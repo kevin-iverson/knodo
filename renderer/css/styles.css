@@ -110,13 +110,24 @@ body {
 .group-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .group-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-count { color: var(--text-3); font-size: 12px; }
-.group-actions { display: none; gap: 2px; }
-.group-item:hover .group-actions { display: flex; }
+/* 子分组：箭头占位 + 层缩进（缩进值由 JS 按 depth 计算写进 style） */
+.group-arrow {
+  width: 14px; flex-shrink: 0; text-align: center; line-height: 1;
+  border: none; background: transparent; cursor: pointer;
+  color: var(--text-3); font-size: 10px; padding: 0;
+}
+.group-arrow:hover { color: var(--primary); }
+.group-arrow.space { display: inline-block; } /* 无子分组时占位，保证同级文字对齐 */
+.group-item.is-child .group-name { font-size: 12.5px; }
+.group-item.is-child .group-dot { width: 8px; height: 8px; }
 .group-actions button, .tag-item .tag-del {
   border: none; background: transparent; cursor: pointer;
   color: var(--text-3); font-size: 12px; padding: 0 3px;
 }
-.group-actions button:hover, .tag-item .tag-del:hover { color: var(--danger); }
+.group-actions { display: none; gap: 2px; }
+.group-item:hover .group-actions { display: flex; }
+.group-actions .g-add:hover, .group-actions .g-edit:hover { color: var(--primary); }
+.group-actions .g-del:hover { color: var(--danger); }
 .tag-color { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
 .tag-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag-count { color: var(--text-3); font-size: 12px; }
@@ -378,9 +389,10 @@ body {
 /* fixed 定位：避免被 .view 的 overflow 裁掉 */
 .ms-panel.is-floating { position: fixed; left: 0; top: 0; z-index: 190; }
 .ms-opt {
-  display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px;
+  display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px;
   font-size: 13px; color: var(--text); cursor: pointer;
 }
+.ms-opt input { flex-shrink: 0; }
 .ms-opt:hover { background: var(--bg-hover); }
 .ms-all { border-bottom: 1px solid var(--border); margin-bottom: 4px; padding-bottom: 7px; }
 .ms-list { display: flex; flex-direction: column; }
@@ -392,16 +404,12 @@ body {
 }
 .ms-btn:hover { background: var(--bg-hover); }
 .notice {
-  background: rgba(245, 158, 11, 0.12); color: #c47f0a;
-  padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: var(--bg-hover); color: var(--text-2);
+  padding: 10px 14px; border-radius: var(--radius-sm); font-size: 12.5px; margin-top: 10px;
 }
-[data-theme="dark"] .notice { color: #f5b640; }
 
-/* AI 配置 */
-.ai-config { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 16px; }
-.ai-config .field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-2); }
-.ai-config input { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); color: var(--text); font-size: 13px; outline: none; min-width: 180px; }
-.ai-config input:focus { border-color: var(--primary); }
+/* AI 配置（已移到工具栏「⚙ AI 设置」弹窗，这里只保留弹窗内字段的微调） */
 
 /* Toast */
 .toast {
@@ -446,8 +454,26 @@ body {
   font-size: 12px; color: var(--danger); background: rgba(229, 72, 77, 0.08);
   border-radius: 6px; padding: 6px 8px;
 }
-.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }
-.modal-foot .primary-btn:disabled { opacity: 0.6; cursor: default; }
+/*
+ * 多字段表单弹窗（分组编辑 / AI 设置）：
+ * foot 为「左侧附加操作 + 右侧主按钮」两段布局，避免多个按钮挤在一行。
+ */
+.modal-form { width: 420px; }
+.modal-form .modal-field { display: flex; flex-direction: column; gap: 4px; }
+.modal-form .modal-body { gap: 12px; }
+.modal-form select.modal-input { cursor: pointer; }
+.modal-hint { font-size: 11.5px; color: var(--text-3); }
+.modal-foot { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.modal-foot .foot-extra { display: flex; gap: 8px; }
+.modal-foot .foot-main { display: flex; gap: 8px; margin-left: auto; }
+.modal-foot .primary-btn:disabled, .modal-foot .ghost-btn:disabled { opacity: 0.6; cursor: default; }
+.link-btn {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--primary); font-size: 12.5px; padding: 0; text-decoration: underline;
+}
+/* 报告页分组多选：子分组缩进 + 层级标记 */
+.ms-tree-mark { color: var(--text-3); font-size: 11px; width: 10px; flex-shrink: 0; }
+.ms-opt .ms-tree-mark:empty { width: 0; }
 .choice-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .choice {
   display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px;

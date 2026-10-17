@@ -10,8 +10,10 @@ import { state, loadGroups, loadTags, loadTasks, refreshAll, todayStr } from './
 import { renderReports } from './reports.js';
 import { openDetail, setDetailHandlers } from './detail.js';
 import { renderSearch, setSearchHandlers } from './search.js';
-import { openPromptModal } from './modal.js';
+import { openPromptModal, openFormModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
+import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOptionsHtml } from './group-tree.js';
+import { bindAiSettingsButton, setAiSettingsHandlers } from './ai-settings.js';
 
 /** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
 const AUTO_SAVE_DELAY = 700;
@@ -80,8 +82,11 @@ function bindStaticEvents() {
   });
 
   // 分组 / 标签新增
-  document.getElementById('btn-add-group').addEventListener('click', promptAddGroup);
+  document.getElementById('btn-add-group').addEventListener('click', () => promptAddGroup());
   document.getElementById('btn-add-tag').addEventListener('click', promptAddTag);
+  // AI 配置（原在「AI 报告」页内的配置面板，提到工具栏统一管理）
+  setAiSettingsHandlers({ toast, onChanged: () => { renderSidebarList(); } });
+  bindAiSettingsButton();
 
   // 数据导入 / 导出
   document.getElementById('btn-export').addEventListener('click', exportData);
@@ -195,6 +200,14 @@ async function renderSidebar() {
 }
 
 /** 仅重绘分组 / 标签列表（使用 state 中已有数据，避免多余请求、避免重复拉取覆盖新增项） */
+function groupEmptyHint(groups, groupList) {
+  if (groups.length) return;
+  const empty = document.createElement('li');
+  empty.className = 'list-empty';
+  empty.textContent = '暂无分组，点击 ＋ 新增';
+  groupList.appendChild(empty);
+}
+
 function renderSidebarList() {
   const groups = state.groups;
   const groupList = document.getElementById('group-list');
@@ -212,29 +225,51 @@ function renderSidebarList() {
   });
   groupList.appendChild(allItem);
 
-  for (const g of groups) {
+  for (const { g, depth } of flattenGroupTree(state.groups, { expanded: state.expandedGroups })) {
+    const children = childGroups(state.groups, g.id);
+    const expanded = state.expandedGroups.has(g.id);
     const li = document.createElement('li');
-    li.className = 'group-item' + (state.currentGroup === g.id ? ' active' : '');
+    li.className = 'group-item'
+      + (state.currentGroup === g.id ? ' active' : '')
+      + (depth ? ' is-child' : '');
     li.dataset.id = g.id;
+    li.dataset.parent = g.parent_id ?? '';
+    li.dataset.depth = String(depth);
+    li.style.paddingLeft = `${10 + depth * 14}px`;
+    li.title = `${groupPath(g, state.groups)}（含子分组）`;
     li.innerHTML = `
+      ${children.length
+    ? `<button class="group-arrow" data-act="toggle-group" aria-expanded="${expanded}" title="${expanded ? '收起子分组' : '展开子分组'}">${expanded ? '▾' : '▸'}</button>`
+    : '<span class="group-arrow space"></span>'}
       <span class="group-dot" style="background:${esc(g.color)}"></span>
       <span class="group-name">${esc(g.name)}</span>
-      <span class="group-count">${g.active_count || 0}</span>
+      <span class="group-count" title="含子分组的任务数">${g.total_count ?? g.active_count ?? 0}</span>
       <span class="group-actions">
-        <button class="g-edit" title="编辑">✎</button>
-        <button class="g-del" title="删除">×</button>
+        <button class="g-add" title="新增子分组" data-act="add-sub">＋</button>
+        <button class="g-edit" title="编辑" data-act="edit">✎</button>
+        <button class="g-del" title="删除" data-act="del">×</button>
       </span>`;
+    // 有子分组且未展开 → 折叠时子项不渲染（由 flattenGroupTree 的可见性过滤保证）
     li.addEventListener('click', (e) => {
-      if (e.target.closest('.g-edit')) return editGroup(g);
-      if (e.target.closest('.g-del')) return deleteGroup(g);
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'add-sub') { e.stopPropagation(); return promptAddGroup(g.id); }
+      if (act === 'edit') { e.stopPropagation(); return editGroup(g); }
+      if (act === 'del') { e.stopPropagation(); return deleteGroup(g); }
+      if (act === 'toggle-group') {
+        e.stopPropagation();
+        if (state.expandedGroups.has(g.id)) state.expandedGroups.delete(g.id);
+        else state.expandedGroups.add(g.id);
+        renderSidebarList();
+        return undefined;
+      }
       state.currentGroup = g.id;
       renderSidebarList();
       renderTasks();
     });
-    li.querySelector('.g-edit').addEventListener('click', () => editGroup(g));
-    li.querySelector('.g-del').addEventListener('click', () => deleteGroup(g));
     groupList.appendChild(li);
   }
+
+  groupEmptyHint(groups, groupList);
 
   // 标签
   const tagList = document.getElementById('tag-list');
@@ -411,6 +446,12 @@ function buildTaskList(nodes) {
   return `<ul class="task-list">${items}</ul>`;
 }
 
+/** 分组 id → 完整路径（"工作 / 前端"）；找不到时回退为空串 */
+function groupPathAt(id) {
+  const g = state.groups.find((x) => x.id === id);
+  return g ? groupPath(g, state.groups) : '';
+}
+
 function taskItemHtml(t, depth = 0) {
   const done = t.completed ? ' done' : '';
   const isSub = depth > 0;
@@ -424,7 +465,10 @@ function taskItemHtml(t, depth = 0) {
   if (t.completed && t.completed_at) meta.push(`<span class="meta-item done-at">✅ 完成于 ${fmtDateTime(t.completed_at)}</span>`);
   if (t.reminder_at) meta.push(`<span class="meta-item">🔔 ${fmtDateTime(t.reminder_at)}</span>`);
   for (const n of t.tag_names) meta.push(`<span class="tag-chip">${esc(n)}</span>`);
-  const groupLabel = t.group_name ? `<span class="meta-item" style="color:${esc(t.group_color)}">● ${esc(t.group_name)}</span>` : '';
+  // 分组标签显示完整路径（"工作 / 前端"），否则同名子分组看不出归属
+  const groupLabel = t.group_name
+    ? `<span class="meta-item group-tag" style="color:${esc(t.group_color)}" title="${esc(groupPathAt(t.group_id))}">● ${esc(groupPathAt(t.group_id))}</span>`
+    : '';
 
   return `
   <li class="task-item${done}${isSub ? ' is-subtask' : ''}" draggable="false" data-id="${t.id}" style="margin-left:${depth * 20}px">
@@ -476,14 +520,6 @@ function bindTaskListEvents(container) {
 
 /* ---------------- 就地新增 / 编辑编辑器 ---------------- */
 
-function groupOptionsHtml(selectedId) {
-  const opts = ['<option value="">无分组</option>'];
-  for (const g of state.groups) {
-    opts.push(`<option value="${g.id}"${selectedId === g.id ? ' selected' : ''}>${esc(g.name)}</option>`);
-  }
-  return opts.join('');
-}
-
 function priorityOptionsHtml(selected) {
   const sel = selected == null ? 1 : selected;
   return [0, 1, 2, 3]
@@ -513,7 +549,7 @@ function taskEditorHtml(task) {
       ${isEdit ? '<span class="editor-save-state" hidden title="修改会自动保存"></span>' : ''}
     </div>
     <div class="editor-details"${detailsHidden}>
-      <select class="editor-group" title="分组">${groupOptionsHtml(defaultGroup)}</select>
+      <select class="editor-group" title="分组">${groupOptionsHtml(state.groups, defaultGroup)}</select>
       <select class="editor-priority" title="优先级">${priorityOptionsHtml(t.priority)}</select>
       ${reminderHtml(t.reminder_at, t.plan_end)}
       <input class="editor-tags" type="text" placeholder="标签（逗号分隔）" value="${esc((t.tag_names || []).join(', '))}" />
@@ -928,35 +964,85 @@ const GROUP_COLORS = [
   { value: '#06b6d4', label: '青', color: '#06b6d4' },
 ];
 
+/** 顶部 ＋ / 分组行 ＋ 的统一入口（parentId 非空 = 新增子分组） */
+async function promptAddGroup(parentId = null) {
+  await promptGroupForm(null, parentId);
+}
+
 /**
- * 新增分组：就地弹窗 → 校验 → 创建 → 立即插入列表并选中。
- * 任何失败（重名 / 数据库只读 / IPC 异常）都会在弹窗内展示具体原因，不再静默。
+ * 新增/编辑分组：统一走表单弹窗。
+ * 「上级分组」下拉决定层级 —— 放在哪个分组下面就成为它的子分组，之后也能改。
+ * @param {number|null} presetParentId 从某个分组的 ＋ 进来时默认挂到它下面
  */
-async function promptAddGroup() {
-  await openPromptModal({
-    title: '新增分组',
-    label: '分组名称',
-    placeholder: '例如：工作 / 学习 / 健身',
-    choices: GROUP_COLORS,
-    choicesLabel: '颜色',
-    okText: '创建',
-    onSubmit: async (raw, color) => {
-      const name = raw.trim();
+async function promptGroupForm(g = null, presetParentId = null) {
+  const isEdit = !!g;
+  const exclude = isEdit ? [g.id, ...descendantGroupIds(state.groups, g.id)] : [];
+  const parentId = isEdit ? (g.parent_id ?? '') : (presetParentId ?? '');
+
+  await openFormModal({
+    title: isEdit ? '编辑分组' : '新增分组',
+    okText: isEdit ? '保存' : '创建',
+    fields: [
+      {
+        name: 'name',
+        label: '分组名称',
+        value: g ? g.name : '',
+        placeholder: '例如：工作 / 学习 / 健身',
+      },
+      {
+        name: 'color',
+        label: '颜色',
+        type: 'choices',
+        value: g ? g.color : 'auto',
+        options: GROUP_COLORS,
+      },
+      {
+        name: 'parentId',
+        label: '上级分组',
+        type: 'select',
+        value: parentId,
+        options: [
+          { value: '', label: '（无，作为顶级分组）' },
+          ...flattenGroupTree(state.groups, { respectExpansion: false })
+            .filter(({ g: x }) => !exclude.includes(x.id))
+            .map(({ g: x, depth }) => ({
+              value: x.id,
+              label: `${depth ? `${'　'.repeat(depth)}└ ` : ''}${x.name}`,
+            })),
+        ],
+      },
+    ],
+    onSubmit: async (v) => {
+      const name = v.name.trim();
       if (!name) return '请输入分组名称';
-      if (state.groups.some((g) => g.name === name)) return `分组「${name}」已存在，请换一个名称`;
-      const group = await api.groups.create({ name, color: color === 'auto' ? pickColor() : color });
-      await afterGroupCreated(group);
+      const dup = state.groups.find((x) => x.name === name && x.id !== (g ? g.id : -1));
+      if (dup) return `分组「${name}」已存在，请换一个名称`;
+      const color = v.color === 'auto' ? pickColor() : v.color;
+      const pid = v.parentId === '' ? null : Number(v.parentId);
+      if (isEdit) {
+        const updated = await api.groups.update(g.id, { name, color, parentId: pid });
+        await afterGroupSaved(updated, true);
+      } else {
+        const created = await api.groups.create({ name, color, parentId: pid });
+        await afterGroupSaved(created, false);
+      }
       return undefined;
     },
   });
 }
 
-async function afterGroupCreated(group) {
-  // 用接口返回的数据补一条计数，列表立刻可见，不必等整表刷新
-  state.groups = [...state.groups, { active_count: 0, ...group }];
+/** 分组写库后：刷新侧边栏 + 选中/展开到它 + 提示 */
+async function afterGroupSaved(group, isEdit) {
+  await refreshAll();
+  if (!isEdit) {
+    // 新建：确保父分组展开，否则新分组藏在折叠的父节点里"看不见"
+    if (group.parent_id != null) state.expandedGroups.add(group.parent_id);
+    state.currentGroup = group.id;
+  }
   renderSidebarList();
+  renderTasks();
   highlightSidebarItem('group', group.id);
-  toast(`已创建分组「${group.name}」`);
+  toast(isEdit ? '分组已更新' : `已创建分组「${group.name}」`);
 }
 
 /** 新增/修改后给对应条目一个短暂高亮，用户能立刻看到"确实加进去了" */
@@ -991,33 +1077,30 @@ async function promptAddTag() {
 }
 
 async function editGroup(g) {
-  await openPromptModal({
-    title: '编辑分组',
-    label: '分组名称',
-    value: g.name,
-    okText: '保存',
-    onSubmit: async (raw) => {
-      const name = raw.trim() || g.name;
-      const dup = state.groups.find((x) => x.name === name && x.id !== g.id);
-      if (dup) return `分组「${name}」已存在，请换一个名称`;
-      await api.groups.update(g.id, { name, color: g.color });
-      state.groups = state.groups.map((x) => (x.id === g.id ? { ...x, name } : x));
-      renderSidebarList();
-      renderTasks();
-      toast('分组已更新');
-      return undefined;
-    },
-  });
+  await promptGroupForm(g);
 }
 
+/**
+ * 删除分组：子分组会一并删除，任务上移一级（不丢任务）。
+ * 确认文案里把影响面说清楚，避免出现"点一下任务全没了"的意外。
+ */
 async function deleteGroup(g) {
-  if (!confirm(`删除分组「${g.name}」？组内任务将变为“未分组”。`)) return;
-  guardAction(async () => {
+  const kids = descendantGroupIds(state.groups, g.id);
+  const target = g.parent_id != null
+    ? `上级分组「${state.groups.find((x) => x.id === g.parent_id)?.name || '已删除'}」`
+    : '未分组';
+  const msg = kids.length
+    ? `删除分组「${g.name}」会连带删除它的 ${kids.length} 个子分组，其中的任务将移到${target}。确定删除？`
+    : `删除分组「${g.name}」？组内任务将移到${target}。`;
+  if (!confirm(msg)) return;
+  await guardAction(async () => {
     await api.groups.remove(g.id);
     if (state.currentGroup === g.id) state.currentGroup = 'all';
+    state.expandedGroups.delete(g.id);
     await refreshAll();
     renderSidebarList();
     renderTasks();
+    toast(`已删除分组「${g.name}」`);
   }, '删除分组失败');
 }
 

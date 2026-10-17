@@ -1,10 +1,13 @@
 'use strict';
 /**
- * AI 报告视图：配置 API、生成日报/周报/月报、编辑并导出。
+ * AI 报告视图：生成日报/周报/月报、编辑并导出。
+ * 注：AI 接口配置已抽到顶部工具栏「⚙ AI 设置」（renderer/js/ai-settings.js），这里只保留生成与导出。
  */
 import { api } from './api.js';
 import { state, loadGroups } from './store.js';
 import { toast } from './ui.js';
+import { openAiSettingsModal } from './ai-settings.js';
+import { flattenGroupTree } from './group-tree.js';
 
 const esc = (s) =>
   String(s == null ? '' : s)
@@ -18,42 +21,17 @@ export async function renderReports() {
   const groups = await loadGroups();
   const aiConfig = await api.ai.getConfig();
 
-  // 分组筛选：多选（勾选若干分组，一个都不勾 = 全部分组）
+  // 分组筛选：多选（勾选若干分组，一个都不勾 = 全部分组）。
+  // 层级：子分组缩进显示；勾选父分组会连带统计其下所有子分组的数据。
   const groupChecks = groups.length
-    ? groups.map((g) => `<label class="ms-opt"><input type="checkbox" data-group="${g.id}" /> <span>${esc(g.name)}</span></label>`).join('')
+    ? groupTreeChecksHtml(groups)
     : '<div class="ms-empty">暂无分组</div>';
 
-  const presetOpts = (aiConfig.presets || [])
-    .map((p) => `<option value="${esc(p.baseUrl)}" data-model="${esc(p.model)}">${esc(p.label)}</option>`)
-    .join('');
-
   const keyHint = aiConfig.hasKey
-    ? (aiConfig.encryptionDegraded ? '已保存 Key（非加密降级）' : '已保存 Key（本地加密）')
-    : '未配置 Key（将生成本地模板报告）';
+    ? '已配置 API Key'
+    : '未配置 API Key（将生成本地模板报告）';
 
   viewEl.innerHTML = `
-    <div class="panel">
-      <h3>AI 配置</h3>
-      <div class="ai-config">
-        <div class="field">接口预设
-          <select id="ai-preset">${presetOpts}</select>
-        </div>
-        <div class="field">接口地址 (Base URL)
-          <input id="ai-baseurl" value="${esc(aiConfig.baseUrl)}" placeholder="https://api.deepseek.com" />
-        </div>
-        <div class="field">模型
-          <input id="ai-model" value="${esc(aiConfig.model)}" placeholder="deepseek-chat" />
-        </div>
-        <div class="field">API Key
-          <input id="ai-key" type="password" placeholder="留空则保持原 Key 不变" />
-        </div>
-        <button class="primary-btn" id="ai-save">保存配置</button>
-        <button class="ghost-btn" id="ai-test">测试连接</button>
-        <button class="ghost-btn" id="ai-clear" ${aiConfig.hasKey ? '' : 'hidden'}>清除 Key</button>
-      </div>
-      <div class="notice" id="ai-status">🔑 ${esc(keyHint)}。支持 OpenAI 兼容接口（DeepSeek / OpenAI / 通义千问 / Moonshot / Ollama）。</div>
-    </div>
-
     <div class="panel">
       <h3>生成报告</h3>
       <div class="report-controls">
@@ -85,6 +63,10 @@ export async function renderReports() {
         </label>
         <button class="primary-btn" id="rp-generate">🤖 生成报告</button>
       </div>
+      <div class="notice" id="ai-status">
+        <span>🔑 ${esc(keyHint)}。</span>
+        <button class="link-btn" id="rp-open-ai-settings">⚙ AI 设置…</button>
+      </div>
     </div>
 
     <div class="panel report-output">
@@ -97,12 +79,27 @@ export async function renderReports() {
       </div>
     </div>`;
 
-  bindReportEvents(aiConfig);
+  bindReportEvents();
 }
 
 /** 跨重绘保留的面板定位函数；document 级监听只注册一次 */
 let placePanelRef = null;
 let globalGroupHandlersBound = false;
+
+/**
+ * 分组勾选列表（树形）：子分组按层级缩进，勾选父分组即覆盖其下所有子分组。
+ * 层级标记用 data-* 属性带出来，方便冒烟测试直接断言。
+ */
+function groupTreeChecksHtml(groups) {
+  return flattenGroupTree(groups, { respectExpansion: false })
+    .map(({ g, depth }) => `
+      <label class="ms-opt tree-depth-${depth}" data-id="${g.id}" data-depth="${depth}" style="padding-left:${6 + depth * 14}px">
+        <input type="checkbox" data-group="${g.id}" />
+        <span class="ms-tree-mark">${depth ? '└' : ''}</span>
+        <span>${esc(g.name)}</span>
+      </label>`)
+    .join('');
+}
 
 /** 读取分组多选当前勾选的分组 id（空数组 = 全部） */
 function selectedGroupIds() {
@@ -213,16 +210,11 @@ function bindGroupMultiSelect() {
   sync();
 }
 
-function bindReportEvents(aiConfig) {
+function bindReportEvents() {
   bindGroupMultiSelect();
-
-  // 预设切换
-  document.getElementById('ai-preset').addEventListener('change', (e) => {
-    const opt = e.target.selectedOptions[0];
-    if (!opt) return;
-    document.getElementById('ai-baseurl').value = opt.value;
-    document.getElementById('ai-model').value = opt.dataset.model || '';
-  });
+  // AI 配置入口（配置本体已在顶部工具栏）
+  const aiBtn = document.getElementById('rp-open-ai-settings');
+  if (aiBtn) aiBtn.addEventListener('click', () => openAiSettingsModal().then(renderReports));
 
   // 初始化日期范围（默认本周）
   const now = new Date();
@@ -231,38 +223,6 @@ function bindReportEvents(aiConfig) {
   const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   document.getElementById('rp-start').value = fmt(monday);
   document.getElementById('rp-end').value = fmt(now);
-
-  // 保存配置
-  document.getElementById('ai-save').addEventListener('click', async () => {
-    const baseUrl = document.getElementById('ai-baseurl').value.trim();
-    const model = document.getElementById('ai-model').value.trim();
-    const apiKey = document.getElementById('ai-key').value.trim();
-    if (!baseUrl) { toast('请填写接口地址'); return; }
-    await api.ai.saveConfig({ baseUrl, model, apiKey });
-    document.getElementById('ai-key').value = '';
-    toast('AI 配置已保存');
-    renderReports();
-  });
-
-  // 测试连接
-  document.getElementById('ai-test').addEventListener('click', async () => {
-    const baseUrl = document.getElementById('ai-baseurl').value.trim();
-    const model = document.getElementById('ai-model').value.trim();
-    const apiKey = document.getElementById('ai-key').value.trim();
-    const btn = document.getElementById('ai-test');
-    btn.textContent = '测试中…';
-    const r = await api.ai.test({ baseUrl, model, apiKey });
-    btn.textContent = '测试连接';
-    toast(r.message);
-  });
-
-  // 清除 Key
-  const clearBtn = document.getElementById('ai-clear');
-  clearBtn.addEventListener('click', async () => {
-    await api.ai.clearKey();
-    toast('API Key 已清除');
-    renderReports();
-  });
 
   // 生成报告
   document.getElementById('rp-generate').addEventListener('click', async () => {
@@ -297,10 +257,12 @@ function bindReportEvents(aiConfig) {
     btn.textContent = '🤖 生成报告';
 
     const statusEl = document.getElementById('ai-status');
-    if (r.degraded) {
-      statusEl.innerHTML = `⚠ ${esc(r.reason)}`;
-    } else {
-      statusEl.innerHTML = '✅ 已由 AI 生成。';
+    if (statusEl) {
+      statusEl.innerHTML = r.degraded
+        ? `<span>⚠ ${esc(r.reason)}</span><button class="link-btn" id="rp-open-ai-settings">⚙ AI 设置…</button>`
+        : '<span>✅ 已由 AI 生成。</span>';
+      const again = document.getElementById('rp-open-ai-settings');
+      if (again) again.addEventListener('click', () => openAiSettingsModal().then(renderReports));
     }
   });
 

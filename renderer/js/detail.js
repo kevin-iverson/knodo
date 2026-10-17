@@ -12,6 +12,7 @@ import {
   reminderHtml, bindReminder, computeReminder, reminderNeedsPlanEnd,
 } from './controls.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
+import { groupOptionsHtml } from './group-tree.js';
 
 // 详情页的计划日期是否必填（默认否，保持可创建“无期限”任务）
 const PLAN_DATE_REQUIRED = DATE_RANGE_DEFAULTS.required;
@@ -198,14 +199,6 @@ async function resolveTagIds(namesStr) {
   return ids;
 }
 
-function groupOptionsHtml(selectedId) {
-  const opts = ['<option value="">无分组</option>'];
-  for (const g of state.groups) {
-    opts.push(`<option value="${g.id}"${selectedId === g.id ? ' selected' : ''}>${esc(g.name)}</option>`);
-  }
-  return opts.join('');
-}
-
 function priorityOptionsHtml(selected) {
   const sel = selected == null ? 1 : selected;
   return [0, 1, 2, 3]
@@ -248,7 +241,7 @@ async function renderDetail() {
             <select class="detail-priority">${priorityOptionsHtml(task.priority)}</select>
           </label>
           <label class="detail-field">分组
-            <select class="detail-group">${groupOptionsHtml(task.group_id)}</select>
+            <select class="detail-group">${groupOptionsHtml(state.groups, task.group_id)}</select>
           </label>
         </div>
         <div class="detail-row">

@@ -107,6 +107,14 @@ const MIGRATIONS = [
       d.exec("ALTER TABLE tasks ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
     }
   },
+  // v5：分组层级（groups.parent_id 自引用，支持无限层子分组）
+  (d) => {
+    const cols = d.prepare('PRAGMA table_info(groups)').all().map((c) => c.name);
+    if (!cols.includes('parent_id')) {
+      d.exec('ALTER TABLE groups ADD COLUMN parent_id INTEGER');
+    }
+    d.exec('CREATE INDEX IF NOT EXISTS idx_groups_parent ON groups(parent_id)');
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -209,26 +217,95 @@ LEFT JOIN tasks p ON p.id = t.parent_id
 
 /* ------------------------------ 分组 ------------------------------ */
 
-function listGroups(includeEmpty = true) {
+/**
+ * 取某分组的**所有子孙分组 id**（不含自身）。
+ * 用递归 CTE 一次查完整条链，避免每層一次查询。
+ */
+function descendantGroupIds(id) {
+  if (id == null) return [];
   const rows = db
-    .prepare('SELECT * FROM groups ORDER BY sort_order ASC, id ASC')
-    .all();
+    .prepare(
+      `WITH RECURSIVE sub(id) AS (
+         SELECT id FROM groups WHERE parent_id = ?
+         UNION ALL
+         SELECT g.id FROM groups g JOIN sub s ON g.parent_id = s.id
+       )
+       SELECT id FROM sub`
+    )
+    .all(id);
+  return rows.map((r) => r.id);
+}
+
+/**
+ * 分组集合 → 展开后的 id 集合（自身 + 全部子孙）。
+ * 业务含义：选中父分组时，挂在它任意层级子分组下的任务都要算进去。
+ */
+function expandGroupIds(ids) {
+  const seed = (Array.isArray(ids) ? ids : ids != null ? [ids] : [])
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v));
+  if (!seed.length) return [];
+  const ph = seed.map(() => '?').join(', ');
+  const rows = db
+    .prepare(
+      `WITH RECURSIVE tree(id) AS (
+         SELECT id FROM groups WHERE id IN (${ph})
+         UNION ALL
+         SELECT g.id FROM groups g JOIN tree t ON g.parent_id = t.id
+       )
+       SELECT DISTINCT id FROM tree`
+    )
+    .all(...seed);
+  return rows.map((r) => r.id);
+}
+
+function listGroups(includeEmpty = true) {
+  const rows = db.prepare('SELECT * FROM groups ORDER BY sort_order ASC, id ASC').all();
   if (!includeEmpty) return rows;
+
   const counts = db
     .prepare(
       `SELECT group_id, COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 GROUP BY group_id`
     )
     .all();
-  const map = new Map(counts.map((r) => [r.group_id, r.c]));
-  return rows.map((g) => ({ ...g, active_count: map.get(g.id) || 0 }));
+  const ownMap = new Map(counts.map((r) => [r.group_id, r.c]));
+
+  // 由叶子向根累加：父分组的计数 = 自身任务 + 所有子分组任务
+  const byParent = new Map();
+  rows.forEach((g) => {
+    const p = g.parent_id == null ? 0 : g.parent_id;
+    if (!byParent.has(p)) byParent.set(p, []);
+    byParent.get(p).push(g.id);
+  });
+  const total = new Map();
+  const walk = (gid) => {
+    if (total.has(gid)) return total.get(gid);
+    total.set(gid, 0); // 防御：历史脏数据可能成环，这里保证不会无限递归
+    const own = ownMap.get(gid) || 0;
+    const kids = byParent.get(gid) || [];
+    const sum = kids.reduce((acc, k) => acc + walk(k), own);
+    total.set(gid, sum);
+    return sum;
+  };
+  rows.forEach((g) => walk(g.id));
+
+  return rows.map((g) => ({
+    ...g,
+    active_count: ownMap.get(g.id) || 0, // 仅直属任务
+    total_count: total.get(g.id) || 0,   // 含所有子分组
+  }));
 }
 
-function createGroup({ name, color = '#4f7cff' }) {
+function createGroup({ name, color = '#4f7cff', parentId = null } = {}) {
   const t = nowIso();
-  const max = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM groups').get().m;
+  if (parentId != null && !getGroup(parentId)) throw new Error('上级分组不存在');
+  // sort_order 只在同级内部递增，保证新分组排在同层末尾
+  const max = parentId == null
+    ? db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM groups WHERE parent_id IS NULL').get().m
+    : db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM groups WHERE parent_id = ?').get(parentId).m;
   const info = db
-    .prepare('INSERT INTO groups (name, color, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-    .run(name, color, max + 1, t, t);
+    .prepare('INSERT INTO groups (name, color, parent_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(name, color, parentId, max + 1, t, t);
   return getGroup(info.lastInsertRowid);
 }
 
@@ -236,17 +313,47 @@ function getGroup(id) {
   return db.prepare('SELECT * FROM groups WHERE id = ?').get(id) || null;
 }
 
-function updateGroup(id, { name, color }) {
+/**
+ * 更新分组。改动 parentId 时做环检测：不能挂到自己或自己的子孙下面，
+ * 否则树会出现闭环（侧边栏渲染死循环、计数无解）。
+ */
+function updateGroup(id, { name, color, parentId } = {}) {
   const cur = getGroup(id);
   if (!cur) return null;
-  db.prepare('UPDATE groups SET name = ?, color = ?, updated_at = ? WHERE id = ?')
-    .run(name ?? cur.name, color ?? cur.color, nowIso(), id);
+  let nextParent = cur.parent_id;
+  if (parentId !== undefined) {
+    nextParent = parentId == null ? null : Number(parentId);
+    if (nextParent === Number(id)) throw new Error('上级分组不能是它自己');
+    if (nextParent != null) {
+      if (!getGroup(nextParent)) throw new Error('上级分组不存在');
+      if (descendantGroupIds(id).includes(nextParent)) {
+        throw new Error('不能把分组移动到它自己的子分组下');
+      }
+    }
+  }
+  db.prepare('UPDATE groups SET name = ?, color = ?, parent_id = ?, updated_at = ? WHERE id = ?')
+    .run(name ?? cur.name, color ?? cur.color, nextParent, nowIso(), id);
   return getGroup(id);
 }
 
+/**
+ * 删除分组：连同所有子孙分组一起删除；这些分组下的任务**上移一级**
+ * （有上级则移到上级，没有就变成"未分组"），避免丢任务。
+ */
 function deleteGroup(id) {
-  const info = db.prepare('DELETE FROM groups WHERE id = ?').run(id);
-  return info.changes > 0;
+  const cur = getGroup(id);
+  if (!cur) return { ok: false, deletedGroups: 0, movedTasks: 0 };
+  const ids = [Number(id), ...descendantGroupIds(id)];
+  const ph = ids.map(() => '?').join(', ');
+  const moveTo = cur.parent_id == null ? null : cur.parent_id;
+  const run = db.transaction(() => {
+    const moved = db
+      .prepare(`UPDATE tasks SET group_id = ?, updated_at = ? WHERE group_id IN (${ph})`)
+      .run(moveTo, nowIso(), ...ids).changes;
+    const removed = db.prepare(`DELETE FROM groups WHERE id IN (${ph})`).run(...ids).changes;
+    return { ok: true, deletedGroups: removed, movedTasks: moved, moveTo };
+  });
+  return run();
 }
 
 function reorderGroups(ids) {
@@ -277,9 +384,18 @@ function listTasks(f = {}) {
     params.push(f.parentId);
   }
 
+  // 分组筛选：选中父分组时，其所有子孙分组下的任务一并返回
   if (f.groupId != null && f.groupId !== 'all') {
-    where.push('t.group_id = ?');
-    params.push(f.groupId);
+    const ids = expandGroupIds(f.groupId);
+    if (ids.length === 1) {
+      where.push('t.group_id = ?');
+      params.push(ids[0]);
+    } else if (ids.length > 1) {
+      where.push(`t.group_id IN (${ids.map(() => '?').join(', ')})`);
+      params.push(...ids);
+    } else {
+      where.push('0'); // 分组已不存在 → 结果为空，而不是退回“全部”
+    }
   }
   switch (f.status) {
     case 'active':
@@ -506,10 +622,13 @@ function reorderTasks(ids) {
 
 /** 将指定分组（或全部）已完成任务归档 */
 function archiveCompleted(groupId = null) {
-  const sql = groupId != null
-    ? 'UPDATE tasks SET archived = 1, updated_at = ? WHERE completed = 1 AND archived = 0 AND group_id = ?'
+  // 与列表筛选保持一致：在当前分组（含其子分组）范围内归档
+  const ids = groupId != null ? expandGroupIds(groupId) : [];
+  if (groupId != null && !ids.length) return 0;
+  const sql = ids.length
+    ? `UPDATE tasks SET archived = 1, updated_at = ? WHERE completed = 1 AND archived = 0 AND group_id IN (${ids.map(() => '?').join(', ')})`
     : 'UPDATE tasks SET archived = 1, updated_at = ? WHERE completed = 1 AND archived = 0';
-  const params = groupId != null ? [nowIso(), groupId] : [nowIso()];
+  const params = ids.length ? [nowIso(), ...ids] : [nowIso()];
   const info = db.prepare(sql).run(...params);
   return info.changes;
 }
@@ -645,9 +764,11 @@ function dailyTrend(days = 7) {
  * @param {number|number[]|null} groupId 单个分组 id、分组 id 数组（多选），null = 全部分组
  */
 function rangeStats(startIso, endIso, groupId = null) {
-  const ids = (Array.isArray(groupId) ? groupId : groupId != null ? [groupId] : [])
+  // 展开成 自身 + 子孙：勾选父分组即代表它下面的所有子分组
+  const raw = (Array.isArray(groupId) ? groupId : groupId != null ? [groupId] : [])
     .map((v) => Number(v))
     .filter((v) => Number.isFinite(v));
+  const ids = raw.length ? expandGroupIds(raw) : [];
   let gCond = '';
   const gParams = [];
   if (ids.length === 1) {
@@ -704,7 +825,7 @@ function setSetting(key, value) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 4,
+    schemaVersion: 5,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
@@ -734,11 +855,19 @@ function importData(data) {
     db.prepare('DELETE FROM groups').run();
 
     const t0 = nowIso();
+    // 分两步写分组：先不带 parent_id（外键约束下，父分组未必已先插入），再回填层级
     const insGroup = db.prepare(
       'INSERT INTO groups (id, name, color, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
     );
+    const pendingParents = [];
     for (const g of data.groups) {
       insGroup.run(g.id, g.name, g.color || '#4f7cff', g.sort_order ?? 0, g.created_at || t0, g.updated_at || t0);
+      if (g.parent_id != null) pendingParents.push([g.parent_id, g.id]);
+    }
+    const setParent = db.prepare('UPDATE groups SET parent_id = ? WHERE id = ?');
+    for (const [pid, gid] of pendingParents) {
+      // 父分组缺失时降级为顶层，避免整个导入失败
+      setParent.run(getGroup(pid) ? pid : null, gid);
     }
 
     const insTag = db.prepare('INSERT INTO tags (id, name, color) VALUES (?, ?, ?)');
@@ -792,6 +921,8 @@ module.exports = {
   updateGroup,
   deleteGroup,
   reorderGroups,
+  descendantGroupIds,
+  expandGroupIds,
   // tasks
   listTasks,
   getTask,

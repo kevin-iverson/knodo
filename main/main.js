@@ -221,10 +221,10 @@ app.whenReady().then(() => {
               const modal = document.querySelector('.modal-mask');
               out.groupModalOpened = !!modal;
               if (modal) {
-                const input = modal.querySelector('.modal-input');
-                input.value = '冒烟分组';
-                modal.querySelector('[data-modal="ok"]').click();
-                await new Promise(r => setTimeout(r, 500));
+              const nameInput = modal.querySelector('[data-field="name"]') || modal.querySelector('.modal-input');
+              nameInput.value = '冒烟分组';
+              modal.querySelector('[data-modal="ok"]').click();
+              await new Promise(r => setTimeout(r, 600));
               }
               const names = [...document.querySelectorAll('#group-list .group-name')].map(e => e.textContent);
               out.groupAdded = names.includes('冒烟分组');
@@ -235,9 +235,10 @@ app.whenReady().then(() => {
               await new Promise(r => setTimeout(r, 120));
               const modal2 = document.querySelector('.modal-mask');
               if (modal2) {
-                modal2.querySelector('.modal-input').value = '冒烟分组';
+                const dupInput = modal2.querySelector('[data-field="name"]') || modal2.querySelector('.modal-input');
+                dupInput.value = '冒烟分组';
                 modal2.querySelector('[data-modal="ok"]').click();
-                await new Promise(r => setTimeout(r, 250));
+                await new Promise(r => setTimeout(r, 300));
                 out.dupErrorShown = !modal2.querySelector('.modal-error').hidden;
                 modal2.querySelector('[data-modal="cancel"]').click();
               }
@@ -254,6 +255,79 @@ app.whenReady().then(() => {
                 await new Promise(r => setTimeout(r, 450));
               }
               out.tagAdded = [...document.querySelectorAll('#tag-list .tag-name')].map(e => e.textContent).includes('冒烟标签');
+
+              /* ---- 子分组：在「冒烟分组」下建子分组 → 树形显示 → 父级筛选包含子任务 ---- */
+              const rowOf = (name) => [...document.querySelectorAll('#group-list .group-item')]
+                .find((el) => el.querySelector('.group-name') && el.querySelector('.group-name').textContent === name);
+              const parentRow = rowOf('冒烟分组');
+              out.parentRowFound = !!parentRow;
+              if (parentRow) {
+                parentRow.querySelector('.g-add').click();
+                await new Promise(r => setTimeout(r, 200));
+                const subModal = document.querySelector('.modal-mask');
+                out.subModalOpened = !!subModal;
+                if (subModal) {
+                  const sel = subModal.querySelector('[data-field="parentId"]');
+                  out.presetParent = sel ? sel.value : '';
+                  const nm = subModal.querySelector('[data-field="name"]');
+                  nm.value = '冒烟子分组';
+                  subModal.querySelector('[data-modal="ok"]').click();
+                  await new Promise(r => setTimeout(r, 700));
+                }
+              }
+              const rowsNow = [...document.querySelectorAll('#group-list .group-item')];
+              const childRow = rowsNow.find((el) => el.dataset.depth === '1'
+                && el.querySelector('.group-name') && el.querySelector('.group-name').textContent === '冒烟子分组');
+              out.childRowVisible = !!childRow;
+              out.parentPresetMatched = out.presetParent !== '' && String(out.presetParent) === String(parentRow && parentRow.dataset.id);
+              out.hasArrow = !!(parentRow && parentRow.querySelector('.group-arrow'));
+
+              // 折叠 / 展开：折叠后子分组行应消失，再点箭头回来
+              const hasChildRow = () => [...document.querySelectorAll('#group-list .group-item')]
+                .some((el) => el.dataset.depth === '1'
+                  && el.querySelector('.group-name')
+                  && el.querySelector('.group-name').textContent === '冒烟子分组');
+              const arrow = rowOf('冒烟分组').querySelector('.group-arrow');
+              arrow.click();
+              await new Promise(r => setTimeout(r, 200));
+              out.childHiddenAfterCollapse = !hasChildRow();
+              rowOf('冒烟分组').querySelector('.group-arrow').click();
+              await new Promise(r => setTimeout(r, 200));
+              out.childBackAfterExpand = hasChildRow();
+              out.childRowVisible = out.childRowVisible && out.childBackAfterExpand;
+
+              // 父筛选含子任务
+              const ids = await window.api.groups.list();
+              const parentId = ids.find((g) => g.name === '冒烟分组').id;
+              const childId = ids.find((g) => g.name === '冒烟子分组').id;
+              await window.api.tasks.create({ title: '子分组里的任务', groupId: childId, planStart: '', planEnd: '' });
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await new Promise(r => setTimeout(r, 400));
+              rowOf('冒烟分组').click();
+              await new Promise(r => setTimeout(r, 500));
+              const titles = [...document.querySelectorAll('.task-item .task-title-text')].map((e) => e.textContent.trim());
+              out.parentFilterIncludesChildTask = titles.includes('子分组里的任务');
+              rowOf('全部').click();
+              await new Promise(r => setTimeout(r, 300));
+
+              /* ---- AI 配置：从工具栏打开 → 填表 → 保存 → 回读 ---- */
+              const aiBtn = document.getElementById('btn-ai-settings');
+              out.aiToolbarBtn = !!aiBtn && aiBtn.textContent.indexOf('AI 设置') > -1;
+              if (aiBtn) {
+                aiBtn.click();
+                await new Promise(r => setTimeout(r, 250));
+                const aiModal = document.querySelector('.modal-mask');
+                out.aiModalOpened = !!aiModal;
+                if (aiModal) {
+                  aiModal.querySelector('[data-field="baseUrl"]').value = 'https://smoke.example.com';
+                  aiModal.querySelector('[data-field="model"]').value = 'smoke-model';
+                  aiModal.querySelector('[data-modal="ok"]').click();
+                  await new Promise(r => setTimeout(r, 500));
+                }
+              }
+              const cfg = await window.api.ai.getConfig();
+              out.aiSavedUrl = cfg.baseUrl;
+              out.aiSavedModel = cfg.model;
               return out;
             })()
           `);
@@ -271,8 +345,9 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 再次触发：重开=${dom.reopened ? '是' : '否'}；二次点击可关闭=${dom.closedByTrigger ? '是' : '否'}；面板在视口内=${dom.calInViewport ? '是' : '否'}`);
           console.log(`[SMOKE] 日期范围落库 = ${dom.persistedStart || '-'} ~ ${dom.persistedEnd || '-'}（${dom.persistedMatches ? '与控件一致' : '不一致'}）`);
           console.log(`[SMOKE] 取消后编辑器关闭 = ${dom.editorClosed ? '成功' : '失败'}`);
-          console.log(`[SMOKE] 分组新增弹窗 = ${dom.groupModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.groupAdded ? '是' : '否'}（${dom.groupCountBefore} → ${dom.groupCount}）`);
-          console.log(`[SMOKE] 分组重名错误提示 = ${dom.dupErrorShown ? '已提示' : '未提示'}`);
+          console.log(`[SMOKE] 分组：新增=${dom.groupAdded ? '是' : '否'}（${dom.groupCountBefore} → ${dom.groupCount}）；重名错误=${dom.dupErrorShown ? '已提示' : '未提示'}`);
+          console.log(`[SMOKE] 子分组：父行含箭头=${dom.hasArrow ? '是' : '否'}；上级默认带入=${dom.parentPresetMatched ? '是' : '否'}；子分组可见=${dom.childRowVisible ? '是' : '否'}；折叠后隐藏=${dom.childHiddenAfterCollapse ? '是' : '否'}；再展开回来=${dom.childBackAfterExpand ? '是' : '否'}；父筛选含子任务=${dom.parentFilterIncludesChildTask ? '是' : '否'}`);
+          console.log(`[SMOKE] AI 设置（工具栏）= 按钮${dom.aiToolbarBtn ? '存在' : '缺失'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
           console.log(`[SMOKE] 标签新增弹窗 = ${dom.tagModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.tagAdded ? '是' : '否'}`);
 
           // 详情侧边栏：拖拽调宽 + 子任务添加（局部刷新，不重绘整页）
@@ -653,6 +728,10 @@ app.whenReady().then(() => {
             && dom.reopened && dom.closedByTrigger && dom.calInViewport && dom.persistedMatches
             && dom.groupModalOpened && dom.groupAdded && dom.dupErrorShown
             && dom.tagModalOpened && dom.tagAdded
+            && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
+            && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
+            && dom.aiToolbarBtn && dom.aiModalOpened
+            && dom.aiSavedUrl === 'https://smoke.example.com' && dom.aiSavedModel === 'smoke-model'
             && detail.panelOpen && detail.hasResizer && detail.widthAfter > detail.widthBefore
             && detail.resizingClassCleared && !!detail.persisted
             && Math.abs(detail.widthReopened - detail.widthAfter) <= 2

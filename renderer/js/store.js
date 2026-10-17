@@ -29,7 +29,10 @@ const state = {
   editingTaskId: null, // 正在编辑的任务 id（null 表示无）
   addingTask: false,   // 是否展开列表底部的“新增任务”编辑器
   detailTaskId: null,  // 详情页打开的任务 id（null 表示关闭）
-  expandedTasks: new Set(), // 列表中已展开子任务的任务 id 集合
+  // 列表中已展开子任务的任务 id 集合
+  expandedTasks: new Set(),
+  // 侧边栏中已展开子分组的分组 id 集合（默认折叠，点箭头展开）
+  expandedGroups: new Set(),
 };
 
 /** 本地日期 YYYY-MM-DD */
