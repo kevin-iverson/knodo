@@ -118,7 +118,9 @@ body {
 }
 .group-actions button:hover, .tag-item .tag-del:hover { color: var(--danger); }
 .tag-color { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
-.tag-item .tag-del { display: none; margin-left: auto; }
+.tag-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-count { color: var(--text-3); font-size: 12px; }
+.tag-item .tag-del { display: none; margin-left: 2px; }
 .tag-item:hover .tag-del { display: inline; }
 
 /* ---------------- 主区域 ---------------- */
@@ -291,12 +293,6 @@ body {
   border-radius: 8px; background: var(--bg); color: var(--text); font-size: 14px; outline: none;
 }
 .editor-title:focus { border-color: var(--primary); }
-.editor-date { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-3); }
-.editor-date input {
-  width: 130px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg); color: var(--text); font-size: 13px; outline: none;
-}
-.editor-date input:focus { border-color: var(--primary); }
 
 .editor-details {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -369,56 +365,125 @@ body {
   border-radius: 8px; font-size: 13px; box-shadow: var(--shadow); z-index: 200;
 }
 
+/* 即时持久化状态提示 */
+.editor-save-state {
+  font-size: 12px; color: var(--text-3); padding: 0 2px; white-space: nowrap; cursor: default;
+}
+.editor-save-state.s-saving { color: var(--primary); }
+.editor-save-state.s-saved { color: var(--green); }
+.editor-save-state.s-error { color: var(--danger); cursor: pointer; text-decoration: underline; }
+.editor-save-state.s-pending { color: var(--text-3); }
+.detail-save-state { font-size: 12px; color: var(--text-3); }
+.detail-save-state.s-saving { color: var(--primary); }
+.detail-save-state.s-saved { color: var(--green); }
+.detail-save-state.s-error { color: var(--danger); cursor: pointer; text-decoration: underline; }
+
+/* ---------------- 模态框（新增分组 / 标签） ---------------- */
+.modal-mask {
+  position: fixed; inset: 0; z-index: 300; background: rgba(0, 0, 0, 0.35);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.modal {
+  width: 100%; max-width: 380px; background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.modal-head { padding: 14px 18px; font-size: 14px; font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border); }
+.modal-body { padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
+.field-label { font-size: 12px; color: var(--text-2); }
+.modal-input {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font-size: 13.5px; outline: none;
+}
+.modal-input:focus { border-color: var(--primary); }
+.modal.has-error .modal-input { border-color: var(--danger); }
+.modal-error {
+  font-size: 12px; color: var(--danger); background: rgba(229, 72, 77, 0.08);
+  border-radius: 6px; padding: 6px 8px;
+}
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }
+.modal-foot .primary-btn:disabled { opacity: 0.6; cursor: default; }
+.choice-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.choice {
+  display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px;
+  border: 1px solid var(--border); border-radius: 999px; cursor: pointer;
+  font-size: 12px; color: var(--text-2);
+}
+.choice input { display: none; }
+.choice-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
+.choice:has(input:checked) { border-color: var(--primary); color: var(--text); background: var(--bg-hover); }
+.list-empty { font-size: 12px; color: var(--text-3); padding: 6px 8px; }
+
+/* 新增成功后的短暂高亮，帮助用户确认"确实加进去了" */
+.group-item.just-added, .tag-item.just-added { animation: justAdded 1.2s ease-out; }
+@keyframes justAdded {
+  0% { background: rgba(79, 124, 255, 0.22); }
+  100% { background: transparent; }
+}
+
 /* 滚动条 */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
 
-/* ---------------- 日期选择控件 ---------------- */
-.date-field { position: relative; display: inline-flex; align-items: center; }
-.date-field-btn {
+/* ---------------- 计划日期范围控件（单一触发器 + 日历两次点选） ---------------- */
+.date-range-field { position: relative; display: inline-flex; align-items: center; }
+.date-range-trigger {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg); color: var(--text-2); cursor: pointer; font-size: 13px;
+  background: var(--bg); color: var(--text); cursor: pointer; font-size: 13px;
+  max-width: 280px;
 }
-.date-field-btn:hover { border-color: var(--primary); color: var(--text); }
-.date-field-icon { font-size: 13px; }
-.date-field-input {
-  position: absolute; left: 0; top: 0; width: 1px; height: 1px;
-  opacity: 0; overflow: hidden; pointer-events: none;
+.date-range-trigger:hover { border-color: var(--primary); }
+.date-range-trigger[aria-expanded="true"] {
+  border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.16);
 }
-
-/* 日期范围选择控件（日历点选起止） */
-.date-range-field { position: relative; display: inline-flex; align-items: center; gap: 4px; }
-.date-range-btn {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg); color: var(--text-2); cursor: pointer; font-size: 13px;
+.date-range-trigger.is-empty { color: var(--text-3); }
+.date-range-field.invalid .date-range-trigger { border-color: var(--danger); }
+.dr-icon { font-size: 13px; }
+.dr-text { white-space: nowrap; }
+.dr-days {
+  padding: 1px 6px; border-radius: 999px; background: var(--bg-hover);
+  color: var(--text-2); font-size: 11px;
 }
-.date-range-btn:hover { border-color: var(--primary); color: var(--text); }
-.date-range-icon { font-size: 13px; }
-.dr-sep { color: var(--text-3); font-size: 12px; }
+.dr-caret { color: var(--text-3); font-size: 10px; }
 .date-range-pop {
-  position: absolute; left: 0; top: calc(100% + 6px); z-index: 20;
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 30;
   background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: var(--shadow); padding: 12px; min-width: 260px;
+  box-shadow: var(--shadow); padding: 12px; width: 272px;
 }
+/* 弹出面板本身不加位移/缩放动画：避免呼出时"跳一下"，也让高度量测稳定 */
 .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .cal-nav { border: none; background: transparent; color: var(--text-2); cursor: pointer; font-size: 16px; padding: 2px 6px; }
 .cal-nav:hover { color: var(--primary); }
 .cal-title { font-size: 13px; font-weight: 600; color: var(--text); }
 .cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
-.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; grid-auto-rows: 30px; }
 .cal-cell {
+  display: flex; align-items: center; justify-content: center;
   height: 30px; border: none; background: transparent; border-radius: 6px;
-  color: var(--text); font-size: 12.5px; cursor: pointer;
+  color: var(--text); font-size: 12.5px; cursor: pointer; padding: 0;
 }
-.cal-cell.empty { cursor: default; }
+/* 空格子是 <span>，必须改成块级：行内元素的 height 会被忽略，首行空网格于是被
+   grid 的 auto 行高（等于整块网格高度）撑成一大块空白。 */
+.cal-cell.empty { cursor: default; display: block; height: 30px; }
 .cal-cell:hover { background: var(--bg-hover); }
 .cal-cell.today { color: var(--primary-strong); font-weight: 700; }
 .cal-cell.selected { background: var(--primary); color: #fff; }
 .cal-cell.in-range { background: rgba(79, 124, 255, 0.15); }
-.cal-foot { margin-top: 8px; text-align: right; }
+.cal-cell.preview { background: rgba(79, 124, 255, 0.1); }
+.cal-hint { margin-top: 8px; font-size: 11.5px; color: var(--text-3); }
+.cal-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.dr-quick {
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-2);
+  border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+}
+.dr-quick:hover { border-color: var(--primary); color: var(--primary); }
+.cal-foot {
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.dr-selected { font-size: 12px; color: var(--text-3); }
 .dr-clear { border: none; background: transparent; color: var(--text-3); cursor: pointer; font-size: 12px; padding: 2px; }
 .dr-clear:hover { color: var(--danger); }
 
@@ -434,11 +499,26 @@ body {
 .detail-drawer { position: fixed; inset: 0; z-index: 150; }
 .detail-mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.35); }
 .detail-panel {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 420px; max-width: 92vw;
+  position: absolute; top: 0; right: 0; bottom: 0; width: var(--detail-width, 420px); max-width: 92vw;
   background: var(--bg-panel); box-shadow: var(--shadow);
   display: flex; flex-direction: column; animation: detailIn 0.2s ease;
 }
 @keyframes detailIn { from { transform: translateX(30px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* 左侧拖拽手柄：6px 命中区，视觉上只有 1px 分隔线 */
+.detail-resizer {
+  position: absolute; left: -3px; top: 0; bottom: 0; width: 6px;
+  cursor: col-resize; z-index: 2; touch-action: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.detail-resizer::after {
+  content: ''; width: 1px; height: 100%; background: transparent; transition: background 0.12s;
+}
+.detail-resizer:hover::after { background: var(--primary); }
+html.is-resizing .detail-resizer::after { background: var(--primary); }
+html.is-resizing, html.is-resizing * { cursor: col-resize !important; user-select: none !important; }
+/* 拖拽时不播放面板入场动画，避免与宽度变化叠加造成抖动 */
+html.is-resizing .detail-panel { animation: none; }
 .detail-head {
   display: flex; align-items: center; gap: 10px;
   padding: 14px 16px; border-bottom: 1px solid var(--border);
@@ -508,7 +588,6 @@ body {
   background: transparent; color: #fff; cursor: pointer; font-size: 11px; flex-shrink: 0;
 }
 .subtask-item.done .subtask-check { background: var(--green); border-color: var(--green); }
-.subtask-item.done .subtask-title { text-decoration: line-through; color: var(--text-3); }
 .subtask-title { flex: 1; font-size: 13px; word-break: break-word; }
 .subtask-del {
   border: none; background: transparent; color: var(--text-3); cursor: pointer; font-size: 14px; opacity: 0;
@@ -516,11 +595,28 @@ body {
 .subtask-item:hover .subtask-del { opacity: 1; }
 .subtask-del:hover { color: var(--danger); }
 .subtask-empty { color: var(--text-3); font-size: 12px; padding: 6px 2px; }
-.subtask-add input {
-  width: 100%; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px;
+.subtask-add { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.subtask-add .subtask-input {
+  flex: 1; min-width: 120px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px;
   background: transparent; color: var(--text); font-size: 13px; outline: none;
 }
-.subtask-add input:focus { border-color: var(--primary); }
+.subtask-add .subtask-input:focus { border-color: var(--primary); }
+
+/* 子任务行：标题可就地编辑，与主任务同级的优先级 / 计划日期 */
+.subtask-title-input {
+  flex: 1; min-width: 90px; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--text); font-size: 13px; outline: none;
+}
+.subtask-title-input:hover { border-color: var(--border); }
+.subtask-title-input:focus { border-color: var(--primary); background: var(--bg); }
+.subtask-item.done .subtask-title-input { text-decoration: line-through; color: var(--text-3); }
+.subtask-priority, .subtask-new-priority {
+  padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text); font-size: 12px; outline: none; flex-shrink: 0;
+}
+.subtask-priority:focus, .subtask-new-priority:focus { border-color: var(--primary); }
+.subtask-item.saving { outline: 1px solid var(--primary); outline-offset: -1px; }
+.subtask-item.save-error { outline: 1px solid var(--danger); outline-offset: -1px; }
 
 /* 子任务树（嵌套 ul） */
 .subtree { list-style: none; margin: 0; padding-left: 16px; }

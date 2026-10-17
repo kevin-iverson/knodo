@@ -109,23 +109,45 @@ const MIGRATIONS = [
   },
 ];
 
-function init(dbDir, dbFileName = 'todo.db') {
-  fs.mkdirSync(dbDir, { recursive: true });
-  const dbPath = path.join(dbDir, dbFileName);
-  db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+// 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
+let initError = '';
 
-  const current = db.pragma('user_version', { simple: true });
-  for (let v = current; v < MIGRATIONS.length; v++) {
-    const run = db.transaction(() => {
-      MIGRATIONS[v](db);
-      db.pragma(`user_version = ${v + 1}`);
-    });
-    run();
+function init(dbDir, dbFileName = 'todo.db') {
+  try {
+    fs.mkdirSync(dbDir, { recursive: true });
+    const dbPath = path.join(dbDir, dbFileName);
+    db = new Database(dbPath);
+    // 立刻做一次写探测：数据库文件只读（权限 / 同步盘占位 / 被占用）时提前暴露，
+    // 否则要等第一次写操作才报 "attempt to write a readonly database"，用户只看到"点了没反应"
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+
+    const current = db.pragma('user_version', { simple: true });
+    for (let v = current; v < MIGRATIONS.length; v++) {
+      const run = db.transaction(() => {
+        MIGRATIONS[v](db);
+        db.pragma(`user_version = ${v + 1}`);
+      });
+      run();
+    }
+    seedDefaults();
+    initError = '';
+    return db;
+  } catch (e) {
+    initError = e && e.message ? e.message : String(e);
+    console.error('[db] 初始化失败：', initError);
+    return null;
   }
-  seedDefaults();
-  return db;
+}
+
+/** 数据库是否可用（初始化成功） */
+function isReady() {
+  return !!db;
+}
+
+/** 初始化失败原因（成功时为空串） */
+function getInitError() {
+  return initError;
 }
 
 function getDb() {
@@ -397,10 +419,17 @@ function deleteTask(id) {
   return true;
 }
 
-/** 获取某任务的直接子任务（按拖拽排序） */
+/**
+ * 获取某任务的直接子任务。
+ * 排序规则与任务主列表保持一致（未完成优先 → 有截止日期优先 → 截止日期升序 →
+ * 优先级降序 → 手动排序 → id），这样补齐了日期 / 优先级字段后，列表与详情的顺序一致。
+ */
 function listSubtasks(parentId) {
   return db
-    .prepare(`${TASK_SELECT} WHERE t.parent_id = ? ORDER BY t.completed ASC, t.sort_order ASC, t.id ASC`)
+    .prepare(
+      `${TASK_SELECT} WHERE t.parent_id = ?
+       ORDER BY t.completed ASC, (t.plan_end IS NULL) ASC, t.plan_end ASC, t.priority DESC, t.sort_order ASC, t.id ASC`
+    )
     .all(parentId)
     .map(normalizeTask);
 }
@@ -732,6 +761,8 @@ function importData(data) {
 module.exports = {
   init,
   getDb,
+  isReady,
+  getInitError,
   close,
   nowIso,
   // groups

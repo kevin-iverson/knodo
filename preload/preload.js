@@ -4,70 +4,103 @@
  */
 const { contextBridge, ipcRenderer } = require('electron');
 
+/**
+ * 统一包装 invoke：
+ * - 主进程返回 { __error } 时在这里抛出可读错误，渲染层用一个 try/catch 就能拿到 message；
+ * - 主进程 handler 缺失 / 已崩溃时 Electron 抛的 "Error invoking remote method ..." 也转成简洁文案。
+ * 背景：以前渲染层若忘记 catch，invoke 失败会被静默吞掉——按钮点了没任何反应。
+ */
+function call(channel, ...args) {
+  return ipcRenderer.invoke(channel, ...args).then(
+    (res) => {
+      if (res && typeof res === 'object' && res.__error) {
+        const err = new Error(res.__error);
+        err.channel = channel;
+        throw err;
+      }
+      return res;
+    },
+    (e) => {
+      const raw = e && e.message ? e.message : String(e);
+      const err = new Error(raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, ''));
+      err.channel = channel;
+      throw err;
+    }
+  );
+}
+
 contextBridge.exposeInMainWorld('api', {
   // 分组
   groups: {
-    list: () => ipcRenderer.invoke('groups:list'),
-    create: (p) => ipcRenderer.invoke('groups:create', p),
-    update: (id, p) => ipcRenderer.invoke('groups:update', id, p),
-    remove: (id) => ipcRenderer.invoke('groups:delete', id),
-    reorder: (ids) => ipcRenderer.invoke('groups:reorder', ids),
+    list: () => call('groups:list'),
+    create: (p) => call('groups:create', p),
+    update: (id, p) => call('groups:update', id, p),
+    remove: (id) => call('groups:delete', id),
+    reorder: (ids) => call('groups:reorder', ids),
   },
   // 任务
   tasks: {
-    list: (f) => ipcRenderer.invoke('tasks:list', f),
-    get: (id) => ipcRenderer.invoke('tasks:get', id),
-    create: (p) => ipcRenderer.invoke('tasks:create', p),
-    update: (id, p) => ipcRenderer.invoke('tasks:update', id, p),
-    remove: (id) => ipcRenderer.invoke('tasks:delete', id),
-    toggle: (id) => ipcRenderer.invoke('tasks:toggle', id),
-    reorder: (ids) => ipcRenderer.invoke('tasks:reorder', ids),
-    archiveCompleted: (groupId) => ipcRenderer.invoke('tasks:archiveCompleted', groupId),
-    archive: (id) => ipcRenderer.invoke('tasks:archive', id),
-    unarchive: (id) => ipcRenderer.invoke('tasks:unarchive', id),
-    subtasks: (parentId) => ipcRenderer.invoke('tasks:subtasks', parentId),
+    list: (f) => call('tasks:list', f),
+    get: (id) => call('tasks:get', id),
+    create: (p) => call('tasks:create', p),
+    update: (id, p) => call('tasks:update', id, p),
+    remove: (id) => call('tasks:delete', id),
+    toggle: (id) => call('tasks:toggle', id),
+    reorder: (ids) => call('tasks:reorder', ids),
+    archiveCompleted: (groupId) => call('tasks:archiveCompleted', groupId),
+    archive: (id) => call('tasks:archive', id),
+    unarchive: (id) => call('tasks:unarchive', id),
+    subtasks: (parentId) => call('tasks:subtasks', parentId),
   },
   // 标签
   tags: {
-    list: () => ipcRenderer.invoke('tags:list'),
-    create: (name, color) => ipcRenderer.invoke('tags:create', name, color),
-    remove: (id) => ipcRenderer.invoke('tags:delete', id),
+    list: () => call('tags:list'),
+    create: (name, color) => call('tags:create', name, color),
+    remove: (id) => call('tags:delete', id),
   },
   // 统计
   stats: {
-    overview: () => ipcRenderer.invoke('stats:overview'),
-    trend: (days) => ipcRenderer.invoke('stats:trend', days),
+    overview: () => call('stats:overview'),
+    trend: (days) => call('stats:trend', days),
   },
   // AI 配置
   ai: {
-    getConfig: () => ipcRenderer.invoke('ai:getConfig'),
-    saveConfig: (p) => ipcRenderer.invoke('ai:saveConfig', p),
-    clearKey: () => ipcRenderer.invoke('ai:clearKey'),
-    test: (p) => ipcRenderer.invoke('ai:test', p),
+    getConfig: () => call('ai:getConfig'),
+    saveConfig: (p) => call('ai:saveConfig', p),
+    clearKey: () => call('ai:clearKey'),
+    test: (p) => call('ai:test', p),
   },
   // 报告
   report: {
-    generate: (p) => ipcRenderer.invoke('report:generate', p),
-    export: (p) => ipcRenderer.invoke('report:export', p),
+    generate: (p) => call('report:generate', p),
+    export: (p) => call('report:export', p),
   },
   // 数据导入 / 导出
   data: {
-    export: () => ipcRenderer.invoke('data:export'),
-    import: () => ipcRenderer.invoke('data:import'),
+    export: () => call('data:export'),
+    import: () => call('data:import'),
   },
   // AI 检索
   search: {
-    ai: (keyword) => ipcRenderer.invoke('search:ai', keyword),
+    ai: (keyword) => call('search:ai', keyword),
   },
-  // 主题 / 应用
+  // 主题 / 强调色 / 界面偏好
   theme: {
-    get: () => ipcRenderer.invoke('theme:get'),
-    set: (mode) => ipcRenderer.invoke('theme:set', mode),
+    get: () => call('theme:get'),
+    set: (mode) => call('theme:set', mode),
+  },
+  accent: {
+    get: () => call('accent:get'),
+    set: (hex) => call('accent:set', hex),
+  },
+  ui: {
+    getDetailWidth: () => call('ui:getDetailWidth'),
+    setDetailWidth: (w) => call('ui:setDetailWidth', w),
   },
   app: {
-    quit: () => ipcRenderer.invoke('app:quit'),
-    openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
-    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+    quit: () => call('app:quit'),
+    openExternal: (url) => call('app:openExternal', url),
+    getVersion: () => call('app:getVersion'),
   },
   // 主进程事件
   on: (channel, cb) => {

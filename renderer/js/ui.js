@@ -10,10 +10,21 @@ import { state, loadGroups, loadTags, loadTasks, refreshAll, todayStr } from './
 import { renderReports } from './reports.js';
 import { openDetail, setDetailHandlers } from './detail.js';
 import { renderSearch, setSearchHandlers } from './search.js';
+import { openPromptModal } from './modal.js';
+import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
+
+/** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
+const AUTO_SAVE_DELAY = 700;
 import {
-  dateRangeFieldHtml, bindDateRangeFields, getDateRange,
+  dateRangeFieldHtml, bindDateRangeFields, validateDateRange,
+  DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS, syncReminderWithPlanEnd, defaultDateRange,
   reminderHtml, bindReminder, computeReminder, reminderNeedsPlanEnd,
 } from './controls.js';
+
+// 新建任务时计划日期的默认范围：'none' = 留空（默认），'today' = 今天 ~ 今天
+const NEW_TASK_RANGE_MODE = 'none';
+// 计划日期是否必填（默认否：允许创建“无期限”任务）
+const PLAN_DATE_REQUIRED = DATE_RANGE_DEFAULTS.required;
 
 const esc = (s) =>
   String(s == null ? '' : s)
@@ -167,10 +178,16 @@ async function renderSidebar() {
   document.querySelectorAll('.nav-item').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === state.view);
   });
+  await loadGroups();
+  await loadTags();
+  renderSidebarList();
+}
 
-  // 分组
-  const groups = await loadGroups();
+/** 仅重绘分组 / 标签列表（使用 state 中已有数据，避免多余请求、避免重复拉取覆盖新增项） */
+function renderSidebarList() {
+  const groups = state.groups;
   const groupList = document.getElementById('group-list');
+  if (!groupList) return; // 元素缺失时直接返回，避免整条链路抛出异常后按钮全部失效
   groupList.innerHTML = '';
 
   const allItem = document.createElement('li');
@@ -179,7 +196,7 @@ async function renderSidebar() {
     <span class="group-name">全部</span>`;
   allItem.addEventListener('click', () => {
     state.currentGroup = 'all';
-    renderSidebar();
+    renderSidebarList();
     renderTasks();
   });
   groupList.appendChild(allItem);
@@ -187,10 +204,11 @@ async function renderSidebar() {
   for (const g of groups) {
     const li = document.createElement('li');
     li.className = 'group-item' + (state.currentGroup === g.id ? ' active' : '');
+    li.dataset.id = g.id;
     li.innerHTML = `
       <span class="group-dot" style="background:${esc(g.color)}"></span>
       <span class="group-name">${esc(g.name)}</span>
-      <span class="group-count">${g.active_count}</span>
+      <span class="group-count">${g.active_count || 0}</span>
       <span class="group-actions">
         <button class="g-edit" title="编辑">✎</button>
         <button class="g-del" title="删除">×</button>
@@ -199,7 +217,7 @@ async function renderSidebar() {
       if (e.target.closest('.g-edit')) return editGroup(g);
       if (e.target.closest('.g-del')) return deleteGroup(g);
       state.currentGroup = g.id;
-      renderSidebar();
+      renderSidebarList();
       renderTasks();
     });
     li.querySelector('.g-edit').addEventListener('click', () => editGroup(g));
@@ -208,20 +226,26 @@ async function renderSidebar() {
   }
 
   // 标签
-  const tags = await loadTags();
   const tagList = document.getElementById('tag-list');
+  if (!tagList) return;
   tagList.innerHTML = '';
-  for (const t of tags) {
+  if (!state.tags.length) {
+    tagList.innerHTML = '<li class="list-empty">暂无标签，点击 ＋ 新增</li>';
+    return;
+  }
+  for (const t of state.tags) {
     const li = document.createElement('li');
     li.className = 'tag-item' + (state.currentTag === t.id ? ' active' : '');
+    li.dataset.id = t.id;
     li.innerHTML = `
       <span class="tag-color" style="background:${esc(t.color)}"></span>
-      <span>${esc(t.name)}</span>
+      <span class="tag-name">${esc(t.name)}</span>
+      <span class="tag-count">${t.task_count || 0}</span>
       <button class="tag-del" title="删除">×</button>`;
     li.addEventListener('click', (e) => {
       if (e.target.closest('.tag-del')) return;
       state.currentTag = state.currentTag === t.id ? null : t.id;
-      renderSidebar();
+      renderSidebarList();
       renderTasks();
     });
     li.querySelector('.tag-del').addEventListener('click', () => deleteTag(t));
@@ -238,6 +262,9 @@ function hasTimeFilter() {
 
 async function renderTasks() {
   const tasks = await loadTasks();
+  // 展开的子节点可能被当前视图 / 筛选条件过滤掉（例如「今天」视图要求 plan_end <= 今天，
+  // 而子任务往往没有日期）。为保证"点得开、看得见"，显式补拉已展开任务的子任务。
+  await withExpandedChildren(tasks);
   const viewEl = document.getElementById('view');
   const isArchived = state.view === 'archived';
   const hasFilters = state.currentGroup !== 'all' || !!state.search || state.priorityFilter !== 'all' || hasTimeFilter();
@@ -253,7 +280,14 @@ async function renderTasks() {
     html += buildTaskList(flattenTree(tasks));
   } else {
     // 未筛选时按分组分组展示（组内父子任务树形展开）
-    const grouped = groupBy(tasks, (t) => t.group_id || null);
+    // 以"最顶层祖先"的分组归组：补拉进来的子任务即使 group_id 与父任务不同，也跟着父任务走
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const topGroup = (t) => {
+      let cur = t;
+      for (let i = 0; i < 20 && cur.parent_id && byId.has(cur.parent_id); i++) cur = byId.get(cur.parent_id);
+      return cur.group_id || null;
+    };
+    const grouped = groupBy(tasks, topGroup);
     for (const [gid, items] of grouped) {
       const g = state.groups.find((x) => x.id === gid);
       const gName = g ? g.name : '未分组';
@@ -284,6 +318,51 @@ function groupBy(arr, keyFn) {
   return map;
 }
 
+/**
+ * 补齐已展开任务的子任务。
+ * 视图筛选（今天 / 即将到期 / 优先级 / 分组 / 搜索）会把不满足条件的子任务过滤掉，
+ * 导致父任务虽然显示"有子任务"的箭头，点开却什么都没有。这里对被标记为展开的任务
+ * 单独拉取子任务并合并进列表（递归处理多层嵌套）。
+ */
+async function withExpandedChildren(tasks) {
+  if (!state.expandedTasks.size) return tasks;
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const queue = [...state.expandedTasks].filter((id) => byId.has(id));
+  const seen = new Set(queue);
+
+  while (queue.length) {
+    const parentId = queue.shift();
+    const kids = await api.tasks.subtasks(parentId).catch((e) => {
+      console.warn('[ui] 拉取子任务失败', e && e.message);
+      return [];
+    });
+    for (const k of kids) {
+      if (!byId.has(k.id)) {
+        byId.set(k.id, k);
+        tasks.push(k);
+      }
+      // 该子任务自身也处于展开状态 → 继续向下补
+      if (state.expandedTasks.has(k.id) && !seen.has(k.id)) {
+        seen.add(k.id);
+        queue.push(k.id);
+      }
+    }
+  }
+  return tasks;
+}
+
+/** 任务排序：与主列表 SQL 一致（未完成 → 有截止日期 → 截止日期 → 优先级降序 → 手动排序 → id） */
+function compareTasks(a, b) {
+  if (!!a.completed !== !!b.completed) return a.completed ? 1 : -1;
+  const aNull = a.plan_end == null;
+  const bNull = b.plan_end == null;
+  if (aNull !== bNull) return aNull ? 1 : -1; // 无截止日期的排后面
+  if (!aNull && a.plan_end !== b.plan_end) return a.plan_end < b.plan_end ? -1 : 1;
+  if (a.priority !== b.priority) return b.priority - a.priority; // 优先级高的在前
+  if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+  return a.id - b.id;
+}
+
 /** 将任务数组组织为树并按“父任务→子任务（缩进）”展平 */
 function flattenTree(tasks) {
   const byId = new Map(tasks.map((t) => [t.id, t]));
@@ -302,7 +381,7 @@ function flattenTree(tasks) {
     result.push({ task: t, depth });
     // 默认收缩：仅在展开时递归渲染子任务
     if (!state.expandedTasks.has(t.id)) return;
-    const kids = (children.get(t.id) || []).sort((a, b) => (a.sort_order - b.sort_order) || (a.id - b.id));
+    const kids = (children.get(t.id) || []).sort(compareTasks);
     for (const k of kids) walk(k, depth + 1);
   };
   for (const r of roots) walk(r, 0);
@@ -336,7 +415,7 @@ function taskItemHtml(t, depth = 0) {
     <button class="task-check" data-act="toggle" title="完成/取消">${t.completed ? '✓' : ''}</button>
     <div class="task-body">
       <div class="task-title">
-        ${t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" title="展开/收起子任务">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}
+        ${t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" aria-expanded="${state.expandedTasks.has(t.id)}" title="${state.expandedTasks.has(t.id) ? '收起子任务' : '展开子任务'}">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}
         <span class="task-title-text">${esc(t.title)}</span>
       </div>
       <div class="task-meta">${groupLabel}${meta.join('')}</div>
@@ -401,15 +480,19 @@ function taskEditorHtml(task) {
   const detailsHidden = isEdit ? '' : ' hidden';
   const showCompletedAt = isEdit && t.completed;
   const defaultGroup = isEdit ? t.group_id : (state.currentGroup !== 'all' ? state.currentGroup : null);
+  // 计划日期：开始 / 完成合并为单一范围控件，新建任务的默认值由 NEW_TASK_RANGE_MODE 决定
+  const rangeOpts = { required: PLAN_DATE_REQUIRED, placeholder: '计划开始 ~ 完成' };
+  const range = isEdit ? { start: t.plan_start, end: t.plan_end } : defaultDateRange(NEW_TASK_RANGE_MODE);
   return `
   <div class="task-editor" data-editor="${isEdit ? t.id : 'new'}">
     <div class="editor-row">
       <input class="editor-title" type="text" placeholder="任务标题（回车保存，Esc 取消）" value="${esc(t.title || '')}" />
-      ${dateRangeFieldHtml(t.plan_start, t.plan_end)}
+      ${dateRangeFieldHtml(range.start, range.end, rangeOpts)}
       <button class="ghost-btn" data-act="editor-more" title="更多选项">⚙</button>
       ${isEdit ? '<button class="danger-btn" data-act="editor-delete" title="删除任务">删除</button>' : ''}
       <button class="ghost-btn" data-act="editor-cancel">取消</button>
       <button class="primary-btn" data-act="editor-save">${isEdit ? '保存' : '添加'}</button>
+      ${isEdit ? '<span class="editor-save-state" hidden title="修改会自动保存"></span>' : ''}
     </div>
     <div class="editor-details"${detailsHidden}>
       <select class="editor-group" title="分组">${groupOptionsHtml(defaultGroup)}</select>
@@ -440,6 +523,10 @@ function bindEditorEvents(container) {
   container.querySelectorAll('.task-editor').forEach((ed) => {
     bindDateRangeFields(ed);
     bindReminder(ed);
+    // 范围变化（含清除）后同步提醒预设，避免出现“依赖完成日期却没有日期”的提醒
+    ed.addEventListener(DATE_RANGE_EVENT, (e) => syncReminderWithPlanEnd(ed, e.detail.planEnd));
+    // 编辑既有任务 → 开启即时持久化（新建任务在“添加”时创建，无 id 可写）
+    if (ed.dataset.editor !== 'new') ed.__autoSave = bindEditorAutoSave(ed);
     const title = ed.querySelector('.editor-title');
     title.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); saveEditor(ed); }
@@ -476,6 +563,9 @@ function startEdit(id) {
 }
 
 function cancelEditor() {
+  // 取消只丢弃"尚未写入"的改动；已经自动保存的内容按即时持久化的语义保留
+  const ed = document.querySelector('.task-editor');
+  if (ed && ed.__autoSave) ed.__autoSave.cancel();
   state.addingTask = false;
   state.editingTaskId = null;
   renderTasks();
@@ -505,18 +595,31 @@ async function resolveTagIds(namesStr) {
   return ids;
 }
 
-async function saveEditor(ed) {
+/**
+ * 从编辑器 DOM 收集待保存的字段。返回 null 表示当前值不合法（标题为空 / 日期未通过校验）。
+ * 供「保存按钮」与「自动保存」共用，保证两条路径写入的数据完全一致。
+ */
+function collectEditorPayload(ed, { quiet = false } = {}) {
   const title = ed.querySelector('.editor-title').value.trim();
   if (!title) {
-    toast('请输入任务标题');
-    ed.querySelector('.editor-title').focus();
-    return;
+    if (!quiet) {
+      toast('请输入任务标题');
+      ed.querySelector('.editor-title').focus();
+    }
+    return null;
   }
-  const isEdit = ed.dataset.editor !== 'new';
-  const { planStart, planEnd } = getDateRange(ed);
+  const range = validateDateRange(ed);
+  if (!range.ok) {
+    if (!quiet) {
+      toast(range.message); // validateDateRange 已给控件加上 .invalid 态
+      ed.querySelector('.date-range-trigger').focus();
+    }
+    return null;
+  }
+  const { planStart, planEnd } = range;
   if (reminderNeedsPlanEnd(ed) && !planEnd) {
-    toast('请先设置完成日期，再选择提醒时间');
-    return;
+    if (!quiet) toast('请先设置完成日期，再选择提醒时间');
+    return null;
   }
   const payload = {
     title,
@@ -530,32 +633,126 @@ async function saveEditor(ed) {
   // 实际完成时间（仅编辑已完成任务时显示该字段）
   const catEl = ed.querySelector('.editor-completed-at');
   if (catEl) payload.completedAt = localToIso(catEl.value);
+  return payload;
+}
 
-  const tagIds = await resolveTagIds(ed.querySelector('.editor-tags').value);
+/** 编辑器内的保存状态提示（已保存 / 保存中… / 保存失败） */
+function setEditorSaveState(ed, status, message) {
+  const el = ed.querySelector('.editor-save-state');
+  if (!el) return;
+  el.hidden = status === 'idle';
+  el.textContent = message || SAVE_STATE_TEXT[status] || '';
+  el.className = `editor-save-state s-${status}`;
+  el.title = status === 'error' ? (message || '保存失败，点击重试') : '';
+}
 
-  if (isEdit) {
-    await api.tasks.update(Number(ed.dataset.editor), { ...payload, tagIds });
-    toast('任务已更新');
-  } else {
-    await api.tasks.create({ ...payload, tagIds });
-    toast('任务已创建');
+/** 编辑已有任务时的即时持久化：输入停止 AUTO_SAVE_DELAY 毫秒后自动写库 */
+function bindEditorAutoSave(ed) {
+  const id = Number(ed.dataset.editor);
+  const task = state.tasks.find((t) => t.id === id);
+  if (!task) return null;
+
+  const read = () => {
+    const p = collectEditorPayload(ed, { quiet: true });
+    if (!p) return null;
+    return { ...p, tagIds: (task.tag_ids || []).map(Number) };
+  };
+
+  const saver = createAutoSave({
+    delay: AUTO_SAVE_DELAY,
+    read,
+    save: async (payload) => {
+      const tagIds = await resolveTagIds(ed.querySelector('.editor-tags').value);
+      return api.tasks.update(id, { ...payload, tagIds });
+    },
+    onStatus: (status, info) => {
+      setEditorSaveState(ed, status, status === 'error' ? (info === 'conflict' ? '任务已不存在' : '保存失败，点击重试') : '');
+    },
+    onError: (e) => {
+      toast(`自动保存失败：${(e && e.message) || '未知错误'}`);
+      // 保留用户输入，点击状态标签即可重试
+    },
+    onConflict: () => {
+      toast('该任务已被删除，未保存的修改已放弃');
+      state.editingTaskId = null;
+      refreshAll().then(() => { renderSidebarList(); renderTasks(); });
+    },
+    onSaved: (updated) => {
+      // 只更新内存状态，不重绘列表（重绘会销毁编辑器、打断输入）
+      const i = state.tasks.findIndex((t) => t.id === id);
+      if (i > -1 && updated) state.tasks[i] = { ...state.tasks[i], ...updated };
+      renderSidebarList();
+    },
+  });
+
+  // 基线 = 打开编辑器时的服务端数据，避免"没改也写库"
+  saver.setBaseline({
+    title: task.title,
+    notes: task.notes || '',
+    priority: task.priority,
+    groupId: task.group_id ?? null,
+    planStart: task.plan_start,
+    planEnd: task.plan_end,
+    reminderAt: task.reminder_at,
+    tagIds: (task.tag_ids || []).map(Number),
+  });
+
+  ed.addEventListener('input', () => saver.schedule());
+  ed.addEventListener('change', () => saver.schedule());
+  // 日期范围控件是自定义事件，单独监听
+  ed.addEventListener(DATE_RANGE_EVENT, () => saver.schedule());
+  // 点击状态标签 → 立即重试
+  const stateEl = ed.querySelector('.editor-save-state');
+  if (stateEl) stateEl.addEventListener('click', () => saver.flush());
+
+  return saver;
+}
+
+async function saveEditor(ed) {
+  const isEdit = ed.dataset.editor !== 'new';
+  const payload = collectEditorPayload(ed);
+  if (!payload) return;
+
+  // 已进入自动保存的编辑器：立即 flush 并关闭；否则（新建）走创建流程
+  const saver = ed.__autoSave;
+  if (isEdit && saver) {
+    await saver.flush();
+    const ok = ed.querySelector('.editor-save-state').className.indexOf('s-error') === -1;
+    if (!ok) return; // 保存失败时保持编辑器打开
+    state.editingTaskId = null;
+    await refreshAll();
+    renderSidebarList();
+    renderTasks();
+    return;
   }
+
+  const ok = await guardAction(async () => {
+    const tagIds = await resolveTagIds(ed.querySelector('.editor-tags').value);
+    if (isEdit) {
+      await api.tasks.update(Number(ed.dataset.editor), { ...payload, tagIds });
+    } else {
+      await api.tasks.create({ ...payload, tagIds });
+    }
+  }, isEdit ? '更新任务失败' : '创建任务失败');
+  if (!ok) return; // 失败时保留编辑器内容，用户可直接重试
+  toast(isEdit ? '任务已更新' : '任务已创建');
 
   state.addingTask = false;
   state.editingTaskId = null;
   await refreshAll();
-  renderSidebar();
+  renderSidebarList();
   renderTasks();
 }
 
 async function deleteEditingTask(ed) {
   const id = Number(ed.dataset.editor);
   if (!confirm('确定删除该任务吗？此操作不可恢复。')) return;
-  await api.tasks.remove(id);
+  const ok = await guardAction(() => api.tasks.remove(id), '删除任务失败');
+  if (!ok) return;
   state.editingTaskId = null;
   toast('任务已删除');
   await refreshAll();
-  renderSidebar();
+  renderSidebarList();
   renderTasks();
 }
 
@@ -600,14 +797,14 @@ function bindDrag(item) {
 async function toggleTask(id) {
   await api.tasks.toggle(id);
   await refreshAll();
-  renderSidebar();
+  renderSidebarList();
   renderTasks();
 }
 
 async function archiveTask(id) {
   await api.tasks.archive(id);
   await refreshAll();
-  renderSidebar();
+  renderSidebarList();
   renderTasks();
   toast('任务已归档');
 }
@@ -616,14 +813,14 @@ async function archiveCompleted() {
   const n = await api.tasks.archiveCompleted(state.currentGroup === 'all' ? null : state.currentGroup);
   toast(`已归档 ${n} 个已完成任务`);
   await refreshAll();
-  renderSidebar();
+  renderSidebarList();
   renderTasks();
 }
 
 async function unarchiveTask(id) {
   await api.tasks.unarchive(id);
   await refreshAll();
-  renderSidebar();
+  renderSidebarList();
   renderTasks();
 }
 
@@ -632,7 +829,7 @@ async function deleteTaskConfirm(id) {
   await api.tasks.remove(id);
   toast('任务已删除');
   await refreshAll();
-  renderSidebar();
+  renderSidebarList();
   renderTasks();
 }
 
@@ -652,7 +849,7 @@ async function importData() {
     state.currentGroup = 'all';
     state.currentTag = null;
     await refreshAll();
-    renderSidebar();
+    renderSidebarList();
     renderTasks();
   } else if (!r.canceled) {
     toast(r.message || '导入失败');
@@ -661,46 +858,118 @@ async function importData() {
 
 /* ---------------- 分组 / 标签编辑 ---------------- */
 
+const GROUP_COLORS = [
+  { value: 'auto', label: '自动', color: '#4f7cff' },
+  { value: '#4f7cff', label: '蓝', color: '#4f7cff' },
+  { value: '#23b07e', label: '绿', color: '#23b07e' },
+  { value: '#f59e0b', label: '橙', color: '#f59e0b' },
+  { value: '#e5484d', label: '红', color: '#e5484d' },
+  { value: '#8b5cf6', label: '紫', color: '#8b5cf6' },
+  { value: '#06b6d4', label: '青', color: '#06b6d4' },
+];
+
+/**
+ * 新增分组：就地弹窗 → 校验 → 创建 → 立即插入列表并选中。
+ * 任何失败（重名 / 数据库只读 / IPC 异常）都会在弹窗内展示具体原因，不再静默。
+ */
 async function promptAddGroup() {
-  const name = prompt('请输入分组名称：');
-  if (!name || !name.trim()) return;
-  await api.groups.create({ name: name.trim(), color: pickColor() });
-  await refreshAll();
-  renderSidebar();
+  await openPromptModal({
+    title: '新增分组',
+    label: '分组名称',
+    placeholder: '例如：工作 / 学习 / 健身',
+    choices: GROUP_COLORS,
+    choicesLabel: '颜色',
+    okText: '创建',
+    onSubmit: async (raw, color) => {
+      const name = raw.trim();
+      if (!name) return '请输入分组名称';
+      if (state.groups.some((g) => g.name === name)) return `分组「${name}」已存在，请换一个名称`;
+      const group = await api.groups.create({ name, color: color === 'auto' ? pickColor() : color });
+      await afterGroupCreated(group);
+      return undefined;
+    },
+  });
+}
+
+async function afterGroupCreated(group) {
+  // 用接口返回的数据补一条计数，列表立刻可见，不必等整表刷新
+  state.groups = [...state.groups, { active_count: 0, ...group }];
+  renderSidebarList();
+  highlightSidebarItem('group', group.id);
+  toast(`已创建分组「${group.name}」`);
+}
+
+/** 新增/修改后给对应条目一个短暂高亮，用户能立刻看到"确实加进去了" */
+function highlightSidebarItem(kind, id) {
+  const sel = kind === 'group' ? '.group-item' : '.tag-item';
+  const items = [...document.querySelectorAll(`${sel}`)];
+  const target = items.find((el) => Number(el.dataset.id) === id);
+  if (!target) return;
+  target.classList.add('just-added');
+  setTimeout(() => target.classList.remove('just-added'), 1200);
+}
+
+async function promptAddTag() {
+  await openPromptModal({
+    title: '新增标签',
+    label: '标签名称',
+    placeholder: '例如：项目A / 紧急',
+    okText: '创建',
+    onSubmit: async (raw) => {
+      const name = raw.trim();
+      if (!name) return '请输入标签名称';
+      if (state.tags.some((t) => t.name === name)) return `标签「${name}」已存在，请换一个名称`;
+      const created = await api.tags.create(name);
+      if (!created || !created.id) return '创建失败：接口未返回标签数据';
+      state.tags = [...state.tags, { task_count: 0, ...created }];
+      renderSidebarList();
+      highlightSidebarItem('tag', created.id);
+      toast(`已创建标签「${created.name}」`);
+      return undefined;
+    },
+  });
 }
 
 async function editGroup(g) {
-  const name = prompt('修改分组名称：', g.name);
-  if (name == null) return;
-  await api.groups.update(g.id, { name: name.trim() || g.name, color: g.color });
-  await refreshAll();
-  renderSidebar();
+  await openPromptModal({
+    title: '编辑分组',
+    label: '分组名称',
+    value: g.name,
+    okText: '保存',
+    onSubmit: async (raw) => {
+      const name = raw.trim() || g.name;
+      const dup = state.groups.find((x) => x.name === name && x.id !== g.id);
+      if (dup) return `分组「${name}」已存在，请换一个名称`;
+      await api.groups.update(g.id, { name, color: g.color });
+      state.groups = state.groups.map((x) => (x.id === g.id ? { ...x, name } : x));
+      renderSidebarList();
+      renderTasks();
+      toast('分组已更新');
+      return undefined;
+    },
+  });
 }
 
 async function deleteGroup(g) {
   if (!confirm(`删除分组「${g.name}」？组内任务将变为“未分组”。`)) return;
-  await api.groups.remove(g.id);
-  if (state.currentGroup === g.id) state.currentGroup = 'all';
-  await refreshAll();
-  renderSidebar();
-  renderTasks();
-}
-
-async function promptAddTag() {
-  const name = prompt('请输入标签名称：');
-  if (!name || !name.trim()) return;
-  await api.tags.create(name.trim());
-  await refreshAll();
-  renderSidebar();
+  guardAction(async () => {
+    await api.groups.remove(g.id);
+    if (state.currentGroup === g.id) state.currentGroup = 'all';
+    await refreshAll();
+    renderSidebarList();
+    renderTasks();
+  }, '删除分组失败');
 }
 
 async function deleteTag(t) {
   if (!confirm(`删除标签「${t.name}」？`)) return;
-  await api.tags.remove(t.id);
-  if (state.currentTag === t.id) state.currentTag = null;
-  await refreshAll();
-  renderSidebar();
-  renderTasks();
+  guardAction(async () => {
+    await api.tags.remove(t.id);
+    if (state.currentTag === t.id) state.currentTag = null;
+    await refreshAll();
+    renderSidebarList();
+    renderTasks();
+  }, '删除标签失败');
 }
 
 /* ---------------- 统计 ---------------- */
@@ -801,6 +1070,22 @@ function toast(msg) {
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 2200);
+}
+
+/**
+ * 统一错误捕获：异步操作失败时把原因提示给用户，避免"点了没反应"。
+ * 失败文案统一带上兜底前缀，便于区分是校验失败还是接口失败。
+ */
+async function guardAction(fn, prefix = '操作失败') {
+  try {
+    await fn();
+    return true;
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    console.error(`[${prefix}]`, e);
+    toast(`${prefix}：${msg}`);
+    return false;
+  }
 }
 
 export { render, renderSidebar, renderTasks, toast };
