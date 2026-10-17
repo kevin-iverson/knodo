@@ -1,0 +1,20 @@
+{
+  "name": "todo-desktop",
+  "version": "1.0.0",
+  "description": "Windows 桌面端个人 TODO 待办应用（Electron + SQLite，本地存储 + AI 报告）",
+  "main": "main/main.js",
+  "author": "WorkBuddy",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke-test",
+    "gen-icon": "node scripts/gen-icon.js",
+    "test:db": "node scripts/smoke-db.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "electron": "^44.8.0"
+  }
+}
