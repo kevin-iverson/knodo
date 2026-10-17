@@ -182,6 +182,18 @@ body {
 .chip:hover { background: var(--bg-hover); }
 .chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
 .filter-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+.sort-select {
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-panel); color: var(--text-2); font-size: 12px; outline: none; cursor: pointer;
+}
+.sort-select:hover { border-color: var(--primary); }
+
+/* 拖拽手柄：只有按住手柄才开始拖拽，避免与行内输入框 / 按钮的点击冲突 */
+.drag-handle {
+  flex-shrink: 0; cursor: grab; color: var(--text-3); font-size: 13px;
+  line-height: 1; padding: 2px 2px; border-radius: 4px; user-select: none;
+}
+.drag-handle:hover { color: var(--text); background: var(--bg-hover); }
 
 /* 时间筛选面板 */
 .time-filter {
@@ -256,7 +268,8 @@ body {
 .task-item:hover .task-actions { opacity: 1; }
 .task-actions button {
   border: none; background: transparent; cursor: pointer;
-  color: var(--text-3); font-size: 13px; padding: 4px; border-radius: 5px;
+  color: var(--text-3); font-size: 12px; padding: 4px 6px; border-radius: 5px;
+  white-space: nowrap;
 }
 .task-actions button:hover { background: var(--bg-hover); color: var(--text); }
 .task-actions button.del:hover { color: var(--danger); }
@@ -346,6 +359,38 @@ body {
   font-family: "SF Mono", Consolas, monospace; font-size: 13px; resize: vertical; outline: none;
 }
 .report-toolbar { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+
+/* 分组多选下拉：触发按钮 + 勾选面板（原生 select 只能单选，这里用自绘面板支持多选） */
+.multi-select { position: relative; display: inline-block; }
+.ms-trigger {
+  min-width: 150px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-panel); color: var(--text); font-size: 13px; cursor: pointer;
+  text-align: left; outline: none;
+}
+.ms-trigger:hover { border-color: var(--primary); }
+.ms-trigger[aria-expanded="true"] { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.16); }
+.ms-panel {
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 120;
+  min-width: 190px; max-height: 260px; overflow-y: auto;
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 8px;
+}
+/* fixed 定位：避免被 .view 的 overflow 裁掉 */
+.ms-panel.is-floating { position: fixed; left: 0; top: 0; z-index: 190; }
+.ms-opt {
+  display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px;
+  font-size: 13px; color: var(--text); cursor: pointer;
+}
+.ms-opt:hover { background: var(--bg-hover); }
+.ms-all { border-bottom: 1px solid var(--border); margin-bottom: 4px; padding-bottom: 7px; }
+.ms-list { display: flex; flex-direction: column; }
+.ms-empty { color: var(--text-3); font-size: 12px; padding: 6px; }
+.ms-foot { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.ms-btn {
+  border: none; background: transparent; color: var(--primary); cursor: pointer;
+  font-size: 12px; padding: 2px 4px; border-radius: 4px;
+}
+.ms-btn:hover { background: var(--bg-hover); }
 .notice {
   background: rgba(245, 158, 11, 0.12); color: #c47f0a;
   padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 12px;
@@ -426,13 +471,12 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
 
-/* ---------------- 计划日期范围控件（单一触发器 + 日历两次点选） ---------------- */
-.date-range-field { position: relative; display: inline-flex; align-items: center; }
+.date-range-field { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; }
 .date-range-trigger {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg); color: var(--text); cursor: pointer; font-size: 13px;
-  max-width: 280px;
+  max-width: 280px; min-width: 0;
 }
 .date-range-trigger:hover { border-color: var(--primary); }
 .date-range-trigger[aria-expanded="true"] {
@@ -440,50 +484,68 @@ body {
 }
 .date-range-trigger.is-empty { color: var(--text-3); }
 .date-range-field.invalid .date-range-trigger { border-color: var(--danger); }
-.dr-icon { font-size: 13px; }
-.dr-text { white-space: nowrap; }
+.dr-icon { font-size: 13px; flex-shrink: 0; }
+.dr-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.dr-days, .dr-caret { flex-shrink: 0; }
 .dr-days {
   padding: 1px 6px; border-radius: 999px; background: var(--bg-hover);
   color: var(--text-2); font-size: 11px;
 }
 .dr-caret { color: var(--text-3); font-size: 10px; }
-.date-range-pop {
-  position: absolute; left: 0; top: calc(100% + 6px); z-index: 30;
-  background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: var(--shadow); padding: 12px; width: 272px;
+/*
+ * flatpickr 的挂载锚点：铺满整个 .date-range-field，但不可见、不接收事件，
+ * 只用它给日历面板提供定位矩形（ trigonometry 由 flatpickr 负责）。
+ */
+.dr-input {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  padding: 0; border: 0; background: transparent; opacity: 0; pointer-events: none;
 }
-/* 弹出面板本身不加位移/缩放动画：避免呼出时"跳一下"，也让高度量测稳定 */
-.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.cal-nav { border: none; background: transparent; color: var(--text-2); cursor: pointer; font-size: 16px; padding: 2px 6px; }
-.cal-nav:hover { color: var(--primary); }
-.cal-title { font-size: 13px; font-weight: 600; color: var(--text); }
-.cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
-.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; grid-auto-rows: 30px; }
-.cal-cell {
-  display: flex; align-items: center; justify-content: center;
-  height: 30px; border: none; background: transparent; border-radius: 6px;
-  color: var(--text); font-size: 12.5px; cursor: pointer; padding: 0;
+
+/* ---- flatpickr 面板主题：vendor 样式已先加载，这里按应用 CSS 变量覆盖 ---- */
+/*
+ * 面板默认挂在 body 上并由 flatpickr 自行计算位置（而且会做视口收敛），
+ * 因此不会被 .detail-body{overflow:auto} 之类的祖先裁剪——子任务行里的
+ * 日期面板不再只露上半截。
+ */
+.flatpickr-calendar {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow); color: var(--text);
+  font-family: inherit; font-size: 13px; z-index: 180; padding: 6px 0 0;
 }
-/* 空格子是 <span>，必须改成块级：行内元素的 height 会被忽略，首行空网格于是被
-   grid 的 auto 行高（等于整块网格高度）撑成一大块空白。 */
-.cal-cell.empty { cursor: default; display: block; height: 30px; }
-.cal-cell:hover { background: var(--bg-hover); }
-.cal-cell.today { color: var(--primary-strong); font-weight: 700; }
-.cal-cell.selected { background: var(--primary); color: #fff; }
-.cal-cell.in-range { background: rgba(79, 124, 255, 0.15); }
-.cal-cell.preview { background: rgba(79, 124, 255, 0.1); }
-.cal-hint { margin-top: 8px; font-size: 11.5px; color: var(--text-3); }
-.cal-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+/* 去掉默认的方向指示三角（它的底色写死为白底，暗色主题下会很突兀） */
+.flatpickr-calendar::before, .flatpickr-calendar::after { display: none; }
+.flatpickr-months .flatpickr-month,
+.flatpickr-months .flatpickr-current-month { color: var(--text); background: transparent; fill: var(--text-2); }
+.flatpickr-months .flatpickr-prev-month svg,
+.flatpickr-months .flatpickr-next-month svg { fill: var(--text-2); }
+.flatpickr-months .flatpickr-prev-month:hover svg,
+.flatpickr-months .flatpickr-next-month:hover svg { fill: var(--primary); }
+.flatpickr-current-month input.cur-year { color: var(--text); }
+.flatpickr-weekday { color: var(--text-3); font-size: 11.5px; }
+.flatpickr-day {
+  color: var(--text); border-radius: 6px;
+}
+.flatpickr-day:hover { background: var(--bg-hover); border-color: transparent; }
+.flatpickr-day.prevMonthDay, .flatpickr-day.nextMonthDay { color: var(--text-3); }
+.flatpickr-day.today { border-color: var(--primary); color: var(--primary-strong); font-weight: 700; }
+.flatpickr-day.today:hover { background: var(--bg-hover); color: var(--primary-strong); }
+/* 区间内的连续底色：vendor 用 box-shadow 拼接，这里统一成一层淡蓝，避免毛刺 */
+.flatpickr-day.inRange { background: rgba(79, 124, 255, 0.14); border-color: transparent; box-shadow: none; }
+.flatpickr-day.selected, .flatpickr-day.startRange, .flatpickr-day.endRange,
+.flatpickr-day.selected:hover, .flatpickr-day.startRange:hover, .flatpickr-day.endRange:hover {
+  background: var(--primary); border-color: var(--primary); color: #fff; box-shadow: none; font-weight: 600;
+}
+
+/* ---- 面板底部的快捷操作（由 controls.js 注入） ---- */
+.dr-fp-foot { padding: 8px 12px 10px; margin-top: 6px; border-top: 1px solid var(--border); }
+.dr-fp-hint { display: block; font-size: 11.5px; color: var(--text-3); margin-bottom: 8px; }
+.dr-fp-quick { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dr-fp-spacer { flex: 1 1 auto; }
 .dr-quick {
   border: 1px solid var(--border); background: var(--bg); color: var(--text-2);
   border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer;
 }
 .dr-quick:hover { border-color: var(--primary); color: var(--primary); }
-.cal-foot {
-  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-}
-.dr-selected { font-size: 12px; color: var(--text-3); }
 .dr-clear { border: none; background: transparent; color: var(--text-3); cursor: pointer; font-size: 12px; padding: 2px; }
 .dr-clear:hover { color: var(--danger); }
 
@@ -582,6 +644,8 @@ html.is-resizing .detail-panel { animation: none; }
 .subtask-item {
   display: flex; align-items: center; gap: 8px; padding: 7px 10px;
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  /* 侧栏较窄时换行，而不是把优先级 / 日期控件压扁到看不清 */
+  flex-wrap: wrap;
 }
 .subtask-check {
   width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--text-3);

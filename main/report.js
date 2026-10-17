@@ -52,12 +52,27 @@ function resolveRange(type, customStart, customEnd) {
 
 const TYPE_TEXT = { day: '日报', week: '周报', month: '月报', custom: '报告' };
 
-function buildLocalReport(type, start, end, groupId) {
+/** 归一化分组筛选：单个 id / id 数组 / null → id 数组（空数组代表全部分组） */
+function normalizeGroupIds(param) {
+  const raw = param && Array.isArray(param.groupIds)
+    ? param.groupIds
+    : (param != null && param.groupId != null ? [param.groupId] : []);
+  return raw.map((v) => Number(v)).filter((v) => Number.isFinite(v));
+}
+
+/** 分组 id 数组 → 展示用名称（空数组 = 全部） */
+function groupNamesText(ids) {
+  if (!ids.length) return '全部';
+  const names = ids.map((id) => (db.getGroup(id) && db.getGroup(id).name) || '').filter(Boolean);
+  return names.length ? names.join('、') : '全部';
+}
+
+function buildLocalReport(type, start, end, groupIds) {
   const s = start.toISOString();
   const e = end.toISOString();
-  const { completedTasks, createdTasks, activeNow, overdue } = db.rangeStats(s, e, groupId);
+  const { completedTasks, createdTasks, activeNow, overdue } = db.rangeStats(s, e, groupIds);
 
-  const groupName = groupId != null ? (db.getGroup(groupId)?.name || '全部') : '全部';
+  const groupName = groupNamesText(groupIds);
   const header = `# ${TYPE_TEXT[type] || '工作报告'}（${fmtDateShort(s)} ~ ${fmtDateShort(e)}）`;
   const range = `- 统计范围：${fmtDate(start.toISOString())} 至 ${fmtDate(end.toISOString())}`;
 
@@ -131,7 +146,7 @@ function buildLocalReport(type, start, end, groupId) {
   return lines.join('\n');
 }
 
-function buildPrompt({ type, start, end, groupId, data }) {
+function buildPrompt({ type, start, end, groupIds, data }) {
   const { completedTasks, createdTasks, activeNow, overdue } = data;
   const completedTitles = completedTasks.map((t) => ({
     title: t.title,
@@ -148,7 +163,7 @@ function buildPrompt({ type, start, end, groupId, data }) {
   const userMsg = [
     `请基于以下本地待办数据生成一份中文${TYPE_TEXT[type] || '工作报告'}。`,
     `时间范围：${fmtDate(start.toISOString())} 至 ${fmtDate(end.toISOString())}`,
-    `分组：${groupId != null ? db.getGroup(groupId)?.name || '全部' : '全部'}`,
+    `分组：${groupNamesText(groupIds)}`,
     '',
     `【本周期已完成任务】${JSON.stringify(completedTitles)}`,
     `【本周期新建任务数量】${createdTasks.length}`,
@@ -172,15 +187,16 @@ function buildPrompt({ type, start, end, groupId, data }) {
  * @returns {Promise<{ markdown, degraded, reason }>}
  */
 async function generateReport(params, aiConfig) {
-  const { type, customStart, customEnd, groupId } = params;
+  const { type, customStart, customEnd } = params;
+  const groupIds = normalizeGroupIds(params);
   const { start, end } = resolveRange(type, customStart, customEnd);
   const s = start.toISOString();
   const e = end.toISOString();
-  const data = db.rangeStats(s, e, groupId);
+  const data = db.rangeStats(s, e, groupIds);
 
   if (!aiConfig || !aiConfig.apiKey) {
     return {
-      markdown: buildLocalReport(type, start, end, groupId),
+      markdown: buildLocalReport(type, start, end, groupIds),
       degraded: true,
       reason: '未配置 AI API Key，已生成本地模板报告。前往「AI 报告」页配置 API Key 后即可获得更自然的智能报告。',
     };
@@ -191,12 +207,12 @@ async function generateReport(params, aiConfig) {
       baseUrl: aiConfig.baseUrl,
       apiKey: aiConfig.apiKey,
       model: aiConfig.model,
-      messages: buildPrompt({ type, start, end, groupId, data }),
+      messages: buildPrompt({ type, start, end, groupIds, data }),
     });
     return { markdown, degraded: false, reason: '' };
   } catch (err) {
     return {
-      markdown: buildLocalReport(type, start, end, groupId),
+      markdown: buildLocalReport(type, start, end, groupIds),
       degraded: true,
       reason: `AI 调用失败：${err.message}。已降级为本地模板报告。`,
     };

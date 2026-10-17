@@ -10,6 +10,8 @@ const { registerIpc } = require('./ipc');
 const { setupTray, destroyTray } = require('./tray');
 const { registerShortcuts, unregisterShortcuts } = require('./shortcuts');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
+const { markdownToDocx } = require('./docx');
+const reportMod = require('./report');
 
 const isSmoke = process.argv.includes('--smoke-test');
 
@@ -143,37 +145,69 @@ app.whenReady().then(() => {
               out.detailDrawer = !!document.querySelector('#detail-drawer');
               out.searchNav = !!document.querySelector('.nav-item[data-view="search"]');
               if (ed) {
-                // 日期范围控件：点一次呼出日历，日历内两次点选 → 起点写入开始日期、终点写入完成日期
+                // 日期范围控件（flatpickr range 模式）：点一次只弹一个日历，
+                // 两次点选 → 起点写入开始日期、终点写入完成日期，并自动关闭
                 const dr = ed.querySelector('.date-range-field');
                 const trigger = dr.querySelector('.date-range-trigger');
+                // 面板由 flatpickr 挂到 body，一律用 document 级查询
+                const openCals = () => [...document.querySelectorAll('.flatpickr-calendar.open')];
+                const daysOf = () => [...document.querySelectorAll('.flatpickr-calendar.open .flatpickr-day:not(.prevMonthDay):not(.nextMonthDay)')];
+                const isoOf = (el) => {
+                  const d = el && el.dateObj;
+                  if (!d) return '';
+                  const mm = String(d.getMonth() + 1).padStart(2, '0');
+                  const dd = String(d.getDate()).padStart(2, '0');
+                  return d.getFullYear() + '-' + mm + '-' + dd;
+                };
                 trigger.click();
-                await new Promise(r => setTimeout(r, 100));
-                let cells = [...dr.querySelectorAll('.cal-cell[data-date]')];
-                out.calCells = cells.length >= 28;
-                if (cells.length >= 3) {
-                  const first = cells[0].dataset.date;
-                  cells[0].click(); // 第 1 次点选 = 开始日期
-                  await new Promise(r => setTimeout(r, 80));
-                  out.pickingOpen = !dr.querySelector('.date-range-pop').hidden;
-                  cells = [...dr.querySelectorAll('.cal-cell[data-date]')];
-                  const target = cells.find((c) => c.dataset.date > first) || cells[cells.length - 1];
-                  target.click(); // 第 2 次点选 = 完成日期
+                await new Promise(r => setTimeout(r, 200));
+                // 关键回归：一次点击只允许出现 1 个日历面板
+                out.calendarsOpen = openCals().length;
+                out.calInBody = !!document.body.querySelector(':scope > .flatpickr-calendar.open');
+                let days = daysOf();
+                out.calDays = days.length;
+                if (days.length >= 6) {
+                  out.expectStart = isoOf(days[0]);
+                  days[0].click(); // 第 1 次点选 = 开始日期
                   await new Promise(r => setTimeout(r, 120));
+                  out.pickingOpen = openCals().length === 1; // 只选了起点 → 面板仍开着等终点
+                  days = daysOf();
+                  out.expectEnd = isoOf(days[5]);
+                  days[5].click(); // 第 2 次点选 = 完成日期
+                  await new Promise(r => setTimeout(r, 200));
                 }
                 out.rangeStart = dr.querySelector('.dr-start-input').value;
                 out.rangeEnd = dr.querySelector('.dr-end-input').value;
-                out.rangePopClosed = dr.querySelector('.date-range-pop').hidden;
+                out.autoFilled = !!out.rangeStart && !!out.rangeEnd
+                  && out.rangeStart === out.expectStart && out.rangeEnd === out.expectEnd;
+                out.rangePopClosed = openCals().length === 0; // 选满即自动关闭
                 out.rangeLabel = dr.querySelector('.dr-text').textContent.trim();
-                // 日历首行空网格高度应与正常格子一致（回归：曾因空 cell 无高度被拉伸成一块空白）
-                dr.querySelector('.date-range-trigger').click();
+                // 触发器必须能正常开关（回归：曾出现 mousedown 先关、click 再开的死循环）
+                trigger.click();
+                await new Promise(r => setTimeout(r, 200));
+                out.reopened = openCals().length === 1;
+                // 面板必须完整落在视口内且不进祖先裁剪容器（回归：old 版被子任务行裁掉）
+                const cal = openCals()[0];
+                if (cal) {
+                  const r = cal.getBoundingClientRect();
+                  out.calInViewport = r.left >= 0 && r.top >= 0
+                    && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1;
+                  out.calParentIsBody = cal.parentElement === document.body;
+                }
+                trigger.click();
                 await new Promise(r => setTimeout(r, 150));
-                const emptyCell = dr.querySelector('.cal-cell.empty');
-                const filledCell = dr.querySelector('.cal-cell[data-date]');
-                out.emptyCellH = emptyCell ? Math.round(emptyCell.getBoundingClientRect().height) : -1;
-                out.filledCellH = filledCell ? Math.round(filledCell.getBoundingClientRect().height) : -1;
-                out.gridH = Math.round(dr.querySelector('.cal-grid').getBoundingClientRect().height);
-                dr.querySelector('.date-range-trigger').click();
-                await new Promise(r => setTimeout(r, 100));
+                out.closedByTrigger = openCals().length === 0;
+                // 端到端：控件里选好的范围要能真正写进数据库（plan_start / plan_end）
+                const titleInput = ed.querySelector('.editor-title');
+                titleInput.value = '冒烟日期任务';
+                titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+                ed.querySelector('[data-act="editor-save"]').click();
+                await new Promise(r => setTimeout(r, 600));
+                const all = (await window.api.tasks.list({ view: 'all' })) || [];
+                const rec = all.find((t) => t.title === '冒烟日期任务');
+                out.persistedStart = rec ? rec.plan_start : null;
+                out.persistedEnd = rec ? rec.plan_end : null;
+                out.persistedMatches = !!rec && rec.plan_start === out.rangeStart && rec.plan_end === out.rangeEnd;
                 const cancel = ed.querySelector('[data-act="editor-cancel"]');
                 if (cancel) cancel.click();
                 await new Promise(r => setTimeout(r, 300));
@@ -231,9 +265,11 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 详情抽屉容器 = ${dom.detailDrawer ? '存在' : '缺失'}`);
           console.log(`[SMOKE] AI 检索导航 = ${dom.searchNav ? '存在' : '缺失'}`);
           console.log(`[SMOKE] 标题输入框聚焦 = ${dom.titleFocused ? '成功' : '失败'}`);
-          console.log(`[SMOKE] 日期范围两次点选回填 = ${dom.rangeStart || '-'} ~ ${dom.rangeEnd || '-'}（文案：${dom.rangeLabel}）`);
+          console.log(`[SMOKE] 日期范围两次点选回填 = ${dom.rangeStart || '-'} ~ ${dom.rangeEnd || '-'}（文案：${dom.rangeLabel}）；期望 ${dom.expectStart} ~ ${dom.expectEnd} → ${dom.autoFilled ? '一致' : '不一致'}`);
           console.log(`[SMOKE] 日期范围弹窗自动关闭 = ${dom.rangePopClosed ? '是' : '否'}`);
-          console.log(`[SMOKE] 日历空网格高度 = ${dom.emptyCellH}px（正常格 ${dom.filledCellH}px，网格 ${dom.gridH}px）`);
+          console.log(`[SMOKE] 单次点击弹出面板数 = ${dom.calendarsOpen}（必须为 1）；挂在 body = ${dom.calInBody ? '是' : '否'}；可视日期格 = ${dom.calDays}`);
+          console.log(`[SMOKE] 再次触发：重开=${dom.reopened ? '是' : '否'}；二次点击可关闭=${dom.closedByTrigger ? '是' : '否'}；面板在视口内=${dom.calInViewport ? '是' : '否'}`);
+          console.log(`[SMOKE] 日期范围落库 = ${dom.persistedStart || '-'} ~ ${dom.persistedEnd || '-'}（${dom.persistedMatches ? '与控件一致' : '不一致'}）`);
           console.log(`[SMOKE] 取消后编辑器关闭 = ${dom.editorClosed ? '成功' : '失败'}`);
           console.log(`[SMOKE] 分组新增弹窗 = ${dom.groupModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.groupAdded ? '是' : '否'}（${dom.groupCountBefore} → ${dom.groupCount}）`);
           console.log(`[SMOKE] 分组重名错误提示 = ${dom.dupErrorShown ? '已提示' : '未提示'}`);
@@ -377,15 +413,18 @@ app.whenReady().then(() => {
               document.querySelector('.subtask-new-priority').value = '3';
               const drTrigger = document.querySelector('.subtask-add .date-range-trigger');
               drTrigger.click();
-              await wait(200);
-              const cells = [...document.querySelectorAll('.subtask-add .cal-cell[data-date]')];
+              await wait(250);
+              // 面板由 flatpickr 挂到 body，不能用 .subtask-add 前缀限定
+              const dayCells = () => [...document.querySelectorAll('.flatpickr-calendar.open .flatpickr-day:not(.prevMonthDay):not(.nextMonthDay)')];
+              let cells = dayCells();
+              out.subCalDays = cells.length;
               if (cells.length >= 3) {
-                cells[0].click(); await wait(120);
-                const cells2 = [...document.querySelectorAll('.subtask-add .cal-cell[data-date]')];
-                const target = cells2.find(c => c.dataset.date > cells[0].dataset.date);
-                if (target) target.click();
-                await wait(200);
+                cells[0].click(); await wait(150);
+                cells = dayCells();
+                (cells[2] || cells[1]).click(); // 第 2 次点选 = 完成日期（选满自动关闭）
+                await wait(250);
               }
+              out.subCalClosed = document.querySelectorAll('.flatpickr-calendar.open').length === 0;
               const addInput = document.querySelector('.subtask-input');
               addInput.value = '带字段的子任务';
               addInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -426,14 +465,192 @@ app.whenReady().then(() => {
           `);
           console.log(`[SMOKE] 即时持久化（列表）= ${feat.statePending} → ${feat.stateSaved}；未点保存已落库 = ${feat.persistedTitle === '自动保存后的标题' && feat.persistedPriority === 3 ? '是' : '否'}`);
           console.log(`[SMOKE] 即时持久化（详情）= ${feat.detailState}；落库 = ${feat.detailPersisted}`);
-          console.log(`[SMOKE] 子任务字段 = ${JSON.stringify(feat.sub)}；改优先级后 = ${feat.subPriorityAfterEdit}`);
+          console.log(`[SMOKE] 子任务字段 = ${JSON.stringify(feat.sub)}；日期格=${feat.subCalDays}；选满自动关闭=${feat.subCalClosed ? '是' : '否'}；改优先级后 = ${feat.subPriorityAfterEdit}`);
           console.log(`[SMOKE] 展开（今天视图）= 子任务可见 ${feat.expandedChildVisible ? '是' : '否'}；箭头 = ${feat.arrowAfter}；收起后隐藏 = ${feat.collapsedChildHidden ? '是' : '否'}`);
+
+          /* ---- 第 4 轮：日期浮层 / 拖拽排序 / 报告分组多选 / 工具栏中文化 ---- */
+          const r4 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wait = (ms) => new Promise(r => setTimeout(r, ms));
+              const p2 = (n) => String(n).padStart(2, '0');
+              const dd = new Date();
+              const today = dd.getFullYear() + '-' + p2(dd.getMonth() + 1) + '-' + p2(dd.getDate());
+              const fireDrag = (el, type, dt) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+
+              /* 1) 子任务日期弹层（flatpickr）：必须挂在 body 上、且完整落在视口内不被裁剪 */
+              const a = await window.api.tasks.create({ title: 'R4父任务', planStart: today, planEnd: today });
+              await window.api.tasks.create({ title: 'R4子任务', parentId: a.id });
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await wait(400);
+              document.querySelector('.task-item[data-id="' + a.id + '"]').click();
+              await wait(700);
+              const subDr = document.querySelector('.subtask-item .date-range-field');
+              out.subDrFound = !!subDr;
+              if (subDr) {
+                subDr.querySelector('.date-range-trigger').click();
+                await wait(250);
+                const pop = document.querySelector('.flatpickr-calendar.open');
+                out.subCalOpenCount = document.querySelectorAll('.flatpickr-calendar.open').length;
+                out.popInLayer = !!pop && pop.parentElement === document.body;
+                out.popClipped = !!pop && pop.closest('.detail-body, .subtree, .subtask-item');
+                if (pop) {
+                  const r = pop.getBoundingClientRect();
+                  out.popRect = { l: Math.round(r.left), t: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+                  out.popInViewport = r.left >= 0 && r.top >= 0
+                    && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1;
+                  out.popVisibleH = Math.round(r.height);
+                }
+                out.popCells = document.querySelectorAll('.flatpickr-calendar.open .flatpickr-day').length;
+                // 关掉：再点触发器应能正常收起（不留孤儿面板）
+                subDr.querySelector('.date-range-trigger').click();
+                await wait(200);
+                out.layerCleaned = document.querySelectorAll('.flatpickr-calendar.open').length === 0;
+              }
+              document.querySelector('.detail-close').click();
+              await wait(300);
+
+              /* 2) 拖拽排序（主列表）：拖第 1 行到第 2 行 → 顺序互换且自动切到手动排序 */
+              const b1 = await window.api.tasks.create({ title: 'R4排序A', planStart: today, planEnd: today });
+              const b2 = await window.api.tasks.create({ title: 'R4排序B', planStart: today, planEnd: today });
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await wait(500);
+              const rows = [...document.querySelectorAll('.task-list > .task-item:not(.is-subtask)')];
+              out.rows = rows.length;
+              const idx1 = rows.findIndex(r => r.dataset.id === String(b1.id));
+              const idx2 = rows.findIndex(r => r.dataset.id === String(b2.id));
+              out.beforeOrder = [idx1, idx2];
+              if (idx1 > -1 && idx2 > -1) {
+                const dt = new DataTransfer();
+                const h1 = rows[idx1].querySelector('.drag-handle');
+                out.hasHandle = !!h1;
+                if (h1) {
+                  h1.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 9, isPrimary: true }));
+                  fireDrag(rows[idx1], 'dragstart', dt);
+                  await wait(60);
+                  fireDrag(rows[idx2], 'dragover', dt);
+                  fireDrag(rows[idx2], 'drop', dt);
+                  await wait(900);
+                }
+                out.sortMode = document.getElementById('sort-select').value;
+                const after = [...document.querySelectorAll('.task-list > .task-item:not(.is-subtask)')];
+                const ai1 = after.findIndex(r => r.dataset.id === String(b1.id));
+                const ai2 = after.findIndex(r => r.dataset.id === String(b2.id));
+                out.afterOrder = [ai1, ai2];
+                out.reordered = ai2 < ai1; // B 现在排在 A 前面
+                const s1 = await window.api.tasks.get(b1.id);
+                const s2 = await window.api.tasks.get(b2.id);
+                out.sortOrders = [s1.sort_order, s2.sort_order];
+                out.persistedOrder = s2.sort_order < s1.sort_order;
+              }
+
+              /* 3) 子任务拖拽排序 */
+              const c1 = await window.api.tasks.create({ title: 'R4子父' });
+              const cs1 = await window.api.tasks.create({ title: 'R4子1', parentId: c1.id });
+              const cs2 = await window.api.tasks.create({ title: 'R4子2', parentId: c1.id });
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await wait(400);
+              document.querySelector('.task-item[data-id="' + c1.id + '"]').click();
+              await wait(700);
+              const subs = [...document.querySelectorAll('.subtree > li.subtask-item')];
+              out.subCount = subs.length;
+              if (subs.length >= 2) {
+                const dt2 = new DataTransfer();
+                const h2 = subs[0].querySelector('.drag-handle');
+                out.subHasHandle = !!h2;
+                if (h2) {
+                  h2.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 10, isPrimary: true }));
+                  fireDrag(subs[0], 'dragstart', dt2);
+                  await wait(60);
+                  fireDrag(subs[1], 'dragover', dt2);
+                  fireDrag(subs[1], 'drop', dt2);
+                  await wait(900);
+                }
+                const afterSubs = [...document.querySelectorAll('.subtree > li.subtask-item')].map(x => Number(x.dataset.id));
+                out.subAfterOrder = afterSubs;
+                out.subReordered = afterSubs[0] === cs2.id && afterSubs[1] === cs1.id;
+              }
+              document.querySelector('.detail-close').click();
+              await wait(300);
+
+              /* 4) 工具栏中文化：图标按钮应带中文文案 */
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await wait(400);
+              const actBtn = document.querySelector('.task-item [data-act="edit"]');
+              out.actionLabel = actBtn ? actBtn.textContent.trim() : '';
+              out.hasChineseAction = /[\\u4e00-\\u9fa5]/.test(out.actionLabel);
+              document.querySelector('[data-act="start-add"]').click();
+              await wait(350);
+              const moreBtn = document.querySelector('[data-act="editor-more"]');
+              out.moreLabel = moreBtn ? moreBtn.textContent.trim() : '';
+              out.hasChineseMore = /[\\u4e00-\\u9fa5]/.test(out.moreLabel);
+              document.querySelector('[data-act="editor-cancel"]').click();
+              await wait(250);
+
+              /* 5) AI 报告：分组下拉改为多选 + Word 导出按钮 */
+              document.querySelector('.nav-item[data-view="reports"]').click();
+              await wait(600);
+              const trigger = document.getElementById('rp-group-trigger');
+              out.msTrigger = !!trigger;
+              out.msTriggerText0 = trigger ? trigger.textContent.trim() : '';
+              if (trigger) {
+                trigger.click();
+                await wait(200);
+                const panel = document.getElementById('rp-group-panel');
+                out.msOpened = !!(panel && !panel.hidden);
+                out.msFixed = panel ? getComputedStyle(panel).position === 'fixed' : false;
+                const boxes = [...panel.querySelectorAll('[data-group]')].filter(b => b.dataset.group !== '__all__');
+                out.msBoxCount = boxes.length;
+                for (const bx of boxes.slice(0, 2)) {
+                  bx.checked = true;
+                  bx.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                await wait(150);
+                out.msTriggerText1 = trigger.textContent.trim();
+                out.msMulti = /已选|全部 \\d/.test(trigger.textContent);
+              }
+              out.exportDocxBtn = !!document.getElementById('rp-export-docx');
+              out.exportMdBtn = !!document.getElementById('rp-export-md');
+              return out;
+            })()
+          `);
+          console.log(`[SMOKE] 子任务日期弹层 = 挂在 body ${r4.popInLayer ? '是' : '否'}；未落进裁剪容器=${r4.popClipped ? '否' : '是'}；完整在视口内=${r4.popInViewport ? '是' : '否'}；日历格=${r4.popCells}；关闭后无残留=${r4.layerCleaned ? '是' : '否'}；矩形=${JSON.stringify(r4.popRect)}`);
+          console.log(`[SMOKE] 拖拽排序（列表）= 顺序 ${JSON.stringify(r4.beforeOrder)} → ${JSON.stringify(r4.afterOrder)}；sortOrder=${JSON.stringify(r4.sortOrders)}；排序方式=${r4.sortMode}；位置互换=${r4.reordered ? '是' : '否'}；已落库=${r4.persistedOrder ? '是' : '否'}`);
+          console.log(`[SMOKE] 拖拽排序（子任务）= ${JSON.stringify(r4.subAfterOrder)}；互换=${r4.subReordered ? '是' : '否'}`);
+          console.log(`[SMOKE] 工具栏中文 = 行操作「${r4.actionLabel}」${r4.hasChineseAction ? '✓' : '✗'}；更多「${r4.moreLabel}」${r4.hasChineseMore ? '✓' : '✗'}`);
+          console.log(`[SMOKE] 报告分组多选 = 面板${r4.msOpened ? '已展开' : '未展开'}（fixed=${r4.msFixed ? '是' : '否'}，${r4.msBoxCount} 个分组）；文案「${r4.msTriggerText0}」→「${r4.msTriggerText1}」；Word 按钮=${r4.exportDocxBtn ? '存在' : '缺失'}`);
+
+          // 主进程侧：Word 导出与分组多选入参
+          const docxBuf = markdownToDocx('# 冒烟报告\\n\\n- [x] 完成任务 **3** 项\\n- [ ] 待办 1\\n', { title: '冒烟报告' });
+          const r4docx = {
+            size: docxBuf.length,
+            isZip: docxBuf.slice(0, 2).toString('latin1') === 'PK',
+          };
+          const groups = db.listGroups();
+          const multiNames = groups.slice(0, 2).map((g) => g.name).join('、');
+          const multi = await reportMod.generateReport(
+            { type: 'week', customStart: null, customEnd: null, groupIds: groups.slice(0, 2).map((g) => g.id) },
+            null,
+          );
+          const single = await reportMod.generateReport(
+            { type: 'week', customStart: null, customEnd: null, groupIds: [groups[0].id] },
+            null,
+          );
+          const none = await reportMod.generateReport({ type: 'week', customStart: null, customEnd: null, groupIds: [] }, null);
+          const r4multi = {
+            multi: multi.markdown.includes(`分组：${multiNames}`),
+            single: single.markdown.includes(`分组：${groups[0].name}`),
+            none: none.markdown.includes('分组：全部'),
+          };
+          console.log(`[SMOKE] Word 导出 = ${r4docx.size} 字节，ZIP 头 ${r4docx.isZip ? '正确' : '错误'}`);
+          console.log(`[SMOKE] 报告分组多选（后端）= 多选「${multiNames}」${r4multi.multi ? '✓' : '✗'}；单选${r4multi.single ? '✓' : '✗'}；空选=全部${r4multi.none ? '✓' : '✗'}`);
 
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
-            && dom.editorClosed && dom.calCells && dom.pickingOpen && dom.rangePopClosed
-            && !!dom.rangeStart && !!dom.rangeEnd && dom.rangeStart <= dom.rangeEnd
-            && dom.emptyCellH === dom.filledCellH
+            && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
+            && dom.pickingOpen && dom.autoFilled && dom.rangePopClosed
+            && dom.rangeStart <= dom.rangeEnd
+            && dom.reopened && dom.closedByTrigger && dom.calInViewport && dom.persistedMatches
             && dom.groupModalOpened && dom.groupAdded && dom.dupErrorShown
             && dom.tagModalOpened && dom.tagAdded
             && detail.panelOpen && detail.hasResizer && detail.widthAfter > detail.widthBefore
@@ -442,10 +659,19 @@ app.whenReady().then(() => {
             && detail.samePanelNode && (detail.subtaskTitles || []).includes('冒烟子任务')
             && feat.persistedTitle === '自动保存后的标题' && feat.persistedPriority === 3
             && feat.detailPersisted === '详情自动保存标题'
-            && !!feat.sub && feat.sub.priority === 3 && !!feat.sub.ps && !!feat.sub.pe
+            && !!feat.sub && feat.sub.priority === 3 && !!feat.sub.ps && !!feat.sub.pe && feat.subCalClosed
             && feat.subPriorityAfterEdit === 0
             && feat.parentVisibleToday && feat.hasArrow && feat.expandedChildVisible
-            && feat.arrowAfter === '▾' && feat.collapsedChildHidden;
+            && feat.arrowAfter === '▾' && feat.collapsedChildHidden
+            // 第 4 轮
+            && r4.popInLayer && r4.popInViewport && r4.popCells >= 28 && r4.layerCleaned && !r4.popClipped
+            && r4.hasHandle && r4.reordered && r4.persistedOrder && r4.sortMode === 'manual'
+            && r4.subHasHandle && r4.subReordered
+            && r4.hasChineseAction && r4.hasChineseMore
+            && r4.msTrigger && r4.msOpened && r4.msFixed && r4.msBoxCount >= 2 && r4.msMulti
+            && r4.exportDocxBtn && r4.exportMdBtn
+            && r4docx.size > 1000 && r4docx.isZip
+            && r4multi.multi && r4multi.single && r4multi.none;
           console.log(allOk ? '[SMOKE] SMOKE_OK' : '[SMOKE] SMOKE_FAIL');
           isQuitting = true;
           app.quit();

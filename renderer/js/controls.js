@@ -3,13 +3,18 @@
  * 表单控件（计划日期范围、快捷提醒），供列表底部编辑器与任务详情抽屉复用。
  *
  * 计划日期范围控件的设计约定：
- *  1. 单一触发器：开始日期 / 完成日期合并为一个控件，点一次弹出日历，不再有两个日期框。
- *  2. 两次点选成范围：第 1 次点击写入「计划开始日期」plan_start，第 2 次点击写入
- *     「计划完成日期」plan_end，选完立即回填隐藏字段并关闭弹窗。
+ *  1. 单一触发器：开始日期 / 完成日期合并为一个控件，**点一次只弹一个日历**。
+ *  2. 两次点选成范围：第 1 次点击 = 计划开始日期 plan_start，第 2 次点击 =
+ *     计划完成日期 plan_end；选满两个日期后**自动关闭**并回填。
  *  3. 数据绑定：两个隐藏 input（.dr-start-input / .dr-end-input）是唯一数据源，
  *     宿主通过 getDateRange() 读取，或直接监听冒泡事件 'date-range:change'。
- *  4. 一致性：仅选了起点就关闭弹窗会被丢弃（不写入“半个范围”）；遇到 end < start
- *     会自动交换，因此落到后端的永远是成对且有序的值。
+ *  4. 一致性：出现 end < start 会自动交换，因此落到后端的永远是成对且有序的值。
+ *
+ * 实现：不再手写日历，改用第三方库 **flatpickr**（v4，零依赖，已 vendor 到
+ * renderer/vendor/flatpickr/）。理由：
+ *  - range 模式本身就是「两次点选成范围 + 选满自动关闭」，弹层次数由上游保证；
+ *  - 面板由 flatpickr 自己挂到 body 并计算位置，不受 .detail-body{overflow:auto} 裁剪；
+ *  - 跨月、闰月、键盘操作、无障碍都在上游维护，我们只保留一层薄封装。
  */
 import { localToIso, isoToLocal } from './api.js';
 
@@ -65,7 +70,74 @@ function defaultDateRange(mode) {
   return { start: '', end: '' };
 }
 
-/* ---------------- 日期范围控件（单点触发 + 日历两次点选） ---------------- */
+/* ---------------- 日期范围控件（flatpickr · range 模式） ---------------- */
+
+/**
+ * 自定义定位：默认放在触发器下方，下方空间不足则上翻，
+ * 最后统一收敛进视口 —— flatpickr 自带的 auto 只在「上方也放得下」时才上翻，
+ * 子任务行位于抽屉底部时会有一部分掉出屏幕，所以这里自己算。
+ */
+function positionRangeCalendar(instance, anchor) {
+  const cal = instance.calendarContainer;
+  if (!cal || !cal.offsetWidth) return;
+  const b = anchor.getBoundingClientRect();
+  const m = 8;
+  const w = cal.offsetWidth;
+  const h = cal.offsetHeight;
+  let left = b.left;
+  if (left + w > window.innerWidth - m) left = window.innerWidth - m - w;
+  if (left < m) left = m;
+  let top = b.bottom + 6;
+  if (top + h > window.innerHeight - m) {
+    const above = b.top - h - 6;
+    top = above >= m ? above : Math.max(m, window.innerHeight - m - h);
+  }
+  cal.style.position = 'absolute';
+  cal.style.left = `${Math.round(window.pageXOffset + left)}px`;
+  cal.style.top = `${Math.round(window.pageYOffset + top)}px`;
+}
+
+/** 已绑定的控件登记表：宿主被重渲染移除后要 destroy，否则 body 里会留下孤儿日历 */
+const boundRanges = new Set();
+
+/** Date → 'YYYY-MM-DD'（本地时区，不走 ISO 以免跨天） */
+function fmtDay(d) {
+  if (!d || isNaN(new Date(d).getTime())) return '';
+  const dt = new Date(d);
+  return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+}
+
+/** 中文语言包 + 周一作为每周第一天（官方 zh 包自身没设 firstDayOfWeek） */
+function rangeLocale() {
+  const l10ns = (typeof flatpickr !== 'undefined' && flatpickr.l10ns) || {};
+  return { ...(l10ns.zh || {}), firstDayOfWeek: 1 };
+}
+
+/** 清理已被重渲染移除的实例 */
+function sweepDetachedRanges() {
+  boundRanges.forEach((entry) => {
+    if (entry.field.isConnected) return;
+    try { entry.instance.destroy(); } catch (_) { /* 宿主已销毁，忽略 */ }
+    boundRanges.delete(entry);
+  });
+}
+
+/**
+ * 面板是 absolute 定位在 body 上的：抽屉 / 列表内部的滚动不会带上它，
+ * 这里统一补一次位置跟随（只绑一遍 document 级监听，避免每个控件都挂一个）。
+ */
+let rangeViewHandlersBound = false;
+function ensureRangeViewHandlers() {
+  if (rangeViewHandlersBound) return;
+  rangeViewHandlersBound = true;
+  const reposition = () => {
+    boundRanges.forEach((entry) => {
+      if (entry.instance.isOpen) positionRangeCalendar(entry.instance, entry.anchor);
+    });
+  };
+  document.addEventListener('scroll', reposition, { capture: true, passive: true });
+  window.addEventListener('resize', reposition);
+}
 
 function dateRangeFieldHtml(startValue, endValue, opts = {}) {
   const cfg = { ...DATE_RANGE_DEFAULTS, ...opts };
@@ -76,216 +148,149 @@ function dateRangeFieldHtml(startValue, endValue, opts = {}) {
   const label = s && e ? `${s} ~ ${e}` : (s ? `${s} 起` : cfg.placeholder);
   return `
   <div class="date-range-field" data-required="${cfg.required ? '1' : '0'}" data-placeholder="${esc(cfg.placeholder)}">
-    <button type="button" class="date-range-trigger${s ? '' : ' is-empty'}" aria-haspopup="dialog" aria-expanded="false" title="点击选择计划开始 / 完成日期">
+    <button type="button" class="date-range-trigger${s ? '' : ' is-empty'}" aria-haspopup="dialog" aria-expanded="false" title="点击选择计划开始 / 完成日期（只需一次）">
       <span class="dr-icon">📅</span>
       <span class="dr-text">${esc(label)}</span>
       <span class="dr-days"${days ? '' : ' hidden'}>${days ? `${days} 天` : ''}</span>
       <span class="dr-caret">▾</span>
     </button>
+    <!-- flatpickr 的挂载锚点：铺满整个控件但不参与交互，日历按它的位置定位 -->
+    <input type="text" class="dr-input" tabindex="-1" readonly aria-hidden="true" />
     <input type="hidden" class="dr-start-input" data-field="planStart" value="${esc(s)}" />
     <input type="hidden" class="dr-end-input" data-field="planEnd" value="${esc(e)}" />
-    <div class="date-range-pop" role="dialog" aria-label="选择计划日期范围" hidden></div>
   </div>`;
 }
 
-/** 已打开的弹窗 → 关闭函数；用于点击外部 / Esc 的统一收拢（避免每次渲染重复挂事件） */
-const openPops = new Map();
-let globalHandlersBound = false;
-
-function sweepDetachedPops() {
-  openPops.forEach((_close, pop) => { if (!pop.isConnected) openPops.delete(pop); });
-}
-
-function ensureGlobalHandlers() {
-  if (globalHandlersBound) return;
-  globalHandlersBound = true;
-  // 点击控件外部 → 收起弹窗（未完成的选择会被丢弃）
-  // 用捕获阶段的 pointerdown：日历内的点击会重建节点，若等到 click 阶段再判断，
-  // 目标节点已被替换，会被误当成"点击外部"而导致点一次日期就关闭。
-  document.addEventListener('pointerdown', (e) => {
-    openPops.forEach((close, pop) => {
-      const field = pop.closest('.date-range-field');
-      if (field && field.contains(e.target)) return;
-      close();
-    });
-  }, true);
-}
-
-/** 单月网格 HTML（周一为一周起始） */
-function calGridHtml(year, month, start, end, today) {
-  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7; // 周一=0
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  let cells = '';
-  for (let i = 0; i < firstDow; i++) cells += '<span class="cal-cell empty"></span>';
-  for (let d = 1; d <= daysInMonth; d++) {
-    const ds = `${year}-${pad2(month + 1)}-${pad2(d)}`;
-    let cls = 'cal-cell';
-    if (ds === today) cls += ' today';
-    if (ds === start || ds === end) cls += ' selected';
-    else if (start && end && ds > start && ds < end) cls += ' in-range';
-    cells += `<button type="button" class="${cls}" data-date="${ds}">${d}</button>`;
-  }
-  return cells;
+/**
+ * 在 flatpickr 面板底部补一行快捷操作（今天 / 明天 / 本周末 / 清除）。
+ * 面板 DOM 由 flatpickr 生成并复用，这里只追加一次。
+ */
+function buildRangeFooter(instance, onPick) {
+  const cal = instance.calendarContainer;
+  if (!cal || cal.querySelector('.dr-fp-foot')) return;
+  const foot = document.createElement('div');
+  foot.className = 'dr-fp-foot';
+  foot.innerHTML = `
+    <span class="dr-fp-hint">点第 1 次 = 开始日期，点第 2 次 = 完成日期</span>
+    <div class="dr-fp-quick">
+      <button type="button" class="dr-quick" data-quick="today">今天</button>
+      <button type="button" class="dr-quick" data-quick="tomorrow">明天</button>
+      <button type="button" class="dr-quick" data-quick="weekend">本周末</button>
+      <span class="dr-fp-spacer"></span>
+      <button type="button" class="dr-clear" data-quick="clear">清除</button>
+    </div>`;
+  // 阻止冒泡：避免脚部点击被 flatpickr 当成「点外部」而提前收起面板
+  foot.addEventListener('mousedown', (e) => e.stopPropagation());
+  foot.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-quick]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const t = todayStrLocal();
+    const q = btn.dataset.quick;
+    if (q === 'today') onPick([t, t]);
+    else if (q === 'tomorrow') { const d = addDays(t, 1); onPick([d, d]); }
+    else if (q === 'weekend') {
+      const idx = (new Date(`${t}T00:00:00`).getDay() + 6) % 7; // 周一=0，周六=5
+      onPick([addDays(t, 5 - idx), addDays(t, 6 - idx)]);
+    } else if (q === 'clear') onPick([]);
+  });
+  cal.appendChild(foot);
 }
 
 function bindDateRangeFields(container) {
-  ensureGlobalHandlers();
-  sweepDetachedPops();
+  sweepDetachedRanges();
+  // 依赖缺失时不阻塞页面：保留只读标签，只是不能选日期
+  const flatpickrLib = typeof window !== 'undefined' ? window.flatpickr : null;
+  if (!flatpickrLib) {
+    console.warn('[controls] flatpickr 未加载，日期范围控件降级为只读');
+    return;
+  }
 
   container.querySelectorAll('.date-range-field').forEach((dr) => {
     if (dr.dataset.drBound === '1') return; // 同一 DOM 不重复绑定
     dr.dataset.drBound = '1';
 
     const trigger = dr.querySelector('.date-range-trigger');
-    const pop = dr.querySelector('.date-range-pop');
+    const anchor = dr.querySelector('.dr-input');
     const sInput = dr.querySelector('.dr-start-input');
     const eInput = dr.querySelector('.dr-end-input');
     const textEl = dr.querySelector('.dr-text');
     const daysEl = dr.querySelector('.dr-days');
     const placeholder = dr.dataset.placeholder || '计划日期';
-    const today = todayStrLocal();
-    let viewYear = new Date().getFullYear();
-    let viewMonth = new Date().getMonth();
-    let tmpStart = ''; // 第 1 次点选后的待定起点
 
-    const read = () => ({ s: sInput.value || '', e: eInput.value || '' });
-    const labelOf = (s, e) => (s && e ? `${s} ~ ${e}` : (s ? `${s} 起` : placeholder));
-
-    /** 把 hidden input 的值同步到触发器文案上（ picking 态优先展示待定起点） */
-    const syncText = () => {
-      const { s, e } = read();
-      const start = tmpStart || s;
-      const end = tmpStart ? '' : e;
-      textEl.textContent = labelOf(start, end);
-      trigger.classList.toggle('is-empty', !start);
-      const d = daysBetween(start, end);
+    const syncText = (s, e) => {
+      textEl.textContent = s && e ? `${s} ~ ${e}` : (s ? `${s} 起` : placeholder);
+      trigger.classList.toggle('is-empty', !s);
+      const d = daysBetween(s, e);
       daysEl.textContent = d ? `${d} 天` : '';
       daysEl.hidden = !d;
     };
 
-    /** 唯一的写入口：保证 end >= start，并对外派发变更事件 */
-    const commit = (s, e) => {
-      let ns = normalizeDate(s);
-      let ne = normalizeDate(e);
-      if (ns && ne && ne < ns) { const t = ns; ns = ne; ne = t; }
-      sInput.value = ns;
-      eInput.value = ne;
-      if (ns && ne) dr.classList.remove('invalid'); // 重新选成完整范围后清掉校验红框
-      syncText();
+    /** 唯一的写入口：写隐藏字段 → 刷新触发器文案 → 派发变更事件 */
+    const apply = (dates) => {
+      let s = fmtDay(dates[0]);
+      let e = fmtDay(dates[1]);
+      if (s && e && e < s) { const t = s; s = e; e = t; }
+      sInput.value = s;
+      eInput.value = e;
+      if (s && e) dr.classList.remove('invalid'); // 重新选成完整范围后清掉校验红框
+      syncText(s, e);
       dr.dispatchEvent(new CustomEvent(DATE_RANGE_EVENT, {
         bubbles: true,
-        detail: { planStart: ns || null, planEnd: ne || null },
+        detail: { planStart: s || null, planEnd: e || null },
       }));
     };
 
-    const close = () => {
-      pop.hidden = true;
-      trigger.setAttribute('aria-expanded', 'false');
-      tmpStart = ''; // 未成对的半成品直接丢弃，避免写入“半个范围”
-      syncText();
-      openPops.delete(pop);
+    /** 快捷操作统一入口：写回面板 → 同步数据 → 收起面板 */
+    const setRange = (values) => {
+      instance.setDate(values, false);
+      apply(instance.selectedDates);
+      instance.close();
     };
 
-    const open = () => {
-      const { s } = read();
-      const base = s ? new Date(`${s}T00:00:00`) : new Date();
-      viewYear = base.getFullYear();
-      viewMonth = base.getMonth();
-      render();
-      pop.hidden = false;
-      trigger.setAttribute('aria-expanded', 'true');
-      openPops.set(pop, close);
-    };
+    const initial = [];
+    if (sInput.value) initial.push(sInput.value);
+    if (eInput.value && eInput.value !== sInput.value) initial.push(eInput.value);
 
-    /** 悬停预览：已选起点后，鼠标经过的日期与起点之间的区间高亮 */
-    const previewTo = (to) => {
-      pop.querySelectorAll('.cal-cell[data-date]').forEach((c) => {
-        const ds = c.dataset.date;
-        c.classList.toggle('preview', !!(tmpStart && to && ds > tmpStart && ds <= to));
-      });
-    };
+    const instance = flatpickrLib(anchor, {
+      mode: 'range',          // 两次点选成范围
+      dateFormat: 'Y-m-d',
+      locale: rangeLocale(),
+      monthSelectorType: 'static',
+      animate: false,         // 不做位移动画，避免呼出/收起时“跳一下”
+      allowInput: false,
+      clickOpens: false,      // 只由触发器开合：否则 focus 与 click 各开一次，会连弹两次
+      defaultDate: initial,
+      // 自己算位置（保证完整落在视口内），不走 flatpickr 自带的 auto 翻转
+      position: (self, el) => positionRangeCalendar(self, el || anchor),
+      // 触发器按钮不算「点击外部」：否则 mousedown 先关、click 再开，永远关不掉
+      ignoredFocusElements: [trigger],
+      onChange: (dates) => apply(dates), // 选满 2 个日期时 flatpickr 会自动 close（closeOnSelect 默认 true）
+      onOpen: () => {
+        trigger.setAttribute('aria-expanded', 'true');
+        // 面板高度依赖内部渲染结果，下一帧再量一次更稳
+        requestAnimationFrame(() => positionRangeCalendar(instance, anchor));
+      },
+      onClose: () => trigger.setAttribute('aria-expanded', 'false'),
+      onReady: (_dates, _value, self) => buildRangeFooter(self, setRange),
+    });
 
-    const render = () => {
-      const { s, e } = read();
-      const start = tmpStart || s;
-      const end = tmpStart ? '' : e;
-      pop.innerHTML = `
-        <div class="cal-head">
-          <button type="button" class="cal-nav" data-cal="-1" title="上一月">‹</button>
-          <span class="cal-title">${viewYear}年${viewMonth + 1}月</span>
-          <button type="button" class="cal-nav" data-cal="1" title="下一月">›</button>
-        </div>
-        <div class="cal-weekdays">${['一', '二', '三', '四', '五', '六', '日'].map((w) => `<span>${w}</span>`).join('')}</div>
-        <div class="cal-grid">${calGridHtml(viewYear, viewMonth, start, end, today)}</div>
-        <div class="cal-hint">${tmpStart ? `起点 ${esc(tmpStart)}，请再点选完成日期` : '点击选择开始日期，再点选完成日期'}</div>
-        <div class="cal-quick">
-          <button type="button" class="dr-quick" data-quick="today">今天</button>
-          <button type="button" class="dr-quick" data-quick="tomorrow">明天</button>
-          <button type="button" class="dr-quick" data-quick="weekend">本周末</button>
-          ${tmpStart ? `<button type="button" class="dr-quick" data-quick="sameday">仅 ${esc(tmpStart.slice(5))} 当天</button>` : ''}
-        </div>
-        <div class="cal-foot">
-          <span class="dr-selected">${tmpStart ? '选择中…' : (s && e ? `已选 ${esc(s)} ~ ${esc(e)}` : '未设置计划日期')}</span>
-          <button type="button" class="dr-clear">清除</button>
-        </div>`;
-
-      pop.querySelectorAll('.cal-cell[data-date]').forEach((cell) => {
-        const d = cell.dataset.date;
-        cell.addEventListener('click', () => {
-          if (!tmpStart) { tmpStart = d; syncText(); render(); return; }
-          if (d < tmpStart) { tmpStart = d; syncText(); render(); return; } // 早于起点 → 改作新起点
-          const startVal = tmpStart;
-          tmpStart = '';
-          commit(startVal, d); // 起点 → plan_start，本次点击 → plan_end
-          close();
-        });
-        cell.addEventListener('mouseenter', () => previewTo(tmpStart ? d : ''));
-      });
-      pop.addEventListener('mouseleave', () => previewTo(''));
-
-      pop.querySelectorAll('.cal-nav').forEach((n) => {
-        n.addEventListener('click', () => {
-          viewMonth += Number(n.dataset.cal);
-          if (viewMonth < 0) { viewMonth = 11; viewYear--; }
-          if (viewMonth > 11) { viewMonth = 0; viewYear++; }
-          render();
-        });
-      });
-
-      pop.querySelectorAll('[data-quick]').forEach((b) => {
-        b.addEventListener('click', () => {
-          const q = b.dataset.quick;
-          if (q === 'today') { commit(today, today); close(); }
-          else if (q === 'tomorrow') { const t = addDays(today, 1); commit(t, t); close(); }
-          else if (q === 'weekend') {
-            const idx = (new Date(`${today}T00:00:00`).getDay() + 6) % 7; // 周一=0，周六=5
-            commit(addDays(today, 5 - idx), addDays(today, 6 - idx));
-            close();
-          } else if (q === 'sameday') { const v = tmpStart; tmpStart = ''; commit(v, v); close(); }
-        });
-      });
-
-      pop.querySelector('.dr-clear').addEventListener('click', () => {
-        tmpStart = '';
-        commit('', '');
-        render();
-      });
-    };
+    boundRanges.add({ field: dr, instance, anchor });
+    ensureRangeViewHandlers();
 
     trigger.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (pop.hidden) open(); else close();
-    });
-    // Esc 关闭日历（阻止冒泡，避免同时关掉详情抽屉）
-    dr.addEventListener('keydown', (e) => {
-      if (e.key !== 'Escape' || pop.hidden) return;
-      e.stopPropagation();
-      close();
-      trigger.focus();
+      if (instance.isOpen) instance.close(); else instance.open();
     });
 
-    syncText();
+    syncText(sInput.value, eInput.value);
   });
+}
+
+/** 是否有日期面板正在打开（详情抽屉的 Esc 关闭需要据此让路） */
+function isAnyRangeOpen() {
+  return !!document.querySelector('.flatpickr-calendar.open');
 }
 
 /** 读取日期范围 → { planStart, planEnd }（null 表示未设置） */
@@ -391,7 +396,7 @@ function reminderNeedsPlanEnd(container) {
 export {
   DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS,
   dateRangeFieldHtml, bindDateRangeFields, getDateRange, validateDateRange,
-  defaultDateRange, todayStrLocal, addDays, normalizeDate,
+  defaultDateRange, todayStrLocal, addDays, normalizeDate, isAnyRangeOpen,
   syncReminderWithPlanEnd,
   reminderHtml, bindReminder, computeReminder, reminderNeedsPlanEnd,
 };

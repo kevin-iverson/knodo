@@ -8,6 +8,7 @@ const db = require('./db');
 const crypto = require('./crypto');
 const ai = require('./ai');
 const report = require('./report');
+const { markdownToDocx } = require('./docx');
 
 function getAiConfig() {
   const baseUrl = db.getSetting('ai.baseUrl', ai.DEFAULT_CONFIG.baseUrl);
@@ -148,25 +149,35 @@ function registerIpc() {
   });
 
   /* ---------- 报告 ---------- */
-  ipcMain.handle('report:generate', async (_e, params) => {
+  ipcMain.handle('report:generate', withDb(async (params) => {
     const cfg = getAiConfig();
-    const r = await report.generateReport(params, cfg);
-    return r;
-  });
-  ipcMain.handle('report:export', async (_e, { content, defaultName, format }) => {
-    const ext = format === 'txt' ? 'txt' : 'md';
+    return report.generateReport(params, cfg);
+  }));
+  // 导出格式表：Word 走 docx（OOXML），其余按纯文本写入
+  const EXPORT_FORMATS = {
+    txt: { ext: 'txt', label: '文本文件' },
+    md: { ext: 'md', label: 'Markdown' },
+    doc: { ext: 'docx', label: 'Word 文档' },
+    docx: { ext: 'docx', label: 'Word 文档' },
+  };
+  ipcMain.handle('report:export', guard(async (_e, { content, defaultName, format }) => {
+    const f = EXPORT_FORMATS[format] || EXPORT_FORMATS.md;
     const { canceled, filePath } = await dialog.showSaveDialog({
       title: '导出报告',
-      defaultPath: `${defaultName}.${ext}`,
+      defaultPath: `${defaultName}.${f.ext}`,
       filters: [
-        { name: ext === 'txt' ? '文本文件' : 'Markdown', extensions: [ext] },
+        { name: f.label, extensions: [f.ext] },
         { name: '所有文件', extensions: ['*'] },
       ],
     });
     if (canceled || !filePath) return { ok: false, canceled: true };
-    fs.writeFileSync(filePath, content, 'utf8');
+    if (f.ext === 'docx') {
+      fs.writeFileSync(filePath, markdownToDocx(content, { title: defaultName }));
+    } else {
+      fs.writeFileSync(filePath, content, 'utf8');
+    }
     return { ok: true, filePath };
-  });
+  }));
 
   /* ---------- 数据导入 / 导出 ---------- */
   ipcMain.handle('data:export', async () => {

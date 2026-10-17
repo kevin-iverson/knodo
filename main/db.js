@@ -325,6 +325,12 @@ function listTasks(f = {}) {
   let order = 't.completed ASC, (t.plan_end IS NULL) ASC, t.plan_end ASC, t.priority DESC, t.sort_order ASC, t.id DESC';
   if (f.sort === 'priority') order = 't.completed ASC, t.priority DESC, (t.plan_end IS NULL) ASC, t.plan_end ASC, t.sort_order ASC';
   if (f.sort === 'due') order = 't.completed ASC, (t.plan_end IS NULL) ASC, t.plan_end ASC, t.priority DESC, t.sort_order ASC';
+  // 手动排序：优先按 sort_order，其余字段只作兜底。
+  // sort_order 一旦被拖拽写入就是 0..n-1 的互不重复值，此时顺序完全由拖拽决定；
+  // 从未拖拽过时大家都是默认值，退化成原来的智能排序，不会突然打乱列表。
+  if (f.sort === 'manual') {
+    order = 't.sort_order ASC, t.completed ASC, (t.plan_end IS NULL) ASC, t.plan_end ASC, t.priority DESC, t.id ASC';
+  }
 
   const sql = `${TASK_SELECT} WHERE ${where.join(' AND ')} ORDER BY ${order}`;
   return db.prepare(sql).all(...params).map(normalizeTask);
@@ -421,14 +427,15 @@ function deleteTask(id) {
 
 /**
  * 获取某任务的直接子任务。
- * 排序规则与任务主列表保持一致（未完成优先 → 有截止日期优先 → 截止日期升序 →
- * 优先级降序 → 手动排序 → id），这样补齐了日期 / 优先级字段后，列表与详情的顺序一致。
+ * 手动排序（sort_order）优先，其余字段只作兜底 —— 同一父任务下的子任务是"步骤清单"，
+ * 拖拽排序是它唯一的排序手段，必须让拖拽结果立刻生效；从未拖拽过 sort_order 全为默认值，
+ * 顺序仍会退化为原来的智能排序（未完成 → 截止日期 → 优先级 → id），与历史表现一致。
  */
 function listSubtasks(parentId) {
   return db
     .prepare(
       `${TASK_SELECT} WHERE t.parent_id = ?
-       ORDER BY t.completed ASC, (t.plan_end IS NULL) ASC, t.plan_end ASC, t.priority DESC, t.sort_order ASC, t.id ASC`
+       ORDER BY t.sort_order ASC, t.completed ASC, (t.plan_end IS NULL) ASC, t.plan_end ASC, t.priority DESC, t.id ASC`
     )
     .all(parentId)
     .map(normalizeTask);
@@ -633,10 +640,23 @@ function dailyTrend(days = 7) {
   return rows;
 }
 
-/** 自定义范围内的统计数据（供日报/周报/月报使用） */
+/**
+ * 自定义范围内的统计数据（供日报/周报/月报使用）。
+ * @param {number|number[]|null} groupId 单个分组 id、分组 id 数组（多选），null = 全部分组
+ */
 function rangeStats(startIso, endIso, groupId = null) {
-  const gCond = groupId != null ? ' AND group_id = ?' : '';
-  const gParams = groupId != null ? [groupId] : [];
+  const ids = (Array.isArray(groupId) ? groupId : groupId != null ? [groupId] : [])
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v));
+  let gCond = '';
+  const gParams = [];
+  if (ids.length === 1) {
+    gCond = ' AND group_id = ?';
+    gParams.push(ids[0]);
+  } else if (ids.length > 1) {
+    gCond = ` AND group_id IN (${ids.map(() => '?').join(', ')})`;
+    gParams.push(...ids);
+  }
 
   const completedTasks = db
     .prepare(

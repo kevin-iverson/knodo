@@ -8,7 +8,7 @@ import { state, loadGroups, loadTags, refreshAll } from './store.js';
 import { renderMarkdown } from './markdown.js';
 import {
   dateRangeFieldHtml, bindDateRangeFields, validateDateRange,
-  DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS, syncReminderWithPlanEnd,
+  DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS, syncReminderWithPlanEnd, isAnyRangeOpen,
   reminderHtml, bindReminder, computeReminder, reminderNeedsPlanEnd,
 } from './controls.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
@@ -306,7 +306,8 @@ async function renderDetail() {
 async function renderSubtreeHtml(parentId) {
   const subs = await api.tasks.subtasks(parentId);
   if (!subs.length) return '';
-  let html = '<ul class="subtree">';
+  // data-parent：拖拽排序时据此知道该刷新哪一层
+  let html = `<ul class="subtree" data-parent="${parentId}">`;
   for (const s of subs) {
     html += subtaskItemHtml(s);
     html += await renderSubtreeHtml(s.id);
@@ -317,7 +318,8 @@ async function renderSubtreeHtml(parentId) {
 
 /** 单个子任务行：勾选 + 标题（可编辑）+ 优先级 + 计划日期范围 + 删除 */
 function subtaskItemHtml(s) {
-  return `<li class="subtask-item${s.completed ? ' done' : ''}" data-id="${s.id}" draggable="true">
+  return `<li class="subtask-item${s.completed ? ' done' : ''}" data-id="${s.id}" draggable="false">
+    <span class="drag-handle" title="按住拖拽调整顺序">⠿</span>
     <button class="subtask-check" data-act="subtask-toggle">${s.completed ? '✓' : ''}</button>
     <input class="subtask-title-input" value="${esc(s.title)}" placeholder="子任务标题" title="直接编辑，自动保存" />
     <select class="subtask-priority" title="优先级">${priorityOptionsHtml(s.priority)}</select>
@@ -327,11 +329,24 @@ function subtaskItemHtml(s) {
   </li>`;
 }
 
+/**
+ * Esc 关闭抽屉。用模块级单一监听（而不是每次开抽屉 add + once 到期失效）：
+ * ① 面板打开时 Esc 只收起日期面板，不连带关掉抽屉；
+ * ② 不会因为 once 被“吃掉”而导致后续 Esc 失灵。
+ */
+let escBound = false;
+function ensureEscHandler() {
+  if (escBound) return;
+  escBound = true;
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !isDetailOpen() || isAnyRangeOpen()) return;
+    closeDetail();
+  });
+}
+
 function bindDetailEvents(drawer, task) {
   drawer.querySelectorAll('[data-act="close"]').forEach((b) => b.addEventListener('click', closeDetail));
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && isDetailOpen()) closeDetail();
-  }, { once: true });
+  ensureEscHandler();
 
   const parentEl = drawer.querySelector('[data-act="goto-parent"]');
   if (parentEl) {
@@ -561,33 +576,61 @@ function insertImageAtCursor(dataUrl) {
   }
 }
 
-/** 子任务拖拽排序（同一父级内重排） */
+/**
+ * 子任务拖拽排序（同一父级内重排）。
+ * 与任务主列表同一套规则：只有按住行首手柄才允许拖拽（否则标题输入框会抢走 mousedown，
+ * 看起来就是"拖不动"），落点决定新的 sort_order，刷新后由 SQL 的 sort_order 优先序生效。
+ */
 function bindSubtaskDrag(container) {
   container.querySelectorAll('.subtree').forEach((ul) => {
-    ul.querySelectorAll(':scope > li').forEach((li) => {
+    ul.querySelectorAll(':scope > li.subtask-item').forEach((li) => {
+      if (li.dataset.dragBound === '1') return;
+      li.dataset.dragBound = '1';
+      const handle = li.querySelector('.drag-handle');
+      if (!handle) return;
+
+      const enable = () => { li.draggable = true; };
+      const disable = () => { li.draggable = false; };
+      handle.addEventListener('pointerdown', enable);
+      handle.addEventListener('pointerup', disable);
+
       li.addEventListener('dragstart', (e) => {
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', li.dataset.id);
+        if (!li.draggable) { e.preventDefault(); return; }
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', String(li.dataset.id));
+        }
         li.classList.add('dragging');
       });
       li.addEventListener('dragend', () => {
+        disable();
         li.classList.remove('dragging');
         ul.querySelectorAll(':scope > li.drag-over').forEach((x) => x.classList.remove('drag-over'));
       });
-      li.addEventListener('dragover', (e) => { e.preventDefault(); li.classList.add('drag-over'); });
+      li.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        li.classList.add('drag-over');
+      });
       li.addEventListener('dragleave', () => li.classList.remove('drag-over'));
       li.addEventListener('drop', async (e) => {
         e.preventDefault();
-        const fromId = Number(e.dataTransfer.getData('text/plain'));
-        const items = Array.from(ul.querySelectorAll(':scope > li'));
+        li.classList.remove('drag-over');
+        const fromId = Number(e.dataTransfer ? e.dataTransfer.getData('text/plain') : '');
+        const items = Array.from(ul.querySelectorAll(':scope > li.subtask-item'));
         const ids = items.map((x) => Number(x.dataset.id));
         const fromIdx = ids.indexOf(fromId);
         const toIdx = ids.indexOf(Number(li.dataset.id));
-        if (fromIdx > -1 && toIdx > -1 && fromIdx !== toIdx) {
-          ids.splice(toIdx, 0, ...ids.splice(fromIdx, 1));
-          await api.tasks.reorder(ids);
-          renderDetail();
-        }
+        if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+
+        ids.splice(toIdx, 0, ...ids.splice(fromIdx, 1));
+        const ok = await guard('保存子任务顺序失败', () => api.tasks.reorder(ids));
+        if (!ok) return;
+        const drawer = li.closest('.detail-drawer');
+        const pid = Number(ul.dataset.parent) || 0;
+        if (drawer && pid) await refreshSubtasks(drawer, pid);
+        handlers.toast('子任务顺序已保存');
       });
     });
   });

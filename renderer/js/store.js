@@ -14,6 +14,8 @@ const state = {
   currentTag: null, // 标签筛选
   priorityFilter: 'all', // 'all' | 0..3
   search: '',
+  // 列表排序方式：smart=智能（默认）/ priority=优先级 / due=截止日期 / manual=手动（可拖拽）
+  sortMode: 'smart',
   // 时间筛选（YYYY-MM-DD，空串表示不限）
   timeFilters: {
     planStartFrom: '',
@@ -88,6 +90,9 @@ function buildFilter() {
       f.status = 'all';
       break;
   }
+
+  // 显式选择了排序方式时覆盖视图默认排序（smart 保持各视图自己的默认序）
+  if (state.sortMode !== 'smart') f.sort = state.sortMode;
 
   // 分组筛选（sidebar 分组点击，作用于任务视图）
   if (state.currentGroup !== 'all') f.groupId = state.currentGroup;

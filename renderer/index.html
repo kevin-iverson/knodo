@@ -6,6 +6,8 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self';" />
   <title>TODO 待办</title>
+  <!-- 第三方依赖：flatpickr（日期范围选择）。先加载厂商样式，再用本项目样式覆盖主题 -->
+  <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css" />
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
@@ -73,6 +75,14 @@
         <button class="chip" data-priority="3">紧急</button>
         <span class="filter-sep"></span>
         <button class="chip" id="btn-time-filter">⏱ 时间筛选</button>
+        <span class="filter-sep"></span>
+        <span class="filter-label">排序</span>
+        <select class="sort-select" id="sort-select" title="选择列表排序方式；选「手动」后可直接拖拽任务行调整顺序">
+          <option value="smart">智能</option>
+          <option value="priority">优先级</option>
+          <option value="due">截止日期</option>
+          <option value="manual">手动（可拖拽）</option>
+        </select>
       </div>
 
       <!-- 时间筛选面板 -->
@@ -108,6 +118,9 @@
   <!-- 任务详情抽屉 -->
   <div class="detail-drawer" id="detail-drawer" hidden></div>
 
+  <!-- 经典脚本先于 ES module 执行（module 默认 defer），因此 app.js 里 window.flatpickr 已就绪 -->
+  <script src="vendor/flatpickr/flatpickr.min.js"></script>
+  <script src="vendor/flatpickr/l10n-zh.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

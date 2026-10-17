@@ -108,6 +108,17 @@ function bindStaticEvents() {
     });
   });
 
+  // 排序方式（智能 / 优先级 / 截止日期 / 手动）
+  const sortSel = document.getElementById('sort-select');
+  if (sortSel) {
+    sortSel.value = state.sortMode;
+    sortSel.addEventListener('change', async () => {
+      setSortMode(sortSel.value);
+      await renderTasks();
+      if (state.sortMode === 'manual') toast('手动排序：按住任务左侧的 ⠿ 手柄拖动即可调整顺序');
+    });
+  }
+
   // 时间筛选：切换面板 + 日期输入
   document.getElementById('btn-time-filter').addEventListener('click', () => {
     const tf = document.getElementById('time-filter');
@@ -353,6 +364,11 @@ async function withExpandedChildren(tasks) {
 
 /** 任务排序：与主列表 SQL 一致（未完成 → 有截止日期 → 截止日期 → 优先级降序 → 手动排序 → id） */
 function compareTasks(a, b) {
+  // 手动排序：sort_order 优先，与 main/db.js 里 f.sort === 'manual' 的 ORDER BY 保持一致
+  if (state.sortMode === 'manual') {
+    if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+    return a.id - b.id;
+  }
   if (!!a.completed !== !!b.completed) return a.completed ? 1 : -1;
   const aNull = a.plan_end == null;
   const bNull = b.plan_end == null;
@@ -411,7 +427,8 @@ function taskItemHtml(t, depth = 0) {
   const groupLabel = t.group_name ? `<span class="meta-item" style="color:${esc(t.group_color)}">● ${esc(t.group_name)}</span>` : '';
 
   return `
-  <li class="task-item${done}${isSub ? ' is-subtask' : ''}" draggable="${isSub ? 'false' : 'true'}" data-id="${t.id}" style="margin-left:${depth * 20}px">
+  <li class="task-item${done}${isSub ? ' is-subtask' : ''}" draggable="false" data-id="${t.id}" style="margin-left:${depth * 20}px">
+    ${isSub ? '' : '<span class="drag-handle" data-act="drag" title="按住拖拽调整顺序">⠿</span>'}
     <button class="task-check" data-act="toggle" title="完成/取消">${t.completed ? '✓' : ''}</button>
     <div class="task-body">
       <div class="task-title">
@@ -421,11 +438,11 @@ function taskItemHtml(t, depth = 0) {
       <div class="task-meta">${groupLabel}${meta.join('')}</div>
     </div>
     <div class="task-actions">
-      <button data-act="edit" title="编辑">✎</button>
+      <button data-act="edit" title="编辑">✎ 编辑</button>
       ${state.view === 'archived'
-        ? `<button data-act="unarchive" title="恢复">↩</button>`
-        : `<button data-act="archive" title="归档">🗂</button>`}
-      <button class="del" data-act="del" title="删除">🗑</button>
+        ? `<button data-act="unarchive" title="恢复">↩ 恢复</button>`
+        : `<button data-act="archive" title="归档">🗂 归档</button>`}
+      <button class="del" data-act="del" title="删除">🗑 删除</button>
     </div>
   </li>`;
 }
@@ -437,6 +454,7 @@ function bindTaskListEvents(container) {
       const id = Number(item.dataset.id);
       if (!btn) { openDetail(id); return; }
       const act = btn.dataset.act;
+      if (act === 'drag') return; // 拖拽手柄：不触发打开详情
       if (act === 'toggle') toggleTask(id);
       else if (act === 'toggle-expand') {
         if (state.expandedTasks.has(id)) state.expandedTasks.delete(id);
@@ -488,7 +506,7 @@ function taskEditorHtml(task) {
     <div class="editor-row">
       <input class="editor-title" type="text" placeholder="任务标题（回车保存，Esc 取消）" value="${esc(t.title || '')}" />
       ${dateRangeFieldHtml(range.start, range.end, rangeOpts)}
-      <button class="ghost-btn" data-act="editor-more" title="更多选项">⚙</button>
+      <button class="ghost-btn" data-act="editor-more" title="展开更多字段（分组 / 优先级 / 提醒 / 标签 / 备注）">⚙ 更多选项</button>
       ${isEdit ? '<button class="danger-btn" data-act="editor-delete" title="删除任务">删除</button>' : ''}
       <button class="ghost-btn" data-act="editor-cancel">取消</button>
       <button class="primary-btn" data-act="editor-save">${isEdit ? '保存' : '添加'}</button>
@@ -758,17 +776,46 @@ async function deleteEditingTask(ed) {
 
 /* ---------------- 拖拽排序 ---------------- */
 
+/**
+ * 切换排序方式（同步部分）：同步 state 与工具栏下拉框，不触发重绘。
+ */
+function setSortMode(mode) {
+  state.sortMode = mode;
+  const sel = document.getElementById('sort-select');
+  if (sel) sel.value = mode;
+}
+
+/**
+ * 绑定一行的拖拽排序。
+ *
+ * 原先整行 draggable="true"，问题有两个：
+ *  1) 行内的输入框 / 按钮会抢走 mousedown，多数时候根本拖不起来；
+ *  2) 列表顺序由 SQL 的「完成状态 → 截止日期 → 优先级 → sort_order」决定，
+ *     sort_order 只是很靠后的兜底键，拖拽写进去后列表又按别的键排回去，看起来"没反应"。
+ * 现在：只有按住左侧手柄才允许拖拽；拖完自动切到「手动」排序，让 sort_order 真正生效。
+ */
 function bindDrag(item) {
+  const handle = item.querySelector('.drag-handle');
+  if (!handle) return; // 子任务行不参与主列表排序
+
+  const enable = () => { item.draggable = true; };
+  const disable = () => { item.draggable = false; };
+  handle.addEventListener('pointerdown', enable);
+  handle.addEventListener('pointerup', disable);
+
   item.addEventListener('dragstart', (e) => {
+    if (!item.draggable) { e.preventDefault(); return; }
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', item.dataset.id);
+    e.dataTransfer.setData('text/plain', String(item.dataset.id));
     item.classList.add('dragging');
   });
   item.addEventListener('dragend', () => {
+    disable();
     item.classList.remove('dragging');
     document.querySelectorAll('.task-item.drag-over').forEach((x) => x.classList.remove('drag-over'));
   });
   item.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     item.classList.add('drag-over');
@@ -776,20 +823,33 @@ function bindDrag(item) {
   item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
   item.addEventListener('drop', async (e) => {
     e.preventDefault();
-    const fromId = Number(e.dataTransfer.getData('text/plain'));
-    const listEl = item.parentElement;
-    const children = Array.from(listEl.children);
-    const targetId = Number(item.dataset.id);
-    const ids = children.map((c) => Number(c.dataset.id));
-    const fromIdx = ids.indexOf(fromId);
-    const toIdx = ids.indexOf(targetId);
-    if (fromIdx > -1 && toIdx > -1 && fromIdx !== toIdx) {
-      ids.splice(toIdx, 0, ...ids.splice(fromIdx, 1));
-      await api.tasks.reorder(ids);
-      await loadTasks();
-      renderTasks();
-    }
+    item.classList.remove('drag-over');
+    await dropReorder(item, e.dataTransfer ? e.dataTransfer.getData('text/plain') : '');
   });
+}
+
+/** 把 fromId 移动到当前行所在的位置，并按新的顺序写回 sort_order */
+async function dropReorder(item, fromIdStr) {
+  const fromId = Number(fromIdStr);
+  const listEl = item.parentElement;
+  if (!listEl) return;
+  // 只取同一列表里的顶层任务：展开出来的子任务缩进显示，不参与主列表排序
+  const rows = Array.from(listEl.querySelectorAll(':scope > .task-item:not(.is-subtask)'));
+  const ids = rows.map((c) => Number(c.dataset.id));
+  const fromIdx = ids.indexOf(fromId);
+  const toIdx = ids.indexOf(Number(item.dataset.id));
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+
+  ids.splice(toIdx, 0, ...ids.splice(fromIdx, 1));
+  const ok = await guardAction(() => api.tasks.reorder(ids), '排序失败');
+  if (!ok) return;
+  // 手动排序下顺序才由 sort_order 决定：拖拽时自动切过去，避免"拖完又弹回原样"
+  if (state.sortMode !== 'manual') {
+    setSortMode('manual');
+    toast('已切换为手动排序，可直接拖拽调整顺序');
+  }
+  await loadTasks();
+  renderTasks();
 }
 
 /* ---------------- 任务操作 ---------------- */

@@ -12,7 +12,8 @@
     "test:db": "node scripts/smoke-db.js"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3"
+    "better-sqlite3": "^13.0.3",
+    "flatpickr": "^4.6.13"
   },
   "devDependencies": {
     "electron": "^44.8.0"
