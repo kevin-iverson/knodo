@@ -140,19 +140,158 @@ const tSubTask = db.createTask({ title: '上移任务', groupId: tSub.id });
 db.deleteGroup(tSub.id);
 check('有上级时任务上移到上级分组', db.getTask(tSubTask.id).group_id === g1.id);
 
+console.log('\n[7.6] 会议记录（meetings）');
+const m1 = db.createMeeting({ title: '周会', mode: 'audio', source_label: '系统声 + 麦克风', duration_ms: 1800000 });
+check('新建会议记录', !!m1 && m1.status === 'recorded' && Array.isArray(m1.media_paths) && m1.media_paths.length === 0);
+check('默认标题兜底', db.createMeeting({}).title === '未命名会议');
+
+const m1b = db.updateMeeting(m1.id, { transcript: '甲：本周进度…', status: 'transcribed' });
+check('局部更新（转写文本 + 状态）',
+  m1b.transcript === '甲：本周进度…' && m1b.status === 'transcribed' && m1b.title === '周会');
+
+const m1c = db.updateMeeting(m1.id, {
+  summary: '## 纪要\n- 议题一',
+  todos: [{ title: '整理接口文档', assignee: '甲', due: '2026-10-20', priority: 2 }],
+  media_paths: ['C:/rec/1.webm', 'C:/rec/2.webm'],
+});
+check('数组字段序列化/反序列化',
+  Array.isArray(m1c.todos) && m1c.todos.length === 1 && m1c.todos[0].title === '整理接口文档'
+  && m1c.media_paths.length === 2 && m1c.media_paths[0] === 'C:/rec/1.webm');
+
+// 字段名白名单：注入字段必须被忽略，且不影响其它字段
+db.updateMeeting(m1.id, { 'title_x": " hacked': 'x', title: '周会(改)' });
+check('非法字段被白名单拦截', db.getMeeting(m1.id).title === '周会(改)' && db.listMeetings().length > 0);
+
+const m2 = db.createMeeting({ title: '评审会', mode: 'screen' });
+const list = db.listMeetings();
+check('列表按创建时间倒序', list[0].title === '评审会' && list.some((m) => m.id === m1.id));
+check('数量正确', list.length === 3); // 含上面那个「未命名会议」
+
+const exportSnap = db.exportData();
+check('导出含 meetings 且 schema 升级到 6',
+  exportSnap.schemaVersion === 6 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3);
+check('导出保留 todos 与 media_paths', (() => {
+  const row = exportSnap.meetings.find((m) => m.id === m1.id);
+  return !!row && row.title === '周会(改)' && typeof row.todos === 'string'
+    && JSON.parse(row.todos)[0].title === '整理接口文档';
+})());
+
+check('删除会议记录', db.deleteMeeting(m2.id) === 1 && db.getMeeting(m2.id) === null);
+
+/**
+ * 本地 mock 一个「OpenAI 兼容」的语音服务，用来离线验证转写链路：
+ * - transcriptions 正常时走主通道；
+ * - transcriptions 返回 404 时（百炼兼容层的常见形态）应自动回退到 chat/completions + base64。
+ */
+function startMockAsr({ transcriptionsStatus = 200 } = {}) {
+  const http = require('http');
+  const hits = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8');
+      const url = req.url.split('?')[0];
+      hits.push({ url, method: req.method, auth: req.headers.authorization || '' });
+
+      if (url.endsWith('/audio/transcriptions')) {
+        if (transcriptionsStatus === 404) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'unknown endpoint' } }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ text: `主通道转写结果/${req.method}/${/multipart|form-data/.test(req.headers['content-type'] || '')}` }));
+        return;
+      }
+      if (url.endsWith('/chat/completions')) {
+        let payload = null;
+        try { payload = JSON.parse(body); } catch (e) { payload = null; }
+        const lastMsg = payload && payload.messages && payload.messages.length
+          ? payload.messages[payload.messages.length - 1]
+          : null;
+        const part = lastMsg && Array.isArray(lastMsg.content) ? lastMsg.content[0] : null;
+        const head = part && part.input_audio ? String(part.input_audio.data).split(',')[0] : '空';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          choices: [{ message: { content: `兜底通道收到 ${head}｜model=${payload ? payload.model : '?'}` } }],
+        }));
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      resolve({
+        port: server.address().port,
+        hits,
+        close: () => new Promise((r) => server.close(r)),
+      });
+    });
+  });
+}
+
+async function runAsrChannelTests() {
+  const asr = require('../main/asr');
+  const wav = path.join(tmpDir, 'asr-sample.wav');
+  fs.writeFileSync(wav, Buffer.alloc(2048, 1));
+
+  const ids = asr.ASR_PRESETS.map((p) => p.id);
+  check('ASR 预设 id 唯一且非空', new Set(ids).size === ids.length && ids.every(Boolean));
+  const domestic = asr.ASR_PRESETS.filter((p) => /siliconflow\.cn|dashscope/.test(p.baseUrl));
+  check('内置国内语音服务', domestic.length >= 3 && domestic.every((p) => !!p.model));
+
+  // A. 主通道：multipart /audio/transcriptions
+  const a = await startMockAsr();
+  const textA = await asr.transcribe({
+    baseUrl: `http://127.0.0.1:${a.port}/v1`,
+    apiKey: 'sk-test', model: 'whisper-1', filePath: wav, language: 'zh',
+  });
+  check('主通道 multipart 转写', textA === '主通道转写结果/POST/true');
+  check('主通道带 Bearer 鉴权', a.hits[0].auth === 'Bearer sk-test');
+  check('主通道不触发回退', a.hits.length === 1);
+  await a.close();
+
+  // B. 404 → 自动回退到 chat/completions + base64
+  const b = await startMockAsr({ transcriptionsStatus: 404 });
+  const textB = await asr.transcribe({
+    baseUrl: `http://127.0.0.1:${b.port}/v1`,
+    apiKey: 'sk-test', model: 'qwen3-asr-flash', filePath: wav, language: 'zh',
+  });
+  check('transcriptions 404 时自动回退', b.hits.length === 2
+    && b.hits[0].url.endsWith('/audio/transcriptions')
+    && b.hits[1].url.endsWith('/chat/completions'));
+  check('兜底以 base64 传音频', textB === '兜底通道收到 data:audio/wav;base64｜model=qwen3-asr-flash');
+  await b.close();
+
+  // C. 缺 Key / 空文件：必须给出可读报错而不是崩溃
+  let msgNoKey = '';
+  try {
+    await asr.transcribe({ baseUrl: 'http://127.0.0.1:1/v1', apiKey: '', model: 'x', filePath: wav });
+  } catch (e) { msgNoKey = e.message; }
+  check('缺 Key 抛 NO_ASR_KEY', msgNoKey === 'NO_ASR_KEY');
+}
+
 console.log('\n[8] 报告本地生成（无 Key 降级）');
 const now = new Date();
 const start = new Date(now); start.setHours(0, 0, 0, 0);
-report.generateReport(
-  { type: 'day', customStart: start.toISOString(), customEnd: now.toISOString(), groupId: null },
-  { baseUrl: '', apiKey: '', model: '' }
-).then((r) => {
+
+(async () => {
+  const r = await report.generateReport(
+    { type: 'day', customStart: start.toISOString(), customEnd: now.toISOString(), groupId: null },
+    { baseUrl: '', apiKey: '', model: '' }
+  );
   check('降级报告生成', r.degraded === true && r.markdown.includes('日报'));
   check('报告含完成清单', r.markdown.includes('完成情况'));
+
+  console.log('\n[9] 语音转写通道（本地 mock，不入网）');
+  await runAsrChannelTests();
 
   console.log('\n====================');
   console.log(`结果：${passed} 通过，${failed} 失败`);
   db.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
   process.exit(failed > 0 ? 1 : 0);
-});
+})();

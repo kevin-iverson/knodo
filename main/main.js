@@ -3,7 +3,11 @@
  * 主进程入口：窗口生命周期、单实例锁、托盘、全局快捷键、提醒调度。
  * 关闭窗口默认最小化到托盘，仅当显式退出时才真正退出。
  */
-const { app, BrowserWindow, nativeTheme, ipcMain } = require('electron');
+const {
+  app, BrowserWindow, nativeTheme, ipcMain, session,
+} = require('electron');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const db = require('./db');
 const { registerIpc } = require('./ipc');
@@ -14,6 +18,15 @@ const { markdownToDocx } = require('./docx');
 const reportMod = require('./report');
 
 const isSmoke = process.argv.includes('--smoke-test');
+
+// 冒烟测试必须跑在独立的临时数据目录里：
+// 1) 每次都从干净状态开始 —— 否则上一轮残留的「冒烟分组」会让这一步撞上重名报错；
+// 2) 不污染用户真实的任务数据。
+if (isSmoke) {
+  const smokeProfile = path.join(os.tmpdir(), 'todo-smoke-profile');
+  fs.rmSync(smokeProfile, { recursive: true, force: true });
+  app.setPath('userData', smokeProfile);
+}
 
 let mainWindow = null;
 let isQuitting = false;
@@ -92,6 +105,12 @@ app.whenReady().then(() => {
   applyTheme();
   registerIpc();
 
+  // 录制需要麦克风 / 屏幕采集权限：这是本机应用、且由用户主动点「录制」触发，
+  // 不弹 Chromium 的权限气泡而是直接放行；其它权限（定位、通知等）一律拒绝。
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media');
+  });
+
   createWindow();
 
   setupTray({
@@ -136,8 +155,23 @@ app.whenReady().then(() => {
               out.noModal = !document.querySelector('.modal-mask');
               out.timeFilterBtn = !!document.querySelector('#btn-time-filter');
               out.timeFilterPanel = !!document.querySelector('#time-filter');
+              const waitUntil = async (fn, timeout = 3000) => {
+                const t0 = Date.now();
+                for (;;) {
+                  if (fn()) return true;
+                  if (Date.now() - t0 > timeout) return false;
+                  await new Promise((r) => setTimeout(r, 50));
+                }
+              };
               const addBtn = document.querySelector('[data-act="start-add"]');
-              if (addBtn) { addBtn.click(); await new Promise(r => setTimeout(r, 300)); }
+              // 冷启动时 UI 响应可能偏慢，用轮询代替固定 sleep，避免偶发的聚焦未生效
+              if (addBtn) {
+                addBtn.click();
+                await waitUntil(() => {
+                  const e = document.querySelector('.task-editor[data-editor="new"]');
+                  return !!e && document.activeElement === e.querySelector('.editor-title');
+                });
+              }
               const ed = document.querySelector('.task-editor[data-editor="new"]');
               out.editorShown = !!ed;
               out.titleFocused = !!(ed && document.activeElement === ed.querySelector('.editor-title'));
@@ -317,8 +351,22 @@ app.whenReady().then(() => {
                 aiBtn.click();
                 await new Promise(r => setTimeout(r, 250));
                 const aiModal = document.querySelector('.modal-mask');
+                // 回归：若前面有弹窗没关干净，这里会抓错弹窗（分组弹窗是单栏的），故显式记录数量
+                out.aiModalCount = document.querySelectorAll('.modal-mask').length;
                 out.aiModalOpened = !!aiModal;
                 if (aiModal) {
+                  // 排版回归：两栏网格、两张分区卡片、整体不超出视口、底部按钮可点
+                  const box = aiModal.querySelector('.modal').getBoundingClientRect();
+                  out.aiCols = getComputedStyle(aiModal.querySelector('.form-grid')).gridTemplateColumns.split(' ').length;
+                  out.aiSections = aiModal.querySelectorAll('.form-section').length;
+                  out.aiFieldCount = aiModal.querySelectorAll('.modal-field').length;
+                  out.aiInViewport = box.top >= 0 && box.bottom <= window.innerHeight && box.left >= 0 && box.right <= window.innerWidth;
+                  const okRect = aiModal.querySelector('[data-modal="ok"]').getBoundingClientRect();
+                  out.aiFootReachable = okRect.bottom <= window.innerHeight && okRect.top >= 0;
+                  const bd = aiModal.querySelector('.modal-body');
+                  out.aiBodyScrolls = bd.scrollHeight <= bd.clientHeight + 2;
+                  out.aiBox = { h: Math.round(box.height), vh: window.innerHeight };
+                  out.aiNoHOverflow = document.documentElement.scrollWidth <= window.innerWidth;
                   aiModal.querySelector('[data-field="baseUrl"]').value = 'https://smoke.example.com';
                   aiModal.querySelector('[data-field="model"]').value = 'smoke-model';
                   aiModal.querySelector('[data-modal="ok"]').click();
@@ -348,6 +396,7 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 分组：新增=${dom.groupAdded ? '是' : '否'}（${dom.groupCountBefore} → ${dom.groupCount}）；重名错误=${dom.dupErrorShown ? '已提示' : '未提示'}`);
           console.log(`[SMOKE] 子分组：父行含箭头=${dom.hasArrow ? '是' : '否'}；上级默认带入=${dom.parentPresetMatched ? '是' : '否'}；子分组可见=${dom.childRowVisible ? '是' : '否'}；折叠后隐藏=${dom.childHiddenAfterCollapse ? '是' : '否'}；再展开回来=${dom.childBackAfterExpand ? '是' : '否'}；父筛选含子任务=${dom.parentFilterIncludesChildTask ? '是' : '否'}`);
           console.log(`[SMOKE] AI 设置（工具栏）= 按钮${dom.aiToolbarBtn ? '存在' : '缺失'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
+          console.log(`[SMOKE] AI 设置排版 = ${dom.aiCols} 列；分区 ${dom.aiSections} 个；字段 ${dom.aiFieldCount} 个；弹窗高 ${dom.aiBox ? dom.aiBox.h : '-'}px / 视口 ${dom.aiBox ? dom.aiBox.vh : '-'}px；完整在视口内=${dom.aiInViewport ? '是' : '否'}；底部按钮可点=${dom.aiFootReachable ? '是' : '否'}；内容无需滚动=${dom.aiBodyScrolls ? '是' : '否'}；横向无溢出=${dom.aiNoHOverflow ? '是' : '否'}`);
           console.log(`[SMOKE] 标签新增弹窗 = ${dom.tagModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.tagAdded ? '是' : '否'}`);
 
           // 详情侧边栏：拖拽调宽 + 子任务添加（局部刷新，不重绘整页）
@@ -720,6 +769,113 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] Word 导出 = ${r4docx.size} 字节，ZIP 头 ${r4docx.isZip ? '正确' : '错误'}`);
           console.log(`[SMOKE] 报告分组多选（后端）= 多选「${multiNames}」${r4multi.multi ? '✓' : '✗'}；单选${r4multi.single ? '✓' : '✗'}；空选=全部${r4multi.none ? '✓' : '✗'}`);
 
+          /* ---- 第 7 轮：会议录制 → 转写 → 纪要 → 待办入库 ---- */
+          const r7 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+              // 1) 侧栏新视图 + 工具栏录制按钮
+              const nav = document.querySelector('.nav-item[data-view="meetings"]');
+              out.navExists = !!nav && nav.textContent.indexOf('会议纪要') > -1;
+              if (nav) { nav.click(); await wait(500); }
+              out.viewRendered = !!document.querySelector('.mt-wrap');
+              out.viewTitle = document.getElementById('view-title').textContent;
+              const recBtn = document.getElementById('btn-record');
+              out.recBtn = !!recBtn && recBtn.textContent.indexOf('录制') > -1;
+
+              // 2) 录制设置面板：默认纯音频、两种声音源勾选、切片时长可选、可取消
+              if (recBtn) { recBtn.click(); await wait(300); }
+              const setup = document.querySelector('.rec-setup');
+              out.setupOpened = !!setup;
+              if (setup) {
+                out.titlePrefilled = /^会议 /.test(setup.querySelector('#rec-title').value);
+                out.modeCount = setup.querySelectorAll('input[name="rec-mode"]').length;
+                out.audioChecks = setup.querySelectorAll('input[name="rec-sys"]:checked, input[name="rec-mic"]:checked').length;
+                out.sliceOpts = setup.querySelectorAll('#rec-slice option').length;
+                out.importBtn = !!setup.querySelector('[data-extra="导入录音文件"]');
+                setup.querySelector('[data-modal="cancel"]').click();
+                await wait(200);
+              }
+              out.setupClosed = !document.querySelector('.rec-setup');
+
+              // 3) 会议记录：开会话 → 归档 → 列表可见
+              const s = await window.api.rec.startSession();
+              // 写一个假分片，模拟真实录制产出（后续 finalize / 列表 / 删除都依赖它）
+              await window.api.rec.saveChunk({ sessionId: s.sessionId, seq: 1, data: new Uint8Array([1, 2, 3, 4, 5]), ext: 'webm' });
+              const mt = await window.api.rec.finalize({
+                sessionId: s.sessionId, title: '冒烟会议', mode: 'audio',
+                sourceLabel: '麦克风 + 系统声', startedAt: new Date().toISOString(), durationMs: 600000,
+              });
+              out.meetingCreated = !!mt && mt.title === '冒烟会议';
+              out.chunkCount = mt ? mt.media_paths.length : 0;
+
+              // 未配语音 Key → 转写必须给出可读提示，而不是静默失败
+              try {
+                await window.api.meeting.transcribe(mt.id, 'zh');
+                out.transcribeErr = '';
+              } catch (e) { out.transcribeErr = String((e && e.message) || e); }
+              out.transcribeFriendly = /语音/.test(out.transcribeErr);
+
+              // 4) 待办：写入 → 详情页签 → 勾选导入任务表
+              await window.api.meeting.update(mt.id, {
+                todos: [{ id: 't1', title: '冒烟会议待办', assignee: '李四', due: '', priority: 2, detail: '来自纪要', evidence: '' }],
+              });
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await wait(300);
+              document.querySelector('.nav-item[data-view="meetings"]').click();
+              await wait(500);
+              out.itemCount = document.querySelectorAll('.mt-item').length;
+              out.itemTitle = (document.querySelector('.mt-item-title') || {}).textContent || '';
+              out.pipelineBtns = document.querySelectorAll('[data-mt="transcribe"], [data-mt="summarize"]').length;
+              out.summarizeDisabled = !!document.querySelector('[data-mt="summarize"]').disabled;
+              out.exportBtns = document.querySelectorAll('[data-mt="export"]').length;
+              // 转写页签：初始为空态
+              const tabT = document.querySelector('[data-mt="tab"][data-tab="transcript"]');
+              if (tabT) { tabT.click(); await wait(350); }
+              out.transcriptPlaceholder = (document.querySelector('.mt-placeholder') || {}).textContent || '';
+              const tab = document.querySelector('[data-mt="tab"][data-tab="todos"]');
+              if (tab) { tab.click(); await wait(400); }
+              out.todoRows = document.querySelectorAll('.mt-todo').length;
+              out.groupSelect = !!document.getElementById('mt-group');
+
+              const imp = await window.api.meeting.importTodos({ id: mt.id, todoIds: ['t1'], groupId: null, asSubtasks: false });
+              out.imported = !!(imp && imp.ok && imp.created === 1);
+              const allTasks = await window.api.tasks.list({ view: 'all' });
+              const rec = allTasks.find((t) => t.title === '冒烟会议待办');
+              out.taskCreated = !!rec;
+              out.taskPriority = rec ? rec.priority : null;
+              const imp2 = await window.api.meeting.importTodos({ id: mt.id, todoIds: ['t1'], groupId: null, asSubtasks: true });
+              out.subtaskMode = !!(imp2 && imp2.ok && imp2.tasks[0] && imp2.tasks[0].parent_id);
+
+              await window.api.meeting.remove(mt.id);
+              out.cleaned = (await window.api.meeting.list()).every((m) => m.title !== '冒烟会议');
+              return out;
+            })()
+          `);
+
+          // 主进程侧：ASR 预设、分片落盘
+          const asrMod = require('./asr');
+          const recMod = require('./recording');
+          const oneSession = recMod.createSession();
+          const chunk = recMod.saveChunk(oneSession.sessionId, 1, Buffer.from('fake-webm-bytes'), 'webm');
+          const presetIds = asrMod.ASR_PRESETS.map((p) => p.id);
+          const r7main = {
+            presets: asrMod.ASR_PRESETS.length,
+            uniqueIds: new Set(presetIds).size === presetIds.length && presetIds.every(Boolean),
+            domestic: asrMod.ASR_PRESETS.filter((p) => /siliconflow\.cn|dashscope/.test(p.baseUrl)).length,
+            chunkSaved: chunk.size > 0 && require('fs').existsSync(chunk.filePath),
+            files: recMod.sessionFiles(oneSession.sessionId).length,
+          };
+          recMod.deleteSession(oneSession.sessionId);
+
+          console.log(`[SMOKE] 会议视图 = 导航${r7.navExists ? '存在' : '缺失'}；标题「${r7.viewTitle}」；渲染=${r7.viewRendered ? '成功' : '失败'}；列表 ${r7.itemCount} 条（首条「${r7.itemTitle}」）`);
+          console.log(`[SMOKE] 录制面板 = 打开${r7.setupOpened ? '✓' : '✗'}；默认名预填${r7.titlePrefilled ? '✓' : '✗'}；采集方式 ${r7.modeCount} 项；默认勾选音源 ${r7.audioChecks} 个；切片档位 ${r7.sliceOpts}；导入入口${r7.importBtn ? '✓' : '✗'}；取消关闭${r7.setupClosed ? '✓' : '✗'}`);
+          console.log(`[SMOKE] 会议转写未配 Key 的提示 = 「${r7.transcribeErr}」→ ${r7.transcribeFriendly ? '可读' : '不可读'}`);
+          console.log(`[SMOKE] 纪要操作条 = 按钮 ${r7.pipelineBtns + r7.exportBtns} 个；未转写时禁用生成=${r7.summarizeDisabled ? '是' : '否'}；转写页签占位「${r7.transcriptPlaceholder}」`);
+          console.log(`[SMOKE] 待办入库 = 勾选 ${r7.todoRows} 条 → 独立导入${r7.imported ? '✓' : '✗'}（优先级 ${r7.taskPriority}）；父子任务形态${r7.subtaskMode ? '✓' : '✗'}；清理后无残留=${r7.cleaned ? '是' : '否'}`);
+          console.log(`[SMOKE] ASR 预设 = ${r7main.presets} 个（国内 ${r7main.domestic} 个，id 唯一=${r7main.uniqueIds ? '是' : '否'}）；分片写盘=${r7main.chunkSaved ? '成功' : '失败'}；会话文件数=${r7main.files}`);
+
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
@@ -730,7 +886,9 @@ app.whenReady().then(() => {
             && dom.tagModalOpened && dom.tagAdded
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
-            && dom.aiToolbarBtn && dom.aiModalOpened
+            && dom.aiToolbarBtn && dom.aiModalOpened && dom.aiModalCount === 1
+            && dom.aiCols === 2 && dom.aiSections === 2 && dom.aiFieldCount === 8
+            && dom.aiInViewport && dom.aiFootReachable && dom.aiBodyScrolls && dom.aiNoHOverflow
             && dom.aiSavedUrl === 'https://smoke.example.com' && dom.aiSavedModel === 'smoke-model'
             && detail.panelOpen && detail.hasResizer && detail.widthAfter > detail.widthBefore
             && detail.resizingClassCleared && !!detail.persisted
@@ -750,7 +908,33 @@ app.whenReady().then(() => {
             && r4.msTrigger && r4.msOpened && r4.msFixed && r4.msBoxCount >= 2 && r4.msMulti
             && r4.exportDocxBtn && r4.exportMdBtn
             && r4docx.size > 1000 && r4docx.isZip
-            && r4multi.multi && r4multi.single && r4multi.none;
+            && r4multi.multi && r4multi.single && r4multi.none
+            // 第 7 轮：会议录制 / 纪要 / 待办
+            && r7.navExists && r7.viewRendered && r7.viewTitle === '会议纪要' && r7.recBtn
+            && r7.setupOpened && r7.titlePrefilled && r7.modeCount === 2 && r7.audioChecks === 2
+            && r7.sliceOpts === 4 && r7.importBtn && r7.setupClosed
+            && r7.meetingCreated && r7.chunkCount === 1 && r7.transcribeFriendly
+            && r7.itemCount >= 1 && r7.itemTitle === '冒烟会议'
+            && r7.pipelineBtns === 2 && r7.summarizeDisabled && r7.exportBtns === 2
+            && r7.todoRows === 1 && r7.groupSelect
+            && r7.imported && r7.taskCreated && r7.taskPriority === 2 && r7.subtaskMode && r7.cleaned
+            && r7main.presets >= 4 && r7main.uniqueIds && r7main.domestic >= 3 && r7main.chunkSaved && r7main.files === 1;
+          if (!allOk) {
+            // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜
+            const dumpFalsy = (label, obj) => {
+              const bad = Object.entries(obj || {})
+                .filter(([, v]) => v === false || v === null || v === undefined || v === 0 || v === '');
+              if (bad.length) {
+                console.log(`[SMOKE] 未通过项 · ${label}：${bad.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('；')}`);
+              }
+            };
+            dumpFalsy('dom', dom);
+            dumpFalsy('detail', detail);
+            dumpFalsy('feat', feat);
+            dumpFalsy('r4', r4);
+            dumpFalsy('r7', r7);
+            dumpFalsy('r7main', r7main);
+          }
           console.log(allOk ? '[SMOKE] SMOKE_OK' : '[SMOKE] SMOKE_FAIL');
           isQuitting = true;
           app.quit();

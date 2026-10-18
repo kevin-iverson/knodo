@@ -2,13 +2,25 @@
 /**
  * IPC 处理器注册：将渲染进程的请求映射到数据库 / AI / 报告等模块。
  */
-const { ipcMain, dialog, shell, app } = require('electron');
+const { ipcMain, dialog, shell, app, desktopCapturer } = require('electron');
+const path = require('path');
 const fs = require('fs');
 const db = require('./db');
 const crypto = require('./crypto');
 const ai = require('./ai');
+const asr = require('./asr');
+const meeting = require('./meeting');
+const recording = require('./recording');
 const report = require('./report');
 const { markdownToDocx } = require('./docx');
+
+function getAsrConfig() {
+  const baseUrl = db.getSetting('ai.asrBaseUrl', asr.DEFAULT_ASR_CONFIG.baseUrl);
+  const model = db.getSetting('ai.asrModel', asr.DEFAULT_ASR_CONFIG.model);
+  const stored = db.getSetting('ai.asrKey', '');
+  const { value: apiKey, degraded } = crypto.decryptApiKey(stored);
+  return { baseUrl, model, apiKey, hasKey: !!apiKey, encryptionDegraded: degraded };
+}
 
 function getAiConfig() {
   const baseUrl = db.getSetting('ai.baseUrl', ai.DEFAULT_CONFIG.baseUrl);
@@ -16,6 +28,11 @@ function getAiConfig() {
   const stored = db.getSetting('ai.apiKey', '');
   const { value: apiKey, degraded } = crypto.decryptApiKey(stored);
   return { baseUrl, model, apiKey, hasKey: !!apiKey, encryptionDegraded: degraded };
+}
+
+/** 取出对话模型调用参数（baseUrl / key / model） */
+function chatConfig(cfg = getAiConfig()) {
+  return { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model };
 }
 
 /**
@@ -68,6 +85,9 @@ function withDb(fn) {
 }
 
 function registerIpc() {
+  // 录制文件目录（userData/recordings）：handler 里一律通过 recording 模块访问
+  recording.init(app.getPath('userData'));
+
   /* ---------- 分组 ---------- */
   ipcMain.handle('groups:list', withDb(() => db.listGroups()));
   ipcMain.handle('groups:create', withDb((p) => db.createGroup(p)));
@@ -116,24 +136,51 @@ function registerIpc() {
   ipcMain.handle('stats:overview', withDb(() => db.overview()));
   ipcMain.handle('stats:trend', withDb((days) => db.dailyTrend(days)));
 
-  /* ---------- AI 配置 ---------- */
+  /* ---------- AI 配置（对话 + 语音） ---------- */
   ipcMain.handle('ai:getConfig', () => {
     const c = getAiConfig();
+    const a = getAsrConfig();
     // 不下发明文 Key 给渲染进程
-    return { baseUrl: c.baseUrl, model: c.model, hasKey: c.hasKey, encryptionDegraded: c.encryptionDegraded, presets: ai.PRESETS };
+    return {
+      baseUrl: c.baseUrl, model: c.model, hasKey: c.hasKey,
+      encryptionDegraded: c.encryptionDegraded, presets: ai.PRESETS,
+      asr: {
+        baseUrl: a.baseUrl, model: a.model, hasKey: a.hasKey,
+        encryptionDegraded: a.encryptionDegraded, presets: asr.ASR_PRESETS,
+      },
+    };
   });
-  ipcMain.handle('ai:saveConfig', (_e, { baseUrl, model, apiKey }) => {
-    db.setSetting('ai.baseUrl', baseUrl);
-    db.setSetting('ai.model', model);
+  ipcMain.handle('ai:saveConfig', (_e, p = {}) => {
+    if (p.baseUrl !== undefined) db.setSetting('ai.baseUrl', p.baseUrl);
+    if (p.model !== undefined) db.setSetting('ai.model', p.model);
     // 仅在用户输入了新 Key 时更新；留空表示保持原 Key 不变
-    if (apiKey !== undefined && apiKey !== null && apiKey !== '') {
-      db.setSetting('ai.apiKey', crypto.encryptApiKey(apiKey));
+    if (p.apiKey !== undefined && p.apiKey !== null && p.apiKey !== '') {
+      db.setSetting('ai.apiKey', crypto.encryptApiKey(p.apiKey));
     }
-    return getAiConfig();
+    // ASR 独立一组配置：传了才更新，避免旧调用把它们清掉
+    if (p.asrBaseUrl !== undefined) db.setSetting('ai.asrBaseUrl', p.asrBaseUrl);
+    if (p.asrModel !== undefined) db.setSetting('ai.asrModel', p.asrModel);
+    if (p.asrKey !== undefined && p.asrKey !== null && p.asrKey !== '') {
+      db.setSetting('ai.asrKey', crypto.encryptApiKey(p.asrKey));
+    }
+    const c = getAiConfig();
+    const a = getAsrConfig();
+    return {
+      baseUrl: c.baseUrl, model: c.model, hasKey: c.hasKey,
+      encryptionDegraded: c.encryptionDegraded, presets: ai.PRESETS,
+      asr: {
+        baseUrl: a.baseUrl, model: a.model, hasKey: a.hasKey,
+        encryptionDegraded: a.encryptionDegraded, presets: asr.ASR_PRESETS,
+      },
+    };
   });
   ipcMain.handle('ai:clearKey', () => {
     db.setSetting('ai.apiKey', '');
     return getAiConfig();
+  });
+  ipcMain.handle('ai:clearAsrKey', () => {
+    db.setSetting('ai.asrKey', '');
+    return getAsrConfig();
   });
   ipcMain.handle('ai:test', async (_e, { baseUrl, model, apiKey }) => {
     // 测试时允许使用临时 Key，优先使用传入值，否则用已保存值
@@ -143,6 +190,18 @@ function registerIpc() {
     try {
       await ai.testConnection({ baseUrl, apiKey: key, model });
       return { ok: true, message: '连接成功，模型响应正常' };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
+  // 语音接口自检：拉取模型列表确认 Key 可用且模型存在（不产生音频计费）
+  ipcMain.handle('ai:testAsr', async (_e, { baseUrl, model, apiKey } = {}) => {
+    const saved = getAsrConfig();
+    const key = apiKey || saved.apiKey;
+    if (!key) return { ok: false, message: '未配置语音 API Key' };
+    try {
+      const message = await asr.testAsr({ baseUrl: baseUrl || saved.baseUrl, model: model || saved.model, apiKey: key });
+      return { ok: true, message };
     } catch (e) {
       return { ok: false, message: e.message };
     }
@@ -177,6 +236,159 @@ function registerIpc() {
       fs.writeFileSync(filePath, content, 'utf8');
     }
     return { ok: true, filePath };
+  }));
+
+  /* ---------- 会议录制 ---------- */
+  // 可选录制源（屏幕 / 窗口），缩略图转 dataURL 给渲染层直接显示
+  ipcMain.handle('rec:listSources', guard(async () => {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 240, height: 140 },
+      fetchWindowIcons: false,
+    });
+    return sources.map((s) => ({
+      id: s.id,
+      name: s.name,
+      displayId: s.display_id || '',
+      thumbnail: s.thumbnail && !s.thumbnail.isEmpty() ? s.thumbnail.toDataURL() : '',
+    }));
+  }));
+  ipcMain.handle('rec:startSession', guard(() => recording.createSession()));
+  ipcMain.handle('rec:saveChunk', guard((_e, { sessionId, seq, data, ext }) => recording.saveChunk(sessionId, seq, data, ext)));
+  ipcMain.handle('rec:discard', guard((_e, sessionId) => ({ ok: recording.deleteSession(sessionId) })));
+  ipcMain.handle('rec:openFolder', guard((_e, filePath) => {
+    if (filePath && fs.existsSync(filePath)) shell.showItemInFolder(filePath);
+    else shell.openPath(recording.getRoot());
+    return { ok: true };
+  }));
+  // 录制结束：把分片路径归档成一条会议记录
+  ipcMain.handle('rec:finalize', withDb((p = {}) => {
+    const files = recording.sessionFiles(p.sessionId);
+    return db.createMeeting({
+      title: (p.title || '').trim() || '未命名会议',
+      source_label: p.sourceLabel || '',
+      mode: p.mode || 'audio',
+      started_at: p.startedAt || undefined,
+      duration_ms: Number(p.durationMs) || 0,
+      media_paths: files,
+      status: files.length ? 'recorded' : 'recorded',
+    });
+  }));
+  // 导入已有录音 / 视频文件，跳过录制直接进转写流程
+  ipcMain.handle('rec:importMedia', guard(async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '导入会议录音 / 录像',
+      properties: ['openFile'],
+      filters: [
+        { name: '音视频文件', extensions: ['webm', 'mp3', 'm4a', 'mp4', 'wav', 'ogg', 'flac', 'aac'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true };
+    const media = recording.importMedia(filePaths[0]);
+    if (media.size > asr.MAX_CHUNK_BYTES) {
+      recording.deleteSession(media.sessionId);
+      throw new Error(
+        `文件 ${(media.size / 1024 / 1024).toFixed(1)}MB 超过单次上传上限 ${asr.MAX_CHUNK_BYTES / 1024 / 1024}MB，`
+        + '请先切成小段再导入'
+      );
+    }
+    const m = db.createMeeting({
+      title: path.basename(filePaths[0], path.extname(filePaths[0])) || '导入的会议',
+      source_label: '外部导入',
+      mode: 'audio',
+      media_paths: [media.filePath],
+    });
+    return { ok: true, meeting: m };
+  }));
+
+  /* ---------- 会议纪要 ---------- */
+  ipcMain.handle('meeting:list', withDb(() => db.listMeetings()));
+  ipcMain.handle('meeting:get', withDb((id) => db.getMeeting(id)));
+  ipcMain.handle('meeting:update', withDb((id, patch) => db.updateMeeting(id, patch)));
+  ipcMain.handle('meeting:remove', withDb((id) => {
+    const m = db.getMeeting(id);
+    // 顺带清理录制文件：会话目录名 = media_paths[0] 的父目录名
+    const dirName = m && m.media_paths && m.media_paths[0] ? path.basename(path.dirname(m.media_paths[0])) : '';
+    if (dirName) recording.deleteSession(dirName);
+    return { ok: db.deleteMeeting(id) > 0 };
+  }));
+
+  // 语音转写：按分片顺序逐段上传，拼接成完整转写稿
+  ipcMain.handle('meeting:transcribe', withDb(async ({ id, language }) => {
+    const m = db.getMeeting(id);
+    if (!m) throw new Error('会议记录不存在');
+    const missing = (m.media_paths || []).filter((f) => !fs.existsSync(f));
+    if (!m.media_paths || !m.media_paths.length) throw new Error('这条会议没有可转写的音频（可能已被清理）');
+    if (missing.length === m.media_paths.length) throw new Error(`音频文件已丢失：${missing[0]}`);
+    const cfg = getAsrConfig();
+    if (!cfg.hasKey) throw new Error('未配置语音 API Key，请到工具栏「⚙ AI 设置」中填写语音接口');
+    const parts = [];
+    for (let i = 0; i < m.media_paths.length; i++) {
+      const f = m.media_paths[i];
+      if (!fs.existsSync(f)) continue;
+      /* eslint-disable no-await-in-loop */
+      const text = await asr.transcribe({
+        baseUrl: cfg.baseUrl,
+        apiKey: cfg.apiKey,
+        model: cfg.model,
+        filePath: f,
+        language: language || 'zh',
+        prompt: i > 0 ? parts[parts.length - 1].slice(-120) : '', // 用上一片结尾做上下文，减少断句错乱
+      });
+      parts.push(text);
+    }
+    const transcript = parts.join('\n').trim();
+    if (!transcript) throw new Error('转写结果为空，可能整段都是静音');
+    return db.updateMeeting(id, { transcript, status: missing.length ? 'transcribed-partial' : 'transcribed' });
+  }));
+
+  // 生成纪要 + 待办（依赖已转写文本）
+  ipcMain.handle('meeting:summarize', withDb(async (id) => {
+    const m = db.getMeeting(id);
+    if (!m) throw new Error('会议记录不存在');
+    if (!m.transcript || !m.transcript.trim()) throw new Error('还没有转写文本，请先执行语音转写');
+    const cfg = getAiConfig();
+    if (!cfg.hasKey) throw new Error('未配置 AI 接口 Key，请到工具栏「⚙ AI 设置」中填写');
+    const { summary, todos } = await meeting.processMeeting({
+      transcript: m.transcript,
+      meta: { title: m.title, startedAt: m.started_at, durationMs: m.duration_ms, mode: m.mode, sourceLabel: m.source_label },
+      config: chatConfig(cfg),
+    });
+    return db.updateMeeting(id, { summary, todos, status: 'summarized' });
+  }));
+
+  // 勾选的待办 → 写入任务表（可并入一个父任务下）
+  ipcMain.handle('meeting:importTodos', withDb(({ id, todoIds, groupId, asSubtasks }) => {
+    const m = db.getMeeting(id);
+    if (!m) throw new Error('会议记录不存在');
+    const picked = (m.todos || []).filter((t) => (todoIds || []).includes(t.id));
+    if (!picked.length) return { ok: false, message: '没有勾选任何待办', created: 0 };
+
+    let parentId = null;
+    if (asSubtasks) {
+      const parent = db.createTask({
+        title: `${m.title} 的待办`,
+        groupId: groupId || null,
+        notes: `来源：会议纪要《${m.title}》`,
+      });
+      parentId = parent.id;
+    }
+    const created = picked.map((t) => {
+      const lines = [];
+      if (t.detail) lines.push(t.detail);
+      if (t.assignee && t.assignee !== '未指定') lines.push(`负责人：${t.assignee}`);
+      if (t.evidence) lines.push(`依据：${t.evidence}`);
+      return db.createTask({
+        title: t.title,
+        groupId: groupId || null,
+        parentId,
+        notes: lines.join('\n'),
+        priority: Number(t.priority) || 1,
+        planEnd: t.due || null,
+      });
+    });
+    return { ok: true, created: created.length, tasks: created };
   }));
 
   /* ---------- 数据导入 / 导出 ---------- */

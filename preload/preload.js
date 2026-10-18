@@ -63,17 +63,39 @@ contextBridge.exposeInMainWorld('api', {
     overview: () => call('stats:overview'),
     trend: (days) => call('stats:trend', days),
   },
-  // AI 配置
+  // AI 配置（对话 + 语音）
   ai: {
     getConfig: () => call('ai:getConfig'),
     saveConfig: (p) => call('ai:saveConfig', p),
     clearKey: () => call('ai:clearKey'),
     test: (p) => call('ai:test', p),
+    clearAsrKey: () => call('ai:clearAsrKey'),
+    testAsr: (p) => call('ai:testAsr', p),
   },
   // 报告
   report: {
     generate: (p) => call('report:generate', p),
     export: (p) => call('report:export', p),
+  },
+  // 会议录制
+  rec: {
+    listSources: () => call('rec:listSources'),
+    startSession: () => call('rec:startSession'),
+    saveChunk: (p) => call('rec:saveChunk', p),
+    discard: (sessionId) => call('rec:discard', sessionId),
+    finalize: (p) => call('rec:finalize', p),
+    importMedia: () => call('rec:importMedia'),
+    openFolder: (filePath) => call('rec:openFolder', filePath),
+  },
+  // 会议纪要
+  meeting: {
+    list: () => call('meeting:list'),
+    get: (id) => call('meeting:get', id),
+    update: (id, patch) => call('meeting:update', id, patch),
+    remove: (id) => call('meeting:remove', id),
+    transcribe: (id, language) => call('meeting:transcribe', { id, language }),
+    summarize: (id) => call('meeting:summarize', id),
+    importTodos: (p) => call('meeting:importTodos', p),
   },
   // 数据导入 / 导出
   data: {

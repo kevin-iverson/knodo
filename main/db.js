@@ -115,6 +115,25 @@ const MIGRATIONS = [
     }
     d.exec('CREATE INDEX IF NOT EXISTS idx_groups_parent ON groups(parent_id)');
   },
+  // v6：会议录制与纪要（meetings 表）
+  (d) => {
+    d.exec(`CREATE TABLE IF NOT EXISTS meetings (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      title        TEXT    NOT NULL,
+      source_label TEXT    NOT NULL DEFAULT '',
+      mode         TEXT    NOT NULL DEFAULT 'audio',
+      started_at   TEXT,
+      duration_ms  INTEGER NOT NULL DEFAULT 0,
+      media_paths  TEXT    NOT NULL DEFAULT '[]',
+      transcript   TEXT    NOT NULL DEFAULT '',
+      summary      TEXT    NOT NULL DEFAULT '',
+      todos        TEXT    NOT NULL DEFAULT '[]',
+      status       TEXT    NOT NULL DEFAULT 'recorded',
+      created_at   TEXT    NOT NULL,
+      updated_at   TEXT    NOT NULL
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_meetings_created ON meetings(created_at DESC)');
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -816,6 +835,89 @@ function setSetting(key, value) {
   ).run(key, value);
 }
 
+/* ------------------------------ 会议录制 / 纪要 ------------------------------ */
+
+/** meetings 表允许写入的字段白名单（防 SQL 拼接注入） */
+const MEETING_FIELDS = [
+  'title', 'source_label', 'mode', 'started_at', 'duration_ms',
+  'media_paths', 'transcript', 'summary', 'todos', 'status',
+];
+
+/** JSON 字符串字段：统一做一次解析/兜底，避免上层反复判空 */
+function parseJsonField(raw, fallback) {
+  try {
+    const v = JSON.parse(raw || '[]');
+    return v;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function rowToMeeting(row) {
+  // 与 getTask 保持一致：查不到返回 null（渲染层统一用 null 判空）
+  if (!row) return null;
+  return {
+    ...row,
+    media_paths: parseJsonField(row.media_paths, []),
+    todos: parseJsonField(row.todos, []),
+  };
+}
+
+/**
+ * 新建会议记录。
+ * @param {{title?:string, source_label?:string, mode?:string, started_at?:string,
+ *          duration_ms?:number, media_paths?:string[], status?:string}} p
+ */
+function createMeeting(p = {}) {
+  const now = nowIso();
+  const info = db.prepare(
+    `INSERT INTO meetings (title, source_label, mode, started_at, duration_ms, media_paths, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    p.title || '未命名会议',
+    p.source_label || '',
+    p.mode || 'audio',
+    p.started_at || now,
+    Number(p.duration_ms) || 0,
+    JSON.stringify(p.media_paths || []),
+    p.status || 'recorded',
+    now,
+    now,
+  );
+  return getMeeting(info.lastInsertRowid);
+}
+
+/** 最近会议列表（倒序） */
+function listMeetings(limit = 200) {
+  const rows = db.prepare('SELECT * FROM meetings ORDER BY created_at DESC, id DESC LIMIT ?').all(limit);
+  return rows.map(rowToMeeting);
+}
+
+function getMeeting(id) {
+  const row = db.prepare('SELECT * FROM meetings WHERE id = ?').get(id);
+  return rowToMeeting(row);
+}
+
+/** 局部更新会议记录（只更新传入字段） */
+function updateMeeting(id, p = {}) {
+  const keys = Object.keys(p).filter((k) => MEETING_FIELDS.includes(k));
+  if (keys.length === 0) return getMeeting(id);
+  const sets = keys.map((k) => `${k} = ?`);
+  const values = keys.map((k) => {
+    const v = p[k];
+    // media_paths / todos 允许数组传入，统一序列化
+    if (k === 'media_paths' || k === 'todos') return JSON.stringify(Array.isArray(v) ? v : (v || []));
+    if (k === 'duration_ms') return Number(v) || 0;
+    return v == null ? '' : String(v);
+  });
+  db.prepare(`UPDATE meetings SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...values, nowIso(), id);
+  return getMeeting(id);
+}
+
+function deleteMeeting(id) {
+  return db.prepare('DELETE FROM meetings WHERE id = ?').run(id).changes;
+}
+
 /* ------------------------------ 数据导入导出 ------------------------------ */
 
 /**
@@ -825,12 +927,13 @@ function setSetting(key, value) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 5,
+    schemaVersion: 6,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
     tasks: db.prepare('SELECT * FROM tasks ORDER BY id').all(),
     task_tags: db.prepare('SELECT * FROM task_tags ORDER BY task_id').all(),
+    meetings: db.prepare('SELECT * FROM meetings ORDER BY id').all(),
     settings: db
       .prepare('SELECT * FROM settings WHERE key NOT LIKE ?')
       .all('ai.apiKey%'),
@@ -853,6 +956,7 @@ function importData(data) {
     db.prepare('DELETE FROM tasks').run();
     db.prepare('DELETE FROM tags').run();
     db.prepare('DELETE FROM groups').run();
+    db.prepare('DELETE FROM meetings').run();
 
     const t0 = nowIso();
     // 分两步写分组：先不带 parent_id（外键约束下，父分组未必已先插入），再回填层级
@@ -895,6 +999,21 @@ function importData(data) {
     const insTT = db.prepare('INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)');
     for (const tt of data.task_tags || []) {
       insTT.run(tt.task_id, tt.tag_id);
+    }
+
+    const insMeeting = db.prepare(
+      `INSERT INTO meetings (id, title, source_label, mode, started_at, duration_ms, media_paths,
+         transcript, summary, todos, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const jsonOf = (v) => JSON.stringify(Array.isArray(v) || (v && typeof v === 'object') ? v : []);
+    for (const m of data.meetings || []) {
+      insMeeting.run(
+        m.id, m.title || '未命名会议', m.source_label || '', m.mode || 'audio',
+        m.started_at || t0, Number(m.duration_ms) || 0, jsonOf(m.media_paths),
+        m.transcript || '', m.summary || '', jsonOf(m.todos),
+        m.status || 'recorded', m.created_at || t0, m.updated_at || t0
+      );
     }
   });
   run();
@@ -950,6 +1069,12 @@ module.exports = {
   // settings
   getSetting,
   setSetting,
+  // 会议录制 / 纪要
+  createMeeting,
+  listMeetings,
+  getMeeting,
+  updateMeeting,
+  deleteMeeting,
   // import / export
   exportData,
   importData,

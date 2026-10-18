@@ -17,44 +17,126 @@ export function setAiSettingsHandlers({ toast, onChanged } = {}) {
   if (onChanged) notifyChanged = onChanged;
 }
 
+/**
+ * 生成预设联动：选中预设后把它的接口地址与模型写进对应输入框。
+ * 按 id 匹配（不是 baseUrl）——同一个厂商地址下可能有多个模型。
+ */
+function presetBinder(list, urlField, modelField) {
+  return (id, root) => {
+    const p = list.find((x) => x.id === id);
+    if (!p || !root) return;
+    const bu = root.querySelector(`[data-field="${urlField}"]`);
+    const md = root.querySelector(`[data-field="${modelField}"]`);
+    if (bu) bu.value = p.baseUrl;
+    if (md) md.value = p.model;
+  };
+}
+
+/** 当前配置命中哪个预设：先按 (地址 + 模型) 精确匹配，再退化到只按地址匹配 */
+function presetIdOf(list, url, model) {
+  if (!url) return '';
+  const exact = list.find((p) => p.baseUrl === url && p.model === model);
+  if (exact) return exact.id;
+  const loose = list.find((p) => p.baseUrl === url);
+  return loose ? loose.id : '';
+}
+
 /** 打开 AI 设置弹窗（工具栏按钮 / 报告页入口共用） */
 export async function openAiSettingsModal() {
   const cfg = await api.ai.getConfig();
   const presets = cfg.presets || [];
   const currentUrl = cfg.baseUrl || '';
+  const asr = cfg.asr || {};
+  const asrPresets = asr.presets || [];
+  const currentAsrUrl = asr.baseUrl || '';
 
   const keyHint = cfg.hasKey
-    ? (cfg.encryptionDegraded ? '已保存 Key（非加密降级）' : '已保存 Key（本地加密）')
-    : '未配置 Key（将生成本地模板报告）';
+    ? (cfg.encryptionDegraded ? '已保存（非加密降级）' : '已保存（本地加密）')
+    : '未配置，报告将降级为本地模板';
+  const asrKeyHint = asr.hasKey
+    ? '已保存（本地加密）'
+    : '未配置，会议无法转写';
 
   await openFormModal({
     title: 'AI 设置',
-    width: 460,
+    width: 780,
     okText: '保存配置',
+    // 两栏栅格 + 两张分区卡片：字段从 8 行压到 4 行左右，不再顶出窗口
     fields: [
       {
+        section: '对话模型（报告 / 检索 / 纪要）',
         name: 'preset',
         label: '接口预设',
         type: 'select',
-        value: presets.find((p) => p.baseUrl === currentUrl)?.baseUrl || '',
+        value: presetIdOf(presets, currentUrl, cfg.model || ''),
         options: [{ value: '', label: '自定义' }].concat(
-          presets.map((p) => ({ value: p.baseUrl, label: p.label })),
+          presets.map((p) => ({ value: p.id, label: p.label })),
         ),
-        hint: '选择预设会自动填入接口地址与模型',
+        onChange: presetBinder(presets, 'baseUrl', 'model'),
       },
-      { name: 'baseUrl', label: '接口地址 (Base URL)', value: currentUrl, placeholder: 'https://api.deepseek.com' },
-      { name: 'model', label: '模型', value: cfg.model || '', placeholder: 'deepseek-chat' },
       {
+        section: '对话模型（报告 / 检索 / 纪要）',
+        name: 'model',
+        label: '模型',
+        value: cfg.model || '',
+        placeholder: 'deepseek-chat',
+      },
+      {
+        section: '对话模型（报告 / 检索 / 纪要）',
+        name: 'baseUrl',
+        span: 2,
+        label: '接口地址 (Base URL)',
+        value: currentUrl,
+        placeholder: 'https://api.deepseek.com',
+      },
+      {
+        section: '对话模型（报告 / 检索 / 纪要）',
         name: 'apiKey',
+        span: 2,
         label: 'API Key',
         type: 'password',
         placeholder: cfg.hasKey ? '留空则保持原 Key 不变' : '输入 API Key',
-        hint: keyHint + '。支持 OpenAI 兼容接口（DeepSeek / OpenAI / 通义千问 / Moonshot / Ollama）',
+        hint: keyHint,
+      },
+
+      {
+        section: '语音转写（会议纪要）',
+        name: 'asrPreset',
+        label: '语音接口预设',
+        type: 'select',
+        value: presetIdOf(asrPresets, currentAsrUrl, asr.model || ''),
+        options: [{ value: '', label: '自定义' }].concat(
+          asrPresets.map((p) => ({ value: p.id, label: p.label })),
+        ),
+        onChange: presetBinder(asrPresets, 'asrBaseUrl', 'asrModel'),
+      },
+      {
+        section: '语音转写（会议纪要）',
+        name: 'asrModel',
+        label: '语音模型',
+        value: asr.model || '',
+        placeholder: 'whisper-1',
+      },
+      {
+        section: '语音转写（会议纪要）',
+        name: 'asrBaseUrl',
+        label: '语音接口地址',
+        value: currentAsrUrl,
+        placeholder: 'https://api.openai.com/v1',
+      },
+      {
+        section: '语音转写（会议纪要）',
+        name: 'asrKey',
+        span: 2,
+        label: '语音 API Key',
+        type: 'password',
+        placeholder: asr.hasKey ? '留空则保持原 Key 不变' : '输入语音接口的 API Key',
+        hint: `${asrKeyHint}；国内可选「硅基流动 SenseVoice（免费）」「阿里云百炼 Qwen3-ASR-Flash」`,
       },
     ],
     extraButtons: [
       {
-        label: '测试连接',
+        label: '测试对话模型',
         handler: async (v) => {
           const r = await api.ai.test({
             baseUrl: v.baseUrl.trim(),
@@ -66,10 +148,31 @@ export async function openAiSettingsModal() {
         },
       },
       {
-        label: '清除 Key',
+        label: '测试语音接口',
+        handler: async (v) => {
+          const r = await api.ai.testAsr({
+            baseUrl: v.asrBaseUrl.trim(),
+            model: v.asrModel.trim(),
+            apiKey: v.asrKey.trim(),
+          });
+          notify(r.message);
+          return undefined;
+        },
+      },
+      {
+        label: '清除对话 Key',
         handler: async () => {
           await api.ai.clearKey();
-          notify('API Key 已清除');
+          notify('对话模型 API Key 已清除');
+          notifyChanged();
+          return undefined;
+        },
+      },
+      {
+        label: '清除语音 Key',
+        handler: async () => {
+          await api.ai.clearAsrKey();
+          notify('语音接口 API Key 已清除');
           notifyChanged();
           return undefined;
         },
@@ -80,7 +183,14 @@ export async function openAiSettingsModal() {
       const model = v.model.trim();
       const apiKey = v.apiKey.trim();
       if (!baseUrl) return '请填写接口地址';
-      await api.ai.saveConfig({ baseUrl, model, apiKey });
+      await api.ai.saveConfig({
+        baseUrl,
+        model,
+        apiKey,
+        asrBaseUrl: v.asrBaseUrl.trim(),
+        asrModel: v.asrModel.trim(),
+        asrKey: v.asrKey.trim(),
+      });
       notify('AI 配置已保存');
       notifyChanged();
       return undefined;

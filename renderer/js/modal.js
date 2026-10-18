@@ -115,6 +115,7 @@ export function openPromptModal(opts) {
 function fieldHtml(f) {
   const label = `<label class="field-label" for="mf-${esc(f.name)}">${esc(f.label)}</label>`;
   const attr = `class="modal-input" id="mf-${esc(f.name)}" data-field="${esc(f.name)}"`;
+  const span = f.span === 2 ? ' span-2' : ' span-1';
   switch (f.type) {
     case 'password':
       return `${label}<input ${attr} type="password" value="${esc(f.value || '')}" placeholder="${esc(f.placeholder || '')}" autocomplete="off" />`;
@@ -137,6 +138,54 @@ function fieldHtml(f) {
   }
 }
 
+/** 单个字段区块（含跨列与提示） */
+function fieldBlock(f) {
+  const span = f.span === 2 ? ' span-2' : ' span-1';
+  return `<div class="modal-field${span}">${fieldHtml(f)}${f.hint ? `<div class="modal-hint">${esc(f.hint)}</div>` : ''}</div>`;
+}
+
+/**
+ * 字段 → 栅格 HTML。
+ * 带 section 的字段会被收进 <fieldset> 分组卡片；section 名变化即开新卡。
+ * 注意：必须先收集好卡片内字段再包容器，不能边遍历边写闭合标签。
+ * @param {Array} fields
+ * @param {boolean} grid 是否套两栏栅格
+ */
+function fieldsToHtml(fields, grid) {
+  const out = [];
+  let loose = ''; // 未归属分区的字段
+  let secName = '';
+  let secBody = [];
+
+  const flushSection = () => {
+    if (!secName) return;
+    out.push(
+      `<fieldset class="form-section"><legend>${esc(secName)}</legend>`
+      + `<div class="form-section-body">${secBody.join('')}</div></fieldset>`,
+    );
+    secName = '';
+    secBody = [];
+  };
+
+  for (const f of fields) {
+    const sec = f.section || '';
+    if (!sec) {
+      flushSection();
+      loose += fieldBlock(f);
+      continue;
+    }
+    if (sec !== secName) {
+      flushSection();
+      secName = sec;
+    }
+    secBody.push(fieldBlock(f));
+  }
+  flushSection();
+
+  const inner = out.join('') + loose;
+  return grid ? `<div class="form-grid">${inner}</div>` : inner;
+}
+
 /** 读取表单当前值（choices 取选中的 radio） */
 function readFields(root, fields) {
   const values = {};
@@ -157,26 +206,30 @@ function readFields(root, fields) {
  * @param {object} opts
  * @param {string} opts.title
  * @param {Array<{name:string,label:string,type?:'text'|'password'|'select'|'choices',
- *                value?:any,placeholder?:string,hint?:string,
+ *                value?:any,placeholder?:string,hint?:string,span?:1|2,section?:string,
  *                options?:Array<{value:string,label:string,color?:string}>}>} opts.fields
+ *        span=2 占满整行；section 相同则收进同一张分组卡片
+ * @param {boolean} [opts.grid=true] 是否使用两栏栅格（单字段小表单可传 false）
  * @param {string} [opts.okText]
- * @param {number} [opts.width] 弹窗宽度（px）
+ * @param {number} [opts.width] 弹窗宽度（px），宽度超过视口时会自动收缩
  * @param {Array<{label:string,handler:(values:object)=>Promise<string|void>}>} [opts.extraButtons]
  *        底部左侧的附加操作（如「测试连接」「清除 Key」）；handler 返回字符串表示失败原因
  * @param {(values:object) => Promise<string|void>} opts.onSubmit 返回字符串 = 校验/保存失败
  * @returns {Promise<boolean>} 是否提交成功
  */
 export function openFormModal(opts) {
-  const { title, fields = [], okText = '保存', extraButtons = [], onSubmit, width } = opts;
+  const {
+    title, fields = [], okText = '保存', extraButtons = [], onSubmit, width, grid = true,
+  } = opts;
 
   return new Promise((resolve) => {
     const mask = document.createElement('div');
     mask.className = 'modal-mask';
     mask.innerHTML = `
-      <div class="modal modal-form" role="dialog" aria-modal="true" aria-label="${esc(title)}"${width ? ` style="width:${esc(String(width))}px"` : ''}>
+      <div class="modal modal-form${grid ? ' is-grid' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}"${width ? ` style="width:${esc(String(width))}px"` : ''}>
         <div class="modal-head">${esc(title)}</div>
         <div class="modal-body">
-          ${fields.map((f) => `<div class="modal-field">${fieldHtml(f)}${f.hint ? `<div class="modal-hint">${esc(f.hint)}</div>` : ''}</div>`).join('')}
+          ${fieldsToHtml(fields, grid)}
           <div class="modal-error" hidden></div>
         </div>
         <div class="modal-foot">
@@ -191,10 +244,18 @@ export function openFormModal(opts) {
       </div>`;
     document.body.appendChild(mask);
 
+    // 字段联动（如选预设后自动填接口地址/模型）：value 变化后回调，回调内部自行改写其它字段
+    fields.forEach((f) => {
+      if (typeof f.onChange !== 'function') return;
+      const el = mask.querySelector(`[data-field="${f.name}"]`);
+      if (el) el.addEventListener('change', () => f.onChange(el.value, mask));
+    });
+
     const errEl = mask.querySelector('.modal-error');
     const okBtn = mask.querySelector('[data-modal="ok"]');
-    const firstInput = mask.querySelector('.modal-input');
-    if (firstInput) { firstInput.focus(); if (firstInput.select) firstInput.select(); }
+    // 只聚焦可输入的文本框：下拉/单选若自动聚焦，Esc 前的误触会改动配置
+    const firstInput = mask.querySelector('input.modal-input');
+    if (firstInput) { firstInput.focus(); if (firstInput.select && firstInput.type !== 'password') firstInput.select(); }
 
     let busy = false;
     const showError = (msg) => {

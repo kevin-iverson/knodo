@@ -14,6 +14,8 @@ import { openPromptModal, openFormModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOptionsHtml } from './group-tree.js';
 import { bindAiSettingsButton, setAiSettingsHandlers } from './ai-settings.js';
+import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
+import { bindRecordButton, setRecorderHandlers } from './recorder.js';
 
 /** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
 const AUTO_SAVE_DELAY = 700;
@@ -45,6 +47,7 @@ const VIEW_META = {
   stats: { title: '统计', desc: '任务完成情况概览' },
   reports: { title: 'AI 报告', desc: '基于本地数据自动生成日报 / 周报 / 月报' },
   search: { title: 'AI 检索', desc: '输入关键词检索任务，由 AI 生成总结' },
+  meetings: { title: '会议纪要', desc: '录制 / 导入会议音频 → 语音转写 → AI 纪要 → 待办入库' },
 };
 
 // 时间筛选输入框与状态键的映射
@@ -62,6 +65,21 @@ const TF_BINDINGS = [
 export async function init() {
   setDetailHandlers({ refresh: () => { renderSidebar(); renderTasks(); }, toast });
   setSearchHandlers({ openDetail, toast });
+  // 会议录制 / 纪要：录制归档后自动跳到会议视图查看
+  setMeetingsHandlers({ toast, refresh: () => { renderSidebar(); renderTasks(); } });
+  setRecorderHandlers({
+    toast,
+    onMeetingSaved: async (m) => {
+      state.view = 'meetings';
+      renderSidebar();
+      try {
+        await render();
+        if (m) await autoProcessMeeting(m);
+      } catch (e) {
+        console.error('[ui] 会议自动处理失败', e);
+      }
+    },
+  });
   bindStaticEvents();
   await initTheme();
   await renderSidebar();
@@ -87,6 +105,8 @@ function bindStaticEvents() {
   // AI 配置（原在「AI 报告」页内的配置面板，提到工具栏统一管理）
   setAiSettingsHandlers({ toast, onChanged: () => { renderSidebarList(); } });
   bindAiSettingsButton();
+  // 会议录制（工具栏按钮）
+  bindRecordButton();
 
   // 数据导入 / 导出
   document.getElementById('btn-export').addEventListener('click', exportData);
@@ -187,6 +207,7 @@ async function render() {
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
   if (state.view === 'search') { renderSearch(); return; }
+  if (state.view === 'meetings') { await renderMeetings(); return; }
   await renderTasks();
 }
 
@@ -982,6 +1003,8 @@ async function promptGroupForm(g = null, presetParentId = null) {
   await openFormModal({
     title: isEdit ? '编辑分组' : '新增分组',
     okText: isEdit ? '保存' : '创建',
+    // 分组表单字段少、语义纵向，保持单列（不套两栏栅格、不自动聚焦，避免误改下拉）
+    grid: false,
     fields: [
       {
         name: 'name',
