@@ -12,7 +12,8 @@
     "test:db": "node scripts/smoke-db.js",
     "dist": "node scripts/gen-icon.js && node scripts/build-win.js",
     "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --target portable",
-    "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis"
+    "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis",
+    "release": "node scripts/release-gitee.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
