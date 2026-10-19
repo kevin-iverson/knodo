@@ -28,6 +28,13 @@ if (isSmoke) {
   app.setPath('userData', smokeProfile);
 }
 
+// 绿色版（portable）：electron-builder 打包时会注入 PORTABLE_EXECUTABLE_DIR，
+// 这里把数据目录改到 exe 同级的 data 目录，整个文件夹拷走即可带走全部数据。
+// 安装版没有该环境变量，仍然按系统默认位置（%APPDATA%）存储。
+if (process.env.PORTABLE_EXECUTABLE_DIR) {
+  app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'));
+}
+
 let mainWindow = null;
 let isQuitting = false;
 

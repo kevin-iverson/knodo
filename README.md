@@ -290,4 +290,32 @@ todo-app/
 - 会议录制过程中**不要**把窗口最小化到托盘：系统会把画面 / 采集轨挂起（仅音频模式不受影响）。录制时可正常使用其它窗口，采集在后台继续。
 - macOS 上系统声采集需要第三方虚拟声卡（BlackHole 等）；本应用的链路以 Windows 为准。
 - 窗口「关闭」按钮默认最小化到托盘，通过托盘菜单「退出」或应用内退出才真正结束进程。
-- 本项目未打包安装程序；如需分发，可额外接入 `electron-builder` / `electron-forge`。
+## 打包为 Windows exe
+
+项目已接入 `electron-builder`，一条命令产出两种分发形态：
+
+```bash
+npm run dist            # 同时产出安装版 + 便携版
+npm run dist:installer  # 只产出 NSIS 安装版
+npm run dist:portable   # 只产出便携版（免安装）
+```
+
+产物输出到 `dist/`：
+
+| 文件 | 说明 |
+|---|---|
+| `TODO待办-<版本>-安装版.exe` | NSIS 安装程序，可选安装目录、自动建桌面/开始菜单快捷方式，安装界面为中文 |
+| `TODO待办-<版本>-便携版.exe` | 单文件绿色版，双击即用；数据写在 exe 同级的 `data/` 目录，整个文件夹拷走即可换机 |
+| `dist/win-unpacked/` | 未压缩的可直接运行副本（调试用） |
+
+要点：
+
+- 打包配置写在 `package.json` 的 `build` 字段；`scripts/build-win.js` 负责注入国内镜像（electron / NSIS / winCodeSign 资源从 npmmirror 下载，避免 GitHub 超时）。
+- `better-sqlite3` 使用官方预编译二进制（`prebuilds/`），**不需要** VS 生成工具，因此打包配置里 `npmRebuild: false`；其 `.node` 文件会通过 `asarUnpack` 解包到 `app.asar.unpacked` 才能被加载。
+- 安装版数据存 `%APPDATA%\todo-desktop\`；便携版数据存 exe 同级 `data\`（由 `PORTABLE_EXECUTABLE_DIR` 判定）。
+- 首次打包需下载约 100MB 的 Electron 与 NSIS 资源，之后有缓存，单个 exe 产物约 116MB（Electron 运行时体积，非本项目代码大小；本项目代码仅约 6MB）。
+- 版本升级改 `package.json` 里的 `version` 即可，文件名与卸载条目会随之变化。
+
+打包后自检（可选）：带调试端口启动 `dist\win-unpacked\TODO待办.exe --remote-debugging-port=9333`，再执行 `node scripts/check-packaged.js 9333`，会输出标题、DOM 渲染结果与渲染层异常。
+
+> 注意：若命令行环境存在 `ELECTRON_RUN_AS_NODE=1`，Electron 会以纯 Node 模式运行并立即退出，看起来像"打包失败"。双击 exe 不受影响；命令行验证时请先 `unset ELECTRON_RUN_AS_NODE`。

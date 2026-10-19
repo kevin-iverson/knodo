@@ -9,7 +9,10 @@
     "start": "electron .",
     "smoke": "electron . --smoke-test",
     "gen-icon": "node scripts/gen-icon.js",
-    "test:db": "node scripts/smoke-db.js"
+    "test:db": "node scripts/smoke-db.js",
+    "dist": "node scripts/gen-icon.js && node scripts/build-win.js",
+    "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --target portable",
+    "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
@@ -17,6 +20,50 @@
     "tom-select": "^2.4.3"
   },
   "devDependencies": {
-    "electron": "^44.8.0"
+    "electron": "^44.8.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.workbuddy.todo-desktop",
+    "productName": "TODO待办",
+    "copyright": "Copyright © 2026 WorkBuddy",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main/**/*",
+      "preload/**/*",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "npmRebuild": false,
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": ["nsis", "portable"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TODO 待办",
+      "language": "2052",
+      "installerLanguages": ["zh_CN"],
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "${productName}-${version}-安装版.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-便携版.${ext}"
+    }
   }
 }

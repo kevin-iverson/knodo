@@ -112,8 +112,41 @@ function drawIcon(size) {
   return px;
 }
 
+/**
+ * 组装 .ico 文件（Windows 窗口与 exe 图标）。
+ * 结构：ICONDIR(6) + 每项 ICONDIRENTRY(16) + 依次排列的图像数据。
+ * Vista 及以上支持在 ICO 中直接内嵌 PNG，因此这里逐尺寸嵌入 PNG 字节。
+ */
+function encodeICO(sizes) {
+  const images = sizes.map((size) => ({ size, data: encodePNG(size, drawIcon(size)) }));
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // type: 1 = icon
+  header.writeUInt16LE(images.length, 4);
+
+  const entries = [];
+  let offset = 6 + images.length * 16;
+  for (const img of images) {
+    const e = Buffer.alloc(16);
+    e[0] = img.size >= 256 ? 0 : img.size; // 宽（256 用 0 表示）
+    e[1] = img.size >= 256 ? 0 : img.size; // 高
+    e[2] = 0; // 调色板色数
+    e[3] = 0; // reserved
+    e.writeUInt16LE(1, 4); // color planes
+    e.writeUInt16LE(32, 6); // 每像素位数
+    e.writeUInt32LE(img.data.length, 8);
+    e.writeUInt32LE(offset, 12);
+    offset += img.data.length;
+    entries.push(e);
+  }
+  return Buffer.concat([header, ...entries, ...images.map((i) => i.data)]);
+}
+
 const outDir = path.join(__dirname, '..', 'assets');
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(path.join(outDir, 'icon.png'), encodePNG(256, drawIcon(256)));
 fs.writeFileSync(path.join(outDir, 'tray.png'), encodePNG(32, drawIcon(32)));
-console.log('图标已生成: assets/icon.png (256x256), assets/tray.png (32x32)');
+fs.writeFileSync(path.join(outDir, 'icon.ico'), encodeICO([16, 24, 32, 48, 64, 128, 256]));
+console.log(
+  '图标已生成: assets/icon.png (256x256), assets/tray.png (32x32), assets/icon.ico (16~256 多尺寸)'
+);
