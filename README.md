@@ -318,4 +318,31 @@ npm run dist:portable   # 只产出便携版（免安装）
 
 打包后自检（可选）：带调试端口启动 `dist\win-unpacked\TODO待办.exe --remote-debugging-port=9333`，再执行 `node scripts/check-packaged.js 9333`，会输出标题、DOM 渲染结果与渲染层异常。
 
+## 发布 Gitee 发行版（供他人直接下载）
+
+仓库页面「发行版」标签下的附件可供直接下载，无需 clone 代码。流程：
+
+```bash
+# 1. 打包
+npm run dist
+
+# 2. 生成发布包（401MB 运行目录 → 94.9MB 的 7z）：
+#    - 只保留 zh-CN / zh-TW / en-US 语言包
+#    - 移除 dxcompiler.dll（WebGPU 编译器，本应用未用到）
+#    - 7z -mx=9 极限压缩（7za 位于 electron-builder 缓存目录）
+# 产物放入 dist/release/TODO待办-<版本>-win64.7z
+```
+
+```bash
+# 3. 一键发布（tag → Release → 逐个上传 dist/release/ 附件）
+GITEE_TOKEN=<私人令牌> npm run release
+```
+
+要点：
+
+- **Gitee 附件硬限制**：发行版/仓库附件单个 ≤100MB（GVP 200MB），每仓库总附件 ≤1GB。exe 直传（116MB）会失败——NSIS 内部已 LZMA 压实，再压无收益，所以发布形态是「瘦身运行目录的 7z 包」。
+- `scripts/release-gitee.js` 具备幂等性：已存在的 tag / Release / 同名附件自动跳过，大附件上传带 3 次重试；令牌只从 `GITEE_TOKEN` 或 `--token` 读取，不写入任何文件。
+- 私人令牌生成：Gitee 头像 → 设置 → 安全设置 → 私人令牌（勾选 projects 权限）。
+- **私有仓库的附件匿名访问返回 403**，只有有权限的登录用户可下载；要公开分发需在「仓库管理 → 基本信息 → 是否开源」设为公开。
+
 > 注意：若命令行环境存在 `ELECTRON_RUN_AS_NODE=1`，Electron 会以纯 Node 模式运行并立即退出，看起来像"打包失败"。双击 exe 不受影响；命令行验证时请先 `unset ELECTRON_RUN_AS_NODE`。

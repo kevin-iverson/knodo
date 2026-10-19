@@ -130,18 +130,34 @@ async function main() {
       continue;
     }
     process.stdout.write(`③ 上传 ${name}（${(size / 1048576).toFixed(1)}MB）… `);
-    const form = new FormData();
-    form.append('access_token', token);
-    form.append('file', new Blob([fs.readFileSync(filePath)]), name);
-    const upRes = await fetch(`${API}/repos/${owner}/${repo}/releases/${releaseId}/attach_files`, {
-      method: 'POST',
-      body: form,
-    });
-    if (upRes.ok) {
-      console.log('完成');
-    } else {
-      console.log(`失败：${upRes.status} ${await upRes.text()}`);
+    // 大附件上传偶发网络中断，重试 3 次；重跑本脚本会跳过已上传成功的同名附件
+    let ok = false;
+    let lastErr = '';
+    for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+      if (attempt > 1) {
+        console.log(`  第 ${attempt} 次重试…`);
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      try {
+        const form = new FormData();
+        form.append('access_token', token);
+        form.append('file', new Blob([fs.readFileSync(filePath)]), name);
+        const upRes = await fetch(`${API}/repos/${owner}/${repo}/releases/${releaseId}/attach_files`, {
+          method: 'POST',
+          body: form,
+          signal: AbortSignal.timeout(15 * 60 * 1000), // 90MB+ 上传可能较慢，给足 15 分钟
+        });
+        if (upRes.ok) {
+          ok = true;
+          console.log('完成');
+        } else {
+          lastErr = `${upRes.status} ${await upRes.text()}`;
+        }
+      } catch (e) {
+        lastErr = e.message;
+      }
     }
+    if (!ok) console.log(`失败：${lastErr}（可重新运行本脚本续传）`);
   }
   console.log(`\n✅ 发布完成：https://gitee.com/${owner}/${repo}/releases/tag/${tag}`);
 }
