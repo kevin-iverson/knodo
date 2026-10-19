@@ -134,6 +134,35 @@ const MIGRATIONS = [
     )`);
     d.exec('CREATE INDEX IF NOT EXISTS idx_meetings_created ON meetings(created_at DESC)');
   },
+  // v7：AI 报告 / AI 检索历史（持久化，切换视图或重启都不丢）
+  (d) => {
+    d.exec(`CREATE TABLE IF NOT EXISTS reports (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      title        TEXT    NOT NULL DEFAULT '',
+      type         TEXT    NOT NULL DEFAULT 'custom',
+      range_start  TEXT,
+      range_end    TEXT,
+      group_ids    TEXT    NOT NULL DEFAULT '[]',
+      group_label  TEXT    NOT NULL DEFAULT '',
+      extra_prompt TEXT    NOT NULL DEFAULT '',
+      content      TEXT    NOT NULL DEFAULT '',
+      degraded     INTEGER NOT NULL DEFAULT 0,
+      created_at   TEXT    NOT NULL,
+      updated_at   TEXT    NOT NULL
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at DESC, id DESC)');
+
+    d.exec(`CREATE TABLE IF NOT EXISTS ai_searches (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      keyword     TEXT    NOT NULL,
+      summary     TEXT    NOT NULL DEFAULT '',
+      task_count  INTEGER NOT NULL DEFAULT 0,
+      tasks       TEXT    NOT NULL DEFAULT '[]',
+      degraded    INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT    NOT NULL
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_searches_created ON ai_searches(created_at DESC, id DESC)');
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -416,6 +445,10 @@ function listTasks(f = {}) {
       where.push('0'); // 分组已不存在 → 结果为空，而不是退回“全部”
     }
   }
+  // 仅顶层任务：overview 的每一项计数都排除了子任务，统计下钻列表必须同口径，
+  // 否则「已逾期 20 个」点进去却列出 30 条，数字对不上。
+  if (f.topLevel) where.push('t.parent_id IS NULL');
+
   switch (f.status) {
     case 'active':
       where.push('t.completed = 0 AND t.archived = 0');
@@ -425,6 +458,9 @@ function listTasks(f = {}) {
       break;
     case 'archived':
       where.push('t.archived = 1');
+      break;
+    case 'any':
+      // 不过滤状态：对应 overview 的 total（含已完成与已归档）
       break;
     case 'all':
     default:
@@ -918,6 +954,126 @@ function deleteMeeting(id) {
   return db.prepare('DELETE FROM meetings WHERE id = ?').run(id).changes;
 }
 
+/* ------------------------------ AI 报告历史 ------------------------------ */
+
+/** reports 表允许写入的字段白名单 */
+const REPORT_FIELDS = [
+  'title', 'type', 'range_start', 'range_end', 'group_ids', 'group_label',
+  'extra_prompt', 'content', 'degraded',
+];
+
+function rowToReport(row) {
+  if (!row) return null;
+  return { ...row, group_ids: parseJsonField(row.group_ids, []), degraded: !!row.degraded };
+}
+
+/**
+ * 保存一份报告（生成时调用，返回带 id 的记录）。
+ * @param {{title?:string,type?:string,range_start?:string,range_end?:string,
+ *          group_ids?:number[],group_label?:string,extra_prompt?:string,
+ *          content?:string,degraded?:boolean}} p
+ */
+function createReport(p = {}) {
+  const now = nowIso();
+  const info = db.prepare(
+    `INSERT INTO reports (title, type, range_start, range_end, group_ids, group_label, extra_prompt, content, degraded, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    p.title || '未命名报告',
+    p.type || 'custom',
+    p.range_start || null,
+    p.range_end || null,
+    JSON.stringify(Array.isArray(p.group_ids) ? p.group_ids : []),
+    p.group_label || '',
+    p.extra_prompt || '',
+    p.content || '',
+    p.degraded ? 1 : 0,
+    now,
+    now,
+  );
+  return getReport(info.lastInsertRowid);
+}
+
+/** 报告历史（倒序，内容裁掉：列表只需要摘要，正文单独取） */
+function listReports(limit = 100) {
+  const rows = db.prepare(
+    `SELECT id, title, type, range_start, range_end, group_label, extra_prompt,
+            degraded, created_at, updated_at,
+            length(content) AS content_len
+       FROM reports ORDER BY created_at DESC, id DESC LIMIT ?`
+  ).all(limit);
+  return rows.map((r) => ({ ...r, degraded: !!r.degraded }));
+}
+
+function getReport(id) {
+  const row = db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+  return rowToReport(row);
+}
+
+/** 局部更新报告（编辑后自动保存用） */
+function updateReport(id, p = {}) {
+  const keys = Object.keys(p).filter((k) => REPORT_FIELDS.includes(k));
+  if (keys.length === 0) return getReport(id);
+  const sets = keys.map((k) => `${k} = ?`);
+  const values = keys.map((k) => {
+    const v = p[k];
+    if (k === 'group_ids') return JSON.stringify(Array.isArray(v) ? v : []);
+    if (k === 'degraded') return v ? 1 : 0;
+    return v == null ? '' : String(v);
+  });
+  db.prepare(`UPDATE reports SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...values, nowIso(), id);
+  return getReport(id);
+}
+
+function deleteReport(id) {
+  return db.prepare('DELETE FROM reports WHERE id = ?').run(id).changes;
+}
+
+/* ------------------------------ AI 检索历史 ------------------------------ */
+
+function rowToSearch(row) {
+  if (!row) return null;
+  return { ...row, tasks: parseJsonField(row.tasks, []), degraded: !!row.degraded };
+}
+
+/**
+ * 保存一次 AI 检索（关键词 + 总结 + 命中任务快照）。
+ * @param {{keyword:string, summary?:string, task_count?:number, tasks?:object[], degraded?:boolean}} p
+ */
+function createSearch(p = {}) {
+  const info = db.prepare(
+    `INSERT INTO ai_searches (keyword, summary, task_count, tasks, degraded, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(
+    String(p.keyword || ''),
+    p.summary || '',
+    Number(p.task_count) || 0,
+    JSON.stringify(Array.isArray(p.tasks) ? p.tasks : []),
+    p.degraded ? 1 : 0,
+    nowIso(),
+  );
+  return getSearch(info.lastInsertRowid);
+}
+
+/** 检索历史（倒序；tasks 只回传摘要，点开时再取完整内容） */
+function listSearches(limit = 100) {
+  const rows = db.prepare(
+    `SELECT id, keyword, task_count, degraded, created_at,
+            substr(summary, 1, 120) AS summary_excerpt
+       FROM ai_searches ORDER BY created_at DESC, id DESC LIMIT ?`
+  ).all(limit);
+  return rows.map((r) => ({ ...r, degraded: !!r.degraded }));
+}
+
+function getSearch(id) {
+  const row = db.prepare('SELECT * FROM ai_searches WHERE id = ?').get(id);
+  return rowToSearch(row);
+}
+
+function deleteSearch(id) {
+  return db.prepare('DELETE FROM ai_searches WHERE id = ?').run(id).changes;
+}
+
 /* ------------------------------ 数据导入导出 ------------------------------ */
 
 /**
@@ -927,13 +1083,15 @@ function deleteMeeting(id) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 6,
+    schemaVersion: 7,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
     tasks: db.prepare('SELECT * FROM tasks ORDER BY id').all(),
     task_tags: db.prepare('SELECT * FROM task_tags ORDER BY task_id').all(),
     meetings: db.prepare('SELECT * FROM meetings ORDER BY id').all(),
+    reports: db.prepare('SELECT * FROM reports ORDER BY id').all(),
+    ai_searches: db.prepare('SELECT * FROM ai_searches ORDER BY id').all(),
     settings: db
       .prepare('SELECT * FROM settings WHERE key NOT LIKE ?')
       .all('ai.apiKey%'),
@@ -957,6 +1115,8 @@ function importData(data) {
     db.prepare('DELETE FROM tags').run();
     db.prepare('DELETE FROM groups').run();
     db.prepare('DELETE FROM meetings').run();
+    db.prepare('DELETE FROM reports').run();
+    db.prepare('DELETE FROM ai_searches').run();
 
     const t0 = nowIso();
     // 分两步写分组：先不带 parent_id（外键约束下，父分组未必已先插入），再回填层级
@@ -1013,6 +1173,29 @@ function importData(data) {
         m.started_at || t0, Number(m.duration_ms) || 0, jsonOf(m.media_paths),
         m.transcript || '', m.summary || '', jsonOf(m.todos),
         m.status || 'recorded', m.created_at || t0, m.updated_at || t0
+      );
+    }
+
+    const insReport = db.prepare(
+      `INSERT INTO reports (id, title, type, range_start, range_end, group_ids, group_label,
+         extra_prompt, content, degraded, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const r of data.reports || []) {
+      insReport.run(
+        r.id, r.title || '未命名报告', r.type || 'custom', r.range_start ?? null, r.range_end ?? null,
+        jsonOf(r.group_ids), r.group_label || '', r.extra_prompt || '', r.content || '',
+        r.degraded ? 1 : 0, r.created_at || t0, r.updated_at || t0
+      );
+    }
+
+    const insSearch = db.prepare(
+      'INSERT INTO ai_searches (id, keyword, summary, task_count, tasks, degraded, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    );
+    for (const s of data.ai_searches || []) {
+      insSearch.run(
+        s.id, s.keyword || '', s.summary || '', Number(s.task_count) || 0,
+        jsonOf(s.tasks), s.degraded ? 1 : 0, s.created_at || t0
       );
     }
   });
@@ -1075,6 +1258,17 @@ module.exports = {
   getMeeting,
   updateMeeting,
   deleteMeeting,
+  // AI 报告历史
+  createReport,
+  listReports,
+  getReport,
+  updateReport,
+  deleteReport,
+  // AI 检索历史
+  createSearch,
+  listSearches,
+  getSearch,
+  deleteSearch,
   // import / export
   exportData,
   importData,

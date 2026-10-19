@@ -144,15 +144,23 @@ function runsXml(text, extraPr = '') {
     .join('');
 }
 
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+const TABLE_SEP = /^\s*\|[\s:|-]+\|\s*$/;
+
+function splitRow(line) {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+}
+
 /**
  * Markdown 文本 → 块级结构数组。
- * 块类型：h1 / h2 / h3 / p / li / quote / code / hr
+ * 块类型：h1 / h2 / h3 / p / li / quote / code / hr / table
  */
 function parseBlocks(md) {
   const lines = String(md == null ? '' : md).split(/\r?\n/);
   const blocks = [];
   let inCode = false;
   let codeBuf = [];
+  let tbl = null; // 正在收集的表格行（原始文本行）
 
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, '');
@@ -163,9 +171,19 @@ function parseBlocks(md) {
         blocks.push({ type: 'code', text: codeBuf.join('\n') });
         codeBuf = [];
       }
+      tbl = null;
       continue;
     }
     if (inCode) { codeBuf.push(raw); continue; }
+
+    // 表格：连续的 |..| 行收成一个 table 块；| --- | 是分隔行，不产出数据
+    if (TABLE_ROW.test(line)) {
+      if (!tbl) { tbl = { type: 'table', rows: [] }; blocks.push(tbl); }
+      if (!TABLE_SEP.test(line)) tbl.rows.push(splitRow(line));
+      continue;
+    }
+    tbl = null;
+
     if (!line.trim()) continue;
 
     const h = line.match(/^\s*(#{1,6})\s+(.*)$/);
@@ -185,19 +203,54 @@ function parseBlocks(md) {
     const q = line.match(/^\s*>\s?(.*)$/);
     if (q) { blocks.push({ type: 'quote', text: q[1] }); continue; }
 
-    const table = line.match(/^\s*\|(.+)\|\s*$/);
-    if (table) { blocks.push({ type: 'p', text: line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim()).join(' ｜ ') }); continue; }
-
     blocks.push({ type: 'p', text: line.trim() });
   }
   if (inCode && codeBuf.length) blocks.push({ type: 'code', text: codeBuf.join('\n') });
-  return blocks;
+  // 只有分隔行、没有数据行的"伪表格"直接丢掉
+  return blocks.filter((b) => b.type !== 'table' || (b.rows && b.rows.length));
 }
 
 /** 任务清单符号：- [x] → ☑，- [ ] → ☐ */
 const TASK_PREFIX = /^\[( |x|X)\]\s*/;
 
+/** 表格块 → 真正的 w:tbl（此前被压成 ｜ 分隔的段落，导出后不再是表格） */
+const TABLE_WIDTH = 9000;
+const CELL_BORDERS = ['top', 'left', 'bottom', 'right']
+  .map((side) => `<w:${side} w:val="single" w:sz="4" w:space="0" w:color="BFBFBF"/>`)
+  .join('');
+
+function tableXml(block) {
+  const rows = block.rows || [];
+  if (!rows.length) return '';
+  const colCount = Math.max(...rows.map((r) => r.length));
+  const colW = Math.floor(TABLE_WIDTH / colCount);
+  const trs = rows
+    .map((cells, ri) => {
+      const isHead = ri === 0;
+      const tcs = [];
+      for (let i = 0; i < colCount; i++) {
+        const text = String(cells[i] == null ? '' : cells[i]);
+        const shd = isHead ? '<w:shd w:val="clear" w:color="auto" w:fill="EEF2FB"/>' : '';
+        tcs.push(
+          `<w:tc><w:tcPr><w:tcW w:w="${colW}" w:type="dxa"/>${shd}<w:tcBorders>${CELL_BORDERS}</w:tcBorders></w:tcPr>`
+          + `<w:p>${runsXml(text, isHead ? '<w:b/>' : '')}</w:p></w:tc>`,
+        );
+      }
+      // 表头重复出现在每页顶部，长表格跨页时仍能看清列名
+      const trPr = isHead ? '<w:trPr><w:tblHeader/></w:trPr>' : '';
+      return `<w:tr>${trPr}${tcs.join('')}</w:tr>`;
+    })
+    .join('');
+  return `<w:tbl>`
+    + `<w:tblPr><w:tblW w:w="${TABLE_WIDTH}" w:type="dxa"/>`
+    + `<w:tblBorders>${CELL_BORDERS}</w:tblBorders></w:tblPr>`
+    + `${trs}</w:tbl>`
+    // 表格后必须跟一个段落：OOXML 不允许表格作为 body 的最后一个元素
+    + '<w:p/>';
+}
+
 function blockXml(block) {
+  if (block.type === 'table') return tableXml(block);
   if (block.type === 'hr') {
     return '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="CCCCCC"/></w:pBdr></w:pPr></w:p>';
   }
@@ -332,4 +385,5 @@ function markdownToDocx(markdown, opts = {}) {
   ]);
 }
 
-module.exports = { markdownToDocx, parseBlocks, zip };
+// documentXml 一并导出：冒烟测试需要直接断言表格/标题的 OOXML，而不必解 zip
+module.exports = { markdownToDocx, parseBlocks, documentXml, zip };

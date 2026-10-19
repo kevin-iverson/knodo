@@ -168,8 +168,9 @@ check('列表按创建时间倒序', list[0].title === '评审会' && list.some(
 check('数量正确', list.length === 3); // 含上面那个「未命名会议」
 
 const exportSnap = db.exportData();
-check('导出含 meetings 且 schema 升级到 6',
-  exportSnap.schemaVersion === 6 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3);
+check('导出含 meetings 且 schema 升级到 7',
+  exportSnap.schemaVersion === 7 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
+  && Array.isArray(exportSnap.reports) && Array.isArray(exportSnap.ai_searches));
 check('导出保留 todos 与 media_paths', (() => {
   const row = exportSnap.meetings.find((m) => m.id === m1.id);
   return !!row && row.title === '周会(改)' && typeof row.todos === 'string'
@@ -274,6 +275,55 @@ async function runAsrChannelTests() {
   check('缺 Key 抛 NO_ASR_KEY', msgNoKey === 'NO_ASR_KEY');
 }
 
+/**
+ * 报告文档视图：Markdown → 文档 HTML 的结构断言。
+ * 反向（DOM → Markdown）需要真实 DOM，放在 Electron 冒烟里做往返校验。
+ */
+async function runReportDocTests() {
+  const url = require('url').pathToFileURL(path.join(__dirname, '..', 'renderer', 'js', 'report-doc.js')).href;
+  const { mdToDocHtml } = await import(url);
+  const docx = require('../main/docx');
+
+  const md = [
+    '# 周报标题',
+    '',
+    '这是**第一段**，含 `代码`。',
+    '',
+    '## 进展',
+    '',
+    '- 完成登录模块',
+    '- 修复导出问题',
+    '',
+    '## 明细',
+    '',
+    '| 任务 | 负责人 | 状态 |',
+    '| --- | --- | --- |',
+    '| 登录模块 | 张三 | 已完成 |',
+    '| 导出功能 | 李四 | 进行中 |',
+    '',
+    '> 下周重点：稳定性',
+    '',
+    '1. 先做压测',
+    '2. 再做灰度',
+  ].join('\n');
+
+  const html = mdToDocHtml(md);
+  check('标题渲染为 h1/h2', html.includes('<h1>周报标题</h1>') && html.includes('<h2>进展</h2>'));
+  check('段落含强调与行内代码', html.includes('<p>这是<strong>第一段</strong>，含 <code>代码</code>。</p>'));
+  check('无序列表保留原始符号', html.includes('<ul data-ul-mark="-"><li>完成登录模块</li><li>修复导出问题</li></ul>'));
+  check('有序列表渲染为 ol', html.includes('<ol><li>先做压测</li><li>再做灰度</li></ol>'));
+  check('表格渲染为真实 table（含 thead）', html.includes('<table class="rp-table"><thead>')
+    && html.includes('<th>任务</th>') && html.includes('<td>已完成</td>'));
+  check('表格不含分隔行数据', !html.includes('<td>---</td>') && !html.includes('｜'));
+  check('引用渲染为 blockquote', html.includes('<blockquote>下周重点：稳定性</blockquote>'));
+
+  // Word 导出：表格必须是真正的 w:tbl（此前被压成 ｜ 分隔的段落）
+  const xml = docx.documentXml(md);
+  check('Word 导出含真表格', xml.includes('<w:tbl>') && xml.includes('<w:tblHeader/>'));
+  check('Word 表格含单元格文本', xml.includes('已完成') && xml.includes('<w:tcBorders>'));
+  check('Word 表格后补了空段落', /<\/w:tbl><w:p\/>/.test(xml));
+}
+
 console.log('\n[8] 报告本地生成（无 Key 降级）');
 const now = new Date();
 const start = new Date(now); start.setHours(0, 0, 0, 0);
@@ -288,6 +338,94 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
 
   console.log('\n[9] 语音转写通道（本地 mock，不入网）');
   await runAsrChannelTests();
+
+  console.log('\n[10] 报告文档视图（Markdown → 文档 HTML）');
+  await runReportDocTests();
+
+  console.log('\n[11] AI 报告自定义提示词');
+  const fakeData = {
+    completedTasks: [{
+      title: '写方案', priority: 2, completed_at: now.toISOString(),
+      plan_start: '2026-10-01', plan_end: '2026-10-10',
+    }],
+    createdTasks: [{ title: '写方案' }],
+    activeNow: [{ title: '下月规划', priority: 1, plan_start: '2026-10-20', plan_end: '2026-11-15' }],
+    overdue: [],
+  };
+  const baseArgs = {
+    type: 'month',
+    start: new Date('2026-10-01T00:00:00'),
+    end: new Date('2026-10-31T23:59:59'),
+    groupIds: [],
+    data: fakeData,
+  };
+  const extraText = '根据任务的计划完成时间生成下个月的计划';
+  const withExtra = report.buildPrompt({ ...baseArgs, extraPrompt: extraText });
+  const msgExtra = withExtra[1].content;
+  check('自定义要求注入到 prompt', msgExtra.includes('【用户额外要求（务必满足）】') && msgExtra.includes(extraText));
+  check('告知模型需新增对应章节', msgExtra.includes('下月计划'));
+  check('任务带上计划完成时间（供推演下月）', msgExtra.includes('"planEnd"') && msgExtra.includes('2026-11-15'));
+  check('请求仍保持 system + user 两条消息', withExtra.length === 2 && withExtra[0].role === 'system');
+
+  const noExtra = report.buildPrompt(baseArgs);
+  check('未填自定义要求时不注入该段', !noExtra[1].content.includes('用户额外要求'));
+  const blankExtra = report.buildPrompt({ ...baseArgs, extraPrompt: '   ' });
+  check('全空白自定义要求视为未填', !blankExtra[1].content.includes('用户额外要求'));
+
+  const degradedExtra = await report.generateReport(
+    { type: 'month', customStart: baseArgs.start.toISOString(), customEnd: baseArgs.end.toISOString(), groupIds: [], extraPrompt: extraText },
+    { baseUrl: '', apiKey: '', model: '' }
+  );
+  check('降级报告明确说明未应用自定义要求',
+    degradedExtra.degraded === true && degradedExtra.markdown.includes('未能应用自定义要求'));
+
+  const degradedPlain = await report.generateReport(
+    { type: 'month', customStart: baseArgs.start.toISOString(), customEnd: baseArgs.end.toISOString(), groupIds: [], extraPrompt: '' },
+    { baseUrl: '', apiKey: '', model: '' }
+  );
+  check('未填要求时降级报告不出现该说明', !degradedPlain.markdown.includes('未能应用自定义要求'));
+
+  console.log('\n[12] AI 报告 / AI 检索历史持久化');
+  const rpt1 = db.createReport({
+    title: '月报 2026-10-01 ~ 2026-10-31', type: 'month',
+    range_start: '2026-10-01', range_end: '2026-10-31',
+    group_ids: [1, 2], group_label: '已选 2 个分组',
+    extra_prompt: '生成下月计划', content: '# 月报\n\n正文 A', degraded: true,
+  });
+  check('报告创建成功并回读', !!rpt1 && rpt1.id > 0 && rpt1.title.includes('月报'));
+  check('分组 id 反序列化为数组', Array.isArray(rpt1.group_ids) && rpt1.group_ids.length === 2);
+  check('降级标记正确', rpt1.degraded === true);
+
+  const rpt2 = db.createReport({ title: '周报', type: 'week', content: '正文 B' });
+  const list2 = db.listReports(50);
+  check('列表按创建时间倒序', list2[0].id === rpt2.id && list2.length === 2);
+  check('列表不带正文（只给摘要长度）', list2[0].content_len > 0 && list2[0].content === undefined);
+
+  const updated = db.updateReport(rpt2.id, { content: '正文 B（已编辑）' });
+  check('编辑后正文更新', updated.content === '正文 B（已编辑）');
+  check('编辑不影响另一份报告', db.getReport(rpt1.id).content === '# 月报\n\n正文 A');
+  check('非法字段被白名单拦截', (() => {
+    const before = db.getReport(rpt2.id).title;
+    db.updateReport(rpt2.id, { title: '周报', evil: 'x' });
+    return db.getReport(rpt2.id).title === before;
+  })());
+
+  const s1 = db.createSearch({
+    keyword: '导出', summary: '共 2 个相关任务', task_count: 2,
+    tasks: [{ id: 1, title: '导出功能' }, { id: 2, title: '导出报表' }], degraded: false,
+  });
+  check('检索记录创建成功', !!s1 && s1.id > 0 && s1.keyword === '导出');
+  check('任务快照反序列化为数组', Array.isArray(s1.tasks) && s1.tasks.length === 2);
+  const sList = db.listSearches(50);
+  check('检索历史列表', sList.length === 1 && sList[0].task_count === 2);
+  check('列表摘要被截断', (sList[0].summary_excerpt || '').length <= 120);
+  check('完整记录可取回全部任务', db.getSearch(s1.id).tasks.length === 2);
+
+  const snap2 = db.exportData();
+  check('导出含 reports 与 ai_searches', snap2.reports.length === 2 && snap2.ai_searches.length === 1);
+
+  check('删除报告生效', db.deleteReport(rpt1.id) === 1 && db.getReport(rpt1.id) === null);
+  check('删除检索记录生效', db.deleteSearch(s1.id) === 1 && db.getSearch(s1.id) === null);
 
   console.log('\n====================');
   console.log(`结果：${passed} 通过，${failed} 失败`);

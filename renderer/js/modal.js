@@ -111,6 +111,51 @@ export function openPromptModal(opts) {
   });
 }
 
+/**
+ * 自定义内容弹窗：用于「统计下钻」这类需要展示表格/列表、而不是收集表单输入的场景。
+ * 主体 HTML 由调用方给出，事件也在 onMount 里自行挂载（调用方最清楚行数据）。
+ * @param {object} opts
+ * @param {string} opts.title
+ * @param {string} [opts.html] 弹窗主体 HTML
+ * @param {string} [opts.className] 附加到 .modal 的类名（用于定制宽度/内边距）
+ * @param {(root:HTMLElement, close:()=>void)=>void} [opts.onMount]
+ * @param {string} [opts.okText] 底部关闭按钮文案
+ * @returns {Promise<boolean>} 是否以“确认”关闭
+ */
+export function openPanelModal({
+  title, html = '', className = '', onMount, okText = '关闭',
+}) {
+  return new Promise((resolve) => {
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask';
+    mask.innerHTML = `
+      <div class="modal modal-panel${className ? ` ${esc(className)}` : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+        <div class="modal-head">${esc(title)}</div>
+        <div class="modal-body">${html}</div>
+        <div class="modal-foot">
+          <div class="foot-main">
+            <button type="button" class="primary-btn" data-modal="ok">${esc(okText)}</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(mask);
+
+    const close = (ok) => {
+      document.removeEventListener('keydown', onKey, true);
+      mask.remove();
+      resolve(ok);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(false); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    mask.querySelector('[data-modal="ok"]').addEventListener('click', () => close(true));
+    mask.addEventListener('click', (e) => { if (e.target === mask) close(false); });
+
+    if (typeof onMount === 'function') onMount(mask, () => close(false));
+  });
+}
+
 /** 字段类型 → HTML 片段 */
 function fieldHtml(f) {
   const label = `<label class="field-label" for="mf-${esc(f.name)}">${esc(f.label)}</label>`;

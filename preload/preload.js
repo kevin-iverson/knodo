@@ -72,10 +72,15 @@ contextBridge.exposeInMainWorld('api', {
     clearAsrKey: () => call('ai:clearAsrKey'),
     testAsr: (p) => call('ai:testAsr', p),
   },
-  // 报告
+  // 报告（含历史记录持久化）
   report: {
     generate: (p) => call('report:generate', p),
     export: (p) => call('report:export', p),
+    save: (p) => call('report:save', p),
+    list: (limit) => call('report:list', limit),
+    get: (id) => call('report:get', id),
+    update: (id, patch) => call('report:update', { id, patch }),
+    remove: (id) => call('report:remove', id),
   },
   // 会议录制
   rec: {
@@ -102,9 +107,12 @@ contextBridge.exposeInMainWorld('api', {
     export: () => call('data:export'),
     import: () => call('data:import'),
   },
-  // AI 检索
+  // AI 检索（含历史记录持久化）
   search: {
     ai: (keyword) => call('search:ai', keyword),
+    history: (limit) => call('search:history', limit),
+    get: (id) => call('search:get', id),
+    remove: (id) => call('search:remove', id),
   },
   // 主题 / 强调色 / 界面偏好
   theme: {
@@ -118,6 +126,10 @@ contextBridge.exposeInMainWorld('api', {
   ui: {
     getDetailWidth: () => call('ui:getDetailWidth'),
     setDetailWidth: (w) => call('ui:setDetailWidth', w),
+    getTagFilter: () => call('ui:getTagFilter'),
+    setTagFilter: (id) => call('ui:setTagFilter', id),
+    getTodayDone: () => call('ui:getTodayDone'),
+    setTodayDone: (p) => call('ui:setTodayDone', p),
   },
   app: {
     quit: () => call('app:quit'),

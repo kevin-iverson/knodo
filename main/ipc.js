@@ -124,8 +124,23 @@ function registerIpc() {
         summary = `AI 总结失败：${e.message}`;
       }
     }
-    return { ok: true, keyword: kw, tasks, summary, degraded, hasKey: cfg.hasKey };
+    // 持久化：每次检索都留一份记录（关键词 + 总结 + 命中任务快照），可在检索页回看
+    let savedId = null;
+    try {
+      const rec = db.createSearch({
+        keyword: kw, summary, task_count: tasks.length, tasks, degraded,
+      });
+      savedId = rec ? rec.id : null;
+    } catch (e) {
+      console.warn('[ipc] 保存检索历史失败', e && e.message);
+    }
+    return { ok: true, keyword: kw, tasks, summary, degraded, hasKey: cfg.hasKey, id: savedId };
   });
+
+  /* ---------- AI 检索历史 ---------- */
+  ipcMain.handle('search:history', withDb((limit) => db.listSearches(Number(limit) || 100)));
+  ipcMain.handle('search:get', withDb((id) => db.getSearch(id)));
+  ipcMain.handle('search:remove', withDb((id) => !!db.deleteSearch(id)));
 
   /* ---------- 标签 ---------- */
   ipcMain.handle('tags:list', withDb(() => db.listTags()));
@@ -219,6 +234,13 @@ function registerIpc() {
     doc: { ext: 'docx', label: 'Word 文档' },
     docx: { ext: 'docx', label: 'Word 文档' },
   };
+  /* ---------- 报告历史（持久化） ---------- */
+  ipcMain.handle('report:save', withDb((p) => db.createReport(p || {})));
+  ipcMain.handle('report:list', withDb((limit) => db.listReports(Number(limit) || 100)));
+  ipcMain.handle('report:get', withDb((id) => db.getReport(id)));
+  ipcMain.handle('report:update', withDb(({ id, patch }) => db.updateReport(id, patch || {})));
+  ipcMain.handle('report:remove', withDb((id) => !!db.deleteReport(id)));
+
   ipcMain.handle('report:export', guard(async (_e, { content, defaultName, format }) => {
     const f = EXPORT_FORMATS[format] || EXPORT_FORMATS.md;
     const { canceled, filePath } = await dialog.showSaveDialog({
@@ -448,6 +470,35 @@ function registerIpc() {
     const w = Math.max(0, Math.round(Number(width) || 0));
     db.setSetting('ui.detailWidth', String(w));
     return w;
+  });
+  // 标签筛选：存到 settings，重启后仍保留（null 表示不筛选）
+  ipcMain.handle('ui:getTagFilter', () => {
+    const raw = db.getSetting('ui.tagFilter', '');
+    const n = Number(raw);
+    return raw === '' ? null : (Number.isFinite(n) ? n : null);
+  });
+  ipcMain.handle('ui:setTagFilter', (_e, id) => {
+    const v = id == null || id === '' ? '' : String(Number(id));
+    db.setSetting('ui.tagFilter', Number.isFinite(Number(id)) && v !== '' ? v : '');
+    return true;
+  });
+  // 「今天」里刚完成、仍留在列表中的任务：连自然日一起存，跨天自动失效（不靠内存，切视图/重启都不丢）
+  ipcMain.handle('ui:getTodayDone', () => {
+    const raw = db.getSetting('ui.todayDone', '');
+    if (!raw) return { day: '', ids: [] };
+    try {
+      const v = JSON.parse(raw);
+      const ids = Array.isArray(v && v.ids) ? v.ids.map(Number).filter(Number.isFinite) : [];
+      return { day: String((v && v.day) || ''), ids };
+    } catch (e) {
+      return { day: '', ids: [] };
+    }
+  });
+  ipcMain.handle('ui:setTodayDone', (_e, { day, ids } = {}) => {
+    const list = Array.isArray(ids) ? ids.map(Number).filter(Number.isFinite) : [];
+    if (!day || !list.length) db.setSetting('ui.todayDone', '');
+    else db.setSetting('ui.todayDone', JSON.stringify({ day: String(day), ids: list }));
+    return true;
   });
   ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(url));
   ipcMain.handle('app:getVersion', () => app.getVersion());

@@ -146,19 +146,26 @@ function buildLocalReport(type, start, end, groupIds) {
   return lines.join('\n');
 }
 
-function buildPrompt({ type, start, end, groupIds, data }) {
+function buildPrompt({ type, start, end, groupIds, data, extraPrompt }) {
   const { completedTasks, createdTasks, activeNow, overdue } = data;
   const completedTitles = completedTasks.map((t) => ({
     title: t.title,
     priority: PRIORITY_LABEL[t.priority],
     completedAt: fmtDate(t.completed_at),
+    // 计划完成时间一并给出：用户常要求「按计划完成时间推演下月计划」
+    planStart: t.plan_start || '',
+    planEnd: t.plan_end || '',
   }));
   const activeTitles = activeNow.map((t) => ({
     title: t.title,
     priority: PRIORITY_LABEL[t.priority],
+    planStart: t.plan_start || '',
     due: t.plan_end || '',
   }));
   const overdueTitles = overdue.map((t) => ({ title: t.title, due: t.plan_end }));
+
+  // 用户自定义要求（原样追加，不做改写，避免曲解）
+  const extra = String(extraPrompt || '').trim().slice(0, 600);
 
   const userMsg = [
     `请基于以下本地待办数据生成一份中文${TYPE_TEXT[type] || '工作报告'}。`,
@@ -172,11 +179,19 @@ function buildPrompt({ type, start, end, groupIds, data }) {
     '',
     '要求：使用 Markdown 格式；包含「完成情况」「进行中」「问题与风险」「下一步计划」四部分；',
     '语言简洁专业，基于真实数据，不要编造不存在的内容；结尾给出 2-3 条可执行的下一步建议。',
-  ].join('\n');
+  ];
+
+  if (extra) {
+    userMsg.push('');
+    userMsg.push('【用户额外要求（务必满足）】');
+    userMsg.push(extra);
+    userMsg.push('请在不违背真实数据的前提下满足上述额外要求；如需新增章节（例如「下月计划」），'
+      + '直接追加对应 Markdown 章节并用列表或表格呈现，不要省略。');
+  }
 
   return [
     { role: 'system', content: '你是一名专业的工作助理，擅长根据待办数据撰写简洁、专业、有洞察力的中文工作报告。' },
-    { role: 'user', content: userMsg },
+    { role: 'user', content: userMsg.join('\n') },
   ];
 }
 
@@ -188,6 +203,7 @@ function buildPrompt({ type, start, end, groupIds, data }) {
  */
 async function generateReport(params, aiConfig) {
   const { type, customStart, customEnd } = params;
+  const extraPrompt = String(params.extraPrompt || '').trim();
   const groupIds = normalizeGroupIds(params);
   const { start, end } = resolveRange(type, customStart, customEnd);
   const s = start.toISOString();
@@ -195,8 +211,14 @@ async function generateReport(params, aiConfig) {
   const data = db.rangeStats(s, e, groupIds);
 
   if (!aiConfig || !aiConfig.apiKey) {
+    let markdown = buildLocalReport(type, start, end, groupIds);
+    if (extraPrompt) {
+      // 本地模板是规则生成，无法理解自由文本要求 —— 明确说明，避免用户以为已生效
+      markdown += `\n> 说明：本次为本地模板报告，未能应用自定义要求「${extraPrompt}」。`
+        + '在「⚙ AI 设置」中配置 API Key 后，该要求会随请求一起发送给 AI。\n';
+    }
     return {
-      markdown: buildLocalReport(type, start, end, groupIds),
+      markdown,
       degraded: true,
       reason: '未配置 AI API Key，已生成本地模板报告。前往「AI 报告」页配置 API Key 后即可获得更自然的智能报告。',
     };
@@ -207,7 +229,7 @@ async function generateReport(params, aiConfig) {
       baseUrl: aiConfig.baseUrl,
       apiKey: aiConfig.apiKey,
       model: aiConfig.model,
-      messages: buildPrompt({ type, start, end, groupIds, data }),
+      messages: buildPrompt({ type, start, end, groupIds, data, extraPrompt }),
     });
     return { markdown, degraded: false, reason: '' };
   } catch (err) {
@@ -219,4 +241,4 @@ async function generateReport(params, aiConfig) {
   }
 }
 
-module.exports = { generateReport, buildLocalReport, resolveRange, TYPE_TEXT };
+module.exports = { generateReport, buildLocalReport, buildPrompt, resolveRange, TYPE_TEXT };

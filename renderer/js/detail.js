@@ -4,7 +4,7 @@
  * 所见即所得 Markdown 描述（支持快捷键与粘贴图片，图片直接插入光标处）。
  */
 import { api, PRIORITY_TEXT } from './api.js';
-import { state, loadGroups, loadTags, refreshAll } from './store.js';
+import { state, loadGroups, loadTags, refreshAll, noteCompletionChange } from './store.js';
 import { renderMarkdown } from './markdown.js';
 import {
   dateRangeFieldHtml, bindDateRangeFields, validateDateRange,
@@ -50,6 +50,10 @@ let renderToken = 0;
 const DETAIL_WIDTH = { min: 360, max: 860, def: 420, key: 'ui.detailWidth' };
 let detailWidth = null; // 运行时宽度（null = 尚未读取）
 let widthSaveTimer = null;
+/** 是否正在拖拽调宽 */
+let resizing = false;
+/** 拖拽期间被推迟的重绘（结束后补一次） */
+let pendingRender = false;
 
 /** 面板宽度上限：不超过窗口宽度的 85%，也不低于最小值 */
 function clampDetailWidth(w) {
@@ -63,6 +67,8 @@ function applyDetailWidth(panel) {
   const w = clampDetailWidth(detailWidth);
   panel.style.setProperty('--detail-width', `${w}px`);
   panel.style.width = `${w}px`;
+  // 抽屉级也留一份：面板被重建时新的 .detail-panel 直接继承，不会先跳回旧宽度再被纠正
+  if (panel.parentElement) panel.parentElement.style.setProperty('--detail-width', `${w}px`);
 }
 
 /** 读取上次保存的宽度（本次会话只读一次，之后用内存值，避免重复 IPC） */
@@ -107,13 +113,19 @@ function bindResizer(drawer) {
     if (!drag) return;
     drag.next = e.clientX; // 面板贴右边，宽度 = 视口宽 - 指针 x
   };
+  /** 唯一写宽度的入口：面板 inline width + 抽屉级变量（面板重建时可直接继承） */
+  const applyWidth = (w) => {
+    detailWidth = w;
+    drawer.style.setProperty('--detail-width', `${w}px`);
+    panel.style.width = `${w}px`;
+  };
   const flush = () => {
     raf = 0;
     if (!drag || drag.next == null) return;
     const w = clampDetailWidth(window.innerWidth - drag.next);
     if (w === drag.last) return; // 宽度没变就不写样式，减少布局抖动
     drag.last = w;
-    panel.style.width = `${w}px`;
+    applyWidth(w);
   };
   const onPointerMove = (e) => {
     onMove(e);
@@ -121,7 +133,7 @@ function bindResizer(drawer) {
   };
   const endDrag = () => {
     if (!drag) return;
-    const w = drag.last || detailWidth;
+    const lastX = drag.next;
     drag = null;
     if (raf) { cancelAnimationFrame(raf); raf = 0; }
     window.removeEventListener('pointermove', onPointerMove);
@@ -130,7 +142,18 @@ function bindResizer(drawer) {
     document.documentElement.classList.remove('is-resizing');
     document.body.style.removeProperty('user-select');
     try { handle.releasePointerCapture(handle.__pointerId); } catch (_e) { /* 已释放 */ }
-    detailWidth = w;
+    // 收尾同步补一次：窗口不可见 / 被遮挡时 rAF 会被节流，最后一帧可能还没落地，
+    // 直接按最后一次指针位置写死，保证“松手处 == 最终宽度”。
+    const w = lastX != null
+      ? clampDetailWidth(window.innerWidth - lastX)
+      : (detailWidth || DETAIL_WIDTH.def);
+    applyWidth(w);
+    resizing = false;
+    // 拖拽期间被推迟的重绘，结束后补上（宽度已经是最新值，不会跳）
+    if (pendingRender) {
+      pendingRender = false;
+      renderDetail();
+    }
     persistDetailWidth(w);
   };
 
@@ -138,6 +161,7 @@ function bindResizer(drawer) {
     if (e.button !== 0) return;
     e.preventDefault(); // 阻止拖拽时选中文字
     drag = { next: e.clientX, last: null };
+    resizing = true;
     handle.__pointerId = e.pointerId;
     try { handle.setPointerCapture(e.pointerId); } catch (_e) { /* 不支持则退回 window 监听 */ }
     document.documentElement.classList.add('is-resizing');
@@ -156,7 +180,7 @@ function bindResizer(drawer) {
 
   // 窗口变窄时收敛到上限内，避免面板超出视口
   window.addEventListener('resize', () => {
-    if (detailWidth == null) return;
+    if (detailWidth == null || resizing) return;
     const w = clampDetailWidth(detailWidth);
     if (w !== detailWidth) { detailWidth = w; }
     applyDetailWidth(panel);
@@ -171,7 +195,10 @@ export function openDetail(id) {
 export function closeDetail() {
   state.detailTaskId = null;
   const drawer = document.getElementById('detail-drawer');
-  if (drawer) drawer.hidden = true;
+  if (drawer) {
+    drawer.hidden = true;
+    drawer.dataset.opened = ''; // 下次打开重新播放入场动画
+  }
 }
 
 export function isDetailOpen() {
@@ -211,6 +238,9 @@ async function renderDetail() {
   if (!drawer) return;
   const id = state.detailTaskId;
   if (id == null) { drawer.hidden = true; return; }
+  // 拖拽调宽期间不重建 DOM：innerHTML 一换，入场动画重播 + 宽度回到重建前的值，
+  // 画面上就是“闪一下/抖一下”。推迟到指针抬起后再补一次重绘。
+  if (resizing) { pendingRender = true; return; }
   const token = ++renderToken;
 
   const task = await api.tasks.get(id);
@@ -225,9 +255,13 @@ async function renderDetail() {
     ? `<div class="detail-parent" data-act="goto-parent" data-parent="${task.parent_id}">↳ 所属父任务：${esc(task.parent_title || '未知')}</div>`
     : '';
 
+  // 只有「从关闭状态打开」才播入场动画；同一任务被重绘（保存、勾选子任务…）时不再滑入，
+  // 否则每次重绘都会有 200ms 的位移 + 淡入，看着像界面在闪。
+  const reopen = drawer.dataset.opened === '1';
+
   drawer.innerHTML = `
     <div class="detail-mask" data-act="close"></div>
-    <div class="detail-panel">
+    <div class="detail-panel${reopen ? ' no-anim' : ''}">
       <div class="detail-resizer" data-act="resize" title="拖拽调整宽度（双击恢复默认）" role="separator" aria-orientation="vertical"></div>
       <div class="detail-head">
         <button class="detail-check${task.completed ? ' done' : ''}" data-act="toggle" title="完成/取消">${task.completed ? '✓' : ''}</button>
@@ -281,6 +315,7 @@ async function renderDetail() {
     </div>`;
 
   drawer.hidden = false;
+  drawer.dataset.opened = '1';
   await ensureDetailWidth();
   bindResizer(drawer);
   bindDateRangeFields(drawer); // 主任务 + 子任务新增区 + 各行内的日期范围控件
@@ -347,7 +382,9 @@ function bindDetailEvents(drawer, task) {
   }
 
   drawer.querySelector('[data-act="toggle"]').addEventListener('click', async () => {
-    await api.tasks.toggle(task.id);
+    const next = await api.tasks.toggle(task.id);
+    // 与列表勾选保持一致：今天视图里保留刚完成的任务
+    noteCompletionChange(task.id, !!(next && next.completed));
     await refreshAll();
     handlers.refresh();
     renderDetail();

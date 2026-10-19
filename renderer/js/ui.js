@@ -5,12 +5,12 @@
  * 新增/编辑任务采用“飞书式”就地交互：列表底部提供“添加任务”入口，点击后
  * 原地展开编辑器；“计划开始日期 / 计划完成日期”直接放在新增行主表单中填写。
  */
-import { api, localToIso, isoToLocal, fmtDateTime, PRIORITY_TEXT } from './api.js';
-import { state, loadGroups, loadTags, loadTasks, refreshAll, todayStr } from './store.js';
+import { api, localToIso, isoToLocal, fmtDateTime, PRIORITY_TEXT, PRIORITY_COLOR } from './api.js';
+import { state, loadGroups, loadTags, loadTasks, refreshAll, todayStr, noteCompletionChange, clearRecentlyDone, initRecentlyDone } from './store.js';
 import { renderReports } from './reports.js';
 import { openDetail, setDetailHandlers } from './detail.js';
 import { renderSearch, setSearchHandlers } from './search.js';
-import { openPromptModal, openFormModal } from './modal.js';
+import { openPromptModal, openFormModal, openPanelModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOptionsHtml } from './group-tree.js';
 import { bindAiSettingsButton, setAiSettingsHandlers } from './ai-settings.js';
@@ -50,15 +50,22 @@ const VIEW_META = {
   meetings: { title: '会议纪要', desc: '录制 / 导入会议音频 → 语音转写 → AI 纪要 → 待办入库' },
 };
 
-// 时间筛选输入框与状态键的映射
-const TF_BINDINGS = [
-  ['tf-plan-start-from', 'planStartFrom'],
-  ['tf-plan-start-to', 'planStartTo'],
-  ['tf-plan-end-from', 'planEndFrom'],
-  ['tf-plan-end-to', 'planEndTo'],
-  ['tf-completed-from', 'completedFrom'],
-  ['tf-completed-to', 'completedTo'],
+/** 会展示任务列表、因而消费分组/标签筛选的视图 */
+const TASK_VIEWS = ['today', 'upcoming', 'all', 'completed', 'archived'];
+
+/**
+ * 时间筛选的三组日期范围。
+ * 使用与「添加任务」完全相同的 flatpickr 范围控件（controls.js 的 dateRangeFieldHtml）：
+ * 两次点选成范围、快捷按钮（今天/明天/本周末/清除）、中文日历、面板定位逻辑全部复用，
+ * 视觉也沿用同一套 .date-range-* 样式 —— 不再用原生 input[type=date]（样式与交互都跟别处不一致）。
+ */
+const TF_RANGES = [
+  { key: 'planStart', label: '计划开始日期', from: 'planStartFrom', to: 'planStartTo' },
+  { key: 'planEnd', label: '计划完成日期', from: 'planEndFrom', to: 'planEndTo' },
+  { key: 'completed', label: '实际完成时间', from: 'completedFrom', to: 'completedTo' },
 ];
+/** 面板级监听只绑一次（面板内容会被重建，容器本身不换） */
+let tfEventsBound = false;
 
 /* ---------------- 初始化 ---------------- */
 
@@ -82,6 +89,10 @@ export async function init() {
   });
   bindStaticEvents();
   await initTheme();
+  // 恢复上次退出时的标签筛选（重启后仍保持选中态）
+  state.currentTag = await api.ui.getTagFilter();
+  // 恢复「今日已完成」：切走再回来、或重启应用，今天完成的那些任务仍然留在今天列表里
+  await initRecentlyDone();
   await renderSidebar();
   await render();
 }
@@ -90,6 +101,7 @@ function bindStaticEvents() {
   // 导航
   document.querySelectorAll('.nav-item').forEach((btn) => {
     btn.addEventListener('click', () => {
+      // 「今日已完成」是持久化的：切换视图不清除，回到「今天」时列表依然完整
       state.view = btn.dataset.view;
       state.currentGroup = 'all';
       state.editingTaskId = null;
@@ -123,6 +135,10 @@ function bindStaticEvents() {
     }, 200);
   });
 
+  // 顶栏标签筛选指示：点击即清除筛选
+  const tagChip = document.getElementById('tag-filter-chip');
+  if (tagChip) tagChip.addEventListener('click', () => selectTag(null));
+
   // 优先级筛选
   document.querySelectorAll('.chip[data-priority]').forEach((chip) => {
     chip.addEventListener('click', () => {
@@ -144,24 +160,12 @@ function bindStaticEvents() {
     });
   }
 
-  // 时间筛选：切换面板 + 日期输入
+  // 时间筛选：切换面板 + 三组日期范围（与「添加任务」同一个 flatpickr 控件）
   document.getElementById('btn-time-filter').addEventListener('click', () => {
     const tf = document.getElementById('time-filter');
     tf.hidden = !tf.hidden;
   });
-  TF_BINDINGS.forEach(([id, key]) => {
-    document.getElementById(id).addEventListener('change', (e) => {
-      state.timeFilters[key] = e.target.value;
-      renderTasks();
-    });
-  });
-  document.getElementById('tf-clear').addEventListener('click', () => {
-    TF_BINDINGS.forEach(([id, key]) => {
-      state.timeFilters[key] = '';
-      document.getElementById(id).value = '';
-    });
-    renderTasks();
-  });
+  buildTimeFilter();
 
   // 新建（顶部按钮 → 展开列表底部编辑器） / 归档已完成
   document.getElementById('btn-new-task').addEventListener('click', () => {
@@ -185,10 +189,65 @@ function bindStaticEvents() {
   });
 }
 
+/* ---------------- 时间筛选面板（复用 flatpickr 范围控件） ---------------- */
+
+/** 顶栏「时间筛选」按钮随生效范围数量变化（0 个 → 普通态，≥1 → 高亮 + 计数） */
+function updateTimeFilterBadge() {
+  const btn = document.getElementById('btn-time-filter');
+  if (!btn) return;
+  const n = TF_RANGES.filter((r) => state.timeFilters[r.from] || state.timeFilters[r.to]).length;
+  btn.classList.toggle('active', n > 0);
+  btn.textContent = n ? `⏱ 时间筛选 · ${n}` : '⏱ 时间筛选';
+  btn.title = n ? `已启用 ${n} 组时间范围，点击查看或修改` : '按计划开始 / 计划完成 / 实际完成时间筛选';
+}
+
+/**
+ * 重建时间筛选面板（首次挂载 + 清除后重建）。
+ * 重建而不是逐个清空实例：flatpickr 的日历容器挂在 body 上，
+ * 换掉 DOM 后由 bindDateRangeFields → sweepDetachedRanges 统一销毁，不会留下孤儿日历。
+ */
+function buildTimeFilter() {
+  const box = document.getElementById('time-filter');
+  if (!box) return;
+  const tf = state.timeFilters;
+
+  box.innerHTML = TF_RANGES.map((r) => `
+    <div class="tf-group" data-tf="${r.key}">
+      <span class="tf-label">${r.label}</span>
+      ${dateRangeFieldHtml(tf[r.from], tf[r.to], { placeholder: '不限' })}
+    </div>`).join('')
+    + '<button class="ghost-btn" id="tf-clear" title="清空全部时间范围">清除</button>';
+
+  bindDateRangeFields(box);
+
+  if (!tfEventsBound) {
+    tfEventsBound = true;
+    // 控件内部已把「开始 / 结束」归一成有序的一对值，这里直接落到筛选项
+    box.addEventListener(DATE_RANGE_EVENT, (e) => {
+      const cell = e.target.closest('[data-tf]');
+      if (!cell) return;
+      const def = TF_RANGES.find((r) => r.key === cell.dataset.tf);
+      if (!def) return;
+      state.timeFilters[def.from] = e.detail.planStart || '';
+      state.timeFilters[def.to] = e.detail.planEnd || '';
+      updateTimeFilterBadge();
+      renderTasks();
+    });
+  }
+
+  box.querySelector('#tf-clear').addEventListener('click', () => {
+    TF_RANGES.forEach((r) => { state.timeFilters[r.from] = ''; state.timeFilters[r.to] = ''; });
+    buildTimeFilter();
+    updateTimeFilterBadge();
+    renderTasks();
+  });
+
+  updateTimeFilterBadge();
+}
+
 /** 确保当前处于任务类视图（否则切到“全部任务”） */
 function ensureTaskView() {
-  const taskViews = ['today', 'upcoming', 'all', 'completed'];
-  if (taskViews.includes(state.view)) return;
+  if (TASK_VIEWS.includes(state.view)) return;
   state.view = 'all';
   state.currentGroup = 'all';
   renderSidebar();
@@ -203,7 +262,7 @@ async function render() {
   const meta = VIEW_META[state.view] || VIEW_META.all;
   document.getElementById('view-title').textContent = meta.title;
   document.getElementById('view-desc').textContent = meta.desc;
-
+  renderTagFilterChip();
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
   if (state.view === 'search') { renderSearch(); return; }
@@ -217,7 +276,13 @@ async function renderSidebar() {
   });
   await loadGroups();
   await loadTags();
+  // 标签可能已被删除：持久化下来的 id 失效时要静默清掉，避免筛选结果为空却看不出原因
+  if (state.currentTag != null && !state.tags.some((t) => t.id === state.currentTag)) {
+    state.currentTag = null;
+    await api.ui.setTagFilter(null);
+  }
   renderSidebarList();
+  renderTagFilterChip();
 }
 
 /** 仅重绘分组 / 标签列表（使用 state 中已有数据，避免多余请求、避免重复拉取覆盖新增项） */
@@ -302,22 +367,58 @@ function renderSidebarList() {
   }
   for (const t of state.tags) {
     const li = document.createElement('li');
-    li.className = 'tag-item' + (state.currentTag === t.id ? ' active' : '');
+    const active = state.currentTag === t.id;
+    li.className = 'tag-item' + (active ? ' active' : '');
     li.dataset.id = t.id;
+    // 可聚焦 + 语义化：键盘 Tab 可达，读屏能播报选中状态
+    li.tabIndex = 0;
+    li.setAttribute('role', 'button');
+    li.setAttribute('aria-pressed', String(active));
+    li.title = active ? `已按标签「${esc(t.name)}」筛选，点击取消` : `点击按标签「${esc(t.name)}」筛选`;
     li.innerHTML = `
       <span class="tag-color" style="background:${esc(t.color)}"></span>
       <span class="tag-name">${esc(t.name)}</span>
       <span class="tag-count">${t.task_count || 0}</span>
       <button class="tag-del" title="删除">×</button>`;
+    const toggle = () => selectTag(state.currentTag === t.id ? null : t.id);
     li.addEventListener('click', (e) => {
       if (e.target.closest('.tag-del')) return;
-      state.currentTag = state.currentTag === t.id ? null : t.id;
-      renderSidebarList();
-      renderTasks();
+      toggle();
+    });
+    li.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); toggle(); }
     });
     li.querySelector('.tag-del').addEventListener('click', () => deleteTag(t));
     tagList.appendChild(li);
   }
+}
+
+/**
+ * 切换标签筛选。
+ * 关键：统计 / 报告 / 检索 / 会议这几个视图并不消费 tagId，若留在原视图会出现
+ * 「点了标签、列表毫无变化」的假死感 —— 选中标签时自动切回任务视图。
+ */
+async function selectTag(id) {
+  state.currentTag = id;
+  if (id != null && !TASK_VIEWS.includes(state.view)) {
+    state.view = 'all';
+    state.currentGroup = 'all';
+  }
+  await api.ui.setTagFilter(id);
+  renderSidebar();
+  await render();
+  renderTagFilterChip();
+}
+
+/** 顶栏筛选指示：侧边栏滚动/折叠时也能确认标签筛选仍在生效 */
+function renderTagFilterChip() {
+  const el = document.getElementById('tag-filter-chip');
+  if (!el) return;
+  const t = state.tags.find((x) => x.id === state.currentTag);
+  if (!t) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = `<span class="tag-color" style="background:${esc(t.color)}"></span>`
+    + `<span>标签：${esc(t.name)}</span><span class="chip-x">×</span>`;
 }
 
 /* ---------------- 任务列表 ---------------- */
@@ -335,8 +436,17 @@ async function renderTasks() {
   const viewEl = document.getElementById('view');
   const isArchived = state.view === 'archived';
   const hasFilters = state.currentGroup !== 'all' || !!state.search || state.priorityFilter !== 'all' || hasTimeFilter();
+  // 「今天」里刚勾选完成、仍留在列表中的任务数量
+  const keptCount = state.view === 'today' ? state.recentlyDone.size : 0;
 
   let html = '';
+
+  if (keptCount) {
+    html += `<div class="keep-done-bar">
+      <span class="keep-done-text">✅ 今日已完成 <b>${keptCount}</b> 个任务，已保留在列表中（打勾 / 置灰 / 删除线）</span>
+      <button class="link-btn" data-act="hide-done" title="立即移出列表（切换视图或重启后仍会保留，跨天自动清空）">隐藏已完成</button>
+    </div>`;
+  }
 
   if (tasks.length === 0) {
     const emptyText = isArchived
@@ -370,6 +480,13 @@ async function renderTasks() {
   }
 
   viewEl.innerHTML = html;
+  const hideDoneBtn = viewEl.querySelector('[data-act="hide-done"]');
+  if (hideDoneBtn) {
+    hideDoneBtn.addEventListener('click', () => {
+      clearRecentlyDone();
+      renderTasks();
+    });
+  }
   bindTaskListEvents(viewEl);
   bindEditorEvents(viewEl);
   if (state.addingTask || state.editingTaskId != null) focusEditor();
@@ -498,7 +615,7 @@ function taskItemHtml(t, depth = 0) {
     <div class="task-body">
       <div class="task-title">
         ${t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" aria-expanded="${state.expandedTasks.has(t.id)}" title="${state.expandedTasks.has(t.id) ? '收起子任务' : '展开子任务'}">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}
-        <span class="task-title-text">${esc(t.title)}</span>
+        <span class="task-title-text" data-act="rename" title="点击直接修改标题">${esc(t.title)}</span>
       </div>
       <div class="task-meta">${groupLabel}${meta.join('')}</div>
     </div>
@@ -526,6 +643,7 @@ function bindTaskListEvents(container) {
         else state.expandedTasks.add(id);
         renderTasks();
       }
+      else if (act === 'rename') startInlineRename(btn, id);
       else if (act === 'edit') startEdit(id);
       else if (act === 'del') deleteTaskConfirm(id);
       else if (act === 'archive') archiveTask(id);
@@ -537,6 +655,57 @@ function bindTaskListEvents(container) {
   // 底部“添加任务”入口
   const addBtn = container.querySelector('[data-act="start-add"]');
   if (addBtn) addBtn.addEventListener('click', startAdd);
+}
+
+/* ---------------- 行内改标题 ---------------- */
+
+/**
+ * 点击任务标题就地改名：只替换这一行的标题节点，不整表重绘（避免焦点丢失与列表闪动）。
+ * 失焦或回车保存，Esc 放弃。
+ * @param {HTMLElement} span .task-title-text 节点
+ * @param {number} id 任务 id
+ */
+function startInlineRename(span, id) {
+  if (!span || span.querySelector('input')) return; // 已在编辑中
+  const original = span.textContent;
+  const input = document.createElement('input');
+  input.className = 'task-title-input';
+  input.type = 'text';
+  input.maxLength = 200;
+  input.value = original;
+  span.textContent = '';
+  span.appendChild(input);
+  span.classList.add('is-renaming');
+  input.focus();
+  input.select();
+
+  let settled = false;
+  /** 收尾：commit=false 表示放弃 */
+  const finish = async (commit) => {
+    if (settled) return;
+    settled = true;
+    input.removeEventListener('blur', onBlur);
+    span.classList.remove('is-renaming');
+    const next = input.value.trim();
+    const put = (text) => { span.textContent = text; };
+    if (!commit || !next || next === original) { put(original); return; }
+    put(next); // 先落地到界面，保存失败再回滚
+    try {
+      await api.tasks.update(id, { title: next });
+      const t = state.tasks.find((x) => x.id === id);
+      if (t) t.title = next;
+      toast('标题已保存');
+    } catch (e) {
+      put(original);
+      toast(`保存失败：${e && e.message ? e.message : e}`);
+    }
+  };
+  const onBlur = () => finish(true);
+  input.addEventListener('blur', onBlur);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
 }
 
 /* ---------------- 就地新增 / 编辑编辑器 ---------------- */
@@ -912,7 +1081,9 @@ async function dropReorder(item, fromIdStr) {
 /* ---------------- 任务操作 ---------------- */
 
 async function toggleTask(id) {
-  await api.tasks.toggle(id);
+  const t = await api.tasks.toggle(id);
+  // 「今天」视图：勾选完成后不要立刻消失 —— 记下来，随后重绘时补拉回来
+  noteCompletionChange(id, !!(t && t.completed));
   await refreshAll();
   renderSidebarList();
   renderTasks();
@@ -1131,9 +1302,13 @@ async function deleteTag(t) {
   if (!confirm(`删除标签「${t.name}」？`)) return;
   guardAction(async () => {
     await api.tags.remove(t.id);
-    if (state.currentTag === t.id) state.currentTag = null;
+    if (state.currentTag === t.id) {
+      state.currentTag = null;
+      await api.ui.setTagFilter(null); // 持久化值同步清掉，否则重启后又筛到一个已删除的标签
+    }
     await refreshAll();
     renderSidebarList();
+    renderTagFilterChip();
     renderTasks();
   }, '删除标签失败');
 }
@@ -1187,16 +1362,184 @@ async function renderStats() {
 
   viewEl.innerHTML = `
     <div class="stats-grid">
-      <div class="stat-card"><div class="num">${ov.total}</div><div class="label">总任务</div></div>
-      <div class="stat-card primary"><div class="num">${ov.active}</div><div class="label">进行中</div></div>
-      <div class="stat-card green"><div class="num">${ov.completed}</div><div class="label">已完成</div></div>
-      <div class="stat-card danger"><div class="num">${ov.overdue}</div><div class="label">已逾期</div></div>
-      <div class="stat-card"><div class="num">${ov.rate}%</div><div class="label">完成率</div></div>
-      <div class="stat-card"><div class="num">${ov.archived}</div><div class="label">已归档</div></div>
+      ${statCardHtml('total', ov.total, '总任务', '')}
+      ${statCardHtml('active', ov.active, '进行中', 'primary')}
+      ${statCardHtml('completed', ov.completed, '已完成', 'green')}
+      ${statCardHtml('overdue', ov.overdue, '已逾期', 'danger')}
+      <div class="stat-card is-static"><div class="num">${ov.rate}%</div><div class="label">完成率</div></div>
+      ${statCardHtml('archived', ov.archived, '已归档', '')}
     </div>
+    <div class="stats-tip">${statsTipHtml()}</div>
     <div class="panel"><h3>近 7 天完成趋势</h3><div class="trend-chart">${trendCols}</div></div>
     <div class="panel"><h3>分组任务量</h3>${groupBars || '<span class="meta-item">暂无分组</span>'}</div>
     <div class="panel"><h3>优先级分布（进行中）</h3>${priBars}</div>`;
+
+  viewEl.querySelectorAll('.stat-card[data-stat]').forEach((card) => {
+    card.addEventListener('click', () => openStatDrilldown(card.dataset.stat, card));
+  });
+}
+
+/**
+ * 统计页提示。
+ * 标签筛选开着时要点明「统计仍是全局口径」——否则用户看到顶栏还挂着标签、
+ * 但数字没按标签过滤，会以为是选中态失效。
+ */
+function statsTipHtml() {
+  const t = state.tags.find((x) => x.id === state.currentTag);
+  const base = '点击卡片上的数字可查看对应任务明细';
+  if (!t) return base;
+  return `${base}　<span class="stats-warn">当前已按标签「${esc(t.name)}」筛选任务列表，统计仍按全部任务计算</span>`;
+}
+
+/** 统计卡片：数字与标题都可点（整卡点击区域更大，但只有数字带下划线提示） */
+function statCardHtml(key, num, label, tone) {
+  return `<button type="button" class="stat-card ${tone}" data-stat="${key}"
+      title="查看「${esc(label)}」的任务明细" aria-label="${esc(label)} ${num} 个，点击查看明细">
+      <div class="num">${num}</div><div class="label">${esc(label)}</div></button>`;
+}
+
+/** 各统计项 → 任务查询条件（与 overview 的 SQL 口径一一对应） */
+function statFilterOf(key) {
+  const today = todayStr();
+  const base = { topLevel: true };
+  switch (key) {
+    case 'total': return { ...base, status: 'any' };
+    case 'active': return { ...base, status: 'active' };
+    case 'completed': return { ...base, status: 'completed' };
+    case 'archived': return { ...base, status: 'archived' };
+    case 'overdue': {
+      // overview 的逾期 = plan_end < 今天，等价于 plan_end <= 昨天
+      const y = new Date(`${today}T00:00:00`);
+      y.setDate(y.getDate() - 1);
+      const p = (n) => String(n).padStart(2, '0');
+      return { ...base, status: 'active', planEndTo: `${y.getFullYear()}-${p(y.getMonth() + 1)}-${p(y.getDate())}` };
+    }
+    default: return null;
+  }
+}
+
+const STAT_TITLES = {
+  total: '总任务', active: '进行中', completed: '已完成', overdue: '已逾期', archived: '已归档',
+};
+
+const DRILL_SORTS = [
+  { key: 'title', label: '任务名称' },
+  { key: 'plan_end', label: '截止时间' },
+  { key: 'status', label: '状态' },
+  { key: 'priority', label: '优先级' },
+];
+
+/** 任务在列表里展示的状态文案（逾期是派生状态，库里只有 completed/archived 两个标记） */
+function drillStatusOf(t) {
+  if (t.archived) return { text: '已归档', cls: 'st-archived' };
+  if (t.completed) return { text: '已完成', cls: 'st-done' };
+  if (t.plan_end && t.plan_end < todayStr()) return { text: '已逾期', cls: 'st-overdue' };
+  return { text: '进行中', cls: 'st-active' };
+}
+
+/**
+ * 统计数字下钻：弹窗列出对应任务，支持按列排序，点击行跳到任务详情。
+ * 关闭弹窗后统计页原样还在（弹窗是覆盖层，不销毁视图）。
+ */
+async function openStatDrilldown(key, cardEl) {
+  const f = statFilterOf(key);
+  if (!f) return;
+  const title = `${STAT_TITLES[key] || '任务'}明细`;
+  let tasks = [];
+  let sortKey = 'plan_end';
+  let sortDir = 1; // 1 升序 / -1 降序
+
+  const sortTasks = () => {
+    const val = (t) => {
+      switch (sortKey) {
+        case 'title': return String(t.title || '');
+        case 'plan_end': return t.plan_end || '9999-99-99'; // 无截止日期的排在最后
+        case 'status': return drillStatusOf(t).text;
+        case 'priority': return Number(t.priority) || 0;
+        default: return '';
+      }
+    };
+    tasks.sort((a, b) => {
+      const va = val(a); const vb = val(b);
+      if (va < vb) return -1 * sortDir;
+      if (va > vb) return 1 * sortDir;
+      return 0;
+    });
+  };
+
+  const rowsHtml = () => {
+    if (!tasks.length) return '<div class="drill-empty">没有符合条件的任务</div>';
+    return tasks.map((t) => {
+      const st = drillStatusOf(t);
+      const pri = Number(t.priority) || 0;
+      return `<tr class="drill-row" data-id="${t.id}" tabindex="0" title="点击查看任务详情">
+        <td class="drill-title">${esc(t.title)}</td>
+        <td>${t.plan_end ? esc(t.plan_end) : '<span class="drill-dim">—</span>'}</td>
+        <td><span class="drill-status ${st.cls}">${st.text}</span></td>
+        <td><span class="drill-pri" style="color:${PRIORITY_COLOR[pri]}">${PRIORITY_TEXT[pri]}</span></td>
+        <td class="drill-group">${t.group_name ? esc(t.group_name) : '<span class="drill-dim">—</span>'}</td>
+      </tr>`;
+    }).join('');
+  };
+
+  const headHtml = () => DRILL_SORTS
+    .map((s) => `<th class="drill-th${s.key === sortKey ? ' sorted' : ''}" data-sort="${s.key}" tabindex="0"
+        role="button" aria-sort="${s.key === sortKey ? (sortDir === 1 ? 'ascending' : 'descending') : 'none'}">
+        ${s.label}<span class="drill-arrow">${s.key === sortKey ? (sortDir === 1 ? '↑' : '↓') : ''}</span></th>`)
+    .join('');
+
+  const tableHtml = () => `
+    <div class="drill-meta">共 ${tasks.length} 个任务 · 点击表头排序 · 点击行打开详情</div>
+    <div class="drill-wrap"><table class="drill-table">
+      <thead><tr>${headHtml()}</tr></thead>
+      <tbody>${rowsHtml()}</tbody>
+    </table></div>`;
+
+  await openPanelModal({
+    title,
+    className: 'modal-drill',
+    html: '<div class="drill-loading">加载中…</div>',
+    onMount: async (root, close) => {
+      const body = root.querySelector('.modal-body');
+      try {
+        tasks = await api.tasks.list(f);
+      } catch (e) {
+        body.innerHTML = `<div class="drill-empty">加载失败：${esc((e && e.message) || e)}</div>`;
+        return;
+      }
+      // 与卡片数字对不上时明确提示，避免"看起来是 bug"的静默不一致
+      const shown = cardEl ? Number(cardEl.querySelector('.num').textContent) : null;
+      sortTasks();
+      body.innerHTML = (Number.isFinite(shown) && shown !== tasks.length
+        ? `<div class="drill-warn">统计值 ${shown} 与当前查询结果 ${tasks.length} 不一致，可能数据刚有变动</div>`
+        : '') + tableHtml();
+
+      const resort = (key) => {
+        if (sortKey === key) sortDir = -sortDir;
+        else { sortKey = key; sortDir = 1; }
+        sortTasks();
+        body.innerHTML = tableHtml();
+        bindTable();
+      };
+      const bindTable = () => {
+        body.querySelectorAll('.drill-th').forEach((th) => {
+          const go = () => resort(th.dataset.sort);
+          th.addEventListener('click', go);
+          th.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+          });
+        });
+        body.querySelectorAll('.drill-row').forEach((tr) => {
+          const go = () => { close(); openDetail(Number(tr.dataset.id)); };
+          tr.addEventListener('click', go);
+          tr.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+          });
+        });
+      };
+      bindTable();
+    },
+  });
 }
 
 /* ---------------- 主题 ---------------- */

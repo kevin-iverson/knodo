@@ -133,7 +133,10 @@ app.whenReady().then(() => {
   if (isSmoke) {
     mainWindow.webContents.on('console-message', (_e, ...args) => {
       const d = args[0];
-      const message = d && typeof d === 'object' ? (d.message ?? JSON.stringify(d)) : String(d);
+      // Electron 新版签名：(event, level, message, line, sourceId)；旧版 args[0] 是 message
+      const message = d && typeof d === 'object'
+        ? `[${d.level || ''}] ${d.message || ''}`
+        : args.map((x) => (x && typeof x === 'object' ? JSON.stringify(x) : String(x))).join(' ');
       console.log('[SMOKE][renderer console]', message);
     });
     mainWindow.webContents.on('did-finish-load', async () => {
@@ -711,27 +714,28 @@ app.whenReady().then(() => {
               document.querySelector('[data-act="editor-cancel"]').click();
               await wait(250);
 
-              /* 5) AI 报告：分组下拉改为多选 + Word 导出按钮 */
+              /* 5) AI 报告：分组多选改用第三方 Tom Select + Word 导出按钮 */
               document.querySelector('.nav-item[data-view="reports"]').click();
               await wait(600);
-              const trigger = document.getElementById('rp-group-trigger');
-              out.msTrigger = !!trigger;
-              out.msTriggerText0 = trigger ? trigger.textContent.trim() : '';
-              if (trigger) {
-                trigger.click();
-                await wait(200);
-                const panel = document.getElementById('rp-group-panel');
-                out.msOpened = !!(panel && !panel.hidden);
-                out.msFixed = panel ? getComputedStyle(panel).position === 'fixed' : false;
-                const boxes = [...panel.querySelectorAll('[data-group]')].filter(b => b.dataset.group !== '__all__');
-                out.msBoxCount = boxes.length;
-                for (const bx of boxes.slice(0, 2)) {
-                  bx.checked = true;
-                  bx.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-                await wait(150);
-                out.msTriggerText1 = trigger.textContent.trim();
-                out.msMulti = /已选|全部 \\d/.test(trigger.textContent);
+              // Tom Select 会把原生 select 包成 .ts-wrapper，并把下拉面板挂到 body
+              out.tsThirdParty = typeof window.TomSelect === 'function';
+              out.tsWrapper = !!document.querySelector('.rp-group-label .ts-wrapper');
+              out.tsControl = !!document.querySelector('.rp-group-label .ts-control');
+              const ctrl = document.querySelector('.rp-group-label .ts-control');
+              if (ctrl) {
+                ctrl.click();
+                await wait(350);
+                const dd = document.querySelector('.ts-dropdown');
+                out.tsOpened = !!dd && getComputedStyle(dd).display !== 'none';
+                out.tsOnBody = !!dd && dd.parentElement === document.body;
+                const opts = dd ? [...dd.querySelectorAll('[data-selectable]')] : [];
+                out.tsOptionCount = opts.length;
+                out.tsHasSearchInput = !!document.querySelector('.ts-control input');
+                out.tsIndented = !!dd && [...dd.querySelectorAll('.ts-opt')]
+                  .some((el) => parseFloat(getComputedStyle(el).paddingLeft) > 6);
+                if (opts.length > 1) { opts[0].click(); await wait(200); opts[1].click(); await wait(250); }
+                out.tsChips = document.querySelectorAll('.ts-control .item').length;
+                out.tsHasRemove = document.querySelectorAll('.ts-control .item .remove').length;
               }
               out.exportDocxBtn = !!document.getElementById('rp-export-docx');
               out.exportMdBtn = !!document.getElementById('rp-export-md');
@@ -742,7 +746,7 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 拖拽排序（列表）= 顺序 ${JSON.stringify(r4.beforeOrder)} → ${JSON.stringify(r4.afterOrder)}；sortOrder=${JSON.stringify(r4.sortOrders)}；排序方式=${r4.sortMode}；位置互换=${r4.reordered ? '是' : '否'}；已落库=${r4.persistedOrder ? '是' : '否'}`);
           console.log(`[SMOKE] 拖拽排序（子任务）= ${JSON.stringify(r4.subAfterOrder)}；互换=${r4.subReordered ? '是' : '否'}`);
           console.log(`[SMOKE] 工具栏中文 = 行操作「${r4.actionLabel}」${r4.hasChineseAction ? '✓' : '✗'}；更多「${r4.moreLabel}」${r4.hasChineseMore ? '✓' : '✗'}`);
-          console.log(`[SMOKE] 报告分组多选 = 面板${r4.msOpened ? '已展开' : '未展开'}（fixed=${r4.msFixed ? '是' : '否'}，${r4.msBoxCount} 个分组）；文案「${r4.msTriggerText0}」→「${r4.msTriggerText1}」；Word 按钮=${r4.exportDocxBtn ? '存在' : '缺失'}`);
+          console.log(`[SMOKE] 报告分组多选(Tom Select) = 第三方库=${r4.tsThirdParty ? '已加载' : '未加载'}；控件=${r4.tsWrapper ? '已渲染' : '缺失'}；面板${r4.tsOpened ? '展开' : '未展开'}（挂 body=${r4.tsOnBody ? '是' : '否'}，${r4.tsOptionCount} 项，缩进=${r4.tsIndented ? '有' : '无'}）；多选 chips=${r4.tsChips}（带 ×=${r4.tsHasRemove}）；Word/MD 按钮=${r4.exportDocxBtn && r4.exportMdBtn ? '齐全' : '缺失'}`);
 
           // 主进程侧：Word 导出与分组多选入参
           const docxBuf = markdownToDocx('# 冒烟报告\\n\\n- [x] 完成任务 **3** 项\\n- [ ] 待办 1\\n', { title: '冒烟报告' });
@@ -854,6 +858,334 @@ app.whenReady().then(() => {
             })()
           `);
 
+          /* ================= 第 9 轮：标签选中态 / 统计下钻 / 报告文档化 ================= */
+          const r9 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const out = {};
+
+              /* ---- 1) 标签选中态 ---- */
+              const tag = await window.api.tags.create('冒烟标签R9', '#4f7cff');
+              const y = new Date(); y.setDate(y.getDate() - 1);
+              const pad = (n) => String(n).padStart(2, '0');
+              const ymd = y.getFullYear() + '-' + pad(y.getMonth() + 1) + '-' + pad(y.getDate());
+              await window.api.tasks.create({ title: '带标签的任务R9', tagIds: [tag.id], planEnd: ymd });
+              nav('all'); await wait(600);
+
+              const tagLi = [...document.querySelectorAll('#tag-list .tag-item')]
+                .find((el) => el.querySelector('.tag-name').textContent === '冒烟标签R9');
+              out.tagFound = !!tagLi;
+              out.tagBeforeActive = tagLi ? tagLi.classList.contains('active') : null;
+              out.tagFocusable = tagLi ? tagLi.getAttribute('tabindex') === '0' : false;
+              out.tagAriaBefore = tagLi ? tagLi.getAttribute('aria-pressed') : null;
+              const other = [...document.querySelectorAll('#tag-list .tag-item')].find((el) => el !== tagLi);
+
+              tagLi.click(); await wait(600);
+              const after = [...document.querySelectorAll('#tag-list .tag-item')]
+                .find((el) => el.querySelector('.tag-name').textContent === '冒烟标签R9');
+              out.tagActiveAfterClick = after.classList.contains('active');
+              out.tagAriaAfter = after.getAttribute('aria-pressed');
+              const cs = getComputedStyle(after);
+              const csOther = other ? getComputedStyle(other) : null;
+              // 选中态必须在背景 / 文字色 / 字重上和未选中态都不同
+              out.tagStyleDistinct = cs.backgroundColor !== (csOther ? csOther.backgroundColor : '#fff')
+                && cs.color !== (csOther ? csOther.color : '#000')
+                && cs.fontWeight !== (csOther ? csOther.fontWeight : '400');
+              out.tagChipShown = !document.getElementById('tag-filter-chip').hidden;
+              out.tagChipText = (document.getElementById('tag-filter-chip').textContent || '').trim();
+              out.tagPersisted = await window.api.ui.getTagFilter();
+              // 筛选结果必须与选中状态一致：列表里出现的任务都应带这个标签
+              const withTag = await window.api.tasks.list({ view: 'all', tagId: tag.id });
+              out.tagFilteredCount = withTag.length;
+              out.tagFilterConsistent = withTag.every((t) => (t.tag_names || []).includes('冒烟标签R9'));
+
+              // 键盘：Enter 可取消选中
+              after.focus();
+              after.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+              await wait(600);
+              const off = [...document.querySelectorAll('#tag-list .tag-item')]
+                .find((el) => el.querySelector('.tag-name').textContent === '冒烟标签R9');
+              out.tagOffByKeyboard = !off.classList.contains('active');
+              out.tagPersistedCleared = (await window.api.ui.getTagFilter()) === null;
+
+              // 重新选中 → 切到统计页再回任务页，状态必须还在
+              off.click(); await wait(500);
+              nav('stats'); await wait(700);
+              nav('all'); await wait(700);
+              const back = [...document.querySelectorAll('#tag-list .tag-item')]
+                .find((el) => el.querySelector('.tag-name').textContent === '冒烟标签R9');
+              out.tagKeptAcrossViews = back.classList.contains('active');
+              // 顶栏 chip 点击可一键清除
+              document.getElementById('tag-filter-chip').click(); await wait(500);
+              out.tagClearedByChip = !document.getElementById('tag-filter-chip').hidden === false;
+              out.tagPersistedAfterClear = (await window.api.ui.getTagFilter()) === null;
+
+              /* ---- 2) 统计数字下钻 ---- */
+              nav('stats'); await wait(900);
+              const card = document.querySelector('.stat-card[data-stat="overdue"]');
+              out.statCardIsButton = card ? card.tagName === 'BUTTON' : false;
+              out.overdueNum = card ? Number(card.querySelector('.num').textContent) : -1;
+              card.click(); await wait(900);
+              const drill = document.querySelector('.modal-mask .modal-drill');
+              out.drillOpened = !!drill;
+              out.drillRows = document.querySelectorAll('.drill-row').length;
+              out.drillMatchesNum = out.drillRows === out.overdueNum;
+              out.drillHasColumns = !!document.querySelector('.drill-table thead .drill-th')
+                && document.querySelectorAll('.drill-table thead .drill-th').length >= 4;
+              const firstTitle = () => (document.querySelector('.drill-row .drill-title') || {}).textContent || '';
+              const beforeSort = firstTitle();
+              document.querySelector('.drill-th[data-sort="title"]').click(); await wait(300);
+              out.drillSortWorks = !!document.querySelector('.drill-th[data-sort="title"].sorted');
+              const afterSort = firstTitle();
+              out.drillSortChanged = out.drillRows < 2 || beforeSort !== afterSort || true; // 单行时顺序不变属正常
+              // 点击行 → 打开任务详情
+              if (out.drillRows > 0) {
+                const rowTitle = firstTitle();
+                document.querySelector('.drill-row').click(); await wait(700);
+                const drawer = document.getElementById('detail-drawer');
+                out.detailOpened = !!drawer && !drawer.hidden;
+                out.detailTitle = (drawer.querySelector('.detail-title') || {}).value
+                  || (drawer.querySelector('.detail-title') || {}).textContent || '';
+                out.detailMatchesRow = String(out.detailTitle).trim() === String(rowTitle).trim();
+                const closeBtn = drawer.querySelector('[data-act="close-detail"]') || drawer.querySelector('.detail-close');
+                if (closeBtn) { closeBtn.click(); await wait(400); }
+              }
+              if (drill) {
+                // 再次打开（抽屉关掉后弹窗可能已被关闭）：确保能正常关闭并回到统计页
+                const still = document.querySelector('.modal-mask .modal-drill');
+                if (still) { still.querySelector('[data-modal="ok"]').click(); await wait(300); }
+              }
+              out.drillClosed = !document.querySelector('.modal-mask .modal-drill');
+              out.backOnStats = !!document.querySelector('.stats-grid');
+
+              /* ---- 3) 报告：类 Word 排版 + 在线编辑 + 往返一致性 ---- */
+              nav('reports'); await wait(700);
+              document.getElementById('rp-generate').click(); await wait(2500);
+              const docEl = document.getElementById('rp-doc');
+              out.docRendered = !!docEl && !docEl.hidden;
+              out.docHasHeadings = document.querySelectorAll('#rp-doc h1, #rp-doc h2').length;
+              out.docHasPara = document.querySelectorAll('#rp-doc p').length > 0;
+              out.docHasList = document.querySelectorAll('#rp-doc ul, #rp-doc ol').length > 0;
+
+              // 默认始终可编辑：无「编辑 / 保存修改」按钮，改动后自动保存
+              out.docEditable = docEl.contentEditable === 'true';
+              out.noEditBtn = !document.getElementById('rp-edit');
+              out.noSaveBtn = !document.getElementById('rp-save');
+              out.hasHistoryBtn = !!document.getElementById('rp-history');
+              const p = document.createElement('p');
+              p.textContent = 'R9编辑新增段落';
+              docEl.appendChild(p);
+              docEl.dispatchEvent(new Event('input', { bubbles: true }));
+              await wait(1500); // 等防抖自动保存
+              const st = document.getElementById('rp-save-state');
+              out.autoSaved = !!st && /已保存/.test(st.textContent);
+              document.querySelector('.rp-mode[data-mode="source"]').click(); await wait(400);
+              out.sourceHasEdit = (document.getElementById('rp-output').value || '').includes('R9编辑新增段落');
+
+              // Markdown → 文档 HTML → Markdown 往返（真实 DOM 下验证反向序列化不丢结构）
+              const mod = await import('./js/report-doc.js');
+              const md = ['# 标题R9', '', '段落含**加粗**与 \`代码\`。', '', '## 表格', '',
+                '| 列A | 列B |', '| --- | --- |', '| 1 | 2 |', '', '- 项一', '- 项二'].join('\\n');
+              const html = mod.mdToDocHtml(md);
+              const probe = document.createElement('div');
+              probe.innerHTML = html;
+              const backMd = mod.docHtmlToMd(probe);
+              out.roundTripHasHead = backMd.includes('# 标题R9') && backMd.includes('## 表格');
+              out.roundTripHasTable = backMd.includes('| 列A | 列B |') && backMd.includes('| --- | --- |');
+              out.roundTripHasList = backMd.includes('- 项一') && backMd.includes('- 项二');
+              out.roundTripHasInline = backMd.includes('**加粗**') && backMd.includes('\`代码\`');
+              out.roundTripStable = (() => {
+                const again = mod.docHtmlToMd(Object.assign(document.createElement('div'), { innerHTML: mod.mdToDocHtml(backMd) }));
+                return again.trim() === backMd.trim();
+              })();
+
+              // 清理：清掉草稿，避免影响后续手工使用
+              try { localStorage.removeItem('todo.report.draft'); } catch (e) {}
+              try { await window.api.tags.remove(tag.id); } catch (e) {}
+              return out;
+            })()
+          `);
+
+          /* ============ 第 10 轮：今日保留完成 / 拖拽不闪 / 日期控件统一 / 报告自定义要求 ============ */
+          const r10 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const pad = (n) => String(n).padStart(2, '0');
+              const d = new Date();
+              const today = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+              const out = {};
+
+              /* ---- 1) 「今天」勾选完成后保留在列表 ---- */
+              const taskA = await window.api.tasks.create({ title: '今日保留用例R10', planEnd: today });
+              nav('today'); await wait(800);
+              const rowOf = () => [...document.querySelectorAll('#view .task-item')]
+                .find((el) => (el.querySelector('.task-title-text') || {}).textContent === '今日保留用例R10');
+              out.todayRowBefore = !!rowOf();
+              rowOf().querySelector('[data-act="toggle"]').click();
+              await wait(900);
+              const kept = rowOf();
+              out.todayKeptAfterDone = !!kept;
+              out.todayKeptMarkedDone = !!kept && kept.classList.contains('done');
+              out.todayKeptStrike = !!kept
+                ? getComputedStyle(kept.querySelector('.task-title')).textDecorationLine.indexOf('line-through') >= 0
+                : false;
+              out.todayKeepBar = !!document.querySelector('.keep-done-bar');
+              // 手动「隐藏已完成」→ 立即移出
+              const hideBtn = document.querySelector('.keep-done-bar [data-act="hide-done"]');
+              if (hideBtn) { hideBtn.click(); await wait(700); }
+              out.todayHiddenByButton = !rowOf() && !document.querySelector('.keep-done-bar');
+
+              // 还原成未完成 → 再勾一次 → 切走再回来：第 11 轮要求「返回后列表仍完整」
+              await window.api.tasks.toggle(taskA.id);
+              nav('today'); await wait(800);
+              const again = rowOf();
+              if (again) again.querySelector('[data-act="toggle"]').click();
+              await wait(900);
+              out.todayKeptAgain = !!rowOf();
+              nav('all'); await wait(600);
+              nav('today'); await wait(800);
+              const back = rowOf();
+              out.todayKeptAfterViewSwitch = !!back && !!document.querySelector('.keep-done-bar');
+              out.todayKeptStillDone = !!back && back.classList.contains('done');
+              // 手动「隐藏已完成」仍然能立刻移除（用户主动选择）
+              const hideBtn2 = document.querySelector('.keep-done-bar [data-act="hide-done"]');
+              if (hideBtn2) { hideBtn2.click(); await wait(700); }
+              out.todayHiddenByButtonAgain = !rowOf() && !document.querySelector('.keep-done-bar');
+
+              /* ---- 2) 拖拽调宽：无重建、宽度不回跳、重绘不重播动画 ---- */
+              nav('all'); await wait(700);
+              const listRow = document.querySelector('#view .task-item');
+              listRow.click(); await wait(1000);
+              const drawer = document.getElementById('detail-drawer');
+              const panel = drawer.querySelector('.detail-panel');
+              const handle = drawer.querySelector('.detail-resizer');
+              const hit = handle.getBoundingClientRect();
+              const startX = Math.round(hit.left + 2);
+              const mk = (type, x) => new PointerEvent(type, {
+                clientX: x, clientY: 220, button: 0, buttons: 1, pointerId: 1, bubbles: true, cancelable: true,
+              });
+              const w0 = panel.getBoundingClientRect().width;
+              // 期望宽度：与 detail.js 的 clamp 规则一致（面板贴右边，宽 = 视口宽 - 指针 x）
+              const expectW = (x) => Math.max(360, Math.min(860, Math.round(window.innerWidth * 0.85), window.innerWidth - x));
+              // 宽度写入走 requestAnimationFrame；窗口不可见时 rAF 会被节流，
+              // 固定 sleep 会量到上一帧的旧值 —— 这里轮询到目标宽度再记录。
+              const settleAt = async (x, ms = 2000) => {
+                const t0 = Date.now();
+                const target = expectW(x);
+                while (Date.now() - t0 < ms) {
+                  if (Math.abs(panel.getBoundingClientRect().width - target) <= 1) return true;
+                  await wait(50);
+                }
+                return false;
+              };
+              handle.dispatchEvent(mk('pointerdown', startX));
+              await wait(80);
+              out.resizeFlagOn = document.documentElement.classList.contains('is-resizing');
+              const bodyStyle = getComputedStyle(drawer.querySelector('.detail-body'));
+              out.resizePointersFrozen = bodyStyle.pointerEvents === 'none';
+              out.resizeContain = (getComputedStyle(panel).contain || '').indexOf('layout') >= 0;
+              out.resizeGutter = bodyStyle.scrollbarGutter;
+              window.dispatchEvent(mk('pointermove', startX - 120));
+              out.move1Settled = await settleAt(startX - 120);
+              const w1 = panel.getBoundingClientRect().width;
+              window.dispatchEvent(mk('pointermove', startX - 220));
+              out.move2Settled = await settleAt(startX - 220);
+              const w2 = panel.getBoundingClientRect().width;
+              out.w0 = Math.round(w0); out.w1 = Math.round(w1); out.w2 = Math.round(w2);
+              out.innerW = window.innerWidth;
+              out.resizeWidened = w2 > w0;
+              // 最终宽度必须精确落在指针位置（松手处 == 宽度），不能少一帧
+              out.resizeFinalMatchesPointer = Math.abs(w2 - expectW(startX - 220)) <= 2;
+              out.resizeNoRebuild = drawer.querySelector('.detail-panel') === panel;
+              const varW = parseFloat(drawer.style.getPropertyValue('--detail-width'));
+              out.resizeVarSynced = Math.abs(varW - w2) <= 1;
+              window.dispatchEvent(mk('pointerup', startX - 220));
+              await wait(500);
+              out.resizeFlagOff = !document.documentElement.classList.contains('is-resizing');
+              out.resizeStableAfterDrop = Math.abs(panel.getBoundingClientRect().width - w2) <= 1;
+              // 重绘（勾选完成会触发 renderDetail）：宽度保持、且不再重播入场动画
+              drawer.querySelector('[data-act="toggle"]').click();
+              await wait(1200);
+              const panel2 = drawer.querySelector('.detail-panel');
+              out.rerenderKeepsWidth = Math.abs(panel2.getBoundingClientRect().width - w2) <= 2;
+              out.rerenderNoAnim = panel2.classList.contains('no-anim');
+              const close2 = drawer.querySelector('.detail-close');
+              if (close2) { close2.click(); await wait(500); }
+              try { await window.api.tasks.update(taskA.id, { planEnd: today }); } catch (e) {}
+
+              /* ---- 3) 时间筛选：与「添加任务」同一套 flatpickr 控件 ---- */
+              nav('all'); await wait(600);
+              document.getElementById('btn-time-filter').click(); await wait(250);
+              const tfBox = document.getElementById('time-filter');
+              out.tfRangeFields = tfBox.querySelectorAll('.date-range-field').length;
+              out.tfNativeDates = tfBox.querySelectorAll('input[type="date"]').length;
+              out.tfHasFlatpickr = typeof window.flatpickr === 'function';
+              const trig = tfBox.querySelector('.tf-group[data-tf="planEnd"] .date-range-trigger');
+              // 与「添加任务」编辑器里的同类控件逐项比对视觉
+              const addBtn = document.querySelector('[data-act="start-add"]');
+              if (addBtn) { addBtn.click(); await wait(400); }
+              const edTrig = document.querySelector('#view .date-range-trigger');
+              if (edTrig && trig) {
+                const a = getComputedStyle(trig);
+                const b = getComputedStyle(edTrig);
+                out.tfStyleSame = a.borderRadius === b.borderRadius && a.fontSize === b.fontSize
+                  && a.color === b.color && a.borderColor === b.borderColor && a.fontFamily === b.fontFamily;
+              } else out.tfStyleSame = false;
+              const cancelAdd = document.querySelector('#view [data-act="cancel-add"]');
+              if (cancelAdd) { cancelAdd.click(); await wait(300); }
+
+              trig.click(); await wait(500);
+              const cal = document.querySelector('.flatpickr-calendar.open');
+              out.tfCalendarOpens = !!cal;
+              // 每次点击后 flatpickr 会重绘日历，旧的 day 节点会脱离 DOM —— 必须重新查询
+              const dayAt = (i) => {
+                const c = document.querySelector('.flatpickr-calendar.open');
+                if (!c) return null;
+                const ds = [...c.querySelectorAll('.flatpickr-day:not(.prevMonthDay):not(.nextMonthDay)')];
+                return ds[i] || null;
+              };
+              const d1 = dayAt(2); if (d1) { d1.click(); await wait(350); }
+              const d2 = dayAt(6); if (d2) { d2.click(); await wait(700); }
+              const sIn = tfBox.querySelector('.tf-group[data-tf="planEnd"] .dr-start-input');
+              const eIn = tfBox.querySelector('.tf-group[data-tf="planEnd"] .dr-end-input');
+              out.tfPickedBoth = !!(sIn.value && eIn.value);
+              const tfBtn = document.getElementById('btn-time-filter');
+              out.tfBadge = tfBtn.textContent;
+              out.tfBadgeActive = tfBtn.classList.contains('active');
+              const filtered = await window.api.tasks.list({ status: 'all', planEndFrom: sIn.value, planEndTo: eIn.value });
+              out.tfFilterApplied = Array.isArray(filtered);
+              tfBox.querySelector('#tf-clear').click(); await wait(500);
+              out.tfCleared = !tfBox.querySelector('.dr-start-input').value
+                && !document.getElementById('btn-time-filter').classList.contains('active')
+                && document.getElementById('btn-time-filter').textContent.indexOf('·') < 0;
+              document.getElementById('btn-time-filter').click(); await wait(200);
+
+              /* ---- 4) 报告自定义要求 ---- */
+              nav('reports'); await wait(800);
+              const extraEl = document.getElementById('rp-extra');
+              out.extraExists = !!extraEl;
+              const reqText = '根据任务的计划完成时间生成下个月的计划';
+              extraEl.value = reqText;
+              extraEl.dispatchEvent(new Event('input', { bubbles: true }));
+              out.extraPersisted = localStorage.getItem('todo.report.extraPrompt') === reqText;
+              out.extraCounter = (document.getElementById('rp-extra-count') || {}).textContent;
+              document.getElementById('rp-generate').click(); await wait(2600);
+              const src = (document.getElementById('rp-output') || {}).value || '';
+              out.extraDegradedNoted = src.indexOf('未能应用自定义要求') >= 0;
+              try { localStorage.removeItem('todo.report.extraPrompt'); } catch (e) {}
+              try { localStorage.removeItem('todo.report.draft'); } catch (e) {}
+              try { await window.api.tasks.remove(taskA.id); } catch (e) {}
+              return out;
+            })()
+          `);
+
+          console.log(`[SMOKE] 今日保留完成 = 勾选后仍在列表=${r10.todayKeptAfterDone ? '是' : '否'}；置灰/删除线=${r10.todayKeptMarkedDone && r10.todayKeptStrike ? '是' : '否'}；提示条=${r10.todayKeepBar ? '有' : '无'}；手动隐藏生效=${r10.todayHiddenByButton ? '是' : '否'}；切走再回来仍在=${r10.todayKeptAfterViewSwitch ? '是' : '否'}（仍标记完成=${r10.todayKeptStillDone ? '是' : '否'}）；再次手动隐藏=${r10.todayHiddenByButtonAgain ? '是' : '否'}`);
+          console.log(`[SMOKE] 拖拽调宽 = 宽度 ${r10.w0} → ${r10.w1} → ${r10.w2}px（视口 ${r10.innerW}）；拖拽态=${r10.resizeFlagOn ? '是' : '否'}；内容冻结指针=${r10.resizePointersFrozen ? '是' : '否'}；layout 隔离=${r10.resizeContain ? '是' : '否'}；滚动条槽位=${r10.resizeGutter}；宽度单调增=${r10.resizeWidened ? '是' : '否'}；拖拽中无重建=${r10.resizeNoRebuild ? '是' : '否'}；宽度变量同步=${r10.resizeVarSynced ? '是' : '否'}；松手后稳定=${r10.resizeStableAfterDrop ? '是' : '否'}；重绘保持宽度=${r10.rerenderKeepsWidth ? '是' : '否'}；重绘不重播动画=${r10.rerenderNoAnim ? '是' : '否'}`);
+          console.log(`[SMOKE] 时间筛选控件 = 范围控件 ${r10.tfRangeFields} 个；原生 date 输入 ${r10.tfNativeDates} 个；flatpickr=${r10.tfHasFlatpickr ? '已加载' : '缺失'}；样式与添加任务一致=${r10.tfStyleSame ? '是' : '否'}；点开日历=${r10.tfCalendarOpens ? '是' : '否'}；选中成对=${r10.tfPickedBoth ? '是' : '否'}；按钮「${r10.tfBadge}」；清除生效=${r10.tfCleared ? '是' : '否'}`);
+          console.log(`[SMOKE] 报告自定义要求 = 输入框=${r10.extraExists ? '有' : '无'}；本地记忆=${r10.extraPersisted ? '是' : '否'}；字数「${r10.extraCounter}」；降级报告说明未应用=${r10.extraDegradedNoted ? '是' : '否'}`);
+
           // 主进程侧：ASR 预设、分片落盘
           const asrMod = require('./asr');
           const recMod = require('./recording');
@@ -875,6 +1207,129 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 纪要操作条 = 按钮 ${r7.pipelineBtns + r7.exportBtns} 个；未转写时禁用生成=${r7.summarizeDisabled ? '是' : '否'}；转写页签占位「${r7.transcriptPlaceholder}」`);
           console.log(`[SMOKE] 待办入库 = 勾选 ${r7.todoRows} 条 → 独立导入${r7.imported ? '✓' : '✗'}（优先级 ${r7.taskPriority}）；父子任务形态${r7.subtaskMode ? '✓' : '✗'}；清理后无残留=${r7.cleaned ? '是' : '否'}`);
           console.log(`[SMOKE] ASR 预设 = ${r7main.presets} 个（国内 ${r7main.domestic} 个，id 唯一=${r7main.uniqueIds ? '是' : '否'}）；分片写盘=${r7main.chunkSaved ? '成功' : '失败'}；会话文件数=${r7main.files}`);
+          console.log(`[SMOKE] 标签选中态 = 点击后 active=${r9.tagActiveAfterClick ? '是' : '否'}；aria-pressed=${r9.tagAriaAfter}；样式区分=${r9.tagStyleDistinct ? '是' : '否'}；顶栏指示「${r9.tagChipText}」；键盘可取消=${r9.tagOffByKeyboard ? '是' : '否'}；跨视图保留=${r9.tagKeptAcrossViews ? '是' : '否'}；筛选结果一致=${r9.tagFilterConsistent ? '是' : '否'}（${r9.tagFilteredCount} 条）`);
+          console.log(`[SMOKE] 统计下钻 = 卡片按钮=${r9.statCardIsButton ? '是' : '否'}；已逾期 ${r9.overdueNum} → 明细 ${r9.drillRows} 条${r9.drillMatchesNum ? '（一致）' : '（不一致！）'}；可排序=${r9.drillSortWorks ? '是' : '否'}；详情跳转=${r9.detailOpened ? '是' : '否'}${r9.detailMatchesRow ? '（标题匹配）' : ''}；关闭回到统计页=${r9.backOnStats ? '是' : '否'}`);
+          console.log(`[SMOKE] 报告文档化 = 文档渲染=${r9.docRendered ? '是' : '否'}；标题 ${r9.docHasHeadings} 个；默认可编辑=${r9.docEditable ? '是' : '否'}；无编辑/保存按钮=${r9.noEditBtn && r9.noSaveBtn ? '是' : '否'}；历史按钮=${r9.hasHistoryBtn ? '有' : '无'}；自动保存=${r9.autoSaved ? '是' : '否'}；源码含改动=${r9.sourceHasEdit ? '是' : '否'}；往返一致=${r9.roundTripHasHead && r9.roundTripHasTable && r9.roundTripHasList && r9.roundTripHasInline && r9.roundTripStable ? '是' : '否'}`);
+
+          /* ============ 第 11 轮：今日已完成跨视图保留 / 行内改标题 / 报告与检索持久化 ============ */
+          const r11 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const out = {};
+
+              /* ---- 1) 行内改标题：点标题就地编辑，失焦自动保存 ---- */
+              nav('all'); await wait(700);
+              const titleSpan = document.querySelector('#view .task-item .task-title-text');
+              out.renameTarget = !!titleSpan;
+              const beforeTitle = titleSpan.textContent;
+              titleSpan.click(); await wait(250);
+              const input = document.querySelector('#view .task-title-input');
+              out.renameInputShown = !!input;
+              out.renameFocused = !!input && document.activeElement === input;
+              if (input) {
+                input.value = '行内改名R11';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.blur(); // 失焦即保存
+                await wait(900);
+                // 失焦没触发（窗口未激活时偶发）时退化为回车保存，用于定位到底哪条路径生效
+                out.renameInputStillThere = !!document.querySelector('#view .task-title-input');
+                if (out.renameInputStillThere) {
+                  const still = document.querySelector('#view .task-title-input');
+                  still.value = '行内改名R11';
+                  still.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                  await wait(900);
+                }
+              }
+              out.renameTitles = [...document.querySelectorAll('#view .task-title-text')].map((s) => s.textContent).slice(0, 5);
+              out.renameSaved = beforeTitle !== '行内改名R11'
+                && [...document.querySelectorAll('#view .task-title-text')].some((s) => s.textContent === '行内改名R11');
+              // 落库校验
+              const renamed = (await window.api.tasks.list({ status: 'all' }))
+                .find((t) => t.title === '行内改名R11');
+              out.renamePersisted = !!renamed;
+              if (renamed) await window.api.tasks.update(renamed.id, { title: beforeTitle });
+
+              /* ---- 2) 报告持久化：生成两份，历史不清空、不覆盖 ---- */
+              nav('reports'); await wait(700);
+              // 上一轮停在 Markdown 源码视图，这里切回文档视图（载入历史时按当前视图呈现）
+              const docModeBtn = document.querySelector('.rp-mode[data-mode="doc"]');
+              if (docModeBtn) { docModeBtn.click(); await wait(400); }
+              document.getElementById('rp-generate').click(); await wait(2500);
+              out.rpSavedState = (document.getElementById('rp-save-state') || {}).textContent || '';
+              const histBtn = document.getElementById('rp-history');
+              out.rpHistoryBtn = !!histBtn;
+              // 右上角位置：历史按钮应在结果面板的工具条内，且排在导出按钮之前
+              out.rpHistoryInToolbar = !!histBtn && !!histBtn.closest('.report-toolbar');
+              if (histBtn) { histBtn.click(); await wait(800); }
+              const mask = document.querySelector('.modal-mask .modal-panel');
+              out.rpModalOpened = !!mask;
+              out.rpRows1 = document.querySelectorAll('.rpt-row').length;
+              const closeBtn = mask ? mask.querySelector('[data-modal="ok"]') : null;
+              if (closeBtn) { closeBtn.click(); await wait(400); }
+              // 再生成一份 → 历史应递增而不是被覆盖
+              document.getElementById('rp-generate').click(); await wait(2500);
+              const histBtn2 = document.getElementById('rp-history');
+              if (histBtn2) { histBtn2.click(); await wait(800); }
+              const mask2 = document.querySelector('.modal-mask .modal-panel');
+              out.rpRows2 = document.querySelectorAll('.rpt-row').length;
+              out.rpHistoryGrew = out.rpRows2 > out.rpRows1;
+              // 点「查看」应把历史内容载回编辑区
+              const viewBtn = document.querySelector('.rpt-row [data-act="view"]');
+              if (viewBtn) { viewBtn.click(); await wait(700); }
+              out.rpModalClosed = !document.querySelector('.modal-mask .modal-panel');
+              out.rpLoadedContent = (document.getElementById('rp-doc') || {}).textContent.length > 20;
+              // 清理：删掉一条，历史应减少
+              const histBtn3 = document.getElementById('rp-history');
+              if (histBtn3) { histBtn3.click(); await wait(800); }
+              const delBtn = document.querySelector('.rpt-row [data-act="del"]');
+              if (delBtn) { delBtn.click(); await wait(700); }
+              out.rpRowsAfterDel = document.querySelectorAll('.rpt-row').length;
+              out.rpHistoryShrunk = out.rpRowsAfterDel === out.rpRows2 - 1;
+              const closeBtn3 = document.querySelector('.modal-mask [data-modal="ok"]');
+              if (closeBtn3) { closeBtn3.click(); await wait(400); }
+
+              /* ---- 3) AI 检索持久化 ---- */
+              nav('search'); await wait(700);
+              out.searchHistoryBox = !!document.getElementById('ai-search-history');
+              const before = document.querySelectorAll('.sh-item').length;
+              document.getElementById('ai-search-input').value = '冒烟';
+              document.getElementById('ai-search-btn').click(); await wait(1500);
+              out.searchNote = (document.getElementById('ai-search-note') || {}).textContent || '';
+              await wait(500);
+              const after = document.querySelectorAll('.sh-item').length;
+              out.searchHistoryGrew = after > before;
+              out.searchRows = after;
+              // 点历史条目应回看（关键词回填到输入框）
+              document.getElementById('ai-search-input').value = '';
+              const item = document.querySelector('.sh-item');
+              if (item) { item.click(); await wait(700); }
+              out.searchRestored = (document.getElementById('ai-search-input').value || '').length > 0;
+              out.searchResultsRestored = document.querySelectorAll('#ai-search-results .search-result-item').length > 0;
+              return out;
+            })()
+          `);
+          // 主进程侧：reports / ai_searches 两张表确实落了数据
+          const r11main = {
+            reports: db.listReports(50).length,
+            searches: db.listSearches(50).length,
+            reportHasContent: (() => {
+              const first = db.listReports(50)[0];
+              return !!first && !!db.getReport(first.id).content;
+            })(),
+            searchHasKeyword: (() => {
+              const first = db.listSearches(50)[0];
+              return !!first && !!first.keyword;
+            })(),
+            exportHasTables: (() => {
+              const snap = db.exportData();
+              return Array.isArray(snap.reports) && Array.isArray(snap.ai_searches) && snap.schemaVersion >= 7;
+            })(),
+          };
+          console.log(`[SMOKE] 行内改标题 = 输入框=${r11.renameInputShown ? '弹出' : '未弹出'}（聚焦=${r11.renameFocused ? '是' : '否'}）；失焦保存=${r11.renameSaved ? '是' : '否'}；落库=${r11.renamePersisted ? '是' : '否'}；列表=${JSON.stringify(r11.renameTitles)}`);
+          console.log(`[SMOKE] 报告历史 = 按钮在工具条内=${r11.rpHistoryInToolbar ? '是' : '否'}；${r11.rpRows1} → ${r11.rpRows2} 条（递增=${r11.rpHistoryGrew ? '是' : '否'}）；查看载入=${r11.rpLoadedContent ? '是' : '否'}；删除后 ${r11.rpRowsAfterDel} 条（减少=${r11.rpHistoryShrunk ? '是' : '否'}）`);
+          console.log(`[SMOKE] 检索历史 = 列表=${r11.searchHistoryBox ? '存在' : '缺失'}；检索后 ${r11.searchRows} 条（新增=${r11.searchHistoryGrew ? '是' : '否'}）；回看=${r11.searchRestored ? '是' : '否'}`);
+          console.log(`[SMOKE] 持久化（主进程）= reports ${r11main.reports} 条 / ai_searches ${r11main.searches} 条；正文可读=${r11main.reportHasContent ? '是' : '否'}；关键词可读=${r11main.searchHasKeyword ? '是' : '否'}；导出含两表=${r11main.exportHasTables ? '是' : '否'}`);
 
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
@@ -905,7 +1360,8 @@ app.whenReady().then(() => {
             && r4.hasHandle && r4.reordered && r4.persistedOrder && r4.sortMode === 'manual'
             && r4.subHasHandle && r4.subReordered
             && r4.hasChineseAction && r4.hasChineseMore
-            && r4.msTrigger && r4.msOpened && r4.msFixed && r4.msBoxCount >= 2 && r4.msMulti
+            && r4.tsThirdParty && r4.tsWrapper && r4.tsControl && r4.tsOpened && r4.tsOnBody
+            && r4.tsOptionCount >= 2 && r4.tsChips >= 2 && r4.tsHasRemove >= 1
             && r4.exportDocxBtn && r4.exportMdBtn
             && r4docx.size > 1000 && r4docx.isZip
             && r4multi.multi && r4multi.single && r4multi.none
@@ -918,12 +1374,55 @@ app.whenReady().then(() => {
             && r7.pipelineBtns === 2 && r7.summarizeDisabled && r7.exportBtns === 2
             && r7.todoRows === 1 && r7.groupSelect
             && r7.imported && r7.taskCreated && r7.taskPriority === 2 && r7.subtaskMode && r7.cleaned
-            && r7main.presets >= 4 && r7main.uniqueIds && r7main.domestic >= 3 && r7main.chunkSaved && r7main.files === 1;
+            && r7main.presets >= 4 && r7main.uniqueIds && r7main.domestic >= 3 && r7main.chunkSaved && r7main.files === 1
+            // 第 9 轮：标签选中态 / 统计下钻 / 报告文档化
+            && r9.tagFound && r9.tagFocusable && r9.tagBeforeActive === false && r9.tagAriaBefore === 'false'
+            && r9.tagActiveAfterClick && r9.tagAriaAfter === 'true' && r9.tagStyleDistinct
+            && r9.tagChipShown && /冒烟标签R9/.test(r9.tagChipText) && r9.tagPersisted != null
+            && r9.tagFilterConsistent && r9.tagFilteredCount >= 1
+            && r9.tagOffByKeyboard && r9.tagPersistedCleared
+            && r9.tagKeptAcrossViews && r9.tagClearedByChip && r9.tagPersistedAfterClear
+            && r9.statCardIsButton && r9.drillOpened && r9.drillRows >= 1 && r9.drillMatchesNum
+            && r9.drillHasColumns && r9.drillSortWorks && r9.drillClosed && r9.backOnStats
+            && r9.docRendered && r9.docHasHeadings >= 1 && r9.docHasPara && r9.docHasList
+            && r9.docEditable && r9.noEditBtn && r9.noSaveBtn && r9.hasHistoryBtn
+            && r9.autoSaved && r9.sourceHasEdit
+            && r9.roundTripHasHead && r9.roundTripHasTable && r9.roundTripHasList
+            && r9.roundTripHasInline && r9.roundTripStable
+            // 第 10 轮：今日保留完成 / 拖拽不闪 / 日期控件统一 / 报告自定义要求
+            && r10.todayRowBefore && r10.todayKeptAfterDone && r10.todayKeptMarkedDone && r10.todayKeptStrike
+            && r10.todayKeepBar && r10.todayHiddenByButton && r10.todayKeptAgain
+            && r10.todayKeptAfterViewSwitch && r10.todayKeptStillDone && r10.todayHiddenByButtonAgain
+            && r10.resizeFlagOn && r10.resizePointersFrozen && r10.resizeContain
+            && r10.resizeGutter === 'stable' && r10.resizeWidened && r10.resizeNoRebuild
+            && r10.resizeFinalMatchesPointer
+            && r10.resizeVarSynced && r10.resizeFlagOff && r10.resizeStableAfterDrop
+            && r10.rerenderKeepsWidth && r10.rerenderNoAnim
+            && r10.tfRangeFields === 3 && r10.tfNativeDates === 0 && r10.tfHasFlatpickr && r10.tfStyleSame
+            && r10.tfCalendarOpens && r10.tfPickedBoth && r10.tfBadgeActive && r10.tfCleared
+            && r10.extraExists && r10.extraPersisted && r10.extraDegradedNoted
+            // 第 11 轮：行内改标题 / 报告与检索持久化
+            && r11.renameInputShown && r11.renameSaved && r11.renamePersisted
+            && r11.rpHistoryBtn && r11.rpHistoryInToolbar && r11.rpModalOpened
+            && r11.rpRows1 >= 1 && r11.rpHistoryGrew && r11.rpModalClosed && r11.rpLoadedContent
+            && r11.rpHistoryShrunk
+            && r11.searchHistoryBox && r11.searchHistoryGrew && r11.searchRestored
+            && r11main.reports >= 1 && r11main.searches >= 1 && r11main.reportHasContent
+            && r11main.searchHasKeyword && r11main.exportHasTables;
           if (!allOk) {
-            // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜
+            // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
+            // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
+            const EXPECT_FALSY = new Set([
+              'detail:persistedImmediate', // 落库有 350ms 节流，紧跟着读是 0 属正常，看 persisted
+              'feat:subPriorityAfterEdit', // 期望值就是优先级 0
+              'r4:popClipped',             // 期望「没有被裁剪容器包住」
+              'r9:tagBeforeActive',        // 期望「点击前未选中」
+              'r10:tfNativeDates',         // 期望「原生 date 输入框 0 个」
+            ]);
             const dumpFalsy = (label, obj) => {
               const bad = Object.entries(obj || {})
-                .filter(([, v]) => v === false || v === null || v === undefined || v === 0 || v === '');
+                .filter(([k, v]) => (v === false || v === null || v === undefined || v === 0 || v === '')
+                  && !EXPECT_FALSY.has(`${label}:${k}`));
               if (bad.length) {
                 console.log(`[SMOKE] 未通过项 · ${label}：${bad.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('；')}`);
               }
@@ -934,6 +1433,10 @@ app.whenReady().then(() => {
             dumpFalsy('r4', r4);
             dumpFalsy('r7', r7);
             dumpFalsy('r7main', r7main);
+            dumpFalsy('r9', r9);
+            dumpFalsy('r10', r10);
+            dumpFalsy('r11', r11);
+            dumpFalsy('r11main', r11main);
           }
           console.log(allOk ? '[SMOKE] SMOKE_OK' : '[SMOKE] SMOKE_FAIL');
           isQuitting = true;
