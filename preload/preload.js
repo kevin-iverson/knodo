@@ -61,7 +61,7 @@ contextBridge.exposeInMainWorld('api', {
   // 统计
   stats: {
     overview: () => call('stats:overview'),
-    trend: (days) => call('stats:trend', days),
+    trend: (p) => call('stats:trend', p),
   },
   // AI 配置（对话 + 语音）
   ai: {

@@ -452,11 +452,20 @@ body {
 .bar-fill { height: 100%; border-radius: 5px; background: var(--primary); }
 .bar-row .bar-val { width: 34px; font-size: 12px; color: var(--text-3); text-align: right; }
 
+/* 面板标题行：左侧标题 + 右侧操作（趋势范围切换） */
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.panel-head h3 { margin-bottom: 0; }
+.trend-range { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.trend-chip { font-size: 12px; }
+
 .trend-chart { display: flex; align-items: flex-end; gap: 8px; height: 140px; padding-top: 10px; }
-.trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
+.trend-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; min-width: 0; }
 .trend-bar { width: 70%; max-width: 40px; background: var(--primary); border-radius: 4px 4px 0 0; min-height: 3px; }
 .trend-count { font-size: 11px; color: var(--text-2); }
-.trend-date { font-size: 10px; color: var(--text-3); }
+.trend-date { font-size: 10px; color: var(--text-3); white-space: nowrap; }
+.trend-body { min-height: 60px; }
+.trend-loading, .trend-empty { padding: 40px 0; text-align: center; color: var(--text-3); font-size: 13px; }
+.trend-summary { margin-top: 10px; text-align: right; font-size: 12px; color: var(--text-2); }
 
 /* ---------------- AI 报告 ---------------- */
 .report-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 16px; }
@@ -989,6 +998,8 @@ html.is-resizing .detail-foot { pointer-events: none; }
   font-size: 12px; color: var(--primary); cursor: pointer; margin-bottom: 10px;
 }
 .detail-parent:hover { text-decoration: underline; }
+/* 创建时间：只读元信息，弱化到与页脚保存状态同级 */
+.detail-created { margin-top: 10px; font-size: 12px; color: var(--text-3); user-select: text; }
 
 /* Markdown 渲染 */
 .markdown-body { line-height: 1.7; font-size: 13.5px; word-break: break-word; }
@@ -1289,3 +1300,5 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .np-ops { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .np-ops .np-spacer { flex: 1; }
 .np-loading { padding: 40px; text-align: center; color: var(--text-3); font-size: 13px; }
+/* 润色失败：原因必须显眼，并给出重试入口（看不到反馈 = 等于"点了没反应"） */
+.np-error { padding: 40px; text-align: center; color: var(--danger); font-size: 13px; line-height: 1.6; word-break: break-all; }

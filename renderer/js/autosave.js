@@ -73,6 +73,9 @@ export function createAutoSave({
     onStatus('saving');
     try {
       const entity = await save(payload);
+      // 写入期间宿主已被销毁（切换任务 / 关闭面板 / 重绘）：库里已经写了就写了，
+      // 但绝不能再回调 —— 回调会去刷新已经不存在的界面，或把别的任务的界面再写一遍。
+      if (disposed) return;
       if (entity === null || entity === undefined) {
         // 冲突：任务已被删除或不存在 → 回滚到基线并交给宿主处理
         onStatus('error', 'conflict');

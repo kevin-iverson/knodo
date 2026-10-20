@@ -498,6 +498,10 @@ async function renderTasks() {
     html += state.addingTask ? newEditorHtml() : addRowHtml();
   }
 
+  // 编辑器被整块替换前先回收它的自动保存器：换 innerHTML 不会取消已排队的防抖计时器，
+  // 旧保存器会拿着已销毁的 DOM 继续写库（可能把别的任务刚改过的值覆盖回去）。
+  disposeEditorSavers(viewEl);
+
   viewEl.innerHTML = html;
   const hideDoneBtn = viewEl.querySelector('[data-act="hide-done"]');
   if (hideDoneBtn) {
@@ -509,6 +513,22 @@ async function renderTasks() {
   bindTaskListEvents(viewEl);
   bindEditorEvents(viewEl);
   if (state.addingTask || state.editingTaskId != null) focusEditor();
+}
+
+/**
+ * 回收视图内就地编辑器的自动保存器（先 flush 落库，再 dispose 取消计时器）。
+ * 与详情抽屉同一套规则：只换 innerHTML 不等于保存器消失。
+ */
+function disposeEditorSavers(root) {
+  root.querySelectorAll('.task-editor').forEach((ed) => {
+    const saver = ed && ed.__autoSave;
+    if (!saver) return;
+    try {
+      const p = saver.flush();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (_e) { /* 回收阶段不抛错 */ }
+    try { saver.dispose(); } catch (_e) { /* 同上 */ }
+  });
 }
 
 function groupBy(arr, keyFn) {
@@ -621,6 +641,8 @@ function taskItemHtml(t, depth = 0) {
   if (t.subtask_count > 0) meta.push(`<span class="meta-item subtask-progress">☑ ${t.subtask_done}/${t.subtask_count}</span>`);
   if (t.completed && t.completed_at) meta.push(`<span class="meta-item done-at">✅ 完成于 ${fmtDateTime(t.completed_at)}</span>`);
   if (t.reminder_at) meta.push(`<span class="meta-item">🔔 ${fmtDateTime(t.reminder_at)}</span>`);
+  // 创建时间：行内只放日期（完整时间走 title），避免把 meta 行撑得太长
+  if (t.created_at) meta.push(`<span class="meta-item created-at" title="创建于 ${esc(fmtDateTime(t.created_at))}">🕒 ${esc(t.created_at.slice(0, 10))}</span>`);
   for (const n of t.tag_names) meta.push(`<span class="tag-chip">${esc(n)}</span>`);
   // 分组标签显示完整路径（"工作 / 前端"），否则同名子分组看不出归属
   const groupLabel = t.group_name
@@ -719,8 +741,10 @@ function startInlineRename(span, id) {
     put(next); // 先落地到界面，保存失败再回滚
     try {
       await api.tasks.update(id, { title: next });
-      const t = state.tasks.find((x) => x.id === id);
-      if (t) t.title = next;
+      // 按 id 精确替换（不可变更新），不直接改 state 里的对象：
+      // 列表数据与任何编辑态都不共用引用，改一个任务不可能带动另一个。
+      const i = state.tasks.findIndex((x) => x.id === id);
+      if (i > -1) state.tasks[i] = { ...state.tasks[i], title: next };
       toast('标题已保存');
     } catch (e) {
       put(original);
@@ -837,8 +861,10 @@ function startEdit(id) {
 
 function cancelEditor() {
   // 取消只丢弃"尚未写入"的改动；已经自动保存的内容按即时持久化的语义保留
+  // 必须 dispose 而不只是 cancel：cancel 只清计时器，renderTasks 回收时会 flush 一次，
+  // 结果把用户刚取消的内容又写回库里。dispose 之后 flush 直接空转。
   const ed = document.querySelector('.task-editor');
-  if (ed && ed.__autoSave) ed.__autoSave.cancel();
+  if (ed && ed.__autoSave) { ed.__autoSave.cancel(); ed.__autoSave.dispose(); }
   state.addingTask = false;
   state.editingTaskId = null;
   renderTasks();
@@ -1344,10 +1370,23 @@ async function deleteTag(t) {
 
 /* ---------------- 统计 ---------------- */
 
+/**
+ * 完成趋势的可选范围（key 与 main/db.js 的 TREND_RANGES 一一对应）。
+ * 跨度越大粒度越粗（天 → 周 → 月），坐标轴标签与标题文案随选择一起变。
+ */
+const TREND_RANGES = [
+  { key: '7d', label: '近 7 天' },
+  { key: '1m', label: '近一个月' },
+  { key: '6m', label: '近半年' },
+  { key: '1y', label: '近一年' },
+];
+/** 当前趋势范围：切换视图再回到统计页时保留用户上次的选择 */
+let trendRange = '7d';
+
 async function renderStats() {
   const viewEl = document.getElementById('view');
   viewEl.innerHTML = '<div class="empty">加载中…</div>';
-  const [ov, trend] = await Promise.all([api.stats.overview(), api.stats.trend(7)]);
+  const ov = await api.stats.overview();
 
   const maxGroup = Math.max(1, ...ov.byGroup.map((g) => g.active + g.done));
   const groupBars = ov.byGroup
@@ -1358,18 +1397,6 @@ async function renderStats() {
         <span class="bar-label">${esc(g.name)}</span>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${esc(g.color)}"></div></div>
         <span class="bar-val">${total}</span>
-      </div>`;
-    })
-    .join('');
-
-  const maxTrend = Math.max(1, ...trend.map((d) => d.count));
-  const trendCols = trend
-    .map((d) => {
-      const h = Math.max(3, Math.round((d.count / maxTrend) * 100));
-      return `<div class="trend-col">
-        <span class="trend-count">${d.count}</span>
-        <div class="trend-bar" style="height:${h}px"></div>
-        <span class="trend-date">${d.date.slice(5)}</span>
       </div>`;
     })
     .join('');
@@ -1399,13 +1426,89 @@ async function renderStats() {
       ${statCardHtml('archived', ov.archived, '已归档', '')}
     </div>
     <div class="stats-tip">${statsTipHtml()}</div>
-    <div class="panel"><h3>近 7 天完成趋势</h3><div class="trend-chart">${trendCols}</div></div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3 id="trend-title">完成趋势</h3>
+        <div class="trend-range" id="trend-range" role="group" aria-label="完成趋势时间范围">
+          ${TREND_RANGES.map((r) => `<button type="button" class="chip trend-chip${r.key === trendRange ? ' active' : ''}"
+            data-trend="${esc(r.key)}" aria-pressed="${r.key === trendRange}">${esc(r.label)}</button>`).join('')}
+        </div>
+      </div>
+      <div class="trend-body" id="trend-body"><div class="trend-loading">加载中…</div></div>
+    </div>
     <div class="panel"><h3>分组任务量</h3>${groupBars || '<span class="meta-item">暂无分组</span>'}</div>
     <div class="panel"><h3>优先级分布（进行中）</h3>${priBars}</div>`;
 
   viewEl.querySelectorAll('.stat-card[data-stat]').forEach((card) => {
     card.addEventListener('click', () => openStatDrilldown(card.dataset.stat, card));
   });
+  bindTrendRange(viewEl);
+  await renderTrend();
+}
+
+/** 范围切换：只重绘趋势这一块，概述数据不必重新拉取 */
+function bindTrendRange(viewEl) {
+  const box = viewEl.querySelector('#trend-range');
+  if (!box) return;
+  box.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-trend]');
+    if (!btn || btn.dataset.trend === trendRange) return;
+    trendRange = btn.dataset.trend;
+    box.querySelectorAll('[data-trend]').forEach((b) => {
+      const on = b.dataset.trend === trendRange;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
+    await renderTrend();
+  });
+}
+
+/**
+ * 拉取并绘制趋势。三种状态都要有明确呈现：
+ * 加载中、无数据（给出范围文案而不是空图）、加载失败（显示原因）。
+ */
+async function renderTrend() {
+  const body = document.getElementById('trend-body');
+  if (!body) return;
+  const titleEl = document.getElementById('trend-title');
+  body.innerHTML = '<div class="trend-loading">加载中…</div>';
+
+  let t;
+  try {
+    t = await api.stats.trend({ range: trendRange });
+  } catch (e) {
+    body.innerHTML = `<div class="trend-empty">趋势加载失败：${esc((e && e.message) || '未知错误')}</div>`;
+    return;
+  }
+  const label = (t && t.label) || '';
+  if (titleEl) titleEl.textContent = `${label}完成趋势`;
+
+  const pts = (t && t.points) || [];
+  // 无数据：直接给一句人话，而不是画一排高度 0 的柱子
+  if (!pts.length || !t.total) {
+    body.innerHTML = `<div class="trend-empty">${esc(label || '所选范围')}内还没有已完成的任务</div>`;
+    return;
+  }
+
+  const maxCount = Math.max(1, ...pts.map((p) => p.count));
+  // 坐标轴文案随粒度变：天 = 当天，周 = 该周起始日，月 = 年月
+  const unitText = t.granularity === 'week' ? ' 起一周' : t.granularity === 'month' ? '（整月）' : '';
+  // 柱子多时每隔 N 个才显示一个坐标标签，否则标签会挤成一团
+  const step = Math.ceil(pts.length / 15);
+  const cols = pts
+    .map((p, i) => {
+      const h = Math.max(3, Math.round((p.count / maxCount) * 100));
+      const showLabel = i === pts.length - 1 || i % step === 0;
+      return `<div class="trend-col" title="${esc(`${p.label}${unitText}：${p.count} 个`)}">
+        <span class="trend-count">${p.count ? p.count : ''}</span>
+        <div class="trend-bar" style="height:${h}px"></div>
+        <span class="trend-date"${showLabel ? '' : ' style="visibility:hidden"'}">${esc(p.label)}</span>
+      </div>`;
+    })
+    .join('');
+
+  body.innerHTML = `<div class="trend-chart">${cols}</div>
+    <div class="trend-summary">${esc(label)}共完成 ${t.total} 个任务</div>`;
 }
 
 /**

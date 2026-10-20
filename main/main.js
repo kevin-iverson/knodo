@@ -1507,6 +1507,195 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 快捷键 = 入口${r13.scBtn ? '存在' : '缺失'}；弹窗=${r13.scModalOpened ? '打开' : '未打开'}；项数=${r13.scRows}；当前=${JSON.stringify(r13.scDefaults)}；避开 IDEA=${r13main.notIdea ? '是' : '否'}；校验器=${r13main.validate ? '正常' : '异常'}；重复被拒=${r13main.dupRejected ? '是' : '否'}`);
           console.log(`[SMOKE] 历史弹窗尺寸 = 报告历史 ${r13.rpHisWidth}px（≥900=${r13.rpHisWidth >= 900 ? '是' : '否'}；完整在视口内=${r13.rpHisInViewport ? '是' : '否'}）；会议纪要历史入口=${r13.mthBtn ? '有' : '无'}`);
 
+          /* ============ 第 14 轮：多任务详情编辑互不串改 ============ */
+          const r14 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const out = {};
+              nav('all'); await wait(700);
+
+              // 两个互相独立的任务（新建后要切一次视图把列表重绘出来）
+              const a = await window.api.tasks.create({ title: '串改用例A', notes: 'A的备注', priority: 1 });
+              const b = await window.api.tasks.create({ title: '串改用例B', notes: 'B的备注', priority: 2 });
+              out.aId = a.id; out.bId = b.id; out.idsDistinct = a.id !== b.id;
+              nav('upcoming'); await wait(500);
+              nav('all'); await wait(800);
+
+              const rowOf = (title) => [...document.querySelectorAll('#view .task-item')]
+                .find((el) => (el.querySelector('.task-title-text') || {}).textContent === title);
+
+              /* ---- 1) 打开 A → 改标题 → 不等防抖立刻切到 B（旧保存器的计时器还在跑）---- */
+              out.aRowFound = !!rowOf('串改用例A');
+              out.bRowFound = !!rowOf('串改用例B');
+              if (rowOf('串改用例A')) rowOf('串改用例A').click();
+              await wait(900);
+              let drawer = document.getElementById('detail-drawer');
+              out.aOpened = !drawer.hidden
+                && (drawer.querySelector('.detail-title') || {}).value === '串改用例A';
+              const ti = drawer.querySelector('.detail-title');
+              ti.value = '串改用例A已改';
+              ti.dispatchEvent(new Event('input', { bubbles: true }));
+              await wait(80); // 远小于 700ms 防抖窗口
+              if (rowOf('串改用例B')) rowOf('串改用例B').click(); // 立刻切换任务
+              await wait(2500);           // 跨过旧防抖窗口并等落库
+
+              const a2 = await window.api.tasks.get(a.id);
+              const b2 = await window.api.tasks.get(b.id);
+              out.aTitleAfter = a2 && a2.title;
+              out.bTitleAfter = b2 && b2.title;
+              out.bUntouched = out.bTitleAfter === '串改用例B';       // B 绝不能被写成 A 的内容
+              out.aNotClonedFromB = out.aTitleAfter !== '串改用例B';   // A 也绝不能被写成 B 的内容
+              out.titlesDistinct = !!a2 && !!b2 && a2.title !== b2.title;
+              out.aKeptEdit = out.aTitleAfter === '串改用例A已改';     // 切走前补写：A 的改动不该丢
+              out.bNotesKept = !!b2 && b2.notes === 'B的备注';
+
+              /* ---- 2) 在 B 的详情页改标题并保存 → 只有 B 变，A 必须原样 ---- */
+              drawer = document.getElementById('detail-drawer');
+              out.bOpened = !drawer.hidden
+                && (drawer.querySelector('.detail-title') || {}).value === '串改用例B';
+              const tb = drawer.querySelector('.detail-title');
+              if (tb) {
+                tb.value = '串改用例B已改';
+                tb.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+              const saveBtn = drawer.querySelector('[data-act="save"]');
+              if (saveBtn) saveBtn.click();
+              await wait(1500);
+              const a3 = await window.api.tasks.get(a.id);
+              const b3 = await window.api.tasks.get(b.id);
+              out.aStable = !!a3 && a3.title === out.aTitleAfter;
+              out.bSaved = !!b3 && b3.title === '串改用例B已改';
+              out.stillDistinct = !!a3 && !!b3 && a3.title !== b3.title;
+
+              // 清理
+              const closeBtn = document.querySelector('.detail-close');
+              if (closeBtn) { closeBtn.click(); await wait(400); }
+              try { await window.api.tasks.remove(a.id); } catch (e) {}
+              try { await window.api.tasks.remove(b.id); } catch (e) {}
+              return out;
+            })()
+          `);
+          console.log(`[SMOKE] 多任务隔离 = A(${r14.aTitleAfter || '-'}) / B(${r14.bTitleAfter || '-'})；B未被串改=${r14.bUntouched ? '是' : '否'}；A未被串改=${r14.aNotClonedFromB ? '是' : '否'}；A改动保留=${r14.aKeptEdit ? '是' : '否'}；保存只影响自己=${r14.aStable && r14.bSaved ? '是' : '否'}`);
+
+          /* ============ 第 15 轮：创建时间 / 趋势范围切换 / AI 润色反馈 ============ */
+          // 一个「连得上但永不响应」的本地服务：这样"加载中"是稳态可观测的，
+          // 而不是像 127.0.0.1:1 那样瞬间失败、根本抓不到加载态。
+          const http = require('http');
+          const slowServer = http.createServer(() => { /* 故意不响应 */ });
+          await new Promise((res) => slowServer.listen(0, '127.0.0.1', res));
+          const slowPort = slowServer.address().port;
+
+          const r15 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const out = {};
+
+              /* 1) 创建时间：列表行与详情都要能看到 */
+              nav('all'); await wait(800);
+              const row = document.querySelector('#view .task-item');
+              out.rowFound = !!row;
+              const ca = row ? row.querySelector('.meta-item.created-at') : null;
+              out.listCreated = !!ca;
+              out.listCreatedText = ca ? ca.textContent.trim() : '';
+              if (row) { row.click(); await wait(900); }
+              const dcEl = document.querySelector('.detail-created');
+              out.detailCreated = !!dcEl && /创建于/.test(dcEl.textContent || '');
+              out.detailCreatedText = dcEl ? dcEl.textContent.trim() : '';
+              const cBtn0 = document.querySelector('.detail-close');
+              if (cBtn0) { cBtn0.click(); await wait(400); }
+
+              /* 2) 趋势范围切换：标题文案、柱子数、选中态都要跟着变 */
+              const tk = await window.api.tasks.create({ title: '趋势用例R15' });
+              await window.api.tasks.toggle(tk.id); // 造一条今天的完成记录，避免落到"无数据"分支
+              nav('stats'); await wait(1000);
+              out.trendChips = document.querySelectorAll('#trend-range [data-trend]').length;
+              const readTrend = () => {
+                const act = document.querySelector('#trend-range .chip.active');
+                return {
+                  title: (document.getElementById('trend-title') || {}).textContent || '',
+                  cols: document.querySelectorAll('#trend-body .trend-col').length,
+                  active: act ? act.dataset.trend : '',
+                };
+              };
+              const pick = async (k) => {
+                document.querySelector('#trend-range [data-trend="' + k + '"]').click();
+                await wait(900);
+                return readTrend();
+              };
+              out.t7 = readTrend();
+              out.t1m = await pick('1m');
+              out.t6m = await pick('6m');
+              out.t1y = await pick('1y');
+              out.trendSummary = !!document.querySelector('.trend-summary');
+              out.trendTitlesOk = /近 7 天/.test(out.t7.title) && /近一个月/.test(out.t1m.title)
+                && /近半年/.test(out.t6m.title) && /近一年/.test(out.t1y.title);
+              out.trendColsOk = out.t7.cols === 7 && out.t1m.cols === 30 && out.t6m.cols === 26 && out.t1y.cols === 12;
+              out.trendActiveOk = out.t7.active === '7d' && out.t1y.active === '1y';
+
+              /* 3) AI 润色：点击必须有反馈（弹窗 + 加载态），失败要有原因与重试入口 */
+              const prevCfg = await window.api.ai.getConfig();
+              nav('all'); await wait(700);
+              const p15 = await window.api.tasks.create({ title: '润色用例R15', notes: '<p>这是一段需要润色的描述文本</p>' });
+              nav('upcoming'); await wait(400); nav('all'); await wait(800);
+              const prow = [...document.querySelectorAll('#view .task-item')].find((el) => el.dataset.id === String(p15.id));
+              out.pRowFound = !!prow;
+              if (prow) { prow.click(); await wait(900); }
+              const pBtn = document.querySelector('[data-act="polish"]');
+              out.polishBtn = !!pBtn;
+              // 只认"润色弹窗"：按主体内容定位，避免被页面上可能残留的其它弹窗干扰
+              const allMasks = () => [...document.querySelectorAll('.modal-mask')];
+              const polishMasks = () => allMasks().filter((m) => m.querySelector('.np-loading, .np-error, .np-compare'));
+              out.masksBefore = allMasks().length;
+              out.strayTitles = allMasks().map((m) => ((m.querySelector('.modal-head') || {}).textContent || '?').trim());
+
+              if (pBtn) {
+                // 3a) 加载态 + 防重复触发：请求一直挂着，观察"进行中"的表现
+                await window.api.ai.saveConfig({ baseUrl: 'http://127.0.0.1:${slowPort}/v1', model: 'smoke-model', apiKey: 'sk-smoke' });
+                pBtn.click();
+                await wait(400);
+                const m1 = polishMasks()[0];
+                out.masks1 = polishMasks().length;
+                out.loadingShown = !!m1 && !!m1.querySelector('.np-loading');
+                out.btnDisabled = pBtn.disabled;
+                out.btnText = pBtn.textContent;
+                pBtn.click(); // 连点第二次：不应再冒出第二个弹窗
+                await wait(400);
+                out.masks2 = polishMasks().length;
+                const okA = m1 ? m1.querySelector('[data-modal="ok"]') : null;
+                if (okA) { okA.click(); await wait(400); }
+                out.modalClosed = polishMasks().length === 0;
+                out.btnRestored = !pBtn.disabled;
+
+                // 3b) 接口异常：连不上的地址 → 明确的失败原因 + 重试入口
+                await window.api.ai.saveConfig({ baseUrl: 'http://127.0.0.1:1/v1', model: 'smoke-model', apiKey: 'sk-smoke' });
+                pBtn.click();
+                await wait(3000);
+                const m2 = polishMasks()[0];
+                out.errShown = !!m2 && !!m2.querySelector('.np-error');
+                out.retryBtn = !!m2 && !!m2.querySelector('[data-np="retry"]');
+                const okB = m2 ? m2.querySelector('[data-modal="ok"]') : null;
+                if (okB) { okB.click(); await wait(400); }
+                out.modalClosedB = polishMasks().length === 0;
+              }
+              const cBtn1 = document.querySelector('.detail-close');
+              if (cBtn1) { cBtn1.click(); await wait(300); }
+
+              // 还原 AI 配置（Key 无法读回明文，原本没有 Key 就清掉）
+              await window.api.ai.saveConfig({ baseUrl: prevCfg.baseUrl, model: prevCfg.model });
+              if (!prevCfg.hasKey) await window.api.ai.clearKey();
+              try { await window.api.tasks.remove(tk.id); } catch (e) {}
+              try { await window.api.tasks.remove(p15.id); } catch (e) {}
+              return out;
+            })()
+          `);
+          console.log(`[SMOKE] 创建时间 = 列表「${r15.listCreatedText || '-'}」；详情「${r15.detailCreatedText || '-'}」；列表展示=${r15.listCreated ? '是' : '否'}；详情展示=${r15.detailCreated ? '是' : '否'}`);
+          console.log(`[SMOKE] 趋势范围 = 档位 ${r15.trendChips} 个；柱子数 ${JSON.stringify([r15.t7 && r15.t7.cols, r15.t1m && r15.t1m.cols, r15.t6m && r15.t6m.cols, r15.t1y && r15.t1y.cols])}；标题随范围更新=${r15.trendTitlesOk ? '是' : '否'}；粒度正确=${r15.trendColsOk ? '是' : '否'}；选中态=${r15.trendActiveOk ? '正确' : '错误'}`);
+          console.log(`[SMOKE] AI 润色反馈 = 弹窗=${r15.masks1 === 1 ? '打开' : '未打开(' + r15.masks1 + ')'}；连点后弹窗数=${r15.masks2}（防重复=${r15.masks2 === 1 ? '是' : '否'}）；加载态=${r15.loadingShown ? '有' : '无'}；按钮禁用=${r15.btnDisabled ? '是' : '否'}（${r15.btnText || '-'}）；失败提示=${r15.errShown ? '有' : '无'}；重试入口=${r15.retryBtn ? '有' : '无'}；关闭后复位=${r15.btnRestored ? '是' : '否'}`);
+          if (r15.masksBefore) console.log(`[SMOKE] 提示：润色前页面上已有 ${r15.masksBefore} 个弹窗遮罩 ${JSON.stringify(r15.strayTitles)}`);
+          slowServer.close();
+
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
@@ -1596,7 +1785,20 @@ app.whenReady().then(() => {
             && r13.scBtn && r13.scModalOpened && r13.scRows === 2
             && r13.rpHisBtn && r13.rpHisOpened && r13.rpHisWidth >= 900 && r13.rpHisInViewport
             && r13.mthBtn
-            && r13main.notIdea && r13main.validate && r13main.dupRejected;
+            && r13main.notIdea && r13main.validate && r13main.dupRejected
+            // 第 14 轮：多任务详情编辑互不串改
+            && r14.idsDistinct && r14.aRowFound && r14.bRowFound
+            && r14.aOpened && r14.bUntouched && r14.aNotClonedFromB
+            && r14.titlesDistinct && r14.aKeptEdit && r14.bNotesKept
+            && r14.bOpened && r14.aStable && r14.bSaved && r14.stillDistinct
+            // 第 15 轮：创建时间 / 趋势范围切换 / AI 润色反馈
+            && r15.rowFound && r15.listCreated && /^\d{4}-\d{2}-\d{2}$/.test(r15.listCreatedText.replace('🕒', '').trim())
+            && r15.detailCreated && /创建于 \d{4}-\d{2}-\d{2} /.test(r15.detailCreatedText)
+            && r15.trendChips === 4 && r15.trendTitlesOk && r15.trendColsOk && r15.trendActiveOk && r15.trendSummary
+            && r15.pRowFound && r15.polishBtn
+            && r15.masks1 === 1 && r15.loadingShown && r15.btnDisabled && /润色中/.test(r15.btnText)
+            && r15.masks2 === 1 && r15.modalClosed && r15.btnRestored
+            && r15.errShown && r15.retryBtn && r15.modalClosedB;
           if (!allOk) {
             // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
             // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
@@ -1627,6 +1829,8 @@ app.whenReady().then(() => {
             dumpFalsy('r11main', r11main);
             dumpFalsy('r13', r13);
             dumpFalsy('r13main', r13main);
+            dumpFalsy('r14', r14);
+            dumpFalsy('r15', r15);
           }
           console.log(allOk ? '[SMOKE] SMOKE_OK' : '[SMOKE] SMOKE_FAIL');
           isQuitting = true;

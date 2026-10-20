@@ -163,6 +163,21 @@ const MIGRATIONS = [
     )`);
     d.exec('CREATE INDEX IF NOT EXISTS idx_searches_created ON ai_searches(created_at DESC, id DESC)');
   },
+  // v8：任务创建时间（created_at）兜底
+  // 建表语句里本来就有这一列，但早期版本 / 手工改过的库可能缺失或留空。这里统一补列 + 回填，
+  // 保证「创建时间」永远有值（回填优先级：updated_at → 当前时间），并加索引便于按创建时间筛选。
+  (d) => {
+    const cols = d.prepare('PRAGMA table_info(tasks)').all().map((c) => c.name);
+    if (!cols.includes('created_at')) {
+      d.exec('ALTER TABLE tasks ADD COLUMN created_at TEXT');
+    }
+    const t = nowIso();
+    d.prepare(
+      `UPDATE tasks SET created_at = COALESCE(NULLIF(updated_at, ''), ?)
+        WHERE created_at IS NULL OR TRIM(created_at) = ''`
+    ).run(t);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at)');
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -247,6 +262,8 @@ function normalizeTask(row) {
   t.tag_names = t.tag_names ? t.tag_names.split(',') : [];
   t.subtask_count = Number(t.subtask_count || 0);
   t.subtask_done = Number(t.subtask_done || 0);
+  // 创建时间兜底：v8 迁移已回填过一遍，这里再兜一层，避免 UI 出现空白
+  t.created_at = t.created_at || t.updated_at || '';
   try { t.attachments = JSON.parse(t.attachments || '[]'); } catch (e) { t.attachments = []; }
   return t;
 }
@@ -523,10 +540,13 @@ function createTask({
   reminderAt = null,
   completedAt = null,
   tagIds = [],
+  createdAt = null, // 留空 = 取当前时间；导入历史数据时可指定以保留原始创建时间
   dueAt = null, // 兼容旧字段
 }) {
   const t = nowIso();
   const pe = planEnd ?? dueAt ?? null;
+  // 创建时间：不传则为当前时刻；updated_at 始终是「现在」
+  const created = createdAt || t;
   const create = db.transaction(() => {
     const max = db
       .prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM tasks WHERE group_id IS ? AND parent_id IS ?')
@@ -537,7 +557,7 @@ function createTask({
            completed_at, sort_order, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(groupId, parentId, title, notes, JSON.stringify(attachments || []), priority, planStart, pe, reminderAt, completedAt, max + 1, t, t);
+      .run(groupId, parentId, title, notes, JSON.stringify(attachments || []), priority, planStart, pe, reminderAt, completedAt, max + 1, created, t);
     const taskId = info.lastInsertRowid;
     setTaskTags(taskId, tagIds);
     return taskId;
@@ -797,21 +817,104 @@ function overview() {
   return { total, active, completed, archived, overdue, byGroup, byPriority, rate };
 }
 
-/** 最近 n 天的每日完成数量趋势 */
-function dailyTrend(days = 7) {
-  const rows = [];
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() - i);
-    const start = d.toISOString();
-    const end = new Date(d.getTime() + 24 * 3600 * 1000).toISOString();
-    const c = db
-      .prepare('SELECT COUNT(*) AS c FROM tasks WHERE completed = 1 AND parent_id IS NULL AND completed_at >= ? AND completed_at < ?')
-      .get(start, end).c;
-    rows.push({ date: start.slice(0, 10), count: c });
+/**
+ * 完成趋势的可选时间范围。
+ * 粒度随跨度变粗（天 → 周 → 月）：一年 365 根柱子既排不下也没法读，按月聚合才有意义。
+ */
+const TREND_RANGES = {
+  '7d': { key: '7d', label: '近 7 天', granularity: 'day', buckets: 7 },
+  '1m': { key: '1m', label: '近一个月', granularity: 'day', buckets: 30 },
+  '6m': { key: '6m', label: '近半年', granularity: 'week', buckets: 26 },
+  '1y': { key: '1y', label: '近一年', granularity: 'month', buckets: 12 },
+};
+const DEFAULT_TREND_RANGE = '7d';
+
+/**
+ * 归一化趋势入参。
+ * 支持三种写法：{ range: '1m' }（推荐，渲染层统一用它）、'1m'、以及旧调用的数字天数。
+ */
+function normalizeTrendRange(arg) {
+  const raw = arg && typeof arg === 'object' ? arg.range : arg;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    const n = Math.round(raw);
+    return { key: `${n}d`, label: `近 ${n} 天`, granularity: 'day', buckets: n };
   }
-  return rows;
+  return TREND_RANGES[String(raw || DEFAULT_TREND_RANGE)] || TREND_RANGES[DEFAULT_TREND_RANGE];
+}
+
+/**
+ * 完成趋势（支持近 7 天 / 一个月 / 半年 / 一年）。
+ *
+ * 只查一次库（按完成时间范围取全部记录），再在内存里分桶：桶数最多 30 个，
+ * 无论哪个范围都是一趟 SQL，不会像逐日查询那样放大成几十次往返。
+ *
+ * @param {string|number|{range:string}} [arg] 范围；缺省 = 近 7 天
+ * @returns {{range:string, label:string, granularity:'day'|'week'|'month',
+ *            start:string, end:string, total:number,
+ *            points:Array<{key:string,label:string,count:number,start:string,end:string}>}}
+ */
+function dailyTrend(arg) {
+  const cfg = normalizeTrendRange(arg);
+  const buckets = [];
+
+  if (cfg.granularity === 'month') {
+    // 末桶 = 当月（1 号 ~ 次月 1 号），往前逐月递推
+    const anchor = new Date();
+    anchor.setDate(1);
+    anchor.setHours(0, 0, 0, 0);
+    for (let i = cfg.buckets - 1; i >= 0; i--) {
+      const s = new Date(anchor.getFullYear(), anchor.getMonth() - i, 1);
+      const e = new Date(anchor.getFullYear(), anchor.getMonth() - i + 1, 1);
+      buckets.push({ start: s, end: e, label: `${s.getFullYear()}-${String(s.getMonth() + 1).padStart(2, '0')}` });
+    }
+  } else {
+    // 天 / 周：末桶右边界对齐到「明天 0 点」，往前按 1 天或 7 天递推
+    const perDay = cfg.granularity === 'week' ? 7 : 1;
+    const lastEnd = new Date();
+    lastEnd.setHours(24, 0, 0, 0);
+    for (let i = cfg.buckets - 1; i >= 0; i--) {
+      const e = new Date(lastEnd.getTime() - i * perDay * 86400000);
+      const s = new Date(e.getTime() - perDay * 86400000);
+      const p = (n) => String(n).padStart(2, '0');
+      buckets.push({ start: s, end: e, label: `${p(s.getMonth() + 1)}-${p(s.getDate())}` });
+    }
+  }
+
+  const startIso = buckets[0].start.toISOString();
+  const endIso = buckets[buckets.length - 1].end.toISOString();
+  const rows = db
+    .prepare(
+      `SELECT completed_at FROM tasks
+        WHERE completed = 1 AND parent_id IS NULL AND completed_at >= ? AND completed_at < ?`
+    )
+    .all(startIso, endIso);
+
+  const counts = new Array(buckets.length).fill(0);
+  for (const r of rows) {
+    const ts = Date.parse(r.completed_at);
+    if (!Number.isFinite(ts)) continue; // 脏数据（非法时间字符串）直接跳过
+    for (let i = buckets.length - 1; i >= 0; i--) {
+      if (ts >= buckets[i].start.getTime() && ts < buckets[i].end.getTime()) { counts[i]++; break; }
+    }
+  }
+
+  const points = buckets.map((b, i) => ({
+    key: b.start.toISOString().slice(0, 10),
+    label: b.label,
+    count: counts[i],
+    start: b.start.toISOString(),
+    end: b.end.toISOString(),
+  }));
+
+  return {
+    range: cfg.key,
+    label: cfg.label,
+    granularity: cfg.granularity,
+    start: startIso,
+    end: endIso,
+    total: counts.reduce((a, b) => a + b, 0),
+    points,
+  };
 }
 
 /**
@@ -1083,7 +1186,7 @@ function deleteSearch(id) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 7,
+    schemaVersion: 8,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
@@ -1248,6 +1351,9 @@ module.exports = {
   // stats
   overview,
   dailyTrend,
+  TREND_RANGES,
+  DEFAULT_TREND_RANGE,
+  normalizeTrendRange,
   rangeStats,
   // settings
   getSetting,

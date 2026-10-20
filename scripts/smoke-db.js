@@ -96,7 +96,7 @@ check('取消归档', db.getTask(task1.id).archived === false);
 
 const ov = db.overview();
 check('统计概览', ov.total === 2 && ov.completed === 1);
-check('趋势天数', db.dailyTrend(7).length === 7);
+check('趋势天数', db.dailyTrend(7).points.length === 7);
 
 console.log('\n[6] 数据导入 / 导出');
 const exported = db.exportData();
@@ -168,8 +168,8 @@ check('列表按创建时间倒序', list[0].title === '评审会' && list.some(
 check('数量正确', list.length === 3); // 含上面那个「未命名会议」
 
 const exportSnap = db.exportData();
-check('导出含 meetings 且 schema 升级到 7',
-  exportSnap.schemaVersion === 7 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
+check('导出含 meetings 且 schema 升级到 8',
+  exportSnap.schemaVersion === 8 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
   && Array.isArray(exportSnap.reports) && Array.isArray(exportSnap.ai_searches));
 check('导出保留 todos 与 media_paths', (() => {
   const row = exportSnap.meetings.find((m) => m.id === m1.id);
@@ -426,6 +426,97 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
 
   check('删除报告生效', db.deleteReport(rpt1.id) === 1 && db.getReport(rpt1.id) === null);
   check('删除检索记录生效', db.deleteSearch(s1.id) === 1 && db.getSearch(s1.id) === null);
+
+  console.log('\n[13] 任务创建时间（created_at）');
+  const ct = db.createTask({ title: '创建时间用例' });
+  check('新建任务自动写入创建时间', !!ct.created_at && !Number.isNaN(Date.parse(ct.created_at)));
+  const ctFixed = db.createTask({ title: '指定创建时间', createdAt: '2026-01-02T03:04:05.000Z' });
+  check('可指定创建时间（导入历史数据保留原值）', db.getTask(ctFixed.id).created_at === '2026-01-02T03:04:05.000Z');
+  check('更新任务不改变创建时间', (() => {
+    const before = db.getTask(ct.id).created_at;
+    db.updateTask(ct.id, { title: '创建时间用例（改）' });
+    return db.getTask(ct.id).created_at === before;
+  })());
+  check('导出保留创建时间', (() => {
+    const snap = db.exportData();
+    const row = snap.tasks.find((t) => t.id === ctFixed.id);
+    return !!row && row.created_at === '2026-01-02T03:04:05.000Z';
+  })());
+  check('空值走兜底（读路径）', (() => {
+    db.getDb().prepare("UPDATE tasks SET created_at = '' WHERE id = ?").run(ct.id);
+    const v = db.getTask(ct.id).created_at;
+    db.getDb().prepare('UPDATE tasks SET created_at = ? WHERE id = ?').run(ct.created_at, ct.id);
+    return !!v;
+  })());
+  // 迁移 v8：老库缺列 / 留空时补列并回填（用独立的临时库模拟，避免污染主用例库）
+  check('老库补列 + 回填创建时间（迁移 v8）', (() => {
+    const Database = require('better-sqlite3');
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'todo-legacy-'));
+    const legacy = new Database(path.join(legacyDir, 'todo.db'));
+    legacy.exec(`CREATE TABLE groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#4f7cff', sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+    // 刻意不建 created_at 列，模拟早期版本 / 手工改过的库
+    legacy.exec(`CREATE TABLE tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, parent_id INTEGER,
+      title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', attachments TEXT NOT NULL DEFAULT '[]',
+      priority INTEGER NOT NULL DEFAULT 1, plan_start TEXT, plan_end TEXT,
+      reminder_at TEXT, reminder_fired INTEGER NOT NULL DEFAULT 0,
+      completed INTEGER NOT NULL DEFAULT 0, completed_at TEXT,
+      archived INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL)`);
+    // TASK_SELECT 会 JOIN 这两张表，一起建出来
+    legacy.exec(`CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+      color TEXT NOT NULL DEFAULT '#8896ab')`);
+    legacy.exec(`CREATE TABLE task_tags (task_id INTEGER NOT NULL, tag_id INTEGER NOT NULL,
+      PRIMARY KEY (task_id, tag_id))`);
+    legacy.pragma('user_version = 7');
+    const stamp = '2026-05-06T07:08:09.000Z';
+    legacy.prepare('INSERT INTO tasks (title, updated_at) VALUES (?, ?)').run('老任务', stamp);
+    legacy.prepare("INSERT INTO tasks (title, updated_at) VALUES ('空更新时间', '')").run();
+    legacy.close();
+
+    db.close();
+    db.init(legacyDir);
+    const r1 = db.getTask(1);
+    const r2 = db.getTask(2);
+    const ok = !!r1 && r1.created_at === stamp && !!r2 && !!r2.created_at && !Number.isNaN(Date.parse(r2.created_at));
+    db.close();
+    fs.rmSync(legacyDir, { recursive: true, force: true });
+    db.init(tmpDir); // 回到主用例库
+    return ok;
+  })());
+
+  console.log('\n[14] 完成趋势时间范围');
+  const TREND_SPEC = { '7d': [7, 'day'], '1m': [30, 'day'], '6m': [26, 'week'], '1y': [12, 'month'] };
+  for (const key of Object.keys(TREND_SPEC)) {
+    const [n, g] = TREND_SPEC[key];
+    const t = db.dailyTrend({ range: key });
+    check(`范围 ${key}：${n} 个桶 / 粒度 ${g}`,
+      t.range === key && t.granularity === g && t.points.length === n);
+  }
+  check('未知范围回退到近 7 天', db.dailyTrend({ range: 'zz' }).range === '7d');
+  check('旧调用（数字天数）仍兼容',
+    db.dailyTrend(7).points.length === 7 && db.dailyTrend(7).granularity === 'day');
+  check('返回结构统一（含 total / 边界 / 每个点的 label 与区间）', (() => {
+    const t = db.dailyTrend({ range: '1m' });
+    return typeof t.total === 'number' && !!t.start && !!t.end && !!t.label
+      && t.points.every((p) => typeof p.label === 'string' && typeof p.count === 'number' && !!p.start && !!p.end);
+  })());
+  check('完成时间计入对应桶', (() => {
+    const tk = db.createTask({ title: '趋势用例', completedAt: new Date().toISOString() });
+    db.getDb().prepare('UPDATE tasks SET completed = 1 WHERE id = ?').run(tk.id);
+    const t = db.dailyTrend({ range: '7d' });
+    const last = t.points[t.points.length - 1];
+    const ok = last.count >= 1 && t.total >= 1;
+    db.deleteTask(tk.id);
+    return ok;
+  })());
+  check('无数据时返回空桶而不是报错', (() => {
+    const t = db.dailyTrend({ range: '1y' });
+    return Array.isArray(t.points) && t.points.length === 12;
+  })());
 
   console.log('\n====================');
   console.log(`结果：${passed} 通过，${failed} 失败`);

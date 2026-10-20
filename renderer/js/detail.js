@@ -3,9 +3,10 @@
  * 任务详情页（右侧抽屉）：基础信息编辑、树形子任务层级（可拖拽排序）、
  * 所见即所得 Markdown 描述（支持快捷键与粘贴图片，图片直接插入光标处）。
  */
-import { api, PRIORITY_TEXT } from './api.js';
+import { api, PRIORITY_TEXT, fmtDateTime } from './api.js';
 import { state, loadGroups, loadTags, refreshAll, noteCompletionChange } from './store.js';
 import { renderMarkdown } from './markdown.js';
+import { openPanelModal } from './modal.js';
 import {
   dateRangeFieldHtml, bindDateRangeFields, validateDateRange,
   DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS, syncReminderWithPlanEnd, isAnyRangeOpen,
@@ -50,11 +51,63 @@ let renderToken = 0;
  * #detail-drawer 是常驻节点（只换 innerHTML），之前每次 renderDetail 都往上再挂一批
  * input/change 监听，于是开着 A 再开 B 时，A 的自动保存器仍然活着并把 B 的内容写进 A。
  * 每次渲染前 abort 上一轮，保证同一时刻只有一个自动保存器。
+ *
+ * 注意：abort 只能摘掉监听器，**取消不了已经排队的防抖计时器**。计时器到期时旧保存器
+ * 仍然会执行 read()（读的是"当前抽屉 DOM"，此时已经是另一个任务）再 save() 到
+ * **旧任务的 id** —— 这才是"改 A 把 B 覆盖 / 两个任务互相串改"的根因。
+ * 所以监听器之外还必须有一份保存器登记表，渲染前逐个「先 flush 再 dispose」。
  */
 let renderAbort = null;
 
+/**
+ * 本轮渲染创建的自动保存器登记表。
+ * - 'main'：主任务抽屉级保存器（bindDetailAutoSave）
+ * - 'subtask'：每个子任务行一个（bindSubtaskAutoSave）
+ * 渲染前按范围回收：flush 把还没落库的改动立刻写掉（此时 DOM 仍是旧任务的，写的一定是
+ * 它自己的数据），dispose 再取消计时器并作废回调，旧保存器从此不可能再写库。
+ */
+let activeSavers = [];
+
+/** 登记一个保存器，便于统一回收 */
+function trackSaver(saver, scope) {
+  if (saver) activeSavers.push({ saver, scope });
+  return saver;
+}
+
+/**
+ * 回收保存器。
+ * @param {string} [scope] 只回收指定范围（'subtask' = 仅子任务行）；不传 = 全部回收
+ */
+function disposeSavers(scope) {
+  const keep = [];
+  for (const entry of activeSavers) {
+    if (scope && entry.scope !== scope) { keep.push(entry); continue; }
+    try {
+      // flush 内部同步取值（read 在第一个 await 之前执行），所以这里拿到的必然是
+      // 「回收那一刻」的 DOM 值 —— 也就是旧任务自己的内容，不会串到别的任务上。
+      const p = entry.saver.flush();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (_e) { /* 回收阶段不再抛错 */ }
+    try { entry.saver.dispose(); } catch (_e) { /* 同上 */ }
+  }
+  activeSavers = keep;
+}
+
+/**
+ * 抽屉当前展示的确实是 id 这个任务吗？
+ * 双重校验：state 里的当前任务 id + 抽屉 DOM 上打的标记（DOM 可能是上一轮留下的）。
+ * 任何一次写入前都要过这一关 —— 即使还有漏网的旧保存器，也只能"什么都不做"，
+ * 绝不能把别的任务的内容写进自己。
+ */
+function isDrawerShowing(id) {
+  const drawer = document.getElementById('detail-drawer');
+  return !!drawer && state.detailTaskId === id && String(drawer.dataset.taskId) === String(id);
+}
+
 /** 描述被 AI 润色前的原文（用于「还原原文」） */
 let polishBackup = '';
+/** 润色是否正在进行：连点「AI 润色」只应弹一个窗、发一次请求 */
+let polishBusy = false;
 
 /* ---------------- 侧边栏宽度（拖拽调整 + 记忆） ---------------- */
 
@@ -190,27 +243,33 @@ function bindResizer(drawer) {
   });
 
   // 窗口变窄时收敛到上限内，避免面板超出视口
+  // 挂在 window 上不会随 innerHTML 消失，必须跟着本轮渲染一起作废，否则越挂越多
   window.addEventListener('resize', () => {
     if (detailWidth == null || resizing) return;
     const w = clampDetailWidth(detailWidth);
     if (w !== detailWidth) { detailWidth = w; }
     applyDetailWidth(panel);
-  });
+  }, { signal: renderAbort ? renderAbort.signal : undefined });
 }
 
 export function openDetail(id) {
+  // 切换任务前先把上一个任务还没落库的改动写掉：此刻 state.detailTaskId 仍是旧值、
+  // 抽屉 DOM 也还是旧任务的，flush 写到的一定是旧任务自己的数据，不会串到新任务上。
+  // （顺序很关键：先落库再改 state，否则身份校验会把这次补写判成"越权"而丢掉改动。）
+  disposeSavers();
   state.detailTaskId = id;
   renderDetail();
 }
 
 export function closeDetail() {
   // 关闭前把还在防抖队列里的改动落库（否则最后一下输入会被抽屉隐藏一起带走）
+  disposeSavers(); // 主任务 + 所有子任务：flush 后 dispose，避免关掉后还有保存器在跑
   const drawer = document.getElementById('detail-drawer');
-  if (drawer && drawer.__autoSave) drawer.__autoSave.flush().catch(() => {});
   state.detailTaskId = null;
   if (drawer) {
     drawer.hidden = true;
-    drawer.dataset.opened = ''; // 下次打开重新播放入场动画
+    drawer.dataset.opened = '';  // 下次打开重新播放入场动画
+    delete drawer.dataset.taskId; // 身份标记一并作废：此后任何保存器都不许再写
   }
 }
 
@@ -257,6 +316,9 @@ async function renderDetail() {
   const token = ++renderToken;
   // 作废上一轮挂在抽屉上的监听器（抽屉是常驻节点，不清理会越挂越多）
   if (renderAbort) renderAbort.abort();
+  // 同时回收上一轮的保存器：此时抽屉还是上一个任务的 DOM，flush 写的是它自己的数据；
+  // 之后旧保存器被 dispose，再也不会拿新任务的 DOM 去写旧任务的 id。
+  disposeSavers();
   renderAbort = new AbortController();
 
   const task = await api.tasks.get(id);
@@ -271,6 +333,7 @@ async function renderDetail() {
   // 而且自动保存会把空内容当成最新值写库 —— 改一下标题，描述就被清空了。
   const notesHtml = notesToHtml(task.notes);
   polishBackup = '';
+  polishBusy = false; // 换任务 = 上一轮润色作废，按钮与防重标记一起复位
   const parentInfo = task.parent_id
     ? `<div class="detail-parent" data-act="goto-parent" data-parent="${task.parent_id}">↳ 所属父任务：${esc(task.parent_title || '未知')}</div>`
     : '';
@@ -330,6 +393,8 @@ async function renderDetail() {
           <div class="detail-notes-editor markdown-body" contenteditable="true"
                data-placeholder="支持 Markdown 快捷键（Ctrl+B 加粗 / Ctrl+I 斜体），可直接粘贴图片…">${notesHtml}</div>
         </div>
+
+        <div class="detail-created" title="任务创建时间（不可修改）">🕒 创建于 ${esc(fmtDateTime(task.created_at))}</div>
       </div>
       <div class="detail-foot">
         <button class="danger-btn" data-act="delete">删除</button>
@@ -342,6 +407,8 @@ async function renderDetail() {
 
   drawer.hidden = false;
   drawer.dataset.opened = '1';
+  // 打上"这块 DOM 属于哪个任务"的标记：保存器写库前据此校验身份
+  drawer.dataset.taskId = String(task.id);
   await ensureDetailWidth();
   bindResizer(drawer);
   bindDateRangeFields(drawer); // 主任务 + 子任务新增区 + 各行内的日期范围控件
@@ -516,6 +583,9 @@ function bindDetailEvents(drawer, task) {
 async function refreshSubtasks(drawer, parentId) {
   const container = drawer.querySelector('.subtask-container');
   if (!container) return;
+  // 整块替换 innerHTML 前先回收子任务行的保存器：行被销毁后它们的计时器仍在跑，
+  // 到期会用已脱离文档的旧 DOM 再写一遍库（拖拽/勾选后可能把刚改过的值覆盖回去）。
+  disposeSavers('subtask');
   const html = await renderSubtreeHtml(parentId);
   container.innerHTML = html || '<div class="subtask-empty">暂无子任务</div>';
   bindDateRangeFields(container); // 子任务行内的日期范围控件
@@ -555,6 +625,8 @@ function bindSubtaskAutoSave(li, sid, parentId, drawer) {
   if (!titleEl || !priEl) return;
 
   const read = () => {
+    // 行已被重绘替换（脱离文档）→ 不再写库，避免用旧 DOM 覆盖服务端的新值
+    if (!li.isConnected) return null;
     const title = titleEl.value.trim();
     if (!title) return null; // 标题为空时不写库，等用户继续输入
     const range = validateDateRange(li);
@@ -567,7 +639,7 @@ function bindSubtaskAutoSave(li, sid, parentId, drawer) {
     };
   };
 
-  const saver = createAutoSave({
+  const saver = trackSaver(createAutoSave({
     delay: DETAIL_AUTO_SAVE_DELAY,
     read,
     save: (payload) => api.tasks.update(sid, payload),
@@ -584,7 +656,7 @@ function bindSubtaskAutoSave(li, sid, parentId, drawer) {
       // 不重绘子树（会打断输入），只刷新列表页与进度
       refreshAll().then(() => { handlers.refresh(); syncDetailSideEffects(parentId); });
     },
-  });
+  }), 'subtask');
 
   saver.setBaseline({
     title: titleEl.value,
@@ -620,20 +692,54 @@ function plainToEditorHtml(text) {
 /**
  * 润色任务描述：预览 → 采纳 / 重新润色 / 取消；采纳后仍可「还原原文」。
  * 不直接改写编辑器：AI 结果不一定更好，先看再决定才不会把原文弄丢。
+ *
+ * 反馈三条铁律：点下去立刻有加载态；成功/失败都有明确文案；过程中按钮禁用防重复触发。
+ * 早期这里整个函数是 async 且没有任何 catch —— 一旦内部抛错（例如漏 import），
+ * 就变成一条无人处理的 rejected Promise，界面上完全看不出来，表现为"点了没反应"。
  */
 async function runPolish(drawer) {
+  if (polishBusy) return; // 防重复触发：已有一次润色在进行
   const editor = drawer.querySelector('.detail-notes-editor');
+  const btn = drawer.querySelector('[data-act="polish"]');
   if (!editor) return;
   const source = editor.innerText.replace(/\u00a0/g, ' ').trim();
   if (!source) { handlers.toast('描述还是空的，先写点内容再润色'); return; }
 
-  let cfg;
-  try { cfg = await api.ai.getConfig(); } catch (e) { cfg = null; }
-  if (!cfg || !cfg.hasKey) {
-    handlers.toast('未配置 AI 接口 Key，请到工具栏「⚙ AI 设置」中填写');
-    return;
-  }
+  const btnLabel = btn ? btn.textContent : '';
+  const setBtnBusy = (on) => {
+    if (!btn) return;
+    btn.disabled = on;
+    btn.textContent = on ? '润色中…' : btnLabel;
+  };
 
+  // 防重标记必须在**第一个 await 之前**置位：否则连点两次会各自都通过这道判断，
+  // 于是弹出两个一模一样的弹窗、发两次请求（冒烟第 15 轮就是这么抓出来的）。
+  polishBusy = true;
+  setBtnBusy(true);
+  try {
+    let cfg = null;
+    try { cfg = await api.ai.getConfig(); } catch (e) { cfg = null; }
+    if (!cfg || !cfg.hasKey) {
+      handlers.toast('未配置 AI 接口 Key，请到工具栏「⚙ AI 设置」中填写');
+      return;
+    }
+    await openPolishModal(drawer, editor, source);
+  } catch (e) {
+    // 兜底：连弹窗都打不开（渲染异常等）也要让用户看到原因
+    console.error('[detail][polish]', e);
+    handlers.toast(`AI 润色失败：${(e && e.message) || '未知错误'}`);
+  } finally {
+    setBtnBusy(false);
+    polishBusy = false;
+  }
+}
+
+/**
+ * 打开润色预览弹窗（原文 / 润色后对照）。
+ * 弹窗内部的请求一律自行兜错并就地渲染错误 + 重试入口：
+ * openPanelModal 不 await onMount，里面的异常没人接，会变成静默失败。
+ */
+async function openPolishModal(drawer, editor, source) {
   const doPolish = async () => {
     const r = await api.ai.polish({ text: source });
     if (!r || !r.ok) throw new Error((r && r.message) || '润色失败');
@@ -647,19 +753,20 @@ async function runPolish(drawer) {
     html: '<div class="np-loading">正在润色，请稍候…</div>',
     onMount: async (mask, close) => {
       const body = mask.querySelector('.modal-body');
+      if (!body) return;
       let polished = '';
-      try {
-        polished = await doPolish();
-      } catch (e) {
-        body.innerHTML = `<div class="np-loading">润色失败：${esc((e && e.message) || '未知错误')}</div>`;
-        return;
-      }
-      if (!polished) {
-        body.innerHTML = '<div class="np-loading">AI 没有返回有效内容，请稍后重试</div>';
-        return;
-      }
+      let busy = false;
 
-      const render = (text) => {
+      const showLoading = (text) => { body.innerHTML = `<div class="np-loading">${esc(text)}</div>`; };
+      const showError = (msg) => {
+        body.innerHTML = `
+          <div class="np-error">${esc(msg)}</div>
+          <div class="np-ops">
+            <span class="np-spacer"></span>
+            <button type="button" class="ghost-btn" data-np="retry">🔁 重新润色</button>
+          </div>`;
+      };
+      const showCompare = (text) => {
         body.innerHTML = `
           <div class="np-compare">
             <div class="np-pane">
@@ -678,14 +785,41 @@ async function runPolish(drawer) {
             <button type="button" class="primary-btn" data-np="accept">✅ 采纳</button>
           </div>`;
       };
-      render(polished);
 
+      const run = async (isRetry) => {
+        if (busy) return;
+        busy = true;
+        showLoading(isRetry ? '正在重新润色，请稍候…' : '正在润色，请稍候…');
+        try {
+          polished = await doPolish();
+        } catch (e) {
+          busy = false;
+          if (!mask.isConnected) return; // 请求期间用户已关窗，不再操作已卸载的 DOM
+          // 超时 / 网络异常 / 接口报错统一在这里翻译成一句人话
+          const raw = (e && e.message) ? e.message : '未知错误';
+          const tip = /超时|timeout/i.test(raw) ? 'AI 润色超时' : 'AI 润色失败';
+          showError(`${tip}：${raw}`);
+          handlers.toast(`${tip}：${raw}`);
+          return;
+        }
+        busy = false;
+        if (!mask.isConnected) return;
+        if (!polished) {
+          showError('AI 没有返回有效内容，请稍后重试');
+          return;
+        }
+        showCompare(polished);
+      };
+
+      // 事件委托挂在常驻的 .modal-body 上：主体内容会被反复替换，委托才不会失效
       body.addEventListener('click', async (e) => {
-        const btn = e.target.closest('[data-np]');
-        if (!btn) return;
-        const act = btn.dataset.np;
+        const hit = e.target.closest('[data-np]');
+        if (!hit) return;
+        const act = hit.dataset.np;
         if (act === 'cancel') { close(); return; }
+        if (act === 'retry') { await run(true); return; }
         if (act === 'accept') {
+          if (!polished) { close(); return; }
           polishBackup = editor.innerHTML;
           editor.innerHTML = plainToEditorHtml(polished);
           const restoreBtn = drawer.querySelector('[data-act="polish-restore"]');
@@ -693,22 +827,10 @@ async function runPolish(drawer) {
           if (drawer.__autoSave) drawer.__autoSave.schedule();
           handlers.toast('已采纳润色结果');
           close();
-          return;
-        }
-        if (act === 'retry') {
-          btn.disabled = true;
-          btn.textContent = '润色中…';
-          try {
-            polished = await doPolish();
-            render(polished);
-          } catch (err) {
-            handlers.toast(`润色失败：${(err && err.message) || '未知错误'}`);
-          } finally {
-            btn.disabled = false;
-            btn.textContent = '🔁 重新润色';
-          }
         }
       });
+
+      await run(false);
     },
   });
 }
@@ -876,14 +998,17 @@ function setDetailSaveState(drawer, status, message) {
  * 否则浏览器归一化后的 innerHTML 与库里的文本永远不相等，会出现"没改也写库"。
  */
 function bindDetailAutoSave(drawer, task, notesHtml) {
-  const read = () => collectDetailPayload(drawer, { quiet: true });
+  // 身份校验是最后一道闸：抽屉已经切到别的任务（或已关闭）时，read 直接返回 null，
+  // 本次保存整个作废 —— 宁可少写一次，也绝不能把 B 的内容写进 A。
+  const read = () => (isDrawerShowing(task.id) ? collectDetailPayload(drawer, { quiet: true }) : null);
   const notesEl = drawer.querySelector('.detail-notes-editor');
   const baselineNotes = notesHtml != null ? notesHtml : (task.notes || '');
 
-  const saver = createAutoSave({
+  const saver = trackSaver(createAutoSave({
     delay: DETAIL_AUTO_SAVE_DELAY,
     read,
     save: async (payload) => {
+      if (!isDrawerShowing(task.id)) return null; // 二次校验：写入前再确认一次身份
       const tagIds = await resolveTagIds(drawer.querySelector('.detail-tags').value);
       return api.tasks.update(task.id, { ...payload, tagIds });
     },
@@ -908,7 +1033,7 @@ function bindDetailAutoSave(drawer, task, notesHtml) {
       // 不重绘抽屉（会打断输入 / 丢失光标），只同步列表页数据
       refreshAll().then(() => handlers.refresh());
     },
-  });
+  }), 'main');
 
   saver.setBaseline({
     title: task.title,
@@ -943,6 +1068,8 @@ function bindDetailAutoSave(drawer, task, notesHtml) {
 
 /** 「保存」按钮：立即写入（自动保存已覆盖日常改动，这里是手动 flush） */
 async function saveDetail(drawer, task) {
+  // 抽屉里的 DOM 必须确实是这个任务的：否则宁可不保存，也不能把 A 的界面写成 B 的数据
+  if (!isDrawerShowing(task.id)) return;
   const payload = collectDetailPayload(drawer);
   if (!payload) return;
   const saver = drawer.__autoSave;

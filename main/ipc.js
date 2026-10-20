@@ -159,7 +159,8 @@ function registerIpc() {
 
   /* ---------- 统计 ---------- */
   ipcMain.handle('stats:overview', withDb(() => db.overview()));
-  ipcMain.handle('stats:trend', withDb((days) => db.dailyTrend(days)));
+  // 入参统一为 { range: '7d' | '1m' | '6m' | '1y' }（旧的数字天数仍兼容）
+  ipcMain.handle('stats:trend', withDb((p) => db.dailyTrend(p)));
 
   /* ---------- AI 配置（对话 + 语音） ---------- */
   ipcMain.handle('ai:getConfig', () => {
