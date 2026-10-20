@@ -17,7 +17,7 @@ import { renderSearch, setSearchHandlers } from './search.js';
 import { openPromptModal, openFormModal, openPanelModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOptionsHtml } from './group-tree.js';
-import { bindAiSettingsButton, setAiSettingsHandlers } from './ai-settings.js';
+import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
 import { bindShortcutsButton } from './shortcuts.js';
@@ -121,9 +121,9 @@ function bindStaticEvents() {
   // 分组 / 标签新增
   document.getElementById('btn-add-group').addEventListener('click', () => promptAddGroup());
   document.getElementById('btn-add-tag').addEventListener('click', promptAddTag);
-  // AI 配置（原在「AI 报告」页内的配置面板，提到工具栏统一管理）
+  // AI 配置（原在「AI 报告」页内的配置面板；现统一从顶部菜单栏「AI 设置」打开）
   setAiSettingsHandlers({ toast, onChanged: () => { renderSidebarList(); } });
-  bindAiSettingsButton();
+  listenAiSettingsMenu();
   // 全局快捷键自定义（默认组合已避开 IDEA / Chrome 常用键位）
   bindShortcutsButton();
   // 会议录制（工具栏按钮）
@@ -271,6 +271,12 @@ async function render() {
   const meta = VIEW_META[state.view] || VIEW_META.all;
   document.getElementById('view-title').textContent = meta.title;
   document.getElementById('view-desc').textContent = meta.desc;
+  // 统计 / AI 报告 / AI 检索 / 会议纪要不是任务列表：搜索框、工具按钮与筛选栏都用不上，
+  // 整排隐藏（[hidden] 已有 display:none !important），把纵向空间还给内容区
+  const isTaskView = TASK_VIEWS.includes(state.view);
+  document.querySelector('.topbar-right').hidden = !isTaskView;
+  document.getElementById('filter-bar').hidden = !isTaskView;
+  if (!isTaskView) document.getElementById('time-filter').hidden = true;
   renderTagFilterChip();
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
@@ -1241,8 +1247,10 @@ async function promptGroupForm(g = null, presetParentId = null) {
       {
         name: 'color',
         label: '颜色',
-        type: 'choices',
+        type: 'color',
         value: g ? g.color : 'auto',
+        fallback: '#4f7cff',
+        hint: '点色块选预设，或点取色器自由取色（也可直接填 #RRGGBB）',
         options: GROUP_COLORS,
       },
       {
@@ -1266,7 +1274,11 @@ async function promptGroupForm(g = null, presetParentId = null) {
       if (!name) return '请输入分组名称';
       const dup = state.groups.find((x) => x.name === name && x.id !== (g ? g.id : -1));
       if (dup) return `分组「${name}」已存在，请换一个名称`;
-      const color = v.color === 'auto' ? pickColor() : v.color;
+      const picked = String(v.color || '').trim();
+      if (picked !== 'auto' && !/^#[0-9a-f]{6}$/i.test(picked)) {
+        return '颜色格式不正确，请用取色器选择或填写 #RRGGBB';
+      }
+      const color = picked === 'auto' ? pickColor() : picked.toLowerCase();
       const pid = v.parentId === '' ? null : Number(v.parentId);
       if (isEdit) {
         const updated = await api.groups.update(g.id, { name, color, parentId: pid });

@@ -239,7 +239,7 @@ function registerIpc() {
     if (!src) return { ok: false, message: '没有可润色的内容' };
     if (src.length > 4000) return { ok: false, message: '描述过长（超过 4000 字），请先精简再润色' };
     const cfg = getAiConfig();
-    if (!cfg.hasKey) return { ok: false, message: '未配置 AI 接口 Key，请到工具栏「⚙ AI 设置」中填写' };
+    if (!cfg.hasKey) return { ok: false, message: '未配置 AI 接口 Key，请到顶部菜单栏「AI 设置」中填写' };
     try {
       const polished = await ai.polishText(src, chatConfig(cfg), instruction);
       return { ok: true, text: polished };
@@ -370,7 +370,7 @@ function registerIpc() {
     if (!m.media_paths || !m.media_paths.length) throw new Error('这条会议没有可转写的音频（可能已被清理）');
     if (missing.length === m.media_paths.length) throw new Error(`音频文件已丢失：${missing[0]}`);
     const cfg = getAsrConfig();
-    if (!cfg.hasKey) throw new Error('未配置语音 API Key，请到工具栏「⚙ AI 设置」中填写语音接口');
+    if (!cfg.hasKey) throw new Error('未配置语音 API Key，请到顶部菜单栏「AI 设置」中填写语音接口');
     const parts = [];
     for (let i = 0; i < m.media_paths.length; i++) {
       const f = m.media_paths[i];
@@ -397,7 +397,7 @@ function registerIpc() {
     if (!m) throw new Error('会议记录不存在');
     if (!m.transcript || !m.transcript.trim()) throw new Error('还没有转写文本，请先执行语音转写');
     const cfg = getAiConfig();
-    if (!cfg.hasKey) throw new Error('未配置 AI 接口 Key，请到工具栏「⚙ AI 设置」中填写');
+    if (!cfg.hasKey) throw new Error('未配置 AI 接口 Key，请到顶部菜单栏「AI 设置」中填写');
     const { summary, todos } = await meeting.processMeeting({
       transcript: m.transcript,
       meta: { title: m.title, startedAt: m.started_at, durationMs: m.duration_ms, mode: m.mode, sourceLabel: m.source_label },

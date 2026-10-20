@@ -1,9 +1,9 @@
 'use strict';
 /**
- * AI 配置入口：从「AI 报告」视图抽出来，统一放到顶部工具栏。
+ * AI 配置入口：从「AI 报告」视图抽出来，统一放到顶部菜单栏（应用菜单「AI 设置」）。
  *
  * 之所以用 setToast / setOnChanged 注入依赖而不是直接 import ui.js：
- * ui.js 会绑定这个模块（工具栏按钮），反过来再 import ui.js 会形成循环依赖，
+ * ui.js 会绑定这个模块（菜单事件监听），反过来再 import ui.js 会形成循环依赖，
  * ESM 下模块求值顺序不确定。项目里 detail.js / search.js 已是同样的做法。
  */
 import { api } from './api.js';
@@ -198,12 +198,9 @@ export async function openAiSettingsModal() {
   });
 }
 
-/** 绑定顶部工具栏的「⚙ AI 设置」按钮 */
-export function bindAiSettingsButton() {
-  const btn = document.getElementById('btn-ai-settings');
-  if (!btn) return false;
-  btn.addEventListener('click', () => {
+/** 监听顶部菜单栏「AI 设置」点击（主进程应用菜单 → ui:ai-settings 事件转发过来） */
+export function listenAiSettingsMenu() {
+  api.on('ui:ai-settings', () => {
     openAiSettingsModal().catch((e) => notify(`打开 AI 设置失败：${e && e.message ? e.message : e}`));
   });
-  return true;
 }

@@ -4,7 +4,7 @@
  * 关闭窗口默认最小化到托盘，仅当显式退出时才真正退出。
  */
 const {
-  app, BrowserWindow, nativeTheme, ipcMain, session,
+  app, BrowserWindow, nativeTheme, ipcMain, session, Menu,
 } = require('electron');
 const fs = require('fs');
 const os = require('os');
@@ -108,10 +108,33 @@ function applyTheme() {
   nativeTheme.themeSource = mode; // 'system' | 'light' | 'dark'
 }
 
+/**
+ * 应用菜单：保留系统默认的 File / Edit / View / Window（role 复用默认行为），
+ * 末尾追加「AI 设置」——原来在顶部工具栏，挪到菜单栏后非任务视图才能整排隐藏工具区。
+ */
+function buildAppMenu() {
+  const template = [
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    {
+      label: 'AI 设置',
+      click: () => {
+        showWindow();
+        if (mainWindow) mainWindow.webContents.send('ui:ai-settings');
+      },
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.whenReady().then(() => {
   db.init(app.getPath('userData'));
   applyTheme();
   registerIpc();
+  buildAppMenu();
 
   // 录制需要麦克风 / 屏幕采集权限：这是本机应用、且由用户主动点「录制」触发，
   // 不弹 Chromium 的权限气泡而是直接放行；其它权限（定位、通知等）一律拒绝。
@@ -360,34 +383,132 @@ app.whenReady().then(() => {
               rowOf('全部').click();
               await new Promise(r => setTimeout(r, 300));
 
-              /* ---- AI 配置：从工具栏打开 → 填表 → 保存 → 回读 ---- */
-              const aiBtn = document.getElementById('btn-ai-settings');
-              out.aiToolbarBtn = !!aiBtn && aiBtn.textContent.indexOf('AI 设置') > -1;
-              if (aiBtn) {
-                aiBtn.click();
-                await new Promise(r => setTimeout(r, 250));
-                const aiModal = document.querySelector('.modal-mask');
-                // 回归：若前面有弹窗没关干净，这里会抓错弹窗（分组弹窗是单栏的），故显式记录数量
-                out.aiModalCount = document.querySelectorAll('.modal-mask').length;
-                out.aiModalOpened = !!aiModal;
-                if (aiModal) {
-                  // 排版回归：两栏网格、两张分区卡片、整体不超出视口、底部按钮可点
-                  const box = aiModal.querySelector('.modal').getBoundingClientRect();
-                  out.aiCols = getComputedStyle(aiModal.querySelector('.form-grid')).gridTemplateColumns.split(' ').length;
-                  out.aiSections = aiModal.querySelectorAll('.form-section').length;
-                  out.aiFieldCount = aiModal.querySelectorAll('.modal-field').length;
-                  out.aiInViewport = box.top >= 0 && box.bottom <= window.innerHeight && box.left >= 0 && box.right <= window.innerWidth;
-                  const okRect = aiModal.querySelector('[data-modal="ok"]').getBoundingClientRect();
-                  out.aiFootReachable = okRect.bottom <= window.innerHeight && okRect.top >= 0;
-                  const bd = aiModal.querySelector('.modal-body');
-                  out.aiBodyScrolls = bd.scrollHeight <= bd.clientHeight + 2;
-                  out.aiBox = { h: Math.round(box.height), vh: window.innerHeight };
-                  out.aiNoHOverflow = document.documentElement.scrollWidth <= window.innerWidth;
-                  aiModal.querySelector('[data-field="baseUrl"]').value = 'https://smoke.example.com';
-                  aiModal.querySelector('[data-field="model"]').value = 'smoke-model';
-                  aiModal.querySelector('[data-modal="ok"]').click();
-                  await new Promise(r => setTimeout(r, 500));
-                }
+              /* ---- AI 设置入口已挪到顶部菜单栏：工具栏里不应再有该按钮 ---- */
+              out.aiToolbarBtnGone = !document.getElementById('btn-ai-settings');
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
+              return out;
+            })()
+          `);
+          if (dom.__fatal) console.log('[SMOKE][dom fatal]', dom.__fatal);
+
+          /* ---- 非任务视图隐藏顶部工具区：统计 / AI 报告 / AI 检索 / 会议纪要 ---- */
+          const tbVis = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const right = document.querySelector('.topbar-right');
+              const bar = document.getElementById('filter-bar');
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              for (const v of ['stats', 'reports', 'search', 'meetings']) {
+                nav(v);
+                await new Promise(r => setTimeout(r, 600));
+                out[v + 'Hidden'] = right.hidden && bar.hidden;
+              }
+              nav('all');
+              await new Promise(r => setTimeout(r, 600));
+              out.taskShown = !right.hidden && !bar.hidden;
+              return out;
+            })()
+          `);
+          console.log(`[SMOKE] 非任务视图工具区隐藏 = 统计${tbVis.statsHidden ? '✓' : '✗'} 报告${tbVis.reportsHidden ? '✓' : '✗'} 检索${tbVis.searchHidden ? '✓' : '✗'} 纪要${tbVis.meetingsHidden ? '✓' : '✗'}；回到任务视图恢复=${tbVis.taskShown ? '是' : '否'}`);
+
+          /* ---- 分组自定义颜色：预设色 + 取色器自由取色 → 落库 → 视觉标识同步 ---- */
+          const gcOut = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              try {
+              document.getElementById('btn-add-group').click();
+              await new Promise(r => setTimeout(r, 350));
+              const mask = document.querySelector('.modal-mask');
+              out.modalOpened = !!mask;
+              const hex = mask.querySelector('.color-hex');
+              const native = mask.querySelector('.color-native');
+              const hidden = mask.querySelector('[data-field="color"]');
+              out.hasNativePicker = !!native && native.type === 'color';
+              out.hasHexInput = !!hex;
+              out.defaultAuto = hidden.value === 'auto';
+              out.presetCount = mask.querySelectorAll('.color-swatch:not(.is-auto)').length;
+              const setHex = async (v) => {
+                hex.value = v;
+                hex.dispatchEvent(new Event('input', { bubbles: true }));
+                await new Promise(r => setTimeout(r, 60));
+              };
+              await setHex('#ff00aa');
+              out.customValue = hidden.value;
+              out.nativeSynced = native.value;
+              await setHex('#abc');
+              out.abbrevNormalized = hidden.value;
+              await setHex('zzz');                 // 非法输入：值应保持上一个有效色（#aabbcc）
+              out.invalidKept = hidden.value;
+              await setHex('#ff00aa');
+              // 点预设色也要能切回去
+              mask.querySelector('.color-swatch:not(.is-auto)').click();
+              await new Promise(r => setTimeout(r, 60));
+              out.presetPicked = hidden.value;
+              await setHex('#ff00aa');
+              mask.querySelector('[data-field="name"]').value = '自定义色分组';
+              mask.querySelector('[data-modal="ok"]').click();
+              await new Promise(r => setTimeout(r, 900));
+              const li = [...document.querySelectorAll('#group-list .group-item')]
+                .find((e) => (e.querySelector('.group-name') || {}).textContent === '自定义色分组');
+              out.created = !!li;
+              out.dotColor = li ? getComputedStyle(li.querySelector('.group-dot')).backgroundColor : '';
+              const g = (await window.api.groups.list()).find((x) => x.name === '自定义色分组');
+              out.persisted = g ? g.color : '';
+              // 编辑回显：已有自定义色时不能再回退成 auto
+              if (li) {
+                li.querySelector('[data-act="edit"]').click();
+                await new Promise(r => setTimeout(r, 350));
+                const m2 = document.querySelector('.modal-mask');
+                out.editValue = m2 ? m2.querySelector('[data-field="color"]').value : '';
+                out.editHex = m2 ? m2.querySelector('.color-hex').value : '';
+                const cancel = m2 && m2.querySelector('[data-modal="cancel"]');
+                if (cancel) { cancel.click(); await new Promise(r => setTimeout(r, 250)); }
+              }
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
+              return out;
+            })()
+          `);
+          if (gcOut.__fatal) console.log('[SMOKE][group-color fatal]', gcOut.__fatal);
+          console.log(`[SMOKE] 分组自定义颜色 = 取色器${gcOut.hasNativePicker ? '有' : '无'}；默认自动=${gcOut.defaultAuto ? '是' : '否'}；预设 ${gcOut.presetCount} 个；自定义值=${gcOut.customValue || '-'}；缩写归一化=${gcOut.abbrevNormalized || '-'}；非法值保持=${gcOut.invalidKept || '-'}；落库=${gcOut.persisted || '-'}；侧栏色点=${gcOut.dotColor || '-'}；编辑回显=${gcOut.editValue || '-'}`);
+          Object.assign(dom, {
+            gcModalOpened: gcOut.modalOpened, gcPicker: gcOut.hasNativePicker && gcOut.hasHexInput,
+            gcAuto: gcOut.defaultAuto, gcCustom: gcOut.customValue === '#ff00aa',
+            gcAbbrev: gcOut.abbrevNormalized === '#aabbcc', gcInvalidKept: gcOut.invalidKept === '#aabbcc',
+            gcPreset: !!gcOut.presetPicked, gcCreated: gcOut.created,
+            gcDot: /rgb\(255,\s*0,\s*170\)/.test(gcOut.dotColor || ''),
+            gcPersisted: gcOut.persisted === '#ff00aa', gcEditEcho: gcOut.editValue === '#ff00aa',
+          });
+
+          /* ---- AI 配置：菜单栏「AI 设置」→ 弹窗 → 填表 → 保存 → 回读 ---- */
+          const aiMenuItem = Menu.getApplicationMenu().items.find((i) => i.label === 'AI 设置');
+          console.log(`[SMOKE] 菜单栏「AI 设置」= ${aiMenuItem ? '存在' : '缺失'}`);
+          mainWindow.webContents.send('ui:ai-settings');
+          await new Promise(r => setTimeout(r, 500));
+          const aiOut = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              try {
+              const aiModal = document.querySelector('.modal-mask');
+              // 回归：若前面有弹窗没关干净，这里会抓错弹窗（分组弹窗是单栏的），故显式记录数量
+              out.aiModalCount = document.querySelectorAll('.modal-mask').length;
+              out.aiModalOpened = !!aiModal;
+              if (aiModal) {
+                // 排版回归：两栏网格、两张分区卡片、整体不超出视口、底部按钮可点
+                const box = aiModal.querySelector('.modal').getBoundingClientRect();
+                out.aiCols = getComputedStyle(aiModal.querySelector('.form-grid')).gridTemplateColumns.split(' ').length;
+                out.aiSections = aiModal.querySelectorAll('.form-section').length;
+                out.aiFieldCount = aiModal.querySelectorAll('.modal-field').length;
+                out.aiInViewport = box.top >= 0 && box.bottom <= window.innerHeight && box.left >= 0 && box.right <= window.innerWidth;
+                const okRect = aiModal.querySelector('[data-modal="ok"]').getBoundingClientRect();
+                out.aiFootReachable = okRect.bottom <= window.innerHeight && okRect.top >= 0;
+                const bd = aiModal.querySelector('.modal-body');
+                out.aiBodyScrolls = bd.scrollHeight <= bd.clientHeight + 2;
+                out.aiBox = { h: Math.round(box.height), vh: window.innerHeight };
+                out.aiNoHOverflow = document.documentElement.scrollWidth <= window.innerWidth;
+                aiModal.querySelector('[data-field="baseUrl"]').value = 'https://smoke.example.com';
+                aiModal.querySelector('[data-field="model"]').value = 'smoke-model';
+                aiModal.querySelector('[data-modal="ok"]').click();
+                await new Promise(r => setTimeout(r, 500));
               }
               const cfg = await window.api.ai.getConfig();
               out.aiSavedUrl = cfg.baseUrl;
@@ -396,7 +517,9 @@ app.whenReady().then(() => {
               return out;
             })()
           `);
-          if (dom.__fatal) console.log('[SMOKE][dom fatal]', dom.__fatal);
+          if (aiOut.__fatal) console.log('[SMOKE][ai fatal]', aiOut.__fatal);
+          Object.assign(dom, aiOut, { aiMenuItem: !!aiMenuItem });
+          Object.assign(dom, { tbStatsHidden: tbVis.statsHidden, tbReportsHidden: tbVis.reportsHidden, tbSearchHidden: tbVis.searchHidden, tbMeetingsHidden: tbVis.meetingsHidden, tbTaskShown: tbVis.taskShown });
           console.log(`[SMOKE] 底部"添加任务"入口 = ${dom.addRowExists ? '存在' : '缺失'}`);
           console.log(`[SMOKE] 弹窗已移除 = ${dom.noModal ? '是' : '否'}`);
           console.log(`[SMOKE] 时间筛选面板 = ${dom.timeFilterBtn && dom.timeFilterPanel ? '存在' : '缺失'}`);
@@ -413,7 +536,7 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 取消后编辑器关闭 = ${dom.editorClosed ? '成功' : '失败'}`);
           console.log(`[SMOKE] 分组：新增=${dom.groupAdded ? '是' : '否'}（${dom.groupCountBefore} → ${dom.groupCount}）；重名错误=${dom.dupErrorShown ? '已提示' : '未提示'}`);
           console.log(`[SMOKE] 子分组：父行含箭头=${dom.hasArrow ? '是' : '否'}；上级默认带入=${dom.parentPresetMatched ? '是' : '否'}；子分组可见=${dom.childRowVisible ? '是' : '否'}；折叠后隐藏=${dom.childHiddenAfterCollapse ? '是' : '否'}；再展开回来=${dom.childBackAfterExpand ? '是' : '否'}；父筛选含子任务=${dom.parentFilterIncludesChildTask ? '是' : '否'}`);
-          console.log(`[SMOKE] AI 设置（工具栏）= 按钮${dom.aiToolbarBtn ? '存在' : '缺失'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
+          console.log(`[SMOKE] AI 设置（菜单栏）= 工具栏按钮已移除${dom.aiToolbarBtnGone ? '✓' : '✗'}；菜单项${dom.aiMenuItem ? '存在' : '缺失'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
           console.log(`[SMOKE] AI 设置排版 = ${dom.aiCols} 列；分区 ${dom.aiSections} 个；字段 ${dom.aiFieldCount} 个；弹窗高 ${dom.aiBox ? dom.aiBox.h : '-'}px / 视口 ${dom.aiBox ? dom.aiBox.vh : '-'}px；完整在视口内=${dom.aiInViewport ? '是' : '否'}；底部按钮可点=${dom.aiFootReachable ? '是' : '否'}；内容无需滚动=${dom.aiBodyScrolls ? '是' : '否'}；横向无溢出=${dom.aiNoHOverflow ? '是' : '否'}`);
           console.log(`[SMOKE] 标签新增弹窗 = ${dom.tagModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.tagAdded ? '是' : '否'}`);
 
@@ -1706,10 +1829,13 @@ app.whenReady().then(() => {
             && dom.tagModalOpened && dom.tagAdded
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
-            && dom.aiToolbarBtn && dom.aiModalOpened && dom.aiModalCount === 1
+            && dom.aiToolbarBtnGone && dom.aiMenuItem && dom.aiModalOpened && dom.aiModalCount === 1
             && dom.aiCols === 2 && dom.aiSections === 2 && dom.aiFieldCount === 8
             && dom.aiInViewport && dom.aiFootReachable && dom.aiBodyScrolls && dom.aiNoHOverflow
             && dom.aiSavedUrl === 'https://smoke.example.com' && dom.aiSavedModel === 'smoke-model'
+            && dom.tbStatsHidden && dom.tbReportsHidden && dom.tbSearchHidden && dom.tbMeetingsHidden && dom.tbTaskShown
+            && dom.gcModalOpened && dom.gcPicker && dom.gcAuto && dom.gcCustom && dom.gcAbbrev
+            && dom.gcInvalidKept && dom.gcPreset && dom.gcCreated && dom.gcDot && dom.gcPersisted && dom.gcEditEcho
             && detail.panelOpen && detail.hasResizer && detail.widthAfter > detail.widthBefore
             && detail.resizingClassCleared && !!detail.persisted
             && Math.abs(detail.widthReopened - detail.widthAfter) <= 2

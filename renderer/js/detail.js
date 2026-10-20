@@ -720,7 +720,7 @@ async function runPolish(drawer) {
     let cfg = null;
     try { cfg = await api.ai.getConfig(); } catch (e) { cfg = null; }
     if (!cfg || !cfg.hasKey) {
-      handlers.toast('未配置 AI 接口 Key，请到工具栏「⚙ AI 设置」中填写');
+      handlers.toast('未配置 AI 接口 Key，请到顶部菜单栏「AI 设置」中填写');
       return;
     }
     await openPolishModal(drawer, editor, source);

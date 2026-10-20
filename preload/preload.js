@@ -147,7 +147,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   // 主进程事件
   on: (channel, cb) => {
-    const allowed = ['ui:quick-add', 'ui:focus-task'];
+    const allowed = ['ui:quick-add', 'ui:focus-task', 'ui:ai-settings'];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));
     }

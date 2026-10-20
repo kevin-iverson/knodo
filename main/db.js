@@ -361,6 +361,17 @@ function listGroups(includeEmpty = true) {
   }));
 }
 
+/**
+ * 分组颜色归一化：'#abc' → '#aabbcc'；非法值回退默认蓝。
+ * 颜色现在支持自由取色，渲染层一律当合法 hex 用，这里兜底避免出现 '#' 开头的半截样式值。
+ */
+function normalizeColor(color, fallback = '#4f7cff') {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(color == null ? '' : color).trim());
+  if (!m) return fallback;
+  const h = m[1].toLowerCase();
+  return `#${h.length === 3 ? h.split('').map((c) => c + c).join('') : h}`;
+}
+
 function createGroup({ name, color = '#4f7cff', parentId = null } = {}) {
   const t = nowIso();
   if (parentId != null && !getGroup(parentId)) throw new Error('上级分组不存在');
@@ -370,7 +381,7 @@ function createGroup({ name, color = '#4f7cff', parentId = null } = {}) {
     : db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM groups WHERE parent_id = ?').get(parentId).m;
   const info = db
     .prepare('INSERT INTO groups (name, color, parent_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(name, color, parentId, max + 1, t, t);
+    .run(name, normalizeColor(color), parentId, max + 1, t, t);
   return getGroup(info.lastInsertRowid);
 }
 
@@ -397,7 +408,7 @@ function updateGroup(id, { name, color, parentId } = {}) {
     }
   }
   db.prepare('UPDATE groups SET name = ?, color = ?, parent_id = ?, updated_at = ? WHERE id = ?')
-    .run(name ?? cur.name, color ?? cur.color, nextParent, nowIso(), id);
+    .run(name ?? cur.name, color == null ? cur.color : normalizeColor(color, normalizeColor(cur.color)), nextParent, nowIso(), id);
   return getGroup(id);
 }
 

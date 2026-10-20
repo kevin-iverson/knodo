@@ -605,7 +605,7 @@ body {
   padding: 10px 14px; border-radius: var(--radius-sm); font-size: 12.5px; margin-top: 10px;
 }
 
-/* AI 配置（已移到工具栏「⚙ AI 设置」弹窗，这里只保留弹窗内字段的微调） */
+/* AI 配置（已移到顶部菜单栏「AI 设置」弹窗，这里只保留弹窗内字段的微调） */
 
 /* Toast
    层级必须高于一切覆盖层：.modal-mask=300、.detail-drawer=150、录制条=200。
@@ -733,6 +733,33 @@ body {
 .choice input { display: none; }
 .choice-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
 .choice:has(input:checked) { border-color: var(--primary); color: var(--text); background: var(--bg-hover); }
+
+/* 取色字段：预设色 + 系统取色器 + 十六进制输入 */
+.color-picker { display: flex; flex-direction: column; gap: 8px; }
+.color-swatches { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.color-swatch {
+  width: 22px; height: 22px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--border); background: transparent; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.color-swatch span { width: 14px; height: 14px; border-radius: 50%; background: var(--c); display: block; }
+.color-swatch:hover { border-color: var(--text-3); }
+.color-swatch.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.28); }
+.color-swatch.is-auto {
+  width: auto; height: 22px; padding: 0 10px; border-radius: 999px;
+  font-size: 12px; color: var(--text-2);
+}
+.color-custom { display: flex; align-items: center; gap: 8px; }
+.color-native {
+  width: 44px; height: 28px; padding: 2px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg-input, transparent); cursor: pointer;
+}
+.color-hex {
+  flex: 1; max-width: 120px; height: 28px; padding: 0 8px; font-size: 12.5px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-input, transparent); color: var(--text); font-family: ui-monospace, Consolas, monospace;
+}
+.color-preview { width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--border); }
 .list-empty { font-size: 12px; color: var(--text-3); padding: 6px 8px; }
 
 /* 新增成功后的短暂高亮，帮助用户确认"确实加进去了" */

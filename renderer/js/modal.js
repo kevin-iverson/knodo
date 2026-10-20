@@ -196,6 +196,61 @@ export function openPanelModal({
   });
 }
 
+/** 归一化颜色值：#abc → #aabbcc，非法值返回 '' */
+function normalizeHex(v) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(v || '').trim());
+  if (!m) return '';
+  const h = m[1].toLowerCase();
+  return `#${h.length === 3 ? h.split('').map((c) => c + c).join('') : h}`;
+}
+
+/**
+ * 绑定取色字段：预设色 / 系统取色器 / 十六进制输入框三向同步。
+ * 选中「自动」时值为 'auto'（由业务侧自行分配），取色器仍显示上次的实色便于微调。
+ */
+function bindColorField(root, f) {
+  const wrap = root.querySelector(`.color-picker[data-color-field="${f.name}"]`);
+  if (!wrap) return;
+  const hidden = wrap.querySelector('[data-field]');
+  const native = wrap.querySelector('.color-native');
+  const hex = wrap.querySelector('.color-hex');
+  const preview = wrap.querySelector('.color-preview');
+  const swatches = [...wrap.querySelectorAll('.color-swatch')];
+
+  let mode = hidden.value === 'auto' ? 'auto' : 'hex';
+  let cur = normalizeHex(hidden.value) || normalizeHex(native.value) || '#4f7cff';
+
+  const paint = () => {
+    hidden.value = mode === 'auto' ? 'auto' : cur;
+    if (native.value !== cur) native.value = cur;
+    if (document.activeElement !== hex) hex.value = cur;
+    preview.style.background = cur;
+    swatches.forEach((s) => {
+      const on = s.dataset.val === 'auto' ? mode === 'auto' : (mode === 'hex' && normalizeHex(s.dataset.val) === cur);
+      s.classList.toggle('active', on);
+      s.setAttribute('aria-pressed', String(on));
+    });
+  };
+
+  swatches.forEach((s) => s.addEventListener('click', () => {
+    if (s.dataset.val === 'auto') { mode = 'auto'; } else { mode = 'hex'; cur = normalizeHex(s.dataset.val) || cur; }
+    paint();
+  }));
+  native.addEventListener('input', () => {
+    const v = normalizeHex(native.value);
+    if (!v) return;
+    mode = 'hex'; cur = v; paint();
+  });
+  hex.addEventListener('input', () => {
+    const v = normalizeHex(hex.value);
+    if (!v) return; // 输入到一半（如 "#4f7"）先不动值，失焦时再回退
+    mode = 'hex'; cur = v; paint();
+  });
+  hex.addEventListener('blur', paint); // 非法输入 → 还原为上一个有效色
+
+  paint();
+}
+
 /** 字段类型 → HTML 片段 */
 function fieldHtml(f) {
   const label = `<label class="field-label" for="mf-${esc(f.name)}">${esc(f.label)}</label>`;
@@ -217,6 +272,32 @@ function fieldHtml(f) {
           <span class="choice-dot"></span><span>${esc(o.label)}</span>
         </label>`).join('');
       return `${label}<div class="choice-row">${rows}</div>`;
+    }
+    case 'color': {
+      // 预设色只是快捷入口：真正的取色靠原生 <input type="color">（系统取色器，支持任意颜色
+      // 与屏幕吸管）+ 十六进制输入框，两者与预设色三向同步，最终值写进隐藏 input 供 readFields 读取
+      const raw = String(f.value ?? '');
+      const init = normalizeHex(raw) || normalizeHex(f.fallback) || '#4f7cff';
+      const isAuto = raw === 'auto' || (!raw && (f.options || []).some((o) => o.value === 'auto'));
+      const swatches = (f.options || []).map((o) => {
+        const auto = o.value === 'auto';
+        const on = auto ? isAuto : (!isAuto && normalizeHex(o.value) === init.toLowerCase());
+        return auto
+          ? `<button type="button" class="color-swatch is-auto${on ? ' active' : ''}" data-val="auto" title="由系统自动分配颜色">自动</button>`
+          : `<button type="button" class="color-swatch${on ? ' active' : ''}" data-val="${esc(o.value)}"
+               style="--c:${esc(o.color || o.value)}" title="${esc(o.label || o.value)}" aria-pressed="${on}"><span></span></button>`;
+      }).join('');
+      return `${label}
+        <div class="color-picker" data-color-field="${esc(f.name)}">
+          <div class="color-swatches">${swatches}</div>
+          <div class="color-custom">
+            <input type="color" class="color-native" value="${esc(init)}" title="打开系统取色器自由取色" aria-label="自由取色" />
+            <input type="text" class="color-hex" maxlength="7" spellcheck="false"
+                   placeholder="#4f7cff" value="${esc(init)}" aria-label="十六进制颜色值" />
+            <span class="color-preview" style="background:${esc(init)}"></span>
+          </div>
+          <input type="hidden" data-field="${esc(f.name)}" value="${isAuto ? 'auto' : esc(init)}" />
+        </div>`;
     }
     default:
       return `${label}<input ${attr} type="text" value="${esc(f.value || '')}" placeholder="${esc(f.placeholder || '')}" />`;
@@ -290,9 +371,10 @@ function readFields(root, fields) {
  * 多字段表单弹窗（分组编辑 / AI 设置等需要一次填多个值的场景）。
  * @param {object} opts
  * @param {string} opts.title
- * @param {Array<{name:string,label:string,type?:'text'|'password'|'select'|'choices',
- *                value?:any,placeholder?:string,hint?:string,span?:1|2,section?:string,
+ * @param {Array<{name:string,label:string,type?:'text'|'password'|'select'|'choices'|'color',
+ *                value?:any,placeholder?:string,hint?:string,span?:1|2,section?:string,fallback?:string,
  *                options?:Array<{value:string,label:string,color?:string}>}>} opts.fields
+ *        type='color'：预设色 + 原生取色器 + 十六进制输入，值为 '#rrggbb' 或 'auto'
  *        span=2 占满整行；section 相同则收进同一张分组卡片
  * @param {boolean} [opts.grid=true] 是否使用两栏栅格（单字段小表单可传 false）
  * @param {string} [opts.okText]
@@ -331,6 +413,7 @@ export function openFormModal(opts) {
 
     // 字段联动（如选预设后自动填接口地址/模型）：value 变化后回调，回调内部自行改写其它字段
     fields.forEach((f) => {
+      if (f.type === 'color') { bindColorField(mask, f); return; }
       if (typeof f.onChange !== 'function') return;
       const el = mask.querySelector(`[data-field="${f.name}"]`);
       if (el) el.addEventListener('change', () => f.onChange(el.value, mask));

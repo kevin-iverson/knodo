@@ -35,6 +35,18 @@ const grand = db.createGroup({ name: '组件库', color: '#06b6d4', parentId: ch
 check('创建子分组', child.parent_id === g1.id && grand.parent_id === child.id);
 check('子孙集合（多层）', db.descendantGroupIds(g1.id).sort().join(',') === [child.id, grand.id].sort().join(','));
 check('分组展开含自身', db.expandGroupIds([g1.id]).length === 3);
+
+// 自定义颜色：不再局限于预设色板，任意 hex 都要原样持久化/归一化
+const gCustom = db.createGroup({ name: '自定义色分组', color: '#ff00aa' });
+check('自定义颜色原样保存', db.getGroup(gCustom.id).color === '#ff00aa');
+db.updateGroup(gCustom.id, { color: '#123ABC' });
+check('自定义颜色可改（大写归一化为小写）', db.getGroup(gCustom.id).color === '#123abc');
+const gAbbrev = db.createGroup({ name: '缩写色分组', color: '#abc' });
+check('三位缩写展开为六位', db.getGroup(gAbbrev.id).color === '#aabbcc');
+const gBad = db.createGroup({ name: '非法色分组', color: 'not-a-color' });
+check('非法颜色回退默认蓝', /^#[0-9a-f]{6}$/.test(db.getGroup(gBad.id).color || ''));
+db.updateGroup(gCustom.id, { name: '自定义色分组' });
+check('未传 color 时保留原色', db.getGroup(gCustom.id).color === '#123abc');
 check('挂载到自己的子孙被拒绝', (() => {
   try { db.updateGroup(g1.id, { parentId: grand.id }); return false; } catch (e) { return true; }
 })());
