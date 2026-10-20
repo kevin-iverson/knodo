@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Windows 桌面端个人 TODO 待办应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": "WorkBuddy",
