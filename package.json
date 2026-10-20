@@ -37,7 +37,11 @@
       "preload/**/*",
       "renderer/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/better-sqlite3/deps/**/*",
+      "!node_modules/better-sqlite3/src/**/*",
+      "!node_modules/better-sqlite3/prebuilds/darwin*",
+      "!node_modules/better-sqlite3/prebuilds/linux*"
     ],
     "asar": true,
     "asarUnpack": [
@@ -49,7 +53,10 @@
     },
     "win": {
       "icon": "assets/icon.ico",
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -59,12 +66,18 @@
       "createStartMenuShortcut": true,
       "shortcutName": "TODO 待办",
       "language": "2052",
-      "installerLanguages": ["zh_CN"],
+      "installerLanguages": [
+        "zh_CN"
+      ],
       "deleteAppDataOnUninstall": false,
       "artifactName": "${productName}-${version}-安装版.${ext}"
     },
     "portable": {
       "artifactName": "${productName}-${version}-便携版.${ext}"
-    }
+    },
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ]
   }
 }
