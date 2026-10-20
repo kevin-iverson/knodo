@@ -148,6 +148,13 @@ async function main() {
     let lastErr = '';
     for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
       if (attempt > 1) {
+        // 超时 ≠ 失败：服务端可能已经收下了文件，重试前先复查，避免传重
+        const check = await fetch(`${API}/repos/${owner}/${repo}/releases/${releaseId}/attach_files?access_token=${encodeURIComponent(token)}`);
+        if (check.ok && (await check.json()).some((a) => a.name === name)) {
+          ok = true;
+          console.log('复查发现已上传成功，跳过重试');
+          break;
+        }
         console.log(`  第 ${attempt} 次重试…`);
         await new Promise((r) => setTimeout(r, 3000));
       }
