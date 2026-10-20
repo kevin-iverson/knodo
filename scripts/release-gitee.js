@@ -76,18 +76,31 @@ async function main() {
     '1. 下载 .7z 文件并解压到任意目录；',
     '2. 双击 `TODO待办.exe` 运行；首次运行如被 SmartScreen 拦截，点「更多信息 → 仍要运行」（未购买代码签名证书）。', '',
     '### 本版功能',
-    '- 任务管理（分组/标签/子任务/优先级/计划日期/提醒/归档/统计）',
+    '- 任务管理（分组/标签/子任务/优先级/计划日期/提醒/归档/统计下钻）',
     '- AI 报告与 AI 检索（支持自定义提示词，历史记录本地持久化）',
     '- 会议录制 → 语音转写 → AI 纪要（支持国内 ASR 预设）',
+    '',
+    '### v1.1.0 更新',
+    '- 修复多任务详情编辑数据串改：切换任务后自动保存只写入当前任务',
+    '- 任务新增创建时间（老数据自动回填），列表与详情展示',
+    '- AI 统计完成趋势支持近 7 天 / 一个月 / 半年 / 一年切换',
+    '- 修复 AI 润色点击无响应：补齐加载态、失败原因与重试、防连点',
+    '- 顶部菜单栏新增「AI 设置」入口；统计 / AI 报告 / AI 检索 / 会议纪要页隐藏无关的工具区',
+    '- 分组支持自定义颜色：预设色 + 系统取色器自由取色，全站视觉标识同步',
+    '- 新增第 14~16 轮冒烟回归（多任务隔离 / 趋势档位 / 润色反馈 / 取色器），数据库测试 118 项',
   ].join('\n');
 
   let releaseId = null;
   const findRes = await fetch(`${API}/repos/${owner}/${repo}/releases/tags/${tag}?access_token=${encodeURIComponent(token)}`);
   if (findRes.ok) {
+    // 注意：Gitee 对「tag 存在但还没有 Release」返回 200 + null，不能当作已存在
     const rel = await findRes.json();
-    releaseId = rel.id;
-    console.log(`② Release ${tag} 已存在（id=${releaseId}），直接复用`);
-  } else {
+    if (rel && rel.id) {
+      releaseId = rel.id;
+      console.log(`② Release ${tag} 已存在（id=${releaseId}），直接复用`);
+    }
+  }
+  if (releaseId == null) {
     const createRes = await fetch(`${API}/repos/${owner}/${repo}/releases`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
