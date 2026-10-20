@@ -111,12 +111,17 @@ body {
 .group-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-count { color: var(--text-3); font-size: 12px; }
 /* 子分组：箭头占位 + 层缩进（缩进值由 JS 按 depth 计算写进 style） */
+/* 展开 / 收起箭头：图标与点击热区一起放大
+   （原来 10px 的字号 + 14px 的框，指针很难命中，视觉上也几乎看不见） */
 .group-arrow {
-  width: 14px; flex-shrink: 0; text-align: center; line-height: 1;
+  width: 22px; height: 22px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  text-align: center; line-height: 1;
   border: none; background: transparent; cursor: pointer;
-  color: var(--text-3); font-size: 10px; padding: 0;
+  color: var(--text-3); font-size: 15px; padding: 0; border-radius: 6px;
 }
-.group-arrow:hover { color: var(--primary); }
+.group-arrow:hover { color: var(--primary); background: var(--bg-hover); }
+.group-arrow:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .group-arrow.space { display: inline-block; } /* 无子分组时占位，保证同级文字对齐 */
 .group-item.is-child .group-name { font-size: 12.5px; }
 .group-item.is-child .group-dot { width: 8px; height: 8px; }
@@ -261,10 +266,17 @@ body {
 .keep-done-bar b { color: var(--green); font-weight: 700; }
 .keep-done-bar .link-btn { margin-left: auto; }
 
+/* 分组头：整行都是折叠开关（button 语义，键盘可达） */
 .task-group-head {
   display: flex; align-items: center; gap: 8px;
   margin: 14px 0 8px; color: var(--text-2); font-size: 13px; font-weight: 600;
+  width: 100%; padding: 4px 6px; border: none; border-radius: 6px;
+  background: transparent; font-family: inherit; text-align: left; cursor: pointer;
 }
+.task-group-head:hover { color: var(--primary); background: var(--bg-hover); }
+.task-group-head:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.task-group-head .group-toggle { font-size: 15px; line-height: 1; width: 16px; text-align: center; }
+.task-group-head .tg-count { color: var(--text-3); font-weight: 400; font-size: 12px; }
 .task-group-head .g-dot { width: 9px; height: 9px; border-radius: 50%; }
 
 .task-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
@@ -293,9 +305,12 @@ body {
 .task-title { font-size: 14px; line-height: 1.4; word-break: break-word; display: flex; align-items: flex-start; gap: 4px; }
 .task-expand {
   border: none; background: transparent; color: var(--text-3); cursor: pointer;
-  font-size: 12px; padding: 1px 3px; flex-shrink: 0; line-height: 1.4;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 16px; padding: 0; flex-shrink: 0; line-height: 1;
+  width: 24px; height: 24px; border-radius: 6px;
 }
-.task-expand:hover { color: var(--primary); }
+.task-expand:hover { color: var(--primary); background: var(--bg-hover); }
+.task-expand:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .task-title-text { flex: 1; }
 /* 行内改标题：点击标题就地变成输入框，hover 给一点可点提示 */
 .task-title-text[data-act="rename"] { cursor: text; border-radius: 4px; }
@@ -403,10 +418,12 @@ body {
 .stats-warn { color: var(--danger); }
 
 /* 统计下钻明细表 */
-.modal-drill { width: 720px; }
-.modal-drill .modal-body { padding: 0; }
+/* 尺寸类必须写成 .modal.modal-xxx（两个类）：只写 .modal-drill 时与后面的 .modal
+   同为单类选择器，靠书写顺序决定胜负，会被 .modal 的 max-width:380px 顶回去。 */
+.modal.modal-drill { width: 1000px; max-width: calc(100vw - 48px); }
+.modal.modal-drill .modal-body { padding: 0; }
 .drill-meta { padding: 8px 16px; color: var(--text-3); font-size: 12px; border-bottom: 1px solid var(--border); }
-.drill-wrap { max-height: 46vh; overflow: auto; }
+.drill-wrap { max-height: 62vh; overflow: auto; }
 .drill-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .drill-table th, .drill-table td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border); }
 .drill-th { color: var(--text-2); font-weight: 600; cursor: pointer; user-select: none; white-space: nowrap; }
@@ -417,7 +434,7 @@ body {
 .drill-row { cursor: pointer; }
 .drill-row:hover { background: var(--bg-hover); }
 .drill-row:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
-.drill-title { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drill-title { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drill-dim { color: var(--text-3); }
 .drill-status { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
 .drill-status.st-active { background: var(--bg-active); color: var(--primary-strong); }
@@ -554,9 +571,14 @@ body {
 }
 .ts-wrapper.plugin-clear_button .clear-button:hover { color: var(--danger); }
 
-/* 历史报告列表 */
-/* 宽弹窗：只写 width 会被 .modal 的 max-width:380px 卡住，必须一起放开 */
-.modal-wide { width: 720px; max-width: calc(100vw - 48px); }
+/* 历史列表（报告 / 会议纪要）
+   宽弹窗：只写 width 会被 .modal 的 max-width:380px 卡住，必须一起放开。
+   历史条目包含标题 + 时间 + 范围 + 分组 + 摘要预览，720px 会把内容挤成多行并触发
+   内部滚动；放大到 1080px 后一屏能完整铺开。 */
+.modal.modal-wide { width: 960px; max-width: calc(100vw - 48px); }
+.modal.modal-xl { width: 1080px; max-width: calc(100vw - 48px); }
+/* 内容区给足高度，避免"内部滚动挤压"；整体仍受 .modal 的 calc(100vh - 48px) 兜底 */
+.modal.modal-wide .modal-body, .modal.modal-xl .modal-body { max-height: 70vh; }
 .rpt-history { display: flex; flex-direction: column; gap: 8px; }
 .rpt-row {
   display: flex; align-items: center; gap: 12px; padding: 10px 12px;
@@ -576,11 +598,17 @@ body {
 
 /* AI 配置（已移到工具栏「⚙ AI 设置」弹窗，这里只保留弹窗内字段的微调） */
 
-/* Toast */
+/* Toast
+   层级必须高于一切覆盖层：.modal-mask=300、.detail-drawer=150、录制条=200。
+   原来是 200，导致「AI 设置」弹窗里保存成功之类的提示被遮罩盖住，看着像没反应；
+   同时它是 body 的直接子元素，不会被任何父容器的 overflow 裁切。 */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: var(--text); color: var(--bg); padding: 10px 18px;
-  border-radius: 8px; font-size: 13px; box-shadow: var(--shadow); z-index: 200;
+  border-radius: 8px; font-size: 13px; box-shadow: var(--shadow);
+  z-index: 2147483000;
+  max-width: calc(100vw - 48px); text-align: center; word-break: break-word;
+  pointer-events: none; /* 只是提示，不该拦住下层的点击 */
 }
 
 /* 即时持久化状态提示 */
@@ -623,6 +651,8 @@ body {
   font-size: 12px; color: var(--danger); background: rgba(229, 72, 77, 0.08);
   border-radius: 6px; padding: 6px 8px;
 }
+/* 面板型弹窗把错误条放在 body 外面（body 可能是表格/列表），需要自己补边距 */
+.modal > .modal-error { margin: 0 18px 10px; flex: 0 0 auto; }
 /*
  * 多字段表单弹窗（分组编辑 / AI 设置）：
  * foot 为「左侧附加操作 + 右侧主按钮」两段布局，避免多个按钮挤在一行。
@@ -1206,3 +1236,56 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .pri-2 { color: #b45309; }
 .pri-3 { color: var(--danger); }
 [data-theme="dark"] .pri-2 { color: #fbbf24; }
+
+/* ==================== 会议纪要历史列表（弹窗） ==================== */
+.mth-list { display: flex; flex-direction: column; gap: 8px; }
+.mth-row {
+  display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel);
+}
+.mth-row:hover { border-color: var(--primary); }
+.mth-main { flex: 1; min-width: 0; }
+.mth-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.mth-sub { font-size: 12px; color: var(--text-3); margin-top: 3px; display: flex; flex-wrap: wrap; gap: 10px; }
+.mth-excerpt {
+  margin-top: 6px; font-size: 12.5px; color: var(--text-2); line-height: 1.6;
+  max-height: 54px; overflow: hidden;
+}
+.mth-ops { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+.mth-empty { padding: 24px; text-align: center; color: var(--text-3); font-size: 13px; }
+
+/* ==================== 全局快捷键设置 ==================== */
+.sc-list { display: flex; flex-direction: column; gap: 10px; }
+.sc-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg);
+}
+.sc-label { flex: 1; min-width: 0; font-size: 13px; color: var(--text); }
+.sc-label .sc-hint { display: block; font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+.sc-input {
+  width: 240px; flex-shrink: 0; padding: 7px 10px; text-align: center;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel);
+  color: var(--text); font-size: 13px; font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  outline: none; cursor: pointer;
+}
+.sc-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, .16); }
+.sc-input.capturing { border-color: var(--primary); color: var(--primary-strong); }
+.sc-tip { font-size: 12px; color: var(--text-3); line-height: 1.6; }
+.sc-warn { font-size: 12px; color: var(--danger); line-height: 1.6; }
+
+/* ==================== 任务描述 AI 润色 ==================== */
+.np-head-ops { display: flex; align-items: center; gap: 6px; }
+.np-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.np-pane { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.np-pane-title { font-size: 12px; color: var(--text-2); font-weight: 600; }
+.np-box {
+  min-height: 220px; max-height: 46vh; overflow: auto; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg); color: var(--text); font-size: 13.5px; line-height: 1.7;
+  white-space: pre-wrap; word-break: break-word;
+}
+.np-box.polished { border-color: var(--primary); background: var(--bg-panel); }
+.np-ops { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.np-ops .np-spacer { flex: 1; }
+.np-loading { padding: 40px; text-align: center; color: var(--text-3); font-size: 13px; }

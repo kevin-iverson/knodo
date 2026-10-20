@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('api', {
     test: (p) => call('ai:test', p),
     clearAsrKey: () => call('ai:clearAsrKey'),
     testAsr: (p) => call('ai:testAsr', p),
+    polish: (p) => call('ai:polish', p),
   },
   // 报告（含历史记录持久化）
   report: {
@@ -107,6 +108,12 @@ contextBridge.exposeInMainWorld('api', {
     export: () => call('data:export'),
     import: () => call('data:import'),
   },
+  // 全局快捷键（可自定义，存在 settings 里）
+  shortcuts: {
+    get: () => call('shortcuts:get'),
+    set: (patch) => call('shortcuts:set', patch),
+    reset: () => call('shortcuts:reset'),
+  },
   // AI 检索（含历史记录持久化）
   search: {
     ai: (keyword) => call('search:ai', keyword),
@@ -130,6 +137,8 @@ contextBridge.exposeInMainWorld('api', {
     setTagFilter: (id) => call('ui:setTagFilter', id),
     getTodayDone: () => call('ui:getTodayDone'),
     setTodayDone: (p) => call('ui:setTodayDone', p),
+    getCollapsedGroups: () => call('ui:getCollapsedGroups'),
+    setCollapsedGroups: (keys) => call('ui:setCollapsedGroups', keys),
   },
   app: {
     quit: () => call('app:quit'),

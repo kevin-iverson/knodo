@@ -11,6 +11,7 @@ import { state } from './store.js';
 import { renderMarkdown } from './markdown.js';
 import { groupOptionsHtml } from './group-tree.js';
 import { openRecorder } from './recorder.js';
+import { openPanelModal } from './modal.js';
 
 let notify = () => {};
 let onChanged = () => {};
@@ -82,6 +83,7 @@ export async function renderMeetings(containerSelector = '#view') {
         <button class="primary-btn" data-mt="record">⏺ 新录制</button>
         <button class="ghost-btn" data-mt="import">📁 导入录音</button>
         <button class="ghost-btn" data-mt="refresh">🔄 刷新</button>
+        <button class="ghost-btn" data-mt="history">🕘 历史记录</button>
         <span class="mt-count">共 ${lastList.length} 条会议记录</span>
       </div>
       <div class="mt-layout">
@@ -208,6 +210,87 @@ function renderTodosTab(m) {
     <ul class="mt-todo-list">${rows}</ul>`;
 }
 
+/* ------------------------------ 历史记录弹窗 ------------------------------ */
+
+/** 摘要预览：去掉 Markdown 标记，取前若干字符，避免弹窗里塞进大段标记文本 */
+function excerptOf(text, max = 140) {
+  const plain = String(text || '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/[#>*_`|-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return plain.length > max ? `${plain.slice(0, max)}…` : plain;
+}
+
+function historyRowHtml(m) {
+  const st = STATUS_TEXT[m.status] || STATUS_TEXT.recorded;
+  const bits = [
+    fmtTime(m.started_at),
+    fmtDuration(m.duration_ms),
+    m.mode === 'screen' ? '屏幕 + 音频' : '仅音频',
+    (m.todos || []).length ? `${m.todos.length} 条待办` : '',
+  ].filter(Boolean);
+  const excerpt = m.summary ? excerptOf(m.summary) : excerptOf(m.transcript);
+  return `<div class="mth-row" data-id="${m.id}">
+    <div class="mth-main">
+      <div class="mth-title">${esc(m.title)} <span class="mt-badge ${st.cls}">${st.label}</span></div>
+      <div class="mth-sub">${bits.map((b) => `<span>${esc(b)}</span>`).join('')}</div>
+      ${excerpt ? `<div class="mth-excerpt">${esc(excerpt)}</div>` : '<div class="mth-excerpt">（暂无内容）</div>'}
+    </div>
+    <div class="mth-ops">
+      <button type="button" class="ghost-btn" data-act="view">查看</button>
+      <button type="button" class="danger-btn" data-act="del">删除</button>
+    </div>
+  </div>`;
+}
+
+/**
+ * 会议纪要历史列表。
+ * 用宽弹窗（.modal-xl）而不是左侧窄列表：左侧列表只有 300px，标题/摘要会被截断，
+ * 且高度受视口挤压、条目一多就变成内部滚动的小窗口，回看很费劲。
+ */
+async function openHistoryModal(root) {
+  let list = await api.meeting.list().catch(() => []);
+  if (!list.length) { notify('还没有会议记录'); return; }
+
+  await openPanelModal({
+    title: `会议纪要历史（${list.length} 条）`,
+    className: 'modal-xl',
+    okText: '关闭',
+    html: '<div class="mth-list" id="mth-list"></div>',
+    onMount(mask, close) {
+      const box = mask.querySelector('#mth-list');
+      const paint = (rows) => {
+        box.innerHTML = rows.length
+          ? rows.map(historyRowHtml).join('')
+          : '<div class="mth-empty">暂无记录</div>';
+      };
+      paint(list);
+
+      box.addEventListener('click', async (e) => {
+        const btn = e.target.closest('[data-act]');
+        if (!btn) return;
+        const row = btn.closest('.mth-row');
+        if (!row) return;
+        const id = Number(row.dataset.id);
+        if (btn.dataset.act === 'del') {
+          if (!window.confirm('删除这条会议记录？对应的录音分片也会一并清除。')) return;
+          await api.meeting.remove(id).catch(() => {});
+          list = await api.meeting.list().catch(() => []);
+          paint(list);
+          onChanged();
+          notify('已删除该会议记录');
+          return;
+        }
+        selectedId = id;
+        activeTab = 'summary';
+        await renderMeetings(root);
+        close();
+      });
+    },
+  });
+}
+
 /* ------------------------------ 交互 ------------------------------ */
 
 function bindEvents(root) {
@@ -228,6 +311,7 @@ function bindEvents(root) {
     if (act === 'tab') { activeTab = el.dataset.tab; await renderMeetings(root); return; }
     if (act === 'record') { openRecorder(); return; }
     if (act === 'refresh') { await renderMeetings(root); return; }
+    if (act === 'history') { await openHistoryModal(root); return; }
     if (act === 'import') {
       try {
         const r = await api.rec.importMedia();

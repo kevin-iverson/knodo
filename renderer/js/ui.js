@@ -6,7 +6,11 @@
  * 原地展开编辑器；“计划开始日期 / 计划完成日期”直接放在新增行主表单中填写。
  */
 import { api, localToIso, isoToLocal, fmtDateTime, PRIORITY_TEXT, PRIORITY_COLOR } from './api.js';
-import { state, loadGroups, loadTags, loadTasks, refreshAll, todayStr, noteCompletionChange, clearRecentlyDone, initRecentlyDone } from './store.js';
+import {
+  state, loadGroups, loadTags, loadTasks, refreshAll, todayStr,
+  noteCompletionChange, clearRecentlyDone, initRecentlyDone,
+  taskGroupKey, initCollapsedTaskGroups, toggleTaskGroup,
+} from './store.js';
 import { renderReports } from './reports.js';
 import { openDetail, setDetailHandlers } from './detail.js';
 import { renderSearch, setSearchHandlers } from './search.js';
@@ -16,6 +20,7 @@ import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOpti
 import { bindAiSettingsButton, setAiSettingsHandlers } from './ai-settings.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
+import { bindShortcutsButton } from './shortcuts.js';
 
 /** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
 const AUTO_SAVE_DELAY = 700;
@@ -93,6 +98,8 @@ export async function init() {
   state.currentTag = await api.ui.getTagFilter();
   // 恢复「今日已完成」：切走再回来、或重启应用，今天完成的那些任务仍然留在今天列表里
   await initRecentlyDone();
+  // 恢复任务列表里被折叠的分组
+  await initCollapsedTaskGroups();
   await renderSidebar();
   await render();
 }
@@ -117,6 +124,8 @@ function bindStaticEvents() {
   // AI 配置（原在「AI 报告」页内的配置面板，提到工具栏统一管理）
   setAiSettingsHandlers({ toast, onChanged: () => { renderSidebarList(); } });
   bindAiSettingsButton();
+  // 全局快捷键自定义（默认组合已避开 IDEA / Chrome 常用键位）
+  bindShortcutsButton();
   // 会议录制（工具栏按钮）
   bindRecordButton();
 
@@ -469,8 +478,18 @@ async function renderTasks() {
       const g = state.groups.find((x) => x.id === gid);
       const gName = g ? g.name : '未分组';
       const gColor = g ? g.color : '#c3cad6';
-      html += `<div class="task-group-head"><span class="g-dot" style="background:${esc(gColor)}"></span>${esc(gName)}</div>`;
-      html += buildTaskList(flattenTree(items));
+      const key = taskGroupKey(gid);
+      const collapsed = state.collapsedTaskGroups.has(key);
+      // 分组头本身就是折叠开关：点一下展开 / 收起，状态按分组独立记忆
+      html += `<button type="button" class="task-group-head${collapsed ? ' is-collapsed' : ''}" data-act="toggle-task-group"
+        data-group="${esc(key)}" aria-expanded="${!collapsed}"
+        title="${collapsed ? '展开' : '收起'}「${esc(gName)}」的 ${items.length} 个任务">
+        <span class="group-toggle">${collapsed ? '▸' : '▾'}</span>
+        <span class="g-dot" style="background:${esc(gColor)}"></span>
+        <span class="tg-name">${esc(gName)}</span>
+        <span class="tg-count">${items.length}</span>
+      </button>`;
+      if (!collapsed) html += buildTaskList(flattenTree(items));
     }
   }
 
@@ -655,6 +674,14 @@ function bindTaskListEvents(container) {
   // 底部“添加任务”入口
   const addBtn = container.querySelector('[data-act="start-add"]');
   if (addBtn) addBtn.addEventListener('click', startAdd);
+
+  // 分组头：各自独立展开 / 收起（状态写回 settings，重启后保持）
+  container.querySelectorAll('[data-act="toggle-task-group"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      toggleTaskGroup(btn.dataset.group);
+      renderTasks();
+    });
+  });
 }
 
 /* ---------------- 行内改标题 ---------------- */
@@ -724,9 +751,11 @@ function taskEditorHtml(task) {
   const detailsHidden = isEdit ? '' : ' hidden';
   const showCompletedAt = isEdit && t.completed;
   const defaultGroup = isEdit ? t.group_id : (state.currentGroup !== 'all' ? state.currentGroup : null);
-  // 计划日期：开始 / 完成合并为单一范围控件，新建任务的默认值由 NEW_TASK_RANGE_MODE 决定
+  // 计划日期：开始 / 完成合并为单一范围控件；新建任务的默认值由 NEW_TASK_RANGE_MODE 决定，
+  // 但「今天」视图下默认填今天（否则新建的任务 plan_end 为空，根本不会出现在今天列表里）
   const rangeOpts = { required: PLAN_DATE_REQUIRED, placeholder: '计划开始 ~ 完成' };
-  const range = isEdit ? { start: t.plan_start, end: t.plan_end } : defaultDateRange(NEW_TASK_RANGE_MODE);
+  const newRangeMode = state.view === 'today' ? 'today' : NEW_TASK_RANGE_MODE;
+  const range = isEdit ? { start: t.plan_start, end: t.plan_end } : defaultDateRange(newRangeMode);
   return `
   <div class="task-editor" data-editor="${isEdit ? t.id : 'new'}">
     <div class="editor-row">
@@ -1575,6 +1604,9 @@ function pickColor() {
 let toastTimer;
 function toast(msg) {
   const el = document.getElementById('toast');
+  if (!el) return;
+  // 提示恒挂在 body 最外层：既不受任何父容器 overflow 裁切，也保证 z-index 生效在顶层栈里
+  if (el.parentElement !== document.body) document.body.appendChild(el);
   el.textContent = msg;
   el.hidden = false;
   clearTimeout(toastTimer);

@@ -39,7 +39,16 @@ const state = {
   expandedTasks: new Set(),
   // 侧边栏中已展开子分组的分组 id 集合（默认折叠，点箭头展开）
   expandedGroups: new Set(),
+  // 任务列表里被折叠的分组（键为 String(分组 id)，未分组用 '__none'）
+  // 存 settings：切视图 / 重启后依然是上次折叠的样子
+  collapsedTaskGroups: new Set(),
 };
+
+/** 分组在任务列表里的折叠状态键 */
+const NO_GROUP_KEY = '__none';
+function taskGroupKey(gid) {
+  return gid == null ? NO_GROUP_KEY : String(gid);
+}
 
 /** 本地日期 YYYY-MM-DD */
 function todayStr() {
@@ -149,6 +158,25 @@ function clearRecentlyDone() {
   persistRecentlyDone();
 }
 
+/** 启动时读回上次折叠的分组 */
+async function initCollapsedTaskGroups() {
+  try {
+    const saved = await api.ui.getCollapsedGroups();
+    state.collapsedTaskGroups = new Set(Array.isArray(saved) ? saved : []);
+  } catch (e) {
+    console.warn('[store] 读取折叠分组失败', e && e.message);
+  }
+}
+
+/** 切换某个分组的折叠状态并落库 */
+function toggleTaskGroup(key) {
+  if (state.collapsedTaskGroups.has(key)) state.collapsedTaskGroups.delete(key);
+  else state.collapsedTaskGroups.add(key);
+  api.ui.setCollapsedGroups([...state.collapsedTaskGroups])
+    .catch((e) => console.warn('[store] 保存折叠分组失败', e && e.message));
+  return state.collapsedTaskGroups.has(key);
+}
+
 function buildFilter() {
   const f = {
     search: state.search || undefined,
@@ -204,4 +232,5 @@ async function refreshAll() {
 export {
   state, loadGroups, loadTags, loadTasks, buildFilter, refreshAll, todayStr,
   noteCompletionChange, clearRecentlyDone, initRecentlyDone,
+  taskGroupKey, initCollapsedTaskGroups, toggleTaskGroup,
 };

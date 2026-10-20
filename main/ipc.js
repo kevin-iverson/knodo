@@ -13,6 +13,7 @@ const meeting = require('./meeting');
 const recording = require('./recording');
 const report = require('./report');
 const { markdownToDocx } = require('./docx');
+const shortcuts = require('./shortcuts');
 
 function getAsrConfig() {
   const baseUrl = db.getSetting('ai.asrBaseUrl', asr.DEFAULT_ASR_CONFIG.baseUrl);
@@ -87,6 +88,15 @@ function withDb(fn) {
 function registerIpc() {
   // 录制文件目录（userData/recordings）：handler 里一律通过 recording 模块访问
   recording.init(app.getPath('userData'));
+
+  /* ---------- 全局快捷键（可自定义） ---------- */
+  ipcMain.handle('shortcuts:get', () => ({
+    shortcuts: shortcuts.getConfig(),
+    actions: shortcuts.ACTIONS,
+    conflicts: shortcuts.KNOWN_CONFLICTS,
+  }));
+  ipcMain.handle('shortcuts:set', (_e, patch) => shortcuts.applyConfig(patch || {}));
+  ipcMain.handle('shortcuts:reset', () => shortcuts.resetConfig());
 
   /* ---------- 分组 ---------- */
   ipcMain.handle('groups:list', withDb(() => db.listGroups()));
@@ -219,6 +229,21 @@ function registerIpc() {
       return { ok: true, message };
     } catch (e) {
       return { ok: false, message: e.message };
+    }
+  });
+
+  // 任务描述 AI 润色：返回纯文本，渲染层预览后再决定是否采纳
+  ipcMain.handle('ai:polish', async (_e, { text, instruction } = {}) => {
+    const src = String(text || '').trim();
+    if (!src) return { ok: false, message: '没有可润色的内容' };
+    if (src.length > 4000) return { ok: false, message: '描述过长（超过 4000 字），请先精简再润色' };
+    const cfg = getAiConfig();
+    if (!cfg.hasKey) return { ok: false, message: '未配置 AI 接口 Key，请到工具栏「⚙ AI 设置」中填写' };
+    try {
+      const polished = await ai.polishText(src, chatConfig(cfg), instruction);
+      return { ok: true, text: polished };
+    } catch (e) {
+      return { ok: false, message: e && e.message ? e.message : '润色失败' };
     }
   });
 
@@ -498,6 +523,22 @@ function registerIpc() {
     const list = Array.isArray(ids) ? ids.map(Number).filter(Number.isFinite) : [];
     if (!day || !list.length) db.setSetting('ui.todayDone', '');
     else db.setSetting('ui.todayDone', JSON.stringify({ day: String(day), ids: list }));
+    return true;
+  });
+  // 任务列表里被折叠的分组（键为分组 id 字符串，未分组用 '__none'）：存 settings，重启后仍保持
+  ipcMain.handle('ui:getCollapsedGroups', () => {
+    const raw = db.getSetting('ui.collapsedGroups', '');
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v.map(String).filter(Boolean) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+  ipcMain.handle('ui:setCollapsedGroups', (_e, keys) => {
+    const list = Array.isArray(keys) ? keys.map(String).filter(Boolean) : [];
+    db.setSetting('ui.collapsedGroups', list.length ? JSON.stringify(list) : '');
     return true;
   });
   ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(url));

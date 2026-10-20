@@ -108,4 +108,35 @@ async function summarizeSearch(keyword, tasks, { baseUrl, apiKey, model }) {
   });
 }
 
-module.exports = { DEFAULT_CONFIG, PRESETS, callLLM, testConnection, summarizeSearch };
+/**
+ * 润色一段任务描述。
+ * 约束写死在提示里：保持原意、不编造信息、只输出正文（不带 Markdown 标记），
+ * 这样渲染层可以把结果直接回填进所见即所得编辑器。
+ */
+async function polishText(text, { baseUrl, apiKey, model }, instruction = '') {
+  const userMsg = [
+    '请润色下面这段任务描述：',
+    '要求：',
+    '1. 保持原意与既有事实不变，不新增原文里没有的信息；',
+    '2. 语句通顺、条理清晰、用词简洁；',
+    '3. 保留原有条目结构（有分点就继续分点，用「1. 2. 3.」而不是 Markdown 符号）；',
+    '4. 只输出润色后的正文，不要标题、不要前后说明、不要 Markdown 标记。',
+    instruction ? `5. 补充要求：${instruction}` : '',
+    '',
+    '---',
+    text,
+  ].filter((x) => x !== null).join('\n');
+  return callLLM({
+    baseUrl,
+    apiKey,
+    model,
+    messages: [
+      { role: 'system', content: '你是中文写作助手，擅长在严格保持原意的前提下润色任务描述。' },
+      { role: 'user', content: userMsg },
+    ],
+    temperature: 0.4,
+    timeoutMs: 60000,
+  });
+}
+
+module.exports = { DEFAULT_CONFIG, PRESETS, callLLM, testConnection, summarizeSearch, polishText };

@@ -120,10 +120,16 @@ export function openPromptModal(opts) {
  * @param {string} [opts.className] 附加到 .modal 的类名（用于定制宽度/内边距）
  * @param {(root:HTMLElement, close:()=>void)=>void} [opts.onMount]
  * @param {string} [opts.okText] 底部关闭按钮文案
+ * @param {Array<{label:string,handler:(root:HTMLElement)=>Promise<string|void>}>} [opts.extraButtons]
+ *        底部左侧的附加操作（如「恢复默认」）；handler 返回字符串表示失败原因
+ * @param {(root:HTMLElement) => Promise<string|void>} [opts.onSubmit]
+ *        提供时底部按钮变为“确认”语义：返回字符串 = 校验失败并就地展示，否则关闭。
+ *        不提供时保持原有的“关闭”语义（历史调用不受影响）。
  * @returns {Promise<boolean>} 是否以“确认”关闭
  */
 export function openPanelModal({
   title, html = '', className = '', onMount, okText = '关闭',
+  extraButtons = [], onSubmit,
 }) {
   return new Promise((resolve) => {
     const mask = document.createElement('div');
@@ -132,7 +138,11 @@ export function openPanelModal({
       <div class="modal modal-panel${className ? ` ${esc(className)}` : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
         <div class="modal-head">${esc(title)}</div>
         <div class="modal-body">${html}</div>
+        <div class="modal-error" hidden></div>
         <div class="modal-foot">
+          ${extraButtons.length
+    ? `<div class="foot-extra">${extraButtons.map((b) => `<button type="button" class="ghost-btn" data-extra="${esc(b.label)}">${esc(b.label)}</button>`).join('')}</div>`
+    : ''}
           <div class="foot-main">
             <button type="button" class="primary-btn" data-modal="ok">${esc(okText)}</button>
           </div>
@@ -140,6 +150,12 @@ export function openPanelModal({
       </div>`;
     document.body.appendChild(mask);
 
+    const errEl = mask.querySelector('.modal-error');
+    const showError = (msg) => {
+      errEl.textContent = msg || '';
+      errEl.hidden = !msg;
+      mask.querySelector('.modal').classList.toggle('has-error', !!msg);
+    };
     const close = (ok) => {
       document.removeEventListener('keydown', onKey, true);
       mask.remove();
@@ -149,8 +165,32 @@ export function openPanelModal({
       if (e.key === 'Escape') { e.stopPropagation(); close(false); }
     };
     document.addEventListener('keydown', onKey, true);
-    mask.querySelector('[data-modal="ok"]').addEventListener('click', () => close(true));
+    mask.querySelector('[data-modal="ok"]').addEventListener('click', async () => {
+      if (typeof onSubmit !== 'function') { close(true); return; }
+      showError('');
+      try {
+        const msg = await onSubmit(mask);
+        if (msg) { showError(msg); return; }
+        close(true);
+      } catch (e) {
+        showError((e && e.message) || '操作失败，请重试');
+      }
+    });
     mask.addEventListener('click', (e) => { if (e.target === mask) close(false); });
+
+    extraButtons.forEach((b) => {
+      const el = mask.querySelector(`[data-extra="${b.label}"]`);
+      if (!el) return;
+      el.addEventListener('click', async () => {
+        showError('');
+        try {
+          const msg = await b.handler(mask);
+          if (msg) showError(msg);
+        } catch (e) {
+          showError((e && e.message) || '操作失败，请重试');
+        }
+      });
+    });
 
     if (typeof onMount === 'function') onMount(mask, () => close(false));
   });

@@ -6,7 +6,7 @@ import { init } from './ui.js';
 
 // 供冒烟测试检测渲染进程是否成功初始化
 window.__appReady = false;
-window.addEventListener('error', (e) => console.error('[renderer error]', e.message));
+window.addEventListener('error', (e) => console.error('[renderer error]', e.message, e.filename, e.lineno, e.colno));
 
 document.addEventListener('DOMContentLoaded', async () => {
   try {

@@ -12,7 +12,8 @@ const path = require('path');
 const db = require('./db');
 const { registerIpc } = require('./ipc');
 const { setupTray, destroyTray } = require('./tray');
-const { registerShortcuts, unregisterShortcuts } = require('./shortcuts');
+const shortcuts = require('./shortcuts');
+const { registerShortcuts, unregisterShortcuts } = shortcuts;
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
 const { markdownToDocx } = require('./docx');
 const reportMod = require('./report');
@@ -161,6 +162,11 @@ app.whenReady().then(() => {
           const dom = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const out = {};
+              try {
+              // 新建任务的默认计划日期跟随视图（「今天」视图会预填今天），
+              // 下面这组断言是按「空范围两次点选」设计的，先切到「全部任务」再展开编辑器
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await new Promise(r => setTimeout(r, 400));
               out.addRowExists = !!document.querySelector('[data-act="start-add"]');
               out.noModal = !document.querySelector('.modal-mask');
               out.timeFilterBtn = !!document.querySelector('#btn-time-filter');
@@ -386,9 +392,11 @@ app.whenReady().then(() => {
               const cfg = await window.api.ai.getConfig();
               out.aiSavedUrl = cfg.baseUrl;
               out.aiSavedModel = cfg.model;
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
               return out;
             })()
           `);
+          if (dom.__fatal) console.log('[SMOKE][dom fatal]', dom.__fatal);
           console.log(`[SMOKE] 底部"添加任务"入口 = ${dom.addRowExists ? '存在' : '缺失'}`);
           console.log(`[SMOKE] 弹窗已移除 = ${dom.noModal ? '是' : '否'}`);
           console.log(`[SMOKE] 时间筛选面板 = ${dom.timeFilterBtn && dom.timeFilterPanel ? '存在' : '缺失'}`);
@@ -1338,6 +1346,167 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 检索历史 = 列表=${r11.searchHistoryBox ? '存在' : '缺失'}；检索后 ${r11.searchRows} 条（新增=${r11.searchHistoryGrew ? '是' : '否'}）；回看=${r11.searchRestored ? '是' : '否'}`);
           console.log(`[SMOKE] 持久化（主进程）= reports ${r11main.reports} 条 / ai_searches ${r11main.searches} 条；正文可读=${r11main.reportHasContent ? '是' : '否'}；关键词可读=${r11main.searchHasKeyword ? '是' : '否'}；导出含两表=${r11main.exportHasTables ? '是' : '否'}`);
 
+          /* ============ 第 13 轮：提示层级 / 分组折叠 / 今天默认值 / 详情描述回填 / 快捷键 ============ */
+          const r13 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wait = (ms) => new Promise(r => setTimeout(r, ms));
+              const p2 = (n) => String(n).padStart(2, '0');
+              const dd = new Date();
+              const today = dd.getFullYear() + '-' + p2(dd.getMonth() + 1) + '-' + p2(dd.getDate());
+
+              /* 1) Toast 必须在弹窗之上：z-index 高于遮罩，且挂在 body 直下 */
+              const toastEl = document.getElementById('toast');
+              out.toastInBody = !!toastEl && toastEl.parentElement === document.body;
+              const zToast = Number(getComputedStyle(toastEl).zIndex) || 0;
+              const mask = document.createElement('div');
+              mask.className = 'modal-mask';
+              document.body.appendChild(mask);
+              out.zMask = Number(getComputedStyle(mask).zIndex) || 0;
+              out.toastAboveMask = zToast > out.zMask;
+              out.toastNoPointer = getComputedStyle(toastEl).pointerEvents === 'none';
+              mask.remove();
+
+              /* 2) 任务列表分组独立折叠 + 记忆 */
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await wait(600);
+              const heads = [...document.querySelectorAll('.task-group-head')];
+              out.groupHeads = heads.length;
+              if (heads.length) {
+                const first = heads[0];
+                out.headIsButton = first.tagName === 'BUTTON';
+                const key = first.dataset.group;
+                const rowsBefore = document.querySelectorAll('.task-item').length;
+                first.click();
+                await wait(500);
+                const headAfter = document.querySelector('.task-group-head[data-group="' + key + '"]');
+                out.headCollapsed = !!headAfter && headAfter.classList.contains('is-collapsed')
+                  && headAfter.getAttribute('aria-expanded') === 'false';
+                out.rowsShrunk = document.querySelectorAll('.task-item').length < rowsBefore;
+                // 折叠状态写进 settings：重开应用也能保持（这里验证 IPC 往返）
+                out.collapsedSaved = await window.api.ui.getCollapsedGroups();
+                headAfter.click();
+                await wait(500);
+                out.expandedAgain = document.querySelectorAll('.task-item').length === rowsBefore;
+                out.collapsedCleared = (await window.api.ui.getCollapsedGroups()).length === 0;
+              }
+
+              /* 2.5) 展开/收起箭头：图标字号与点击热区都要够大 */
+              const ga = document.querySelector('#group-list .group-arrow');
+              out.arrowWidth = ga ? Math.round(ga.getBoundingClientRect().width) : 0;
+              out.arrowFont = ga ? parseFloat(getComputedStyle(ga).fontSize) || 0 : 0;
+
+              /* 3) 今天视图新建：计划日期默认填今天 */
+              document.querySelector('.nav-item[data-view="today"]').click();
+              await wait(500);
+              const addBtn = document.querySelector('[data-act="start-add"]');
+              if (addBtn) { addBtn.click(); await wait(400); }
+              const edNew = document.querySelector('.task-editor[data-editor="new"]');
+              out.todayEditor = !!edNew;
+              if (edNew) {
+                out.todayStart = edNew.querySelector('.dr-start-input').value;
+                out.todayEnd = edNew.querySelector('.dr-end-input').value;
+                out.todayFilled = out.todayStart === today && out.todayEnd === today;
+                edNew.querySelector('[data-act="editor-cancel"]').click();
+                await wait(300);
+              }
+
+              /* 4) 详情描述：必须回填，且改其它字段不能把描述清空 */
+              const t13 = await window.api.tasks.create({
+                title: 'R13描述任务', notes: '<p>原始描述内容</p>', planStart: today, planEnd: today,
+              });
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await wait(600);
+              document.querySelector('.task-item[data-id="' + t13.id + '"]').click();
+              await wait(700);
+              const editor = document.querySelector('.detail-notes-editor');
+              out.notesFilled = !!editor && editor.textContent.indexOf('原始描述内容') > -1;
+              const dTitle13 = document.querySelector('.detail-title');
+              dTitle13.value = 'R13改过标题';
+              dTitle13.dispatchEvent(new Event('input', { bubbles: true }));
+              await wait(1500);
+              out.saveStateText = document.querySelector('.detail-save-state').textContent;
+              out.saveStateClass = document.querySelector('.detail-save-state').className;
+              const after = await window.api.tasks.get(t13.id);
+              out.titleSaved = after.title === 'R13改过标题';
+              out.notesKept = (after.notes || '').indexOf('原始描述内容') > -1;
+              out.polishBtn = !!document.querySelector('[data-act="polish"]');
+              document.querySelector('.detail-close').click();
+              await wait(300);
+
+              /* 5) 快捷键：设置入口可用，默认值不与 IDEA 常用键位撞车 */
+              const scBtn = document.getElementById('btn-shortcuts');
+              out.scBtn = !!scBtn;
+              if (scBtn) {
+                scBtn.click();
+                await wait(400);
+                const scModal = document.querySelector('.modal-mask');
+                out.scModalOpened = !!scModal;
+                if (scModal) {
+                  out.scRows = scModal.querySelectorAll('.sc-row').length;
+                  out.scValues = [...scModal.querySelectorAll('.sc-input')].map(i => i.value);
+                  scModal.querySelector('[data-modal="ok"]').click();
+                  await wait(400);
+                }
+              }
+              const scNow = await window.api.shortcuts.get();
+              out.scDefaults = scNow && scNow.shortcuts;
+
+              /* 6) 历史类弹窗必须放大：报告历史 ≥900px 且完整落在视口内，会议纪要要有历史入口 */
+              document.querySelector('.nav-item[data-view="reports"]').click();
+              await wait(800);
+              const hisBtn = document.getElementById('rp-history');
+              out.rpHisBtn = !!hisBtn;
+              if (hisBtn) {
+                hisBtn.click();
+                await wait(700);
+                const m = document.querySelector('.modal-mask .modal');
+                out.rpHisOpened = !!m;
+                if (m) {
+                  const r = m.getBoundingClientRect();
+                  out.rpHisWidth = Math.round(r.width);
+                  out.rpHisInViewport = r.left >= 0 && r.right <= window.innerWidth + 1
+                    && r.top >= 0 && r.bottom <= window.innerHeight + 1;
+                }
+                const okBtn2 = document.querySelector('.modal-mask [data-modal="ok"]');
+                if (okBtn2) { okBtn2.click(); await wait(400); }
+              }
+              document.querySelector('.nav-item[data-view="meetings"]').click();
+              await wait(700);
+              out.mthBtn = !!document.querySelector('[data-mt="history"]');
+              return out;
+            })()
+          `);
+          const r13main = {
+            defaults: (() => {
+              const cfg = shortcuts.getConfig();
+              return cfg;
+            })(),
+            notIdea: (() => {
+              // 默认组合不能落在 IDEA / Chrome 的已知占用键位上
+              const cfg = shortcuts.getConfig();
+              return !shortcuts.KNOWN_CONFLICTS[cfg.toggleWindow] && !shortcuts.KNOWN_CONFLICTS[cfg.quickAdd];
+            })(),
+            validate: (() => {
+              // 校验器：缺修饰键 / 非法主键必须被拒绝
+              return !shortcuts.validateAccel('Q').ok && !shortcuts.validateAccel('').ok
+                && shortcuts.validateAccel('CommandOrControl+Alt+Shift+Q').ok;
+            })(),
+            dupRejected: (() => {
+              const before = shortcuts.getConfig();
+              const r = shortcuts.applyConfig({ toggleWindow: 'CommandOrControl+Alt+Shift+X', quickAdd: 'CommandOrControl+Alt+Shift+X' });
+              shortcuts.applyConfig(before); // 还原
+              return r && r.ok === false;
+            })(),
+          };
+          console.log(`[SMOKE] Toast 层级 = z:${r13.zMask ? `(遮罩 ${r13.zMask})` : '?'} 挂 body=${r13.toastInBody ? '是' : '否'}；高于遮罩=${r13.toastAboveMask ? '是' : '否'}；不拦点击=${r13.toastNoPointer ? '是' : '否'}`);
+          console.log(`[SMOKE] 分组折叠 = 表头 ${r13.groupHeads} 个（按钮语义=${r13.headIsButton ? '是' : '否'}）；折叠=${r13.headCollapsed ? '是' : '否'}；任务行减少=${r13.rowsShrunk ? '是' : '否'}；记忆=${JSON.stringify(r13.collapsedSaved)}；再展开=${r13.expandedAgain ? '是' : '否'}；清除=${r13.collapsedCleared ? '是' : '否'}`);
+          console.log(`[SMOKE] 箭头尺寸 = 宽 ${r13.arrowWidth}px / 字号 ${r13.arrowFont}px（热区≥20、字号≥14：${r13.arrowWidth >= 20 && r13.arrowFont >= 14 ? '达标' : '未达标'}）`);
+          console.log(`[SMOKE] 今天默认值 = ${r13.todayStart || '-'} ~ ${r13.todayEnd || '-'}（填今天=${r13.todayFilled ? '是' : '否'}）`);
+          console.log(`[SMOKE] 详情描述 = 回填=${r13.notesFilled ? '是' : '否'}；状态「${r13.saveStateText}」（${r13.saveStateClass}）；标题落库=${r13.titleSaved ? '是' : '否'}；描述未被清空=${r13.notesKept ? '是' : '否'}；润色入口=${r13.polishBtn ? '有' : '无'}`);
+          console.log(`[SMOKE] 快捷键 = 入口${r13.scBtn ? '存在' : '缺失'}；弹窗=${r13.scModalOpened ? '打开' : '未打开'}；项数=${r13.scRows}；当前=${JSON.stringify(r13.scDefaults)}；避开 IDEA=${r13main.notIdea ? '是' : '否'}；校验器=${r13main.validate ? '正常' : '异常'}；重复被拒=${r13main.dupRejected ? '是' : '否'}`);
+          console.log(`[SMOKE] 历史弹窗尺寸 = 报告历史 ${r13.rpHisWidth}px（≥900=${r13.rpHisWidth >= 900 ? '是' : '否'}；完整在视口内=${r13.rpHisInViewport ? '是' : '否'}）；会议纪要历史入口=${r13.mthBtn ? '有' : '无'}`);
+
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
@@ -1415,7 +1584,19 @@ app.whenReady().then(() => {
             && r11.rpHistoryShrunk
             && r11.searchHistoryBox && r11.searchHistoryGrew && r11.searchRestored
             && r11main.reports >= 1 && r11main.searches >= 1 && r11main.reportHasContent
-            && r11main.searchHasKeyword && r11main.exportHasTables;
+            && r11main.searchHasKeyword && r11main.exportHasTables
+            // 第 13 轮
+            && r13.toastInBody && r13.toastAboveMask && r13.toastNoPointer
+            && r13.groupHeads >= 1 && r13.headIsButton && r13.headCollapsed && r13.rowsShrunk
+            && r13.arrowWidth >= 20 && r13.arrowFont >= 14
+            && r13.expandedAgain && r13.collapsedCleared
+            && r13.todayEditor && r13.todayFilled
+            && r13.notesFilled && r13.titleSaved && r13.notesKept && r13.polishBtn
+            && /已保存/.test(r13.saveStateText) && /s-saved/.test(r13.saveStateClass)
+            && r13.scBtn && r13.scModalOpened && r13.scRows === 2
+            && r13.rpHisBtn && r13.rpHisOpened && r13.rpHisWidth >= 900 && r13.rpHisInViewport
+            && r13.mthBtn
+            && r13main.notIdea && r13main.validate && r13main.dupRejected;
           if (!allOk) {
             // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
             // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
@@ -1444,12 +1625,15 @@ app.whenReady().then(() => {
             dumpFalsy('r10', r10);
             dumpFalsy('r11', r11);
             dumpFalsy('r11main', r11main);
+            dumpFalsy('r13', r13);
+            dumpFalsy('r13main', r13main);
           }
           console.log(allOk ? '[SMOKE] SMOKE_OK' : '[SMOKE] SMOKE_FAIL');
           isQuitting = true;
           app.quit();
         } catch (e) {
           console.error('[SMOKE] 检测失败:', e.message);
+          console.error('[SMOKE] 堆栈:', e && e.stack ? String(e.stack).split('\n').slice(0, 6).join(' | ') : '');
           isQuitting = true;
           app.quit();
         }

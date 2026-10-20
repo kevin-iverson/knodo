@@ -312,7 +312,8 @@ async function openHistoryModal() {
 
   await openPanelModal({
     title: `历史报告（${list.length} 份）`,
-    className: 'modal-wide',
+    // 宽弹窗：标题 + 时间 + 范围 + 分组 + 自定义要求都要在一行里铺开，720px 会挤成内部滚动
+    className: 'modal-xl',
     okText: '关闭',
     html: '<div class="rpt-history" id="rpt-history"></div>',
     onMount(mask, close) {
