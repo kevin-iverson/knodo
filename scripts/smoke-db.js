@@ -23,9 +23,15 @@ console.log('临时数据库目录:', tmpDir);
 db.init(tmpDir);
 
 console.log('\n[1] 分组 CRUD');
-const g1 = db.createGroup({ name: '工作', color: '#4f7cff' });
-const g2 = db.createGroup({ name: '生活', color: '#23b07e' });
-check('默认分组 + 新建分组', db.listGroups().length >= 4);
+// seedDefaults 已经建了「工作 / 生活」，同名再建会撞上「同一上级不允许重名」的校验，
+// 所以这里直接复用种子分组（这也正是新校验要保护的行为）
+const seededGroups = db.listGroups();
+const g1 = seededGroups.find((g) => g.name === '工作' && g.parent_id == null);
+const g2 = seededGroups.find((g) => g.name === '生活' && g.parent_id == null);
+check('默认分组 + 新建分组', db.listGroups().length >= 2 && !!g1 && !!g2);
+check('顶级分组重名被拒绝', (() => {
+  try { db.createGroup({ name: '工作' }); return false; } catch (e) { return /已存在同名分组/.test(e.message); }
+})());
 db.updateGroup(g2.id, { name: '家庭', color: '#f59e0b' });
 check('更新分组', db.getGroup(g2.id).name === '家庭');
 
@@ -35,6 +41,74 @@ const grand = db.createGroup({ name: '组件库', color: '#06b6d4', parentId: ch
 check('创建子分组', child.parent_id === g1.id && grand.parent_id === child.id);
 check('子孙集合（多层）', db.descendantGroupIds(g1.id).sort().join(',') === [child.id, grand.id].sort().join(','));
 check('分组展开含自身', db.expandGroupIds([g1.id]).length === 3);
+
+console.log('\n[1.5] 分组重名的作用域（同级唯一，跨级可同名）');
+const dupA = db.createGroup({ name: '11', color: '#4f7cff', parentId: g1.id });   // 工作 / 11
+const dupB = db.createGroup({ name: '11', color: '#23b07e', parentId: g2.id });   // 家庭 / 11
+check('不同父级下可同名', dupA.id !== dupB.id
+  && db.getGroup(dupA.id).parent_id === g1.id && db.getGroup(dupB.id).parent_id === g2.id);
+const dupRoot = db.createGroup({ name: '11', color: '#f59e0b' });                 // 顶级 / 11
+check('子分组与顶级分组可同名', dupRoot.parent_id == null && dupRoot.name === '11');
+check('同一父级下重名被拒绝', (() => {
+  try { db.createGroup({ name: '11', parentId: g1.id }); return false; } catch (e) { return /已存在同名分组/.test(e.message); }
+})());
+check('重名比较忽略大小写与首尾空格', (() => {
+  db.createGroup({ name: 'Backend', parentId: g1.id });
+  try { db.createGroup({ name: '  backend  ', parentId: g1.id }); return false; } catch (e) { return /已存在同名分组/.test(e.message); }
+})());
+check('只改颜色不触发重名校验', (() => {
+  const r = db.updateGroup(dupA.id, { name: '11', parentId: g1.id, color: '#123456' });
+  return r.color === '#123456' && r.name === '11';
+})());
+check('重命名成同级已存在的名字被拒绝', (() => {
+  try { db.updateGroup(dupA.id, { name: 'Backend' }); return false; } catch (e) { return /已存在同名分组/.test(e.message); }
+})());
+check('重命名成别的层级的名字允许', (() => {
+  const r = db.updateGroup(dupB.id, { name: '办公' }); // 家庭 / 11 → 家庭 / 办公
+  return r.name === '办公' && r.parent_id === g2.id;
+})());
+check('移动到已有同名子分组的父级被拒绝', (() => {
+  // 家庭 / 办公 挪到 工作 下不冲突；再造一个「家庭 / Backend」挪到「工作」下就该撞车
+  const src = db.createGroup({ name: 'Backend', parentId: g2.id });
+  try { db.updateGroup(src.id, { parentId: g1.id }); return false; } catch (e) { return /已存在同名分组/.test(e.message); }
+})());
+check('移动 + 改名后不撞车则允许（独立用例）', (() => {
+  const src = db.createGroup({ name: 'Ops', parentId: g2.id });
+  const r = db.updateGroup(src.id, { parentId: g1.id, name: 'Ops2' });
+  return r.parent_id === g1.id && r.name === 'Ops2';
+})());
+check('移到顶级时与顶级同名分组冲突被拒绝', (() => {
+  try { db.updateGroup(dupA.id, { parentId: null }); return false; } catch (e) { return /已存在同名分组/.test(e.message); }
+})());
+check('移到顶级 + 改名后允许', (() => {
+  const r = db.updateGroup(dupA.id, { parentId: null, name: '11-顶层' });
+  return r.parent_id == null && r.name === '11-顶层';
+})());
+check('空名被拒绝', (() => {
+  try { db.createGroup({ name: '   ' }); return false; } catch (e) { return /不能为空/.test(e.message); }
+})());
+
+console.log('\n[1.6] 任务附件元数据');
+const attTask = db.createTask({ title: '带附件的任务', groupId: g1.id });
+const att1 = { id: 'a1', name: '需求说明.docx', size: 1024, mime: 'application/msword', path: `task-${attTask.id}/a1_需求说明.docx`, added_at: new Date().toISOString() };
+const att2 = { id: 'a2', name: '截图.png', size: 2048, mime: 'image/png', path: `task-${attTask.id}/a2_截图.png`, added_at: new Date().toISOString() };
+const afterAdd = db.setAttachments(attTask.id, [att1, att2]);
+check('写入附件元数据', Array.isArray(afterAdd.attachments) && afterAdd.attachments.length === 2);
+check('附件元数据随任务读出（normalizeTask 解析 JSON）', db.getTask(attTask.id).attachments[0].name === '需求说明.docx');
+const afterRemove = db.setAttachments(attTask.id, [att2]);
+check('删除单个附件', afterRemove.attachments.length === 1 && afterRemove.attachments[0].id === 'a2');
+check('附件不影响其它字段更新', (() => {
+  const t = db.updateTask(attTask.id, { title: '带附件的任务2', notes: '备注' });
+  return t.title === '带附件的任务2' && t.attachments.length === 1;
+})());
+check('子树 id 收集（删除任务时清附件用）', (() => {
+  const kid = db.createTask({ title: '子任务', parentId: attTask.id });
+  const ids = db.subtreeTaskIds(attTask.id);
+  return ids.includes(attTask.id) && ids.includes(kid.id);
+})());
+check('清空附件', db.setAttachments(attTask.id, []).attachments.length === 0);
+// 清理临时任务（含上面建的子任务）：后面的用例按任务数量做断言
+db.deleteTask(attTask.id);
 
 // 自定义颜色：不再局限于预设色板，任意 hex 都要原样持久化/归一化
 const gCustom = db.createGroup({ name: '自定义色分组', color: '#ff00aa' });
@@ -109,6 +183,22 @@ check('取消归档', db.getTask(task1.id).archived === false);
 const ov = db.overview();
 check('统计概览', ov.total === 2 && ov.completed === 1);
 check('趋势天数', db.dailyTrend(7).points.length === 7);
+
+// 统计口径：默认只算主任务；includeSubtasks=true 要把子任务一起算进来
+const scopeParent = db.createTask({ title: '口径父任务' });
+db.createTask({ title: '口径子任务A', parentId: scopeParent.id });
+const scopeSubB = db.createTask({ title: '口径子任务B', parentId: scopeParent.id });
+db.toggleTask(scopeSubB.id); // 完成一个子任务：趋势口径也要能算到它
+const ovTop = db.overview();
+const ovAll = db.overview({ includeSubtasks: true });
+check('默认口径不含子任务', ovTop.total === 3 && ovTop.includeSubtasks === false);
+check('含子任务口径把子任务计入', ovAll.total === 5 && ovAll.includeSubtasks === true);
+check('含子任务口径的完成数包含已完成子任务', ovAll.completed === ovTop.completed + 1);
+check('默认口径的完成数不含已完成子任务', ovTop.completed === 1);
+check(
+  '趋势口径：默认不含子任务 / 开启后计入',
+  db.dailyTrend({ range: '7d' }).total < db.dailyTrend({ range: '7d', includeSubtasks: true }).total
+);
 
 console.log('\n[6] 数据导入 / 导出');
 const exported = db.exportData();

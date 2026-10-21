@@ -4,12 +4,14 @@
  * 关闭窗口默认最小化到托盘，仅当显式退出时才真正退出。
  */
 const {
-  app, BrowserWindow, nativeTheme, ipcMain, session, Menu,
+  app, BrowserWindow, nativeTheme, ipcMain, session, Menu, dialog, shell,
 } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const db = require('./db');
+const storage = require('./storage');
+const attachments = require('./attachments');
 const { registerIpc } = require('./ipc');
 const { setupTray, destroyTray } = require('./tray');
 const shortcuts = require('./shortcuts');
@@ -87,6 +89,19 @@ function showWindow() {
   mainWindow.focus();
 }
 
+/**
+ * 对话框统一入口：有主窗口就挂成模态对话框，没有（极早期 / 窗口已关）就不带父窗口。
+ * Electron 的签名是 showMessageBox([browserWindow,] options)，第一个参数传 undefined 会报参数错误，
+ * 所以这里必须用两个分支，而不是 `mainWindow || undefined`。
+ */
+function msgBox(opts) {
+  return mainWindow ? dialog.showMessageBox(mainWindow, opts) : dialog.showMessageBox(opts);
+}
+
+function dirDialog(opts) {
+  return mainWindow ? dialog.showOpenDialog(mainWindow, opts) : dialog.showOpenDialog(opts);
+}
+
 function toggleWindow() {
   if (!mainWindow) return showWindow();
   if (mainWindow.isVisible() && mainWindow.isFocused()) mainWindow.hide();
@@ -126,12 +141,146 @@ function buildAppMenu() {
         if (mainWindow) mainWindow.webContents.send('ui:ai-settings');
       },
     },
+    {
+      label: '数据存放位置…',
+      click: () => {
+        showWindow();
+        openStorageDialog();
+      },
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/**
+ * 「数据存放位置」对话框：查看当前目录 → 选新目录 → 探测写权限 → 可选迁移现有数据 → 重启生效。
+ * 之所以全程用原生对话框：切换目录涉及关库 / 重启，放在渲染层做容易出现「界面还在、库已换」的中间态。
+ */
+async function openStorageDialog() {
+  const info = storage.getInfo();
+  const detail = info.source === 'fallback'
+    ? `⚠️ 你之前配置的目录当前不可用：\n${info.wanted}\n原因：${info.error}\n\n本次已临时使用默认目录，数据不会写进那个失效路径。`
+    : info.isCustom
+      ? '这是你自定义的目录。数据库（todo.db）与任务附件（attachments）都在这里。'
+      : '默认目录在系统用户数据目录下（通常位于 C 盘）。选一个其它盘符的目录可以把数据挪出 C 盘。';
+  const buttons = ['选择新目录…', '打开当前目录'];
+  if (info.isCustom) buttons.push('恢复默认目录');
+  buttons.push('取消');
+  const cancelId = buttons.length - 1;
+  const { response } = await msgBox({
+    type: info.source === 'fallback' ? 'warning' : 'info',
+    title: '数据存放位置',
+    message: `当前数据目录：\n${info.dir}`,
+    detail,
+    buttons,
+    defaultId: 0,
+    cancelId,
+    noLink: true,
+  });
+  const picked = buttons[response];
+  if (picked === '打开当前目录') {
+    const err = await shell.openPath(info.dir);
+    if (err) dialog.showErrorBox('无法打开目录', err);
+    return;
+  }
+  if (picked === '恢复默认目录') {
+    try {
+      storage.clearDataDir();
+    } catch (e) {
+      dialog.showErrorBox('恢复默认目录失败', e.message);
+      return;
+    }
+    await askRestart(info.dir, info.defaultDir, false);
+    return;
+  }
+  if (picked !== '选择新目录…') return;
+
+  const pick = await dirDialog({
+    title: '选择数据存放目录',
+    buttonLabel: '使用此目录',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (pick.canceled || !pick.filePaths || !pick.filePaths.length) return;
+  const target = pick.filePaths[0];
+
+  const test = storage.probe(target);
+  if (!test.ok) {
+    dialog.showErrorBox('目录不可用', `无法写入该目录：\n${target}\n\n原因：${test.error}\n\n请换一个目录，或检查磁盘权限。`);
+    return;
+  }
+  if (path.resolve(target) === path.resolve(info.dir)) {
+    msgBox({
+      type: 'info', title: '数据存放位置', message: '这已经是当前的数据目录了。', buttons: ['好'], noLink: true,
+    });
+    return;
+  }
+  if (fs.existsSync(path.join(target, storage.DB_NAME))) {
+    dialog.showErrorBox('目标目录已有数据', `该目录下已存在 ${storage.DB_NAME}：\n${target}\n\n为避免覆盖已有数据，请换一个空目录（或先把旧文件移走）。`);
+    return;
+  }
+
+  // 有数据时才问「是否迁移」，空库直接切过去即可
+  let copy = false;
+  const hasData = db.isReady() && db.listTasks({ status: 'all' }).length > 0;
+  if (hasData) {
+    const ans = await msgBox({
+      type: 'question',
+      title: '迁移现有数据',
+      message: '是否把当前数据复制到新目录？',
+      detail: `当前目录：${info.dir}\n新目录：${target}\n\n复制内容：数据库（todo.db）+ 任务附件。 `
+        + '录音文件仍留在原目录（会议记录里存的是绝对路径），不影响回放。',
+      buttons: ['复制并切换', '仅切换（新目录为空）', '取消'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    });
+    if (ans.response === 2) return;
+    copy = ans.response === 0;
+  }
+
+  try {
+    if (copy) {
+      // 源目录以「当前打开的数据库文件」为准，避免配置与实际运行目录不一致时复制错地方
+      const fromDir = path.dirname(db.getDbPath() || path.join(info.dir, storage.DB_NAME));
+      await storage.migrateTo(target, (dest) => db.backupTo(dest), fromDir);
+    }
+    storage.setDataDir(target);
+  } catch (e) {
+    dialog.showErrorBox('切换数据目录失败', `${e && e.message ? e.message : e}\n\n数据目录未做任何修改，仍在使用：${info.dir}`);
+    return;
+  }
+  await askRestart(info.dir, target, copy);
+}
+
+/** 切换成功后询问是否立即重启（配置已落盘，重启才真正换库） */
+async function askRestart(fromDir, toDir, copied) {
+  const { response } = await msgBox({
+    type: 'info',
+    title: '数据目录已更新',
+    message: '数据目录已保存，重启后生效',
+    detail: `新目录：${toDir}${copied ? '\n已复制：数据库 + 任务附件' : '\n新目录为空（原有数据仍留在原目录）'}\n\n是否立即重启？`,
+    buttons: ['立即重启', '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (response === 0) {
+    isQuitting = true;
+    app.relaunch();
+    app.exit(0);
+  } else if (copied) {
+    // 不重启的话当前进程仍写在旧库上，新目录里的副本会停留在这一刻 —— 提醒一句
+    console.log(`[storage] 已配置新目录 ${toDir}（来自 ${fromDir}），等待重启生效`);
+  }
+}
+
 app.whenReady().then(() => {
-  db.init(app.getPath('userData'));
+  // 数据目录：配置里指定的（自定义）目录优先；不可用时回退默认目录并在窗口出来后提示，
+  // 保证「盘没插 / 路径被删 / 无写权限」都不会让应用起不来。
+  storage.init({ userDataDir: app.getPath('userData'), defaultDir: app.getPath('userData') });
+  const dataInfo = storage.resolve();
+  db.init(dataInfo.dir);
+  attachments.init(path.join(dataInfo.dir, storage.ATTACH_DIR));
   applyTheme();
   registerIpc();
   buildAppMenu();
@@ -143,6 +292,21 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+
+  // 配置的数据目录不可用：提示用户本次实际使用的目录（数据没丢，只是回退到了默认位置）
+  if (!dataInfo.ok && !isSmoke) {
+    msgBox({
+      type: 'warning',
+      title: '数据目录不可用',
+      message: '配置的数据目录无法使用，本次已回退到默认目录',
+      detail: `配置目录：${dataInfo.wanted}\n原因：${dataInfo.error}\n\n本次实际使用：${dataInfo.dir}\n\n`
+        + '可在菜单「数据存放位置…」里重新指定目录（例如重新插上移动硬盘后再试）。',
+      buttons: ['好', '去设置'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    }).then(({ response }) => { if (response === 1) openStorageDialog(); }).catch(() => {});
+  }
 
   setupTray({
     getWindow: () => mainWindow,
@@ -1819,6 +1983,199 @@ app.whenReady().then(() => {
           if (r15.masksBefore) console.log(`[SMOKE] 提示：润色前页面上已有 ${r15.masksBefore} 个弹窗遮罩 ${JSON.stringify(r15.strayTitles)}`);
           slowServer.close();
 
+          /* ============ 第 16 轮：标题层级 / 子任务计数 / 行内改名自适应 / 图片放大 / 侧栏调宽 / 统计口径 ============ */
+          const r16 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const out = {};
+              try {
+              nav('all'); await wait(800);
+
+              /* ---- 1) 标题字号层级 + 子任务计数紧邻标题 ---- */
+              const t16 = await window.api.tasks.create({ title: '标题层级用例' });
+              const s1 = await window.api.tasks.create({ title: '子任务甲', parentId: t16.id });
+              const s2 = await window.api.tasks.create({ title: '子任务乙', parentId: t16.id });
+              await window.api.tasks.toggle(s1.id);
+              nav('upcoming'); await wait(400); nav('all'); await wait(800);
+              const item16 = document.querySelector('#view .task-item[data-id="' + t16.id + '"]');
+              out.rowFound = !!item16;
+              if (item16) {
+                const titleEl = item16.querySelector('.task-title');
+                const textEl = item16.querySelector('.task-title-text');
+                // 量真正的正文文本节点（.task-meta 容器本身只继承 body 字号，量它没意义）
+                const metaEl = item16.querySelector('.task-meta .meta-item') || item16.querySelector('.task-meta');
+                const titleFs = parseFloat(getComputedStyle(titleEl).fontSize);
+                const metaFs = parseFloat(getComputedStyle(metaEl).fontSize);
+                out.titleFs = titleFs;
+                out.metaFs = metaFs;
+                out.titleBigger = titleFs >= metaFs + 3;      // 与正文拉开层级
+                out.titleSizeOk = titleFs >= 15.5 && titleFs <= 17;
+                const badge = item16.querySelector('.task-subtask-badge');
+                out.badgeExists = !!badge;
+                out.badgeInTitle = !!badge && badge.parentElement === titleEl;
+                out.badgeNextToName = !!badge && textEl.nextElementSibling === badge;
+                out.badgeNotInMeta = !item16.querySelector('.task-meta .subtask-progress');
+                out.badgeText = badge ? badge.textContent.trim() : '';
+              }
+
+              /* ---- 2) 行内改名：输入框宽度随输入自适应、不换行 ---- */
+              if (item16) {
+                item16.querySelector('.task-title-text').click();
+                await wait(250);
+                const input = item16.querySelector('.task-title-input');
+                out.inputFound = !!input;
+                if (input) {
+                  const w0 = input.getBoundingClientRect().width;
+                  input.value = '这是一段明显更长的任务标题用于验证宽度自适应';
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  await wait(150);
+                  const w1 = input.getBoundingClientRect().width;
+                  out.widthGrew = w1 > w0 + 20;
+                  out.noWrap = input.scrollHeight <= input.clientHeight + 2;
+                  const rowW = item16.querySelector('.task-title').getBoundingClientRect().width;
+                  out.withinRow = w1 <= rowW + 1;
+                  // 不该压到右侧操作区
+                  const bodyR = item16.querySelector('.task-body').getBoundingClientRect().right;
+                  out.noOverlap = input.getBoundingClientRect().right <= bodyR + 1;
+                  input.value = '标题层级用例';
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                  await wait(300);
+                }
+              }
+
+              /* ---- 3) 图片双击放大预览 ---- */
+              const c = document.createElement('canvas');
+              c.width = 120; c.height = 60;
+              const cx = c.getContext('2d');
+              cx.fillStyle = '#4f7cff'; cx.fillRect(0, 0, 120, 60);
+              const dataUrl = c.toDataURL('image/png');
+              const imgTask = await window.api.tasks.create({ title: '图片用例', notes: '![测试图](' + dataUrl + ')' });
+              nav('upcoming'); await wait(400); nav('all'); await wait(800);
+              const imgRow = document.querySelector('#view .task-item[data-id="' + imgTask.id + '"]');
+              if (imgRow) { imgRow.click(); await wait(900); }
+              const mdImg = document.querySelector('.detail-notes-editor img, .markdown-body img');
+              out.mdImgFound = !!mdImg;
+              if (mdImg) {
+                mdImg.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                await wait(300);
+                const mask = document.querySelector('.img-zoom-mask');
+                out.zoomOpened = !!mask;
+                if (mask) {
+                  const big = mask.querySelector('.img-zoom-img');
+                  const r = big.getBoundingClientRect();
+                  const nat = big.naturalWidth / big.naturalHeight;
+                  const shown = r.width / r.height;
+                  out.ratioKept = Math.abs(nat - shown) < 0.05 && r.width <= window.innerWidth && r.height <= window.innerHeight;
+                  out.zoomSize = Math.round(r.width) + 'x' + Math.round(r.height);
+                  // 关闭方式 1：Esc
+                  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                  await wait(250);
+                  out.closedByEsc = !document.querySelector('.img-zoom-mask');
+                }
+                if (!document.querySelector('.img-zoom-mask')) {
+                  mdImg.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                  await wait(300);
+                  // 关闭方式 2：点遮罩
+                  const m2 = document.querySelector('.img-zoom-mask');
+                  if (m2) { m2.dispatchEvent(new MouseEvent('click', { bubbles: true })); await wait(250); }
+                  out.closedByMask = !document.querySelector('.img-zoom-mask');
+                }
+                if (!document.querySelector('.img-zoom-mask')) {
+                  mdImg.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                  await wait(300);
+                  // 关闭方式 3：再次双击图片
+                  const b3 = document.querySelector('.img-zoom-img');
+                  if (b3) { b3.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })); await wait(250); }
+                  out.closedByDbl = !document.querySelector('.img-zoom-mask');
+                }
+              }
+              const cBtn = document.querySelector('.detail-close');
+              if (cBtn) { cBtn.click(); await wait(400); }
+
+              /* ---- 4) 侧边栏拖拽调宽 ---- */
+              const handle = document.getElementById('sidebar-resizer');
+              const bar = document.querySelector('.sidebar');
+              out.handleFound = !!handle && !!bar;
+              if (handle && bar) {
+                const before = bar.getBoundingClientRect().width;
+                const rect = handle.getBoundingClientRect();
+                const startX = rect.left + rect.width / 2;
+                const pd = new PointerEvent('pointerdown', { bubbles: true, clientX: startX, clientY: 300, button: 0, pointerId: 1 });
+                handle.dispatchEvent(pd);
+                await wait(80);
+                out.selectDisabled = document.body.style.userSelect === 'none' && document.documentElement.classList.contains('is-resizing');
+                window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: startX + 90, clientY: 300, pointerId: 1 }));
+                await wait(150);
+                const mid = bar.getBoundingClientRect().width;
+                window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: startX + 90, clientY: 300, pointerId: 1 }));
+                await wait(200);
+                const after = bar.getBoundingClientRect().width;
+                out.dragged = after > before + 40;
+                out.widths = [Math.round(before), Math.round(mid), Math.round(after)];
+                out.selectRestored = document.body.style.userSelect === '' && !document.documentElement.classList.contains('is-resizing');
+                // 拖到极小值也要被夹住
+                handle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: startX, clientY: 300, button: 0, pointerId: 2 }));
+                window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 5, clientY: 300, pointerId: 2 }));
+                await wait(120);
+                window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 5, clientY: 300, pointerId: 2 }));
+                await wait(200);
+                const minW = bar.getBoundingClientRect().width;
+                out.minClamped = minW >= 179 && minW <= 181;
+                // 布局不错位：侧栏右边界 == 主区左边界，且主区仍有可用宽度
+                const mainEl = document.querySelector('.main');
+                const barR = bar.getBoundingClientRect().right;
+                const mainL = mainEl.getBoundingClientRect().left;
+                out.layoutAligned = Math.abs(barR - mainL) <= 9; // 把手占 8px
+                out.mainUsable = mainEl.getBoundingClientRect().width >= 400;
+                out.noHOverflow = document.documentElement.scrollWidth <= window.innerWidth;
+                await wait(500);
+                out.persisted = await window.api.ui.getSidebarWidth();
+              }
+
+              /* ---- 5) 统计口径：仅主任务 / 含子任务 ---- */
+              nav('stats'); await wait(900);
+              const scopeBox = document.querySelector('#stats-scope');
+              out.scopeFound = !!scopeBox;
+              if (scopeBox) {
+                const readTotal = () => {
+                  const card = document.querySelector('.stat-card[data-stat="total"] .num');
+                  return card ? Number(card.textContent.trim()) : -1;
+                };
+                const topBtn = scopeBox.querySelector('[data-scope="top"]');
+                const allBtn = scopeBox.querySelector('[data-scope="all"]');
+                topBtn.click(); await wait(900);
+                const nTop = readTotal();
+                out.scopeTopActive = scopeBox.querySelector('[data-scope="top"]').classList.contains('active');
+                allBtn.click(); await wait(1000);
+                const nAll = readTotal();
+                out.scopeAllActive = !!scopeBox.querySelector('[data-scope="all"]')
+                  && scopeBox.querySelector('[data-scope="all"]').classList.contains('active');
+                out.scopeCounts = [nTop, nAll];
+                out.scopeGrew = nAll > nTop;   // 有子任务时切到「含子任务」总数必须变大
+                // 趋势也跟着换口径
+                const summary = document.querySelector('.trend-summary');
+                out.trendRefreshed = !!summary;
+                topBtn.click(); await wait(900);
+                const nBack = readTotal();
+                out.scopeSwitchedBack = nBack === nTop;
+              }
+
+              // 清理
+              try { await window.api.tasks.remove(t16.id); } catch (e) {}
+              try { await window.api.tasks.remove(imgTask.id); } catch (e) {}
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
+              return out;
+            })()
+          `);
+          if (r16.__fatal) console.log('[SMOKE][r16 fatal]', r16.__fatal);
+          console.log(`[SMOKE] 标题层级 = 标题 ${r16.titleFs || '-'}px / 正文 ${r16.metaFs || '-'}px（层级分明=${r16.titleBigger ? '是' : '否'}）；子任务计数在标题行内=${r16.badgeInTitle ? '是' : '否'}；紧邻名称=${r16.badgeNextToName ? '是' : '否'}（${r16.badgeText || '-'}）`);
+          console.log(`[SMOKE] 行内改名自适应 = 宽度随输入增长=${r16.widthGrew ? '是' : '否'}；不换行=${r16.noWrap ? '是' : '否'}；不越界=${r16.withinRow && r16.noOverlap ? '是' : '否'}`);
+          console.log(`[SMOKE] 图片放大 = 打开=${r16.zoomOpened ? '是' : '否'}；原比例=${r16.ratioKept ? '保持' : '变形'}（${r16.zoomSize || '-'}）；Esc关=${r16.closedByEsc ? '是' : '否'}；点遮罩关=${r16.closedByMask ? '是' : '否'}；双击关=${r16.closedByDbl ? '是' : '否'}`);
+          console.log(`[SMOKE] 侧栏调宽 = ${JSON.stringify(r16.widths)}；拖拽生效=${r16.dragged ? '是' : '否'}；下限夹住=${r16.minClamped ? '是' : '否'}；拖时禁选中=${r16.selectDisabled ? '是' : '否'}；松手恢复=${r16.selectRestored ? '是' : '否'}；布局对齐=${r16.layoutAligned ? '是' : '否'}；主区可用=${r16.mainUsable ? '是' : '否'}；落库=${r16.persisted || '-'}px`);
+          console.log(`[SMOKE] 统计口径 = 仅主任务 ${(r16.scopeCounts || [])[0]} / 含子任务 ${(r16.scopeCounts || [])[1]}；切换生效=${r16.scopeGrew ? '是' : '否'}；切回一致=${r16.scopeSwitchedBack ? '是' : '否'}`);
+
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
@@ -1924,7 +2281,18 @@ app.whenReady().then(() => {
             && r15.pRowFound && r15.polishBtn
             && r15.masks1 === 1 && r15.loadingShown && r15.btnDisabled && /润色中/.test(r15.btnText)
             && r15.masks2 === 1 && r15.modalClosed && r15.btnRestored
-            && r15.errShown && r15.retryBtn && r15.modalClosedB;
+            && r15.errShown && r15.retryBtn && r15.modalClosedB
+            // 第 16 轮：标题层级 / 子任务计数 / 行内改名自适应 / 图片放大 / 侧栏调宽 / 统计口径
+            && r16.rowFound && r16.titleSizeOk && r16.titleBigger
+            && r16.badgeExists && r16.badgeInTitle && r16.badgeNextToName && r16.badgeNotInMeta
+            && /1\/2/.test(r16.badgeText || '')
+            && r16.inputFound && r16.widthGrew && r16.noWrap && r16.withinRow && r16.noOverlap
+            && r16.mdImgFound && r16.zoomOpened && r16.ratioKept
+            && r16.closedByEsc && r16.closedByMask && r16.closedByDbl
+            && r16.handleFound && r16.dragged && r16.minClamped && r16.selectDisabled
+            && r16.selectRestored && r16.layoutAligned && r16.mainUsable && r16.noHOverflow
+            && r16.persisted >= 180 && r16.scopeFound && r16.scopeGrew
+            && r16.scopeTopActive && r16.scopeAllActive && r16.scopeSwitchedBack && r16.trendRefreshed;
           if (!allOk) {
             // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
             // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
@@ -1957,6 +2325,7 @@ app.whenReady().then(() => {
             dumpFalsy('r13main', r13main);
             dumpFalsy('r14', r14);
             dumpFalsy('r15', r15);
+            dumpFalsy('r16', r16);
           }
           console.log(allOk ? '[SMOKE] SMOKE_OK' : '[SMOKE] SMOKE_FAIL');
           isQuitting = true;

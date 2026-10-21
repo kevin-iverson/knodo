@@ -2,7 +2,7 @@
 /**
  * 预加载脚本：通过 contextBridge 向渲染进程暴露安全的最小 API 面。
  */
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 /**
  * 统一包装 invoke：
@@ -58,9 +58,18 @@ contextBridge.exposeInMainWorld('api', {
     create: (name, color) => call('tags:create', name, color),
     remove: (id) => call('tags:delete', id),
   },
+  // 任务附件：文件本体存在主进程的数据目录里，渲染层只拿元数据
+  attachments: {
+    pick: (taskId) => call('attachments:pick', taskId),
+    addPaths: (taskId, paths) => call('attachments:addPaths', taskId, paths),
+    open: (taskId, attId) => call('attachments:open', taskId, attId),
+    reveal: (taskId, attId) => call('attachments:reveal', taskId, attId),
+    saveAs: (taskId, attId) => call('attachments:saveAs', taskId, attId),
+    remove: (taskId, attId) => call('attachments:remove', taskId, attId),
+  },
   // 统计
   stats: {
-    overview: () => call('stats:overview'),
+    overview: (p) => call('stats:overview', p),
     trend: (p) => call('stats:trend', p),
   },
   // AI 配置（对话 + 语音）
@@ -133,6 +142,8 @@ contextBridge.exposeInMainWorld('api', {
   ui: {
     getDetailWidth: () => call('ui:getDetailWidth'),
     setDetailWidth: (w) => call('ui:setDetailWidth', w),
+    getSidebarWidth: () => call('ui:getSidebarWidth'),
+    setSidebarWidth: (w) => call('ui:setSidebarWidth', w),
     getTagFilter: () => call('ui:getTagFilter'),
     setTagFilter: (id) => call('ui:setTagFilter', id),
     getTodayDone: () => call('ui:getTodayDone'),
@@ -144,6 +155,17 @@ contextBridge.exposeInMainWorld('api', {
     quit: () => call('app:quit'),
     openExternal: (url) => call('app:openExternal', url),
     getVersion: () => call('app:getVersion'),
+  },
+  /**
+   * 拖拽进来的 File 对象在 Electron 32+ 已没有 .path，必须用 webUtils 换绝对路径。
+   * 拿到路径后再交给 attachments.addPaths 复制进数据目录。
+   */
+  pathForFile: (file) => {
+    try {
+      return (webUtils && webUtils.getPathForFile && webUtils.getPathForFile(file)) || '';
+    } catch (e) {
+      return '';
+    }
   },
   // 主进程事件
   on: (channel, cb) => {

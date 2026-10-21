@@ -25,7 +25,8 @@ function inline(text) {
   // 行内代码 `code`
   s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
   // 图片 ![alt](url)
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => `<img src="${safeUrl(url)}" alt="${alt}">`);
+  // md-image：图片双击放大预览的挂载点（见 image-zoom.js）
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => `<img class="md-image" src="${safeUrl(url)}" alt="${alt}" loading="lazy">`);
   // 链接 [text](url)
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, txt, url) => `<a href="${safeUrl(url)}" target="_blank" rel="noopener">${txt}</a>`);
   // 粗体 ** ** / __ __

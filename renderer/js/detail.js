@@ -28,6 +28,59 @@ const esc = (s) =>
 let handlers = { refresh: () => {}, toast: () => {} };
 export function setDetailHandlers(h) { handlers = { ...handlers, ...h }; }
 
+/* ---------------- 附件 ---------------- */
+
+/** 文件大小：B / KB / MB / GB，保留一位小数，0 字节也给出可读值 */
+function fmtSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`;
+}
+
+/** 按 MIME / 扩展名给一个图标，扫一眼就知道是什么类型的附件 */
+function attIcon(a) {
+  const mime = String((a && a.mime) || '');
+  const name = String((a && a.name) || '').toLowerCase();
+  if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name)) return '🖼';
+  if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi)$/.test(name)) return '🎬';
+  if (mime.startsWith('audio/') || /\.(mp3|wav|m4a|ogg|flac)$/.test(name)) return '🎵';
+  if (mime === 'application/pdf' || /\.pdf$/.test(name)) return '📕';
+  if (/\.(xls|xlsx|csv)$/.test(name)) return '📊';
+  if (/\.(doc|docx)$/.test(name)) return '📄';
+  if (/\.(zip|rar|7z|tar|gz)$/.test(name)) return '🗜';
+  return '📎';
+}
+
+/** 附件唯一键：新数据都有 id，老数据（base64 内联）可能只有 name，兜底用 name 定位 */
+function attKey(a) {
+  return String((a && (a.id || a.name)) || '');
+}
+
+/** 附件列表 HTML（空态也在这里，方便整体替换） */
+function attachmentsInnerHtml(list) {
+  const arr = Array.isArray(list) ? list : [];
+  if (!arr.length) {
+    return '<div class="att-empty">暂无附件：点右上「＋ 添加附件」，或把文件拖到这里</div>';
+  }
+  return arr.map((a) => `
+    <div class="att-row" data-att="${esc(attKey(a))}" title="${esc(a.name)}">
+      <span class="att-icon">${attIcon(a)}</span>
+      <span class="att-main">
+        <span class="att-name">${esc(a.name)}</span>
+        <span class="att-meta">${fmtSize(a.size)}${a.added_at ? ` · ${esc(fmtDateTime(a.added_at))}` : ''}</span>
+      </span>
+      <span class="att-ops">
+        <button data-att-act="open" title="用系统默认程序打开">打开</button>
+        <button data-att-act="save" title="另存为…">下载</button>
+        <button class="del" data-att-act="del" title="删除附件">删除</button>
+      </span>
+    </div>`).join('');
+}
+
 /**
  * 统一错误处理：把失败原因提示给用户，避免"点了没反应"。
  * 返回 true 表示成功，false 表示已提示并应中止后续刷新。
@@ -394,6 +447,16 @@ async function renderDetail() {
                data-placeholder="支持 Markdown 快捷键（Ctrl+B 加粗 / Ctrl+I 斜体），可直接粘贴图片…">${notesHtml}</div>
         </div>
 
+        <div class="detail-section">
+          <div class="detail-section-head">
+            <span>附件 <span class="att-count">${(task.attachments || []).length}</span></span>
+            <span class="np-head-ops">
+              <button class="ghost-btn tiny" data-act="att-add" title="选择本地文件添加附件（支持多选，也可直接把文件拖进来）">＋ 添加附件</button>
+            </span>
+          </div>
+          <div class="att-list">${attachmentsInnerHtml(task.attachments)}</div>
+        </div>
+
         <div class="detail-created" title="任务创建时间（不可修改）">🕒 创建于 ${esc(fmtDateTime(task.created_at))}</div>
       </div>
       <div class="detail-foot">
@@ -573,6 +636,105 @@ function bindDetailEvents(drawer, task) {
   // 子任务：勾选 / 删除（统一由 bindSubtaskRowEvents 绑定，只重绘子树）
   bindSubtaskRowEvents(drawer, task.id);
   bindSubtaskDrag(drawer);
+
+  bindAttachmentEvents(drawer, task);
+}
+
+/**
+ * 附件区块交互：添加（选择文件 / 拖拽拖入）、打开、下载（另存为）、删除。
+ * 增删后只替换 .att-list 的内容，不整页重绘抽屉 —— 描述编辑器里的光标与滚动位置都要保住。
+ */
+function bindAttachmentEvents(drawer, task) {
+  const listEl = drawer.querySelector('.att-list');
+  if (!listEl) return;
+  const signal = renderAbort ? renderAbort.signal : undefined;
+
+  /** 用最新的任务数据刷新附件列表与计数 */
+  const reload = async () => {
+    const fresh = await api.tasks.get(task.id).catch(() => null);
+    if (!fresh) return;
+    task.attachments = fresh.attachments || [];
+    listEl.innerHTML = attachmentsInnerHtml(task.attachments);
+    const cnt = drawer.querySelector('.att-count');
+    if (cnt) cnt.textContent = String(task.attachments.length);
+    // 列表页的附件角标也要跟着变
+    await refreshAll();
+    handlers.refresh();
+  };
+
+  const addPaths = async (paths) => {
+    const list = (paths || []).filter(Boolean);
+    if (!list.length) return;
+    const ok = await guard('添加附件失败', async () => {
+      const res = await api.attachments.addPaths(task.id, list);
+      if (res && res.failed && res.failed.length) {
+        handlers.toast(`已添加 ${res.added} 个附件，${res.failed.length} 个失败：${res.failed[0]}`);
+      } else if (res && res.added) {
+        handlers.toast(`已添加 ${res.added} 个附件`);
+      }
+    });
+    if (ok) await reload();
+  };
+
+  const addBtn = drawer.querySelector('[data-act="att-add"]');
+  if (addBtn) {
+    addBtn.addEventListener('click', async () => {
+      const ok = await guard('添加附件失败', async () => {
+        const res = await api.attachments.pick(task.id);
+        if (res && res.canceled) return;
+        if (res && res.failed && res.failed.length) {
+          handlers.toast(`已添加 ${res.added} 个附件，${res.failed.length} 个失败：${res.failed[0]}`);
+        } else if (res && res.added) {
+          handlers.toast(`已添加 ${res.added} 个附件`);
+        }
+      });
+      if (ok) await reload();
+    });
+  }
+
+  // 行内操作：事件委托，列表重绘后不需要重新绑定
+  listEl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-att-act]');
+    if (!btn) return;
+    const row = btn.closest('[data-att]');
+    const key = row ? row.dataset.att : '';
+    const name = row ? (row.title || '该附件') : '该附件';
+    const act = btn.dataset.attAct;
+    if (act === 'open') {
+      await guard('打开附件失败', () => api.attachments.open(task.id, key));
+    } else if (act === 'save') {
+      const ok = await guard('保存附件失败', async () => {
+        const res = await api.attachments.saveAs(task.id, key);
+        if (res && res.ok) handlers.toast('附件已保存');
+      });
+      if (!ok) return;
+    } else if (act === 'del') {
+      if (!confirm(`删除附件「${name}」？文件会从数据目录中一并删除。`)) return;
+      const ok = await guard('删除附件失败', () => api.attachments.remove(task.id, key));
+      if (ok) { handlers.toast('附件已删除'); await reload(); }
+    }
+  }, { signal });
+
+  // 拖拽添加：把文件直接拖到附件区
+  listEl.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    listEl.classList.add('drag-over');
+  }, { signal });
+  listEl.addEventListener('dragleave', () => listEl.classList.remove('drag-over'), { signal });
+  listEl.addEventListener('drop', async (e) => {
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault(); // 阻止 Electron 默认「把文件当页面打开」
+    listEl.classList.remove('drag-over');
+    // Electron 32+ 的 File 已没有 .path，必须通过 preload 的 webUtils 换绝对路径
+    const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
+    if (!paths.length) {
+      handlers.toast('无法读取拖入文件的路径，请改用「＋ 添加附件」');
+      return;
+    }
+    await addPaths(paths);
+  }, { signal });
 }
 
 /**

@@ -6,6 +6,7 @@ const { ipcMain, dialog, shell, app, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const db = require('./db');
+const attachments = require('./attachments');
 const crypto = require('./crypto');
 const ai = require('./ai');
 const asr = require('./asr');
@@ -110,13 +111,107 @@ function registerIpc() {
   ipcMain.handle('tasks:get', withDb((id) => db.getTask(id)));
   ipcMain.handle('tasks:create', withDb((p) => db.createTask(p)));
   ipcMain.handle('tasks:update', withDb((id, p) => db.updateTask(id, p)));
-  ipcMain.handle('tasks:delete', withDb((id) => db.deleteTask(id)));
+  ipcMain.handle('tasks:delete', withDb((id) => {
+    // 删除任务会连带删除子任务：先收集整棵子树，删库成功后一并清掉它们的附件文件
+    const ids = db.subtreeTaskIds(id);
+    const ok = db.deleteTask(id);
+    ids.forEach((tid) => attachments.removeTaskDir(tid));
+    return ok;
+  }));
   ipcMain.handle('tasks:toggle', withDb((id) => db.toggleTask(id)));
   ipcMain.handle('tasks:reorder', withDb((ids) => db.reorderTasks(ids)));
   ipcMain.handle('tasks:archiveCompleted', withDb((groupId) => db.archiveCompleted(groupId)));
   ipcMain.handle('tasks:archive', withDb((id) => db.archiveTask(id)));
   ipcMain.handle('tasks:unarchive', withDb((id) => db.unarchiveTask(id)));
   ipcMain.handle('tasks:subtasks', withDb((parentId) => db.listSubtasks(parentId)));
+
+  /* ---------- 任务附件 ---------- */
+  /** 取任务的附件数组（任务不存在时抛出可读错误） */
+  const taskAttachments = (taskId) => {
+    const task = db.getTask(taskId);
+    if (!task) throw new Error('任务不存在或已被删除');
+    return Array.isArray(task.attachments) ? task.attachments : [];
+  };
+  const findAttachment = (taskId, attId) => {
+    const entry = taskAttachments(taskId).find((a) => String(a.id) === String(attId));
+    if (!entry) throw new Error('附件不存在（可能已被删除）');
+    return entry;
+  };
+  /** 复制进附件目录并写回元数据；单个文件失败不影响其它文件 */
+  const appendAttachments = (taskId, paths) => {
+    const cur = taskAttachments(taskId);
+    const added = [];
+    const failed = [];
+    for (const p of paths) {
+      try {
+        added.push(attachments.importFile(taskId, p));
+      } catch (e) {
+        failed.push(e && e.message ? e.message : String(e));
+      }
+    }
+    if (!added.length) throw new Error(failed[0] || '没有可添加的附件');
+    const next = db.setAttachments(taskId, [...cur, ...added]);
+    return { attachments: next.attachments, added: added.length, failed };
+  };
+
+  // 选择本地文件添加（支持多选）
+  ipcMain.handle('attachments:pick', withDb(async (taskId) => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '添加附件',
+      buttonLabel: '添加',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '所有文件', extensions: ['*'] }],
+    });
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true };
+    return { ok: true, ...appendAttachments(taskId, filePaths) };
+  }));
+
+  // 拖拽添加：渲染层把 File 转成绝对路径后传进来
+  ipcMain.handle('attachments:addPaths', withDb((taskId, paths) => {
+    const list = (Array.isArray(paths) ? paths : []).filter((p) => typeof p === 'string' && p.trim());
+    if (!list.length) return { ok: false, message: '没有可添加的文件' };
+    return { ok: true, ...appendAttachments(taskId, list) };
+  }));
+
+  // 用系统默认程序打开附件
+  ipcMain.handle('attachments:open', withDb(async (taskId, attId) => {
+    const entry = findAttachment(taskId, attId);
+    if (!attachments.exists(entry)) throw new Error(`附件文件已丢失：${entry.name}`);
+    const err = await shell.openPath(attachments.absPath(entry));
+    if (err) throw new Error(`打开失败：${err}`);
+    return { ok: true };
+  }));
+
+  // 在资源管理器中定位
+  ipcMain.handle('attachments:reveal', withDb((taskId, attId) => {
+    const entry = findAttachment(taskId, attId);
+    if (!attachments.exists(entry)) throw new Error(`附件文件已丢失：${entry.name}`);
+    shell.showItemInFolder(attachments.absPath(entry));
+    return { ok: true };
+  }));
+
+  // 另存为（下载到用户指定位置）
+  ipcMain.handle('attachments:saveAs', withDb(async (taskId, attId) => {
+    const entry = findAttachment(taskId, attId);
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: '保存附件',
+      defaultPath: entry.name,
+      filters: [{ name: '所有文件', extensions: ['*'] }],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+    attachments.saveAs(entry, filePath);
+    return { ok: true, filePath };
+  }));
+
+  // 删除附件：先删文件再改元数据（文件缺失也允许删除记录）
+  ipcMain.handle('attachments:remove', withDb((taskId, attId) => {
+    const cur = taskAttachments(taskId);
+    const entry = cur.find((a) => String(a.id) === String(attId));
+    if (!entry) throw new Error('附件不存在（可能已被删除）');
+    attachments.removeFile(entry);
+    const next = db.setAttachments(taskId, cur.filter((a) => String(a.id) !== String(attId)));
+    return { ok: true, attachments: next.attachments };
+  }));
 
   /* ---------- AI 检索 ---------- */
   ipcMain.handle('search:ai', async (_e, keyword) => {
@@ -158,7 +253,7 @@ function registerIpc() {
   ipcMain.handle('tags:delete', withDb((id) => db.deleteTag(id)));
 
   /* ---------- 统计 ---------- */
-  ipcMain.handle('stats:overview', withDb(() => db.overview()));
+  ipcMain.handle('stats:overview', withDb((p) => db.overview(p || {})));
   // 入参统一为 { range: '7d' | '1m' | '6m' | '1y' }（旧的数字天数仍兼容）
   ipcMain.handle('stats:trend', withDb((p) => db.dailyTrend(p)));
 
@@ -495,6 +590,13 @@ function registerIpc() {
   ipcMain.handle('ui:setDetailWidth', (_e, width) => {
     const w = Math.max(0, Math.round(Number(width) || 0));
     db.setSetting('ui.detailWidth', String(w));
+    return w;
+  });
+  // 侧边栏宽度（px），0 表示使用默认宽度
+  ipcMain.handle('ui:getSidebarWidth', () => Number(db.getSetting('ui.sidebarWidth', '0')) || 0);
+  ipcMain.handle('ui:setSidebarWidth', (_e, width) => {
+    const w = Math.max(0, Math.round(Number(width) || 0));
+    db.setSetting('ui.sidebarWidth', String(w));
     return w;
   });
   // 标签筛选：存到 settings，重启后仍保留（null 表示不筛选）

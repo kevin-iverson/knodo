@@ -54,9 +54,10 @@ body {
 .app { display: flex; height: 100vh; }
 
 /* ---------------- 侧边栏 ---------------- */
+/* 宽度可被拖拽调整：JS 会同时写 inline width 与 --sidebar-width */
 .sidebar {
-  width: 220px;
-  min-width: 220px;
+  width: var(--sidebar-width, 220px);
+  min-width: var(--sidebar-width, 220px);
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
   display: flex;
@@ -64,6 +65,20 @@ body {
   padding: 16px 12px;
   overflow-y: auto;
 }
+
+/* 拖拽把手：贴着侧边栏右边界，热区 8px、视觉只露一条 1px 的线 */
+.sidebar-resizer {
+  width: 8px; flex-shrink: 0; cursor: col-resize; touch-action: none;
+  background: transparent; position: relative; z-index: 2;
+}
+.sidebar-resizer::after {
+  content: ''; position: absolute; inset: 0 3px;
+  background: var(--border); opacity: 0;
+  transition: opacity 0.15s;
+}
+.sidebar:hover ~ .sidebar-resizer::after,
+.sidebar-resizer:hover::after { opacity: 0.6; }
+.sidebar-resizer.is-active::after { opacity: 1; background: var(--primary); }
 
 .brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 16px; }
 .brand-logo {
@@ -127,11 +142,15 @@ body {
 .group-item.is-child .group-dot { width: 8px; height: 8px; }
 .group-actions button, .tag-item .tag-del {
   border: none; background: transparent; cursor: pointer;
-  color: var(--text-3); font-size: 12px; padding: 0 3px;
+  color: var(--text-3); font-size: 12px; padding: 0 2px;
 }
-.group-actions { display: none; gap: 2px; }
+.group-actions { display: none; gap: 0; }
 .group-item:hover .group-actions { display: flex; }
-.group-actions .g-add:hover, .group-actions .g-edit:hover { color: var(--primary); }
+/* 悬停时按钮从 3 个变 4 个（多了「在此分组下新增任务」），把计数先让给分组名，
+   否则短名字也会被挤成「工…」；分组名本身仍有 ellipsis 兜底，完整路径看行的 title */
+.group-item:hover .group-count { display: none; }
+.group-actions .g-add:hover, .group-actions .g-edit:hover, .group-actions .g-task-add:hover { color: var(--primary); }
+.group-actions .g-task-add { font-size: 13px; font-weight: 700; }
 .group-actions .g-del:hover { color: var(--danger); }
 .tag-color { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
 .tag-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -235,6 +254,12 @@ body {
   line-height: 1; padding: 2px 2px; border-radius: 4px; user-select: none;
 }
 .drag-handle:hover { color: var(--text); background: var(--bg-hover); }
+/* 拖拽手柄列：宽度固定；子任务行不放手柄但保留同样占位，
+   这样缩进层级不会把完成按钮挤到别的列上 */
+.task-gutter {
+  flex: 0 0 18px; width: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
 
 /* 时间筛选面板 */
 .time-filter {
@@ -302,25 +327,47 @@ body {
 .task-item.done .task-title { text-decoration: line-through; color: var(--text-3); }
 
 .task-body { flex: 1; min-width: 0; }
-.task-title { font-size: 14px; line-height: 1.4; word-break: break-word; display: flex; align-items: flex-start; gap: 4px; }
+/* 标题比正文高一档（16px vs meta 12px），层级一眼分明
+   标题行单行排布：标题按文字宽度占位，子任务计数紧跟其后（详见 .task-title-text） */
+.task-title { font-size: 16px; line-height: 1.4; display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* 展开箭头 + 完成按钮成组：箭头固定在完成按钮左侧，组内间距恒定；
+   没有子任务时 .task-expand-slot 仍占住同样的宽度，保证完成按钮列对齐 */
+.task-leading { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.task-expand-slot {
+  flex: 0 0 20px; width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
 .task-expand {
   border: none; background: transparent; color: var(--text-3); cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 16px; padding: 0; flex-shrink: 0; line-height: 1;
-  width: 24px; height: 24px; border-radius: 6px;
+  font-size: 15px; padding: 0; flex-shrink: 0; line-height: 1;
+  width: 20px; height: 20px; border-radius: 5px;
 }
 .task-expand:hover { color: var(--primary); background: var(--bg-hover); }
 .task-expand:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
-.task-title-text { flex: 1; }
+/* 标题宽度随文字长度走（flex: 0 1 auto），长标题先截断出省略号，
+   给子任务计数留出空间，计数始终贴在标题末尾之后、不被挤压换行 */
+.task-title-text {
+  flex: 0 1 auto; min-width: 0; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 子任务进度：紧跟标题右侧，不进 meta 行 */
+.task-subtask-badge {
+  flex-shrink: 0; font-size: 11.5px; line-height: 1.6; padding: 0 7px;
+  border-radius: 999px; background: var(--bg-hover); color: var(--text-2);
+  white-space: nowrap;
+}
 /* 行内改标题：点击标题就地变成输入框，hover 给一点可点提示 */
 .task-title-text[data-act="rename"] { cursor: text; border-radius: 4px; }
 .task-title-text[data-act="rename"]:hover { box-shadow: 0 0 0 1px var(--border) inset; }
 .task-title-text.is-renaming { box-shadow: none; overflow: visible; }
+/* 宽度由 JS 按输入内容实时算（宽度写 inline style），这里只保证不换行、不溢出 */
 .task-title-input {
-  width: 100%; box-sizing: border-box; padding: 1px 6px;
+  width: auto; max-width: 100%; box-sizing: border-box; padding: 1px 6px;
   border: 1px solid var(--primary); border-radius: 5px;
   background: var(--bg-panel); color: var(--text);
   font: inherit; font-size: inherit; line-height: inherit; outline: none;
+  white-space: nowrap; overflow: hidden; text-overflow: clip;
 }
 .task-meta { display: flex; align-items: center; gap: 10px; margin-top: 4px; flex-wrap: wrap; }
 .meta-item { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); }
@@ -397,6 +444,10 @@ body {
 .editor-details input:focus, .editor-details select:focus, .editor-details textarea:focus { border-color: var(--primary); }
 
 /* ---------------- 统计 ---------------- */
+/* 统计口径切换：只算主任务 / 含子任务 */
+.stats-scope { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.stats-scope-label { font-size: 12px; color: var(--text-3); }
+.stats-scope-hint { font-size: 12px; color: var(--text-3); }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
 /* 统计卡片：可点击下钻（button 语义，键盘可达） */
 .stat-card {
@@ -632,6 +683,26 @@ body {
 .detail-save-state.s-saving { color: var(--primary); }
 .detail-save-state.s-saved { color: var(--green); }
 .detail-save-state.s-error { color: var(--danger); cursor: pointer; text-decoration: underline; }
+
+/* ---------------- 图片放大预览 ---------------- */
+/* 层级：高于弹窗遮罩（300），低于 Toast（最上层） */
+.img-zoom-mask {
+  position: fixed; inset: 0; z-index: 400;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex; align-items: center; justify-content: center;
+  cursor: zoom-out; animation: imgZoomIn 0.12s ease-out;
+}
+/* 只约束最大边，宽高由浏览器按原始比例推导 —— 任何尺寸的原图都不会被拉伸 */
+.img-zoom-img {
+  max-width: 92vw; max-height: 92vh; width: auto; height: auto;
+  object-fit: contain; border-radius: 6px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45); cursor: zoom-out;
+}
+@keyframes imgZoomIn { from { opacity: 0; } to { opacity: 1; } }
+/* 正文里的图片：限宽 + 提示可放大 */
+.md-image, .markdown-body img, .detail-notes-editor img {
+  max-width: 100%; height: auto; border-radius: 6px; cursor: zoom-in;
+}
 
 /* ---------------- 模态框（新增分组 / 标签） ---------------- */
 .modal-mask {
@@ -931,6 +1002,11 @@ html.is-resizing .detail-foot { pointer-events: none; }
   display: flex; align-items: center; justify-content: space-between;
   font-size: 13px; font-weight: 600; color: var(--text-2); margin-bottom: 8px;
 }
+/* 附件数量角标：与「子任务」标题右对齐的小圆角片 */
+.detail-section-head .att-count {
+  font-size: 11px; font-weight: 500; color: var(--text-3);
+  background: var(--bg-hover); border-radius: 999px; padding: 0 6px; margin-left: 2px;
+}
 .md-tabs { display: flex; gap: 4px; }
 .md-tab {
   border: 1px solid var(--border); background: transparent; color: var(--text-3);
@@ -1009,18 +1085,37 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .subtask-item.drag-over { outline: 2px dashed var(--primary); outline-offset: -2px; }
 .subtask-badge { font-size: 11px; color: var(--text-3); background: var(--bg-hover); border-radius: 999px; padding: 0 6px; flex-shrink: 0; }
 
-/* 附件缩略图 */
-.att-list { display: flex; flex-wrap: wrap; gap: 8px; }
-.att-item { position: relative; }
-.att-thumb {
-  width: 72px; height: 72px; object-fit: cover; border-radius: 8px;
-  border: 1px solid var(--border); cursor: pointer;
+/* 附件：详情页里的一行一个（图标 + 文件名/大小/时间 + 操作），拖拽拖入时高亮 */
+.att-list {
+  display: flex; flex-direction: column; gap: 6px;
+  border: 1px dashed transparent; border-radius: 8px; padding: 2px;
+  transition: border-color .15s, background .15s;
 }
-.att-del {
-  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px;
-  border: none; border-radius: 50%; background: var(--danger); color: #fff;
-  font-size: 12px; cursor: pointer; line-height: 1;
+.att-list.drag-over { border-color: var(--primary); background: var(--bg-active); }
+.att-empty {
+  color: var(--text-3); font-size: 12.5px; padding: 8px 4px;
+  border: 1px dashed var(--border); border-radius: 8px; text-align: center;
 }
+.att-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-panel); min-width: 0;
+}
+.att-row:hover { border-color: var(--primary); }
+.att-icon { flex-shrink: 0; font-size: 15px; line-height: 1; }
+.att-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.att-name {
+  font-size: 13px; color: var(--text); cursor: default;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.att-meta { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.att-ops { display: flex; gap: 2px; flex-shrink: 0; }
+.att-ops button {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--text-3); font-size: 12px; padding: 2px 5px; border-radius: 5px;
+}
+.att-ops button:hover { background: var(--bg-hover); color: var(--primary); }
+.att-ops button.del:hover { color: var(--danger); }
 .detail-parent {
   font-size: 12px; color: var(--primary); cursor: pointer; margin-bottom: 10px;
 }

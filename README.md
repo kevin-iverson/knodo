@@ -24,6 +24,10 @@
 - 窗口关闭后最小化到托盘
 
 **进阶功能**
+- 任务标题 16px、正文 12px，层级分明；**子任务进度（☑ 已完/总数）紧邻标题右侧**；点击标题行内改名，输入框宽度随输入实时自适应（不换行、不遮挡右侧元素）
+- **描述里的图片双击可放大预览**：保持原始宽高比，再次双击图片 / 点击遮罩 / 按 Esc 关闭
+- **侧边栏可拖拽调宽**（180 ~ 420px，双击把手恢复默认）：拖动时禁用文本选中，宽度写入 `ui.sidebarWidth` 持久化，主区自动跟随不错位
+- **统计支持切换口径**：「仅主任务」/「含子任务」，卡片、分组、优先级、完成趋势与下钻明细实时按新口径刷新
 - 任务详情页：点击任务查看/编辑，描述支持**所见即所得编辑**（Markdown 快捷键，图片直接插入光标处）
 - 详情侧边栏可**拖拽左侧边缘调整宽度**（360 ~ 860px，双击手柄恢复默认），宽度自动记忆、下次打开复用；拖拽过程无闪烁：拖拽期间禁止重建面板（重绘推迟到松手）、内容区预留滚动条槽位（`scrollbar-gutter: stable`）、`contain: layout` 隔离重排、重绘不再重播入场动画、松手时按指针位置同步收尾（不依赖可能被节流的 rAF 最后一帧）
 - **编辑即时持久化**：列表行内编辑与详情抽屉中修改任意字段，停止输入约 0.7s 后自动写入，无需点"保存"；失败时保留输入并可点击状态重试，任务已被删除等冲突会提示并回滚
@@ -160,7 +164,7 @@ todo-app/
 | parent_id | INTEGER | 父任务 id（子任务，可空，删除父任务时级联删除） |
 | title | TEXT | 标题 |
 | notes | TEXT | 描述（Markdown） |
-| attachments | TEXT | 图片附件（JSON 数组，base64，缩略图展示） |
+| attachments | TEXT | 附件元数据（JSON 数组；文件本体在 `<数据目录>/attachments/task-<id>/`，库里只存相对路径） |
 | priority | INTEGER | 优先级 0 低 / 1 中 / 2 高 / 3 紧急 |
 | plan_start | TEXT | 计划开始日期（YYYY-MM-DD，可空） |
 | plan_end | TEXT | 计划完成日期（YYYY-MM-DD，可空） |
@@ -313,6 +317,9 @@ npm run dist:portable   # 只产出便携版（免安装）
 - 打包配置写在 `package.json` 的 `build` 字段；`scripts/build-win.js` 负责注入国内镜像（electron / NSIS / winCodeSign 资源从 npmmirror 下载，避免 GitHub 超时）。
 - `better-sqlite3` 使用官方预编译二进制（`prebuilds/`），**不需要** VS 生成工具，因此打包配置里 `npmRebuild: false`；其 `.node` 文件会通过 `asarUnpack` 解包到 `app.asar.unpacked` 才能被加载。
 - 安装版数据存 `%APPDATA%\todo-desktop\`；便携版数据存 exe 同级 `data\`（由 `PORTABLE_EXECUTABLE_DIR` 判定）。
+- **数据目录可配置**：菜单「数据存放位置…」可选任意目录（例如换到 D 盘），配置写在 `<用户数据目录>/config.json` 的 `dataDir` 字段，
+  下次启动生效；可勾选把现有数据（`todo.db` + `attachments`）复制到新目录。配置目录不可用（盘未插入 / 被删 / 无写权限）时会自动回退默认目录并弹窗提示。
+  录音文件（`recordings/`）仍留在用户数据目录：会议记录里存的是绝对路径，迁移会造成两份数据。
 - 首次打包需下载约 100MB 的 Electron 与 NSIS 资源，之后有缓存，单个 exe 产物约 116MB（Electron 运行时体积，非本项目代码大小；本项目代码仅约 6MB）。
 - 版本升级改 `package.json` 里的 `version` 即可，文件名与卸载条目会随之变化。
 

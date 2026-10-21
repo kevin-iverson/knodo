@@ -182,12 +182,15 @@ const MIGRATIONS = [
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
 let initError = '';
+// 当前数据库文件绝对路径（数据目录可配置后，界面/迁移逻辑需要知道真实落点）
+let currentDbPath = '';
 
 function init(dbDir, dbFileName = 'todo.db') {
   try {
     fs.mkdirSync(dbDir, { recursive: true });
     const dbPath = path.join(dbDir, dbFileName);
     db = new Database(dbPath);
+    currentDbPath = dbPath;
     // 立刻做一次写探测：数据库文件只读（权限 / 同步盘占位 / 被占用）时提前暴露，
     // 否则要等第一次写操作才报 "attempt to write a readonly database"，用户只看到"点了没反应"
     db.pragma('journal_mode = WAL');
@@ -224,6 +227,22 @@ function getInitError() {
 function getDb() {
   if (!db) throw new Error('数据库尚未初始化，请先调用 init()');
   return db;
+}
+
+/** 当前数据库文件绝对路径（未初始化时为空串） */
+function getDbPath() {
+  return currentDbPath;
+}
+
+/**
+ * 生成一份一致性快照到目标文件（数据目录迁移用）。
+ * WAL 模式下直接 copy .db 文件可能拿到「旧主库 + 未 checkpoint 的 WAL」，所以走 SQLite 的
+ * 在线备份接口；调用期间数据库可以继续读写，不需要先断开。
+ */
+async function backupTo(destPath) {
+  if (!db) throw new Error('数据库尚未初始化');
+  await db.backup(destPath);
+  return destPath;
 }
 
 /** 关闭数据库连接 */
@@ -372,16 +391,45 @@ function normalizeColor(color, fallback = '#4f7cff') {
   return `#${h.length === 3 ? h.split('').map((c) => c + c).join('') : h}`;
 }
 
+/**
+ * 同一「上级」下是否已有同名分组。
+ * 名称唯一性的作用域是**父级**，不是全集：不同层级下允许重名（如「工作 / 11」与「生活 / 11」），
+ * 顶级分组（parent_id 为 NULL）自成一级。比较时去空格并忽略大小写，避免「Work / work」这种伪重名。
+ * @param {string} name 待校验名称
+ * @param {number|null} parentId 目标上级分组 id
+ * @param {number|null} exceptId 排除自身（重命名 / 原地保存时用）
+ */
+function groupNameTaken(name, parentId, exceptId = null) {
+  const key = String(name == null ? '' : name).trim().toLowerCase();
+  if (!key) return false;
+  const pid = parentId == null ? null : Number(parentId);
+  const rows = db.prepare('SELECT id, name FROM groups WHERE parent_id IS ?').all(pid);
+  return rows.some((r) => Number(r.id) !== Number(exceptId)
+    && String(r.name || '').trim().toLowerCase() === key);
+}
+
+/** 校验并返回规范化后的分组名（空名 / 同级重名直接抛可读错误） */
+function assertGroupName(name, parentId, exceptId = null) {
+  const clean = String(name == null ? '' : name).trim();
+  if (!clean) throw new Error('分组名称不能为空');
+  if (groupNameTaken(clean, parentId, exceptId)) {
+    const where = parentId == null ? '顶级分组' : `上级分组「${(getGroup(parentId) || {}).name || '已删除'}」下`;
+    throw new Error(`${where}已存在同名分组「${clean}」，请换一个名称`);
+  }
+  return clean;
+}
+
 function createGroup({ name, color = '#4f7cff', parentId = null } = {}) {
   const t = nowIso();
   if (parentId != null && !getGroup(parentId)) throw new Error('上级分组不存在');
+  const clean = assertGroupName(name, parentId);
   // sort_order 只在同级内部递增，保证新分组排在同层末尾
   const max = parentId == null
     ? db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM groups WHERE parent_id IS NULL').get().m
     : db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM groups WHERE parent_id = ?').get(parentId).m;
   const info = db
     .prepare('INSERT INTO groups (name, color, parent_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(name, normalizeColor(color), parentId, max + 1, t, t);
+    .run(clean, normalizeColor(color), parentId, max + 1, t, t);
   return getGroup(info.lastInsertRowid);
 }
 
@@ -407,8 +455,17 @@ function updateGroup(id, { name, color, parentId } = {}) {
       }
     }
   }
+  // 名称 + 上级：重命名、或「移动到别的父级」时，都要按**目标父级**重新校验同级重名
+  // （移动 = 换了一个父级作用域，可能与该父级下已有的同名分组撞车）。
+  // 只改颜色等其它字段时不校验，避免历史脏数据（例如旧备份导入的同级重名）把无关操作卡死。
+  const sameParent = (nextParent == null ? null : Number(nextParent))
+    === (cur.parent_id == null ? null : Number(cur.parent_id));
+  const sameName = name == null || String(name).trim() === String(cur.name).trim();
+  const nextName = (sameParent && sameName)
+    ? cur.name
+    : assertGroupName(name ?? cur.name, nextParent, id);
   db.prepare('UPDATE groups SET name = ?, color = ?, parent_id = ?, updated_at = ? WHERE id = ?')
-    .run(name ?? cur.name, color == null ? cur.color : normalizeColor(color, normalizeColor(cur.color)), nextParent, nowIso(), id);
+    .run(nextName, color == null ? cur.color : normalizeColor(color, normalizeColor(cur.color)), nextParent, nowIso(), id);
   return getGroup(id);
 }
 
@@ -627,6 +684,33 @@ function deleteTask(id) {
   return true;
 }
 
+/** 任务自身 + 所有后代任务 id（删除任务前收集，用于连带清理附件文件） */
+function subtreeTaskIds(id) {
+  const ids = [];
+  const stack = [Number(id)];
+  while (stack.length) {
+    const pid = stack.pop();
+    if (!ids.includes(pid)) ids.push(pid);
+    const children = db.prepare('SELECT id FROM tasks WHERE parent_id = ?').all(pid);
+    for (const c of children) stack.push(c.id);
+  }
+  return ids;
+}
+
+/**
+ * 只更新附件元数据。
+ * 文件本体由 main/attachments.js 落盘，这里只负责把元数据数组写回 tasks.attachments（JSON）。
+ * 与 updateTask 分开是为了避免「附件列表」被编辑器的自动保存（notes/title）用旧值覆盖回去。
+ */
+function setAttachments(taskId, list) {
+  const cur = getTask(taskId);
+  if (!cur) return null;
+  const arr = Array.isArray(list) ? list : [];
+  db.prepare('UPDATE tasks SET attachments = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(arr), nowIso(), Number(taskId));
+  return getTask(taskId);
+}
+
 /**
  * 获取某任务的直接子任务。
  * 手动排序（sort_order）优先，其余字段只作兜底 —— 同一父任务下的子任务是"步骤清单"，
@@ -785,26 +869,36 @@ function markReminderFired(id) {
 
 /* ------------------------------ 统计 ------------------------------ */
 
-function overview() {
-  const total = db.prepare('SELECT COUNT(*) AS c FROM tasks WHERE parent_id IS NULL').get().c;
+/**
+ * 概览统计。
+ * @param {{includeSubtasks?:boolean}} [opts] 默认只统计主任务（parent_id IS NULL）；
+ *        includeSubtasks=true 时把子任务一并算进来。
+ */
+function overview(opts = {}) {
+  // 统计口径写进 SQL 条件里，不做"先全表捞出再应用层过滤"
+  const top = opts && opts.includeSubtasks ? '' : 'AND parent_id IS NULL';
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE 1 = 1 ${top}`).get().c;
   const active = db
-    .prepare('SELECT COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 AND parent_id IS NULL').get().c;
+    .prepare(`SELECT COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 ${top}`).get().c;
   const completed = db
-    .prepare('SELECT COUNT(*) AS c FROM tasks WHERE completed = 1 AND archived = 0 AND parent_id IS NULL').get().c;
-  const archived = db.prepare('SELECT COUNT(*) AS c FROM tasks WHERE archived = 1 AND parent_id IS NULL').get().c;
+    .prepare(`SELECT COUNT(*) AS c FROM tasks WHERE completed = 1 AND archived = 0 ${top}`).get().c;
+  const archived = db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE archived = 1 ${top}`).get().c;
   const today = new Date().toISOString().slice(0, 10);
   const overdue = db
     .prepare(
-      'SELECT COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 AND parent_id IS NULL AND plan_end IS NOT NULL AND plan_end < ?'
+      `SELECT COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 ${top}
+        AND plan_end IS NOT NULL AND plan_end < ?`
     )
     .get(today).c;
 
+  // 分组统计：LEFT JOIN 的条件必须带口径，否则 JOIN 完再过滤会把"没有主任务"的分组整行丢掉
+  const joinTop = opts && opts.includeSubtasks ? '' : 'AND t.parent_id IS NULL';
   const byGroup = db
     .prepare(
       `SELECT g.id, g.name, g.color,
          SUM(CASE WHEN t.completed = 0 AND t.archived = 0 THEN 1 ELSE 0 END) AS active,
          SUM(CASE WHEN t.completed = 1 THEN 1 ELSE 0 END) AS done
-       FROM groups g LEFT JOIN tasks t ON t.group_id = g.id AND t.parent_id IS NULL
+       FROM groups g LEFT JOIN tasks t ON t.group_id = g.id ${joinTop}
        GROUP BY g.id ORDER BY g.sort_order`
     )
     .all()
@@ -818,14 +912,24 @@ function overview() {
 
   const byPriority = db
     .prepare(
-      `SELECT priority, COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 AND parent_id IS NULL GROUP BY priority`
+      `SELECT priority, COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 ${top} GROUP BY priority`
     )
     .all()
     .map((r) => ({ priority: r.priority, count: r.c }));
 
   const rate = completed + active > 0 ? Math.round((completed / (completed + active)) * 100) : 0;
 
-  return { total, active, completed, archived, overdue, byGroup, byPriority, rate };
+  return {
+    total,
+    active,
+    completed,
+    archived,
+    overdue,
+    byGroup,
+    byPriority,
+    rate,
+    includeSubtasks: !!(opts && opts.includeSubtasks),
+  };
 }
 
 /**
@@ -859,13 +963,15 @@ function normalizeTrendRange(arg) {
  * 只查一次库（按完成时间范围取全部记录），再在内存里分桶：桶数最多 30 个，
  * 无论哪个范围都是一趟 SQL，不会像逐日查询那样放大成几十次往返。
  *
- * @param {string|number|{range:string}} [arg] 范围；缺省 = 近 7 天
+ * @param {string|number|{range:string, includeSubtasks?:boolean}} [arg] 范围；缺省 = 近 7 天。
+ *        arg 为对象时可用 includeSubtasks=true 把子任务的完成记录也算进来。
  * @returns {{range:string, label:string, granularity:'day'|'week'|'month',
  *            start:string, end:string, total:number,
  *            points:Array<{key:string,label:string,count:number,start:string,end:string}>}}
  */
 function dailyTrend(arg) {
   const cfg = normalizeTrendRange(arg);
+  const top = arg && typeof arg === 'object' && arg.includeSubtasks ? '' : 'AND parent_id IS NULL';
   const buckets = [];
 
   if (cfg.granularity === 'month') {
@@ -896,7 +1002,7 @@ function dailyTrend(arg) {
   const rows = db
     .prepare(
       `SELECT completed_at FROM tasks
-        WHERE completed = 1 AND parent_id IS NULL AND completed_at >= ? AND completed_at < ?`
+        WHERE completed = 1 ${top} AND completed_at >= ? AND completed_at < ?`
     )
     .all(startIso, endIso);
 
@@ -1326,6 +1432,8 @@ function importData(data) {
 module.exports = {
   init,
   getDb,
+  getDbPath,
+  backupTo,
   isReady,
   getInitError,
   close,
@@ -1345,6 +1453,8 @@ module.exports = {
   createTask,
   updateTask,
   deleteTask,
+  subtreeTaskIds,
+  setAttachments,
   toggleTask,
   listSubtasks,
   searchTasks,
