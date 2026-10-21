@@ -130,7 +130,22 @@ function applyTheme() {
 function buildAppMenu() {
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
-    { role: 'fileMenu' },
+    {
+      // 显式构建 File 菜单：把「存储位置」收进来（原来是顶层菜单项，太占位置）。
+      // 不用 role: 'fileMenu'，以便在同一个子菜单里追加自定义项；Exit 行为与默认一致。
+      label: 'File',
+      submenu: [
+        {
+          label: '存储位置…',
+          click: () => {
+            showWindow();
+            openStorageDialog();
+          },
+        },
+        { type: 'separator' },
+        { role: 'quit', label: 'Exit' },
+      ],
+    },
     { role: 'editMenu' },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
@@ -139,13 +154,6 @@ function buildAppMenu() {
       click: () => {
         showWindow();
         if (mainWindow) mainWindow.webContents.send('ui:ai-settings');
-      },
-    },
-    {
-      label: '数据存放位置…',
-      click: () => {
-        showWindow();
-        openStorageDialog();
       },
     },
   ];
@@ -300,7 +308,7 @@ app.whenReady().then(() => {
       title: '数据目录不可用',
       message: '配置的数据目录无法使用，本次已回退到默认目录',
       detail: `配置目录：${dataInfo.wanted}\n原因：${dataInfo.error}\n\n本次实际使用：${dataInfo.dir}\n\n`
-        + '可在菜单「数据存放位置…」里重新指定目录（例如重新插上移动硬盘后再试）。',
+        + '可在菜单「File → 存储位置…」里重新指定目录（例如重新插上移动硬盘后再试）。',
       buttons: ['好', '去设置'],
       defaultId: 0,
       cancelId: 0,

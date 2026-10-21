@@ -401,7 +401,7 @@ async function renderDetail() {
       <div class="detail-resizer" data-act="resize" title="拖拽调整宽度（双击恢复默认）" role="separator" aria-orientation="vertical"></div>
       <div class="detail-head">
         <button class="detail-check${task.completed ? ' done' : ''}" data-act="toggle" title="完成/取消">${task.completed ? '✓' : ''}</button>
-        <input class="detail-title" placeholder="任务标题" value="${esc(task.title)}" />
+        <input class="detail-title" placeholder="任务标题" value="${esc(task.title)}" spellcheck="false" />
         <button class="detail-close" data-act="close" title="关闭">×</button>
       </div>
       <div class="detail-body">
@@ -439,12 +439,13 @@ async function renderDetail() {
           <div class="detail-section-head">
             <span>描述</span>
             <span class="np-head-ops">
+              <button class="ghost-btn tiny" data-act="md-help" title="查看 Markdown 快捷键">?</button>
               <button class="ghost-btn tiny" data-act="polish" title="用 AI 润色这段描述，可先预览再决定是否采纳">✨ AI 润色</button>
               <button class="ghost-btn tiny" data-act="polish-restore" title="放弃润色结果，恢复润色前的原文" hidden>↩ 还原原文</button>
             </span>
           </div>
-          <div class="detail-notes-editor markdown-body" contenteditable="true"
-               data-placeholder="支持 Markdown 快捷键（Ctrl+B 加粗 / Ctrl+I 斜体），可直接粘贴图片…">${notesHtml}</div>
+          <div class="detail-notes-editor markdown-body" contenteditable="true" spellcheck="false"
+               data-placeholder="支持 Markdown 快捷键，点左上角「?」查看；可直接粘贴图片…">${notesHtml}</div>
         </div>
 
         <div class="detail-section">
@@ -513,6 +514,124 @@ function subtaskItemHtml(s) {
   </li>`;
 }
 
+/* ---------------- 描述编辑器：Markdown 快捷键与帮助 ---------------- */
+
+/** 快捷键清单：帮助弹窗与 keydown 分发共用同一份数据 */
+const MD_SHORTCUTS = [
+  { keys: 'Ctrl+B', desc: '加粗', cmd: 'bold' },
+  { keys: 'Ctrl+I', desc: '斜体', cmd: 'italic' },
+  { keys: 'Ctrl+U', desc: '下划线', cmd: 'underline' },
+  { keys: 'Ctrl+1 / 2 / 3', desc: '一 / 二 / 三级标题', cmd: 'heading' },
+  { keys: 'Ctrl+Shift+7', desc: '有序列表（1. 2. 3.）', cmd: 'ol' },
+  { keys: 'Ctrl+Shift+8', desc: '无序列表（*）', cmd: 'ul' },
+  { keys: 'Ctrl+\\', desc: '清除样式（还原为正文）', cmd: 'clear' },
+];
+
+/**
+ * 在描述编辑器里执行一个 Markdown 格式化命令。
+ * 用 execCommand：虽已标记废弃，但 Chromium（Electron）里依旧稳定可用，
+ * 且天生与 contenteditable 的撤销栈 / 选区协同，比手动改 DOM 可靠得多。
+ */
+function execMdCommand(editor, cmd) {
+  editor.focus();
+  document.execCommand(cmd, false);
+}
+
+/** 标题级别快捷键：Ctrl+1/2/3 切换 h1/h2/h3；对同级标题再按一次还原为正文 */
+function execHeading(editor, level) {
+  const block = (document.queryCommandValue('formatBlock') || '').toLowerCase();
+  const tag = `h${level}`;
+  document.execCommand('formatBlock', false, block === tag ? 'p' : tag);
+}
+
+const MD_BLOCK_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'DIV', 'BLOCKQUOTE', 'PRE']);
+
+/**
+ * 清除样式（Ctrl+\）。
+ * 关键坑：选区折叠（光标停着没选中任何文字）时，removeFormat 在 Chromium 里不作用于任何内容，
+ * 表现就是「按了没反应」。所以光标折叠时先自动选中光标所在的整个块，再清内联格式、还原为正文。
+ */
+function clearMdStyles(editor) {
+  editor.focus();
+  const sel = document.getSelection();
+  if (sel && sel.rangeCount > 0 && sel.getRangeAt(0).collapsed) {
+    // 从光标向上找编辑器内的块级元素，全选其内容
+    let node = sel.anchorNode;
+    let block = null;
+    while (node && node !== editor) {
+      if (node.nodeType === Node.ELEMENT_NODE && MD_BLOCK_TAGS.has(node.tagName)) { block = node; break; }
+      node = node.parentNode;
+    }
+    if (block) {
+      const range = document.createRange();
+      range.selectNodeContents(block);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+  document.execCommand('removeFormat', false);
+  document.execCommand('unlink', false);
+  document.execCommand('formatBlock', false, 'p');
+}
+
+/** 「?」帮助弹窗：展示常用 Markdown 快捷键 */
+function showMdHelp() {
+  const rows = MD_SHORTCUTS.map((s) => `
+    <tr><td class="md-key">${esc(s.keys)}</td><td>${esc(s.desc)}</td></tr>`).join('');
+  openPanelModal({
+    title: 'Markdown 快捷键',
+    className: 'modal-md-help',
+    html: `
+      <table class="md-help-table">
+        <thead><tr><th>快捷键</th><th>功能</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="md-help-tip">另外：可直接粘贴截图到描述里，图片会插入光标处。</div>`,
+  });
+}
+
+/** 绑定描述编辑器的键盘快捷键（挂在抽屉内，随抽屉重建自动回收） */
+function bindMdShortcuts(editor, drawer) {
+  editor.addEventListener('keydown', (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (!mod) return;
+    const key = e.key.toLowerCase();
+    const schedule = () => { if (drawer.__autoSave) drawer.__autoSave.schedule(); };
+
+    if (key === '1' || key === '2' || key === '3') {
+      e.preventDefault();
+      execHeading(editor, Number(key));
+      schedule();
+      return;
+    }
+    if (e.shiftKey && (key === '&' || e.code === 'Digit7')) { // Shift+7 = '&'
+      e.preventDefault();
+      document.execCommand('insertOrderedList', false);
+      schedule();
+      return;
+    }
+    if (e.shiftKey && (key === '*' || e.code === 'Digit8')) { // Shift+8 = '*'
+      e.preventDefault();
+      document.execCommand('insertUnorderedList', false);
+      schedule();
+      return;
+    }
+    if (key === '\\' || e.code === 'Backslash') {
+      // 清除样式：先去内联格式，再把所在块还原为正文段落
+      e.preventDefault();
+      clearMdStyles(editor);
+      schedule();
+      return;
+    }
+    if (key === 'b' || key === 'i' || key === 'u') {
+      const cmd = { b: 'bold', i: 'italic', u: 'underline' }[key];
+      e.preventDefault();
+      execMdCommand(editor, cmd);
+      schedule();
+    }
+  });
+}
+
 /**
  * Esc 关闭抽屉。用模块级单一监听（而不是每次开抽屉 add + once 到期失效）：
  * ① 面板打开时 Esc 只收起日期面板，不连带关掉抽屉；
@@ -567,8 +686,7 @@ function bindDetailEvents(drawer, task) {
 
   // 所见即所得描述：粘贴图片插入光标处
   const editor = drawer.querySelector('.detail-notes-editor');
-  editor.addEventListener('paste', (e) => {
-    const items = e.clipboardData && e.clipboardData.items;
+  editor.addEventListener('paste', (e) => {    const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
     for (const item of items) {
       if (item.kind === 'file' && item.type && item.type.startsWith('image/')) {
@@ -580,6 +698,11 @@ function bindDetailEvents(drawer, task) {
       }
     }
   });
+
+  // Markdown 快捷键 + 「?」帮助弹窗
+  bindMdShortcuts(editor, drawer);
+  const mdHelpBtn = drawer.querySelector('[data-act="md-help"]');
+  if (mdHelpBtn) mdHelpBtn.addEventListener('click', showMdHelp);
 
   // 描述 AI 润色：结果先预览，采纳后可一键还原原文
   const polishBtn = drawer.querySelector('[data-act="polish"]');
