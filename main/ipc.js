@@ -38,6 +38,26 @@ function chatConfig(cfg = getAiConfig()) {
 }
 
 /**
+ * 润色配置：上次使用的提示词（ai.polishInstruction）与用户自建预设（ai.polishPresets）。
+ * 内置预设由 ai.POLISH_PRESETS 下发，两者在界面上合并成一个下拉，但只持久化用户自己的那份。
+ */
+function getPolishConfig() {
+  let custom = [];
+  try {
+    const raw = db.getSetting('ai.polishPresets', '[]');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) custom = parsed.filter((p) => p && p.label);
+  } catch (e) {
+    custom = []; // 数据损坏就当没有自建预设，不能因此让设置读不出来
+  }
+  return {
+    instruction: db.getSetting('ai.polishInstruction', ''),
+    presets: ai.POLISH_PRESETS,
+    customPresets: custom.map((p) => ({ id: `custom:${p.label}`, label: p.label, instruction: p.instruction || '' })),
+  };
+}
+
+/**
  * 把底层异常翻译成用户能理解的提示（保留原文便于排查）。
  */
 function friendlyError(e) {
@@ -265,6 +285,7 @@ function registerIpc() {
     return {
       baseUrl: c.baseUrl, model: c.model, hasKey: c.hasKey,
       encryptionDegraded: c.encryptionDegraded, presets: ai.PRESETS,
+      polish: getPolishConfig(),
       asr: {
         baseUrl: a.baseUrl, model: a.model, hasKey: a.hasKey,
         encryptionDegraded: a.encryptionDegraded, presets: asr.ASR_PRESETS,
@@ -272,6 +293,8 @@ function registerIpc() {
     };
   });
   ipcMain.handle('ai:saveConfig', (_e, p = {}) => {
+    // 界面上合并展示的「设为默认」会连提示词一起带过来，这里顺手落库
+    if (typeof p.polishInstruction === 'string') db.setSetting('ai.polishInstruction', p.polishInstruction);
     if (p.baseUrl !== undefined) db.setSetting('ai.baseUrl', p.baseUrl);
     if (p.model !== undefined) db.setSetting('ai.model', p.model);
     // 仅在用户输入了新 Key 时更新；留空表示保持原 Key 不变
@@ -289,6 +312,7 @@ function registerIpc() {
     return {
       baseUrl: c.baseUrl, model: c.model, hasKey: c.hasKey,
       encryptionDegraded: c.encryptionDegraded, presets: ai.PRESETS,
+      polish: getPolishConfig(),
       asr: {
         baseUrl: a.baseUrl, model: a.model, hasKey: a.hasKey,
         encryptionDegraded: a.encryptionDegraded, presets: asr.ASR_PRESETS,
@@ -341,6 +365,33 @@ function registerIpc() {
     } catch (e) {
       return { ok: false, message: e && e.message ? e.message : '润色失败' };
     }
+  });
+
+  /**
+   * 保存润色提示词配置。
+   * - instruction：写入默认提示词（下次打开润色弹窗自动带出）
+   * - savePreset：{ label, instruction } 时把当前提示词另存为自建预设（同名覆盖）
+   * - deletePreset：按 label 删除一条自建预设（内置预设不可删）
+   * 无论哪种操作都回传最新配置，界面直接用返回值重绘下拉，避免自己拼状态。
+   */
+  ipcMain.handle('ai:savePolish', (_e, p = {}) => {
+    if (typeof p.instruction === 'string') db.setSetting('ai.polishInstruction', p.instruction);
+    if (p.savePreset && p.savePreset.label) {
+      const raw = db.getSetting('ai.polishPresets', '[]');
+      let list = [];
+      try { const parsed = JSON.parse(raw); if (Array.isArray(parsed)) list = parsed; } catch (e) { list = []; }
+      const idx = list.findIndex((x) => x.label === p.savePreset.label);
+      const item = { label: p.savePreset.label, instruction: p.savePreset.instruction || '' };
+      if (idx >= 0) list[idx] = item; else list.push(item);
+      db.setSetting('ai.polishPresets', JSON.stringify(list));
+    }
+    if (p.deletePreset) {
+      const raw = db.getSetting('ai.polishPresets', '[]');
+      let list = [];
+      try { const parsed = JSON.parse(raw); if (Array.isArray(parsed)) list = parsed; } catch (e) { list = []; }
+      db.setSetting('ai.polishPresets', JSON.stringify(list.filter((x) => x.label !== p.deletePreset)));
+    }
+    return getPolishConfig();
   });
 
   /* ---------- 报告 ---------- */

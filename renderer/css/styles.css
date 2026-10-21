@@ -1417,6 +1417,21 @@ html.is-resizing .detail-foot { pointer-events: none; }
 
 /* ==================== 任务描述 AI 润色 ==================== */
 .np-head-ops { display: flex; align-items: center; gap: 6px; }
+/* 润色弹窗顶部：改写取向 + 自定义提示词（与结果区 .np-out 分开渲染，重跑不丢输入） */
+.np-ctl { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 12px; }
+.np-ctl-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.np-ctl-label { flex: 0 0 76px; font-size: 12.5px; color: var(--text-2); line-height: 28px; }
+.np-ctl-row .np-preset, .np-ctl-row .np-instruction {
+  flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px;
+  font-family: inherit; outline: none; resize: vertical;
+}
+.np-ctl-row .np-preset:focus, .np-ctl-row .np-instruction:focus { border-color: var(--primary); }
+.np-ctl-ops { display: flex; align-items: center; gap: 8px; }
+.np-ctl-ops .np-spacer { flex: 1; }
+.np-preset-table .np-preset-text { max-width: 420px; color: var(--text-2); word-break: break-all; }
+.np-preset-table .np-empty { color: var(--text-3); font-size: 12.5px; }
+
 .np-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .np-pane { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .np-pane-title { font-size: 12px; color: var(--text-2); font-weight: 600; }

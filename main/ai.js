@@ -109,34 +109,93 @@ async function summarizeSearch(keyword, tasks, { baseUrl, apiKey, model }) {
 }
 
 /**
- * 润色一段任务描述。
- * 约束写死在提示里：保持原意、不编造信息、只输出正文（不带 Markdown 标记），
- * 这样渲染层可以把结果直接回填进所见即所得编辑器。
+ * 润色预设：内置几种常见改写取向，界面上直接下拉选，选中后填进「自定义提示词」可再改。
+ * instruction 会作为补充要求拼进用户提示，因此每条都写成一句明确的动作指令。
  */
-async function polishText(text, { baseUrl, apiKey, model }, instruction = '') {
+const POLISH_PRESETS = [
+  {
+    id: 'default',
+    label: '润色优化（推荐）',
+    instruction: '在保持原意的前提下重写：理清逻辑顺序，让目标、产出与约束一目了然，去掉口语化赘词。',
+  },
+  {
+    id: 'concise',
+    label: '精简压缩',
+    instruction: '大幅精简：保留全部事实与结论，删掉重复与修饰，字数尽量压到原文的 60% 以内。',
+  },
+  {
+    id: 'expand',
+    label: '扩写细化',
+    instruction: '在原文事实基础上适度扩写：补充合理的执行步骤与验收要点，但不要编造原文没有的人名、日期、数字。',
+  },
+  {
+    id: 'checklist',
+    label: '转结构化清单',
+    instruction: '改写成结构化清单：先一句总述，再用「1. 2. 3.」列出可执行条目，每条一句话、以动词开头。',
+  },
+  {
+    id: 'formal',
+    label: '正式汇报口吻',
+    instruction: '改写为正式的工作汇报口吻：用词书面、语气客观，适合直接贴进周报或项目文档。',
+  },
+  {
+    id: 'todo',
+    label: '拆成待办事项',
+    instruction: '拆成可勾选的待办事项：每条一个动作、可独立完成、以动词开头，按执行顺序排列。',
+  },
+  { id: 'custom', label: '自定义', instruction: '' },
+];
+
+/** 润色的系统提示：强调"改写能力"，而不是只做语法校对 */
+const POLISH_SYSTEM_PROMPT = [
+  '你是资深的任务管理与商务写作助手，擅长把潦草的任务描述改写成可直接执行、可直接汇报的成稿。',
+  '工作方式：先理解这段描述要达成的目标、交付物与约束，再动笔重写——必要时重组顺序、合并重复、',
+  '拆分长句、补上缺失的上下文衔接，而不是只在原句上改几个词。',
+  '硬性约束：',
+  '1. 不新增原文没有的事实（人名、日期、数字、结论一律不得编造）；确实缺失时保持原样或概括表述；',
+  '2. 保留原文的全部关键信息，删减只针对冗余与口语化表达；',
+  '3. 用词准确、句式干脆，避免"应该/可能/大概"这类模糊措辞，除非原文本就是不确定的；',
+  '4. 只输出改写后的正文：不要标题、不要"润色如下"之类的前后说明、不要 Markdown 标记；',
+  '5. 有序列表用「1. 2. 3.」这样的纯文本序号，不要用 Markdown 的 #、-、* 等符号。',
+].join('\n');
+
+/**
+ * 润色 / 改写一段任务描述。
+ *
+ * 与"语法校对"的区别：这里要求模型理解任务意图后重写（结构、条理、可执行性一起优化），
+ * 而不是把原句修通顺就算完。默认输出纯文本正文，渲染层可直接回填进所见即所得编辑器。
+ * @param {string} text 原文
+ * @param {object} cfg { baseUrl, apiKey, model }
+ * @param {string} [instruction] 额外的改写要求（预设或用户自定义提示词）
+ */
+async function polishText(text, cfg, instruction = '') {
   const userMsg = [
-    '请润色下面这段任务描述：',
-    '要求：',
-    '1. 保持原意与既有事实不变，不新增原文里没有的信息；',
-    '2. 语句通顺、条理清晰、用词简洁；',
-    '3. 保留原有条目结构（有分点就继续分点，用「1. 2. 3.」而不是 Markdown 符号）；',
-    '4. 只输出润色后的正文，不要标题、不要前后说明、不要 Markdown 标记。',
-    instruction ? `5. 补充要求：${instruction}` : '',
+    '请改写下面这段任务描述：',
     '',
     '---',
     text,
-  ].filter((x) => x !== null).join('\n');
+    '---',
+    '',
+    instruction ? `本次改写的额外要求（优先级最高，与上述约束冲突时以此为准）：\n${instruction}` : '',
+    '输出改写后的正文。',
+  ].filter(Boolean).join('\n');
   return callLLM({
-    baseUrl,
-    apiKey,
-    model,
+    ...cfg,
     messages: [
-      { role: 'system', content: '你是中文写作助手，擅长在严格保持原意的前提下润色任务描述。' },
+      { role: 'system', content: POLISH_SYSTEM_PROMPT },
       { role: 'user', content: userMsg },
     ],
-    temperature: 0.4,
+    temperature: 0.5,
     timeoutMs: 60000,
   });
 }
 
-module.exports = { DEFAULT_CONFIG, PRESETS, callLLM, testConnection, summarizeSearch, polishText };
+module.exports = {
+  DEFAULT_CONFIG,
+  PRESETS,
+  POLISH_PRESETS,
+  callLLM,
+  testConnection,
+  summarizeSearch,
+  polishText,
+};

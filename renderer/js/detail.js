@@ -6,7 +6,7 @@
 import { api, PRIORITY_TEXT, fmtDateTime } from './api.js';
 import { state, loadGroups, loadTags, refreshAll, noteCompletionChange } from './store.js';
 import { renderMarkdown } from './markdown.js';
-import { openPanelModal } from './modal.js';
+import { openPanelModal, openPromptModal } from './modal.js';
 import {
   dateRangeFieldHtml, bindDateRangeFields, validateDateRange,
   DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS, syncReminderWithPlanEnd, isAnyRangeOpen,
@@ -440,7 +440,7 @@ async function renderDetail() {
             <span>描述</span>
             <span class="np-head-ops">
               <button class="ghost-btn tiny" data-act="md-help" title="查看 Markdown 快捷键">?</button>
-              <button class="ghost-btn tiny" data-act="polish" title="用 AI 润色这段描述，可先预览再决定是否采纳">✨ AI 润色</button>
+              <button class="ghost-btn tiny" data-act="polish" title="用 AI 改写这段描述（可选预设或自定义提示词），先预览再决定是否采纳">✨ AI 改写</button>
               <button class="ghost-btn tiny" data-act="polish-restore" title="放弃润色结果，恢复润色前的原文" hidden>↩ 还原原文</button>
             </span>
           </div>
@@ -994,7 +994,7 @@ async function runPolish(drawer) {
   const setBtnBusy = (on) => {
     if (!btn) return;
     btn.disabled = on;
-    btn.textContent = on ? '润色中…' : btnLabel;
+    btn.textContent = on ? '改写中…' : btnLabel;
   };
 
   // 防重标记必须在**第一个 await 之前**置位：否则连点两次会各自都通过这道判断，
@@ -1008,7 +1008,7 @@ async function runPolish(drawer) {
       handlers.toast('未配置 AI 接口 Key，请到顶部菜单栏「AI 设置」中填写');
       return;
     }
-    await openPolishModal(drawer, editor, source);
+    await openPolishModal(drawer, editor, source, cfg.polish || null);
   } catch (e) {
     // 兜底：连弹窗都打不开（渲染异常等）也要让用户看到原因
     console.error('[detail][polish]', e);
@@ -1020,69 +1020,138 @@ async function runPolish(drawer) {
 }
 
 /**
- * 打开润色预览弹窗（原文 / 润色后对照）。
+ * 打开润色预览弹窗（改写取向 / 自定义提示词 + 原文与结果对照）。
  * 弹窗内部的请求一律自行兜错并就地渲染错误 + 重试入口：
  * openPanelModal 不 await onMount，里面的异常没人接，会变成静默失败。
+ *
+ * 上半区（.np-ctl）是常驻的提示词输入区，下半区（.np-out）是结果区——
+ * 两者分开渲染，重跑时输入的内容不会因为结果区被替换而丢失。
  */
-async function openPolishModal(drawer, editor, source) {
-  const doPolish = async () => {
-    const r = await api.ai.polish({ text: source });
-    if (!r || !r.ok) throw new Error((r && r.message) || '润色失败');
-    return r.text || '';
+async function openPolishModal(drawer, editor, source, polishCfg) {
+  const cfg = polishCfg || {};
+  const builtIn = cfg.presets || DEFAULT_POLISH_PRESETS;
+  const savedInstruction = cfg.instruction || '';
+
+  /** 预设下拉：内置 + 用户自建 */
+  const fillPresets = (list, customList) => {
+    const all = [...(list || []), ...(customList || [])];
+    polishPresets = all;
+    const sel = mask && mask.querySelector('.np-preset');
+    if (!sel) return;
+    sel.innerHTML = all
+      .map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`)
+      .join('') + '<option value="__manage__">管理自建预设…</option>';
+    syncPresetSelection();
   };
 
+  /** 让下拉选中项与当前提示词一致：命中某个预设就选它，否则落到「自定义」 */
+  const syncPresetSelection = () => {
+    const sel = mask && mask.querySelector('.np-preset');
+    const ta = mask && mask.querySelector('.np-instruction');
+    if (!sel || !ta) return;
+    const hit = polishPresets.find((p) => p.instruction && p.instruction === ta.value.trim());
+    if (hit) sel.value = hit.id;
+    else sel.value = ta.value.trim() ? 'custom' : 'default';
+  };
+
+  let mask = null;
+  let polishPresets = [...builtIn, ...(cfg.customPresets || [])];
+
+  const presetOptionsHtml = polishPresets
+    .map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`)
+    .join('') + '<option value="__manage__">管理自建预设…</option>';
+
+  const html = `
+    <div class="np-ctl">
+      <div class="np-ctl-row">
+        <label class="np-ctl-label" for="np-preset">改写取向</label>
+        <select class="np-preset" id="np-preset">${presetOptionsHtml}</select>
+      </div>
+      <div class="np-ctl-row">
+        <label class="np-ctl-label" for="np-instruction">自定义提示词</label>
+        <textarea class="np-instruction" id="np-instruction" rows="2" spellcheck="false"
+          placeholder="例：只保留三条要点 / 改成给客户看的口吻 / 输出英文">${esc(savedInstruction)}</textarea>
+      </div>
+      <div class="np-ctl-ops">
+        <button type="button" class="ghost-btn" data-np="save-preset">💾 存为我的预设</button>
+        <span class="np-spacer"></span>
+        <button type="button" class="primary-btn" data-np="run">✨ 开始改写</button>
+      </div>
+    </div>
+    <div class="np-out"><div class="np-loading">正在改写，请稍候…</div></div>`;
+
   await openPanelModal({
-    title: 'AI 润色描述',
+    title: 'AI 改写描述',
     className: 'modal-xl',
     okText: '关闭',
-    html: '<div class="np-loading">正在润色，请稍候…</div>',
-    onMount: async (mask, close) => {
+    html,
+    onMount: async (m, close) => {
+      mask = m;
       const body = mask.querySelector('.modal-body');
-      if (!body) return;
+      const out = mask.querySelector('.np-out');
+      const ta = mask.querySelector('.np-instruction');
+      const sel = mask.querySelector('.np-preset');
+      if (!body || !out) return;
       let polished = '';
       let busy = false;
 
-      const showLoading = (text) => { body.innerHTML = `<div class="np-loading">${esc(text)}</div>`; };
+      const showLoading = (text) => { out.innerHTML = `<div class="np-loading">${esc(text)}</div>`; };
       const showError = (msg) => {
-        body.innerHTML = `
+        out.innerHTML = `
           <div class="np-error">${esc(msg)}</div>
           <div class="np-ops">
             <span class="np-spacer"></span>
-            <button type="button" class="ghost-btn" data-np="retry">🔁 重新润色</button>
+            <button type="button" class="ghost-btn" data-np="retry">🔁 重新改写</button>
           </div>`;
       };
       const showCompare = (text) => {
-        body.innerHTML = `
+        out.innerHTML = `
           <div class="np-compare">
             <div class="np-pane">
               <div class="np-pane-title">原文</div>
               <div class="np-box">${esc(source)}</div>
             </div>
             <div class="np-pane">
-              <div class="np-pane-title">润色后</div>
+              <div class="np-pane-title">改写后</div>
               <div class="np-box polished">${esc(text)}</div>
             </div>
           </div>
           <div class="np-ops">
-            <button type="button" class="ghost-btn" data-np="retry">🔁 重新润色</button>
+            <button type="button" class="ghost-btn" data-np="retry">🔁 重新改写</button>
             <span class="np-spacer"></span>
             <button type="button" class="ghost-btn" data-np="cancel">取消</button>
             <button type="button" class="primary-btn" data-np="accept">✅ 采纳</button>
           </div>`;
       };
 
+      // 切换预设 → 把该预设的提示词填进输入框（选「自定义」时保留用户自己写的内容）
+      if (sel) {
+        sel.addEventListener('change', () => {
+          if (sel.value === '__manage__') { openPresetManager(); return; }
+          const p = polishPresets.find((x) => x.id === sel.value);
+          if (p && p.id !== 'custom') ta.value = p.instruction || '';
+        });
+      }
+      if (ta) ta.addEventListener('input', syncPresetSelection);
+      // 记住这次用的提示词，下次打开自动带出（失败不影响改写结果，只吞掉）
+      const remember = (instruction) => {
+        api.ai.savePolish({ instruction }).catch(() => {});
+      };
+
       const run = async (isRetry) => {
         if (busy) return;
         busy = true;
-        showLoading(isRetry ? '正在重新润色，请稍候…' : '正在润色，请稍候…');
+        showLoading(isRetry ? '正在重新改写，请稍候…' : '正在改写，请稍候…');
         try {
-          polished = await doPolish();
+          const r = await api.ai.polish({ text: source, instruction: (ta && ta.value.trim()) || '' });
+          if (!r || !r.ok) throw new Error((r && r.message) || '改写失败');
+          polished = r.text || '';
         } catch (e) {
           busy = false;
           if (!mask.isConnected) return; // 请求期间用户已关窗，不再操作已卸载的 DOM
           // 超时 / 网络异常 / 接口报错统一在这里翻译成一句人话
           const raw = (e && e.message) ? e.message : '未知错误';
-          const tip = /超时|timeout/i.test(raw) ? 'AI 润色超时' : 'AI 润色失败';
+          const tip = /超时|timeout/i.test(raw) ? 'AI 改写超时' : 'AI 改写失败';
           showError(`${tip}：${raw}`);
           handlers.toast(`${tip}：${raw}`);
           return;
@@ -1096,6 +1165,40 @@ async function openPolishModal(drawer, editor, source) {
         showCompare(polished);
       };
 
+      /** 自建预设管理：列出已有预设，可删除；新增走「存为我的预设」 */
+      const openPresetManager = async () => {
+        const custom = polishPresets.filter((p) => p.id.startsWith('custom:'));
+        const rows = custom.length
+          ? custom.map((p) => `
+              <tr>
+                <td>${esc(p.label)}</td>
+                <td class="np-preset-text">${esc(p.instruction || '')}</td>
+                <td><button type="button" class="ghost-btn tiny" data-del="${esc(p.label)}">删除</button></td>
+              </tr>`).join('')
+          : '<tr><td colspan="3" class="np-empty">还没有自建预设，可在润色弹窗里点「存为我的预设」添加</td></tr>';
+        await openPanelModal({
+          title: '我的润色预设',
+          html: `<table class="md-help-table np-preset-table">
+              <thead><tr><th>名称</th><th>提示词</th><th></th></tr></thead>
+              <tbody>${rows}</tbody></table>`,
+          onMount: async (root, closeMgr) => {
+            root.addEventListener('click', async (e) => {
+              const del = e.target.closest('[data-del]');
+              if (!del) return;
+              try {
+                const next = await api.ai.savePolish({ deletePreset: del.dataset.del });
+                polishPresets = [...(next.presets || []), ...(next.customPresets || [])];
+                handlers.toast('已删除预设');
+                closeMgr();
+              } catch (err) {
+                handlers.toast(`删除预设失败：${(err && err.message) || '未知错误'}`);
+              }
+            });
+          },
+        });
+        sel.value = ta && ta.value.trim() ? 'custom' : 'default';
+      };
+
       // 事件委托挂在常驻的 .modal-body 上：主体内容会被反复替换，委托才不会失效
       body.addEventListener('click', async (e) => {
         const hit = e.target.closest('[data-np]');
@@ -1103,6 +1206,37 @@ async function openPolishModal(drawer, editor, source) {
         const act = hit.dataset.np;
         if (act === 'cancel') { close(); return; }
         if (act === 'retry') { await run(true); return; }
+        if (act === 'run') { const ins = ta ? ta.value.trim() : ''; remember(ins); await run(false); return; }
+        if (act === 'save-preset') {
+          const instruction = ta ? ta.value.trim() : '';
+          if (!instruction) { handlers.toast('先写点提示词，再存为预设'); return; }
+          const label = await openPromptModal({
+            title: '存为我的预设',
+            label: '预设名称',
+            placeholder: '如：给客户的周报口吻',
+            okText: '保存',
+            onSubmit: async (v) => {
+              const name = (v || '').trim();
+              if (!name) return '请填写预设名称';
+              if (polishPresets.some((p) => !p.id.startsWith('custom:') && p.label === name)) {
+                return '与内置预设重名，换一个名字';
+              }
+              try {
+                const next = await api.ai.savePolish({ instruction, savePreset: { label: name, instruction } });
+                polishPresets = [...(next.presets || []), ...(next.customPresets || [])];
+                // 重绘下拉并把自建预设补进去
+                fillPresets(next.presets, next.customPresets);
+                const mine = polishPresets.find((p) => p.id === `custom:${name}`);
+                if (mine && sel) sel.value = mine.id;
+              } catch (err) {
+                return (err && err.message) || '保存失败，请重试';
+              }
+              return undefined;
+            },
+          });
+          if (label) handlers.toast('已保存为我的预设');
+          return;
+        }
         if (act === 'accept') {
           if (!polished) { close(); return; }
           polishBackup = editor.innerHTML;
@@ -1110,15 +1244,24 @@ async function openPolishModal(drawer, editor, source) {
           const restoreBtn = drawer.querySelector('[data-act="polish-restore"]');
           if (restoreBtn) restoreBtn.hidden = false;
           if (drawer.__autoSave) drawer.__autoSave.schedule();
-          handlers.toast('已采纳润色结果');
+          handlers.toast('已采纳改写结果');
           close();
         }
       });
 
+      syncPresetSelection();
       await run(false);
     },
   });
 }
+
+/** 内置润色预设兜底：主进程配置没取到时界面也不至于空白 */
+const DEFAULT_POLISH_PRESETS = [
+  { id: 'default', label: '润色优化（推荐）', instruction: '在保持原意的前提下重写：理清逻辑顺序，让目标、产出与约束一目了然，去掉口语化赘词。' },
+  { id: 'concise', label: '精简压缩', instruction: '大幅精简：保留全部事实与结论，删掉重复与修饰，字数尽量压到原文的 60% 以内。' },
+  { id: 'checklist', label: '转结构化清单', instruction: '改写成结构化清单：先一句总述，再用「1. 2. 3.」列出可执行条目，每条一句话、以动词开头。' },
+  { id: 'custom', label: '自定义', instruction: '' },
+];
 
 /**
  * 子任务变化后的“非视觉”副作用：刷新列表页数据与父任务勾选状态。

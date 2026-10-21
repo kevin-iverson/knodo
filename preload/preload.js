@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('api', {
     clearAsrKey: () => call('ai:clearAsrKey'),
     testAsr: (p) => call('ai:testAsr', p),
     polish: (p) => call('ai:polish', p),
+    savePolish: (p) => call('ai:savePolish', p),
   },
   // 报告（含历史记录持久化）
   report: {
