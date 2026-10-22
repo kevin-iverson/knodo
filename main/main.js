@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 主进程入口：窗口生命周期、单实例锁、托盘、全局快捷键、提醒调度。
+ * 主进程入口：窗口生命周期、单实例锁、托盘、提醒调度。
  * 关闭窗口默认最小化到托盘，仅当显式退出时才真正退出。
  */
 const {
@@ -14,8 +14,7 @@ const storage = require('./storage');
 const attachments = require('./attachments');
 const { registerIpc } = require('./ipc');
 const { setupTray, destroyTray } = require('./tray');
-const shortcuts = require('./shortcuts');
-const { registerShortcuts, unregisterShortcuts } = shortcuts;
+const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
 const { markdownToDocx } = require('./docx');
 const reportMod = require('./report');
@@ -40,6 +39,11 @@ if (process.env.PORTABLE_EXECUTABLE_DIR) {
 
 let mainWindow = null;
 let isQuitting = false;
+/**
+ * 静默启动：由开机自启动（--autostart）拉起时只驻留托盘，不弹主窗口。
+ * 冒烟测试也走这条路（它自己控制窗口显隐）。
+ */
+const silentLaunch = autostart.isAutoStarted() || isSmoke;
 
 // 单实例锁
 const gotLock = app.requestSingleInstanceLock();
@@ -68,7 +72,8 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   mainWindow.once('ready-to-show', () => {
-    if (!isSmoke) mainWindow.show();
+    // 开机自启动唤起时只驻留托盘，不弹主窗口（用户想用时点托盘图标即可）
+    if (!isSmoke && !silentLaunch) mainWindow.show();
   });
 
   // 关闭 → 最小化到托盘
@@ -126,21 +131,33 @@ function applyTheme() {
 /**
  * 应用菜单：保留系统默认的 File / Edit / View / Window（role 复用默认行为），
  * 末尾追加「AI 设置」——原来在顶部工具栏，挪到菜单栏后非任务视图才能整排隐藏工具区。
+ * 与"应用级设置"同类的项（存储位置、开机自启动）统一收进 File 菜单，其余菜单保持系统默认分组。
  */
 function buildAppMenu() {
+  const auto = autostart.getState();
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     {
-      // 显式构建 File 菜单：把「存储位置」收进来（原来是顶层菜单项，太占位置）。
-      // 不用 role: 'fileMenu'，以便在同一个子菜单里追加自定义项；Exit 行为与默认一致。
+      // 显式构建 File 菜单：不用 role: 'fileMenu'，以便在同一个子菜单里追加自定义项；
+      // Exit 行为与默认一致。
+      // 分组：存储位置（数据层）｜ 开机自启动（系统启动项）｜ Exit。
       label: 'File',
       submenu: [
         {
-          label: '存储位置…',
+          label: '存储位置',
           click: () => {
             showWindow();
             openStorageDialog();
           },
+        },
+        { type: 'separator' },
+        {
+          // 开机自启动：勾选项直接反映系统里实际登记的启动项，点一下即写系统设置
+          label: '开机自启动',
+          type: 'checkbox',
+          checked: auto.enabled,
+          enabled: auto.supported,
+          click: (item) => toggleAutoStart(item.checked),
         },
         { type: 'separator' },
         { role: 'quit', label: 'Exit' },
@@ -158,6 +175,30 @@ function buildAppMenu() {
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/**
+ * 切换开机自启动（File 菜单勾选项的唯一入口）。
+ * 失败时重建菜单让勾选状态回到系统实际值，并弹出原因——避免"看着开了其实没开"。
+ * 返回结构同时供 IPC 使用，渲染层据此保持状态一致。
+ */
+async function toggleAutoStart(next) {
+  const res = autostart.setEnabled(!!next);
+  // 记一份用户意图（换机器 / 重装后仍能看出偏好）；读取一律以系统状态为准
+  db.setSetting('app.autoStart', res.enabled ? '1' : '0');
+  buildAppMenu(); // 重建菜单，让勾选状态与系统实际状态一致
+  if (mainWindow) mainWindow.webContents.send('ui:autostart-changed', res);
+  if (!res.ok) {
+    await msgBox({
+      type: 'warning',
+      title: '开机自启动',
+      message: next ? '未能开启开机自启动' : '未能关闭开机自启动',
+      detail: res.reason || '未知原因',
+      buttons: ['好'],
+      noLink: true,
+    });
+  }
+  return res;
 }
 
 /**
@@ -308,7 +349,7 @@ app.whenReady().then(() => {
       title: '数据目录不可用',
       message: '配置的数据目录无法使用，本次已回退到默认目录',
       detail: `配置目录：${dataInfo.wanted}\n原因：${dataInfo.error}\n\n本次实际使用：${dataInfo.dir}\n\n`
-        + '可在菜单「File → 存储位置…」里重新指定目录（例如重新插上移动硬盘后再试）。',
+        + '可在菜单「File → 存储位置」里重新指定目录（例如重新插上移动硬盘后再试）。',
       buttons: ['好', '去设置'],
       defaultId: 0,
       cancelId: 0,
@@ -326,7 +367,6 @@ app.whenReady().then(() => {
     },
   });
 
-  registerShortcuts({ onToggle: toggleWindow, onQuickAdd: quickAdd });
   startReminderScheduler({ onFocusTask: focusTask });
 
   ipcMain.handle('app:quit', () => { isQuitting = true; app.quit(); });
@@ -881,7 +921,7 @@ app.whenReady().then(() => {
 
               /* --- 4) 展开：父任务在今天视图可见、子任务无日期也需展开显示 --- */
               const parent = await window.api.tasks.create({ title: '带子任务的父', planStart: today, planEnd: today });
-              await window.api.tasks.create({ title: '无日期子任务', parentId: parent.id });
+              const child = await window.api.tasks.create({ title: '无日期子任务', parentId: parent.id });
               document.querySelector('.nav-item[data-view="today"]').click();
               await wait(500);
               const pLi = document.querySelector('.task-item[data-id="' + parent.id + '"]');
@@ -891,10 +931,12 @@ app.whenReady().then(() => {
               if (arrow) {
                 if (arrow.textContent === '▾') { arrow.click(); await wait(400); }
                 const a2 = document.querySelector('.task-item[data-id="' + parent.id + '"] [data-act="toggle-expand"]');
-                out.collapsedChildHidden = !document.querySelector('.task-item.is-subtask');
+                // 子任务行嵌在父行 <li> 内，所以不能只看 .is-subtask 存不存在——
+                // 必须看"哪一行被渲染出来了"，否则父行自身会把 is-subtask 一直带在 DOM 里。
+                out.collapsedChildHidden = !document.querySelector('.task-item[data-id="' + child.id + '"]');
                 a2.click();
                 await wait(500);
-                out.expandedChildVisible = !!document.querySelector('.task-item.is-subtask');
+                out.expandedChildVisible = !!document.querySelector('.task-item[data-id="' + child.id + '"]');
                 out.arrowAfter = document.querySelector('.task-item[data-id="' + parent.id + '"] [data-act="toggle-expand"]').textContent;
               }
               return out;
@@ -1641,7 +1683,7 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 检索历史 = 列表=${r11.searchHistoryBox ? '存在' : '缺失'}；检索后 ${r11.searchRows} 条（新增=${r11.searchHistoryGrew ? '是' : '否'}）；回看=${r11.searchRestored ? '是' : '否'}`);
           console.log(`[SMOKE] 持久化（主进程）= reports ${r11main.reports} 条 / ai_searches ${r11main.searches} 条；正文可读=${r11main.reportHasContent ? '是' : '否'}；关键词可读=${r11main.searchHasKeyword ? '是' : '否'}；导出含两表=${r11main.exportHasTables ? '是' : '否'}`);
 
-          /* ============ 第 13 轮：提示层级 / 分组折叠 / 今天默认值 / 详情描述回填 / 快捷键 ============ */
+          /* ============ 第 13 轮：提示层级 / 分组折叠 / 今天默认值 / 详情描述回填 / 工具栏清理 ============ */
           const r13 = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const out = {};
@@ -1729,23 +1771,9 @@ app.whenReady().then(() => {
               document.querySelector('.detail-close').click();
               await wait(300);
 
-              /* 5) 快捷键：设置入口可用，默认值不与 IDEA 常用键位撞车 */
-              const scBtn = document.getElementById('btn-shortcuts');
-              out.scBtn = !!scBtn;
-              if (scBtn) {
-                scBtn.click();
-                await wait(400);
-                const scModal = document.querySelector('.modal-mask');
-                out.scModalOpened = !!scModal;
-                if (scModal) {
-                  out.scRows = scModal.querySelectorAll('.sc-row').length;
-                  out.scValues = [...scModal.querySelectorAll('.sc-input')].map(i => i.value);
-                  scModal.querySelector('[data-modal="ok"]').click();
-                  await wait(400);
-                }
-              }
-              const scNow = await window.api.shortcuts.get();
-              out.scDefaults = scNow && scNow.shortcuts;
+              /* 5) 顶部工具栏不再有「⌨ 快捷键」「⚙ 启动」入口（快捷键功能已移除、自启动已并入 File 菜单） */
+              out.staleToolbarBtns = ['btn-shortcuts', 'btn-startup']
+                .filter((id) => document.getElementById(id));
 
               /* 6) 历史类弹窗必须放大：报告历史 ≥900px 且完整落在视口内，会议纪要要有历史入口 */
               document.querySelector('.nav-item[data-view="reports"]').click();
@@ -1772,34 +1800,23 @@ app.whenReady().then(() => {
               return out;
             })()
           `);
+          // 主进程侧断言：File 菜单结构（存储位置无省略号 + 开机自启动已并入 + 顶层不再单独出现）
+          const fileMenu = (Menu.getApplicationMenu() || []).items.find((it) => it.label === 'File');
+          const fileItems = fileMenu ? fileMenu.submenu.items.map((it) => (it.type === 'separator' ? '—' : it.label)) : [];
+          const topItems = (Menu.getApplicationMenu() || []).items.map((it) => it.label);
           const r13main = {
-            defaults: (() => {
-              const cfg = shortcuts.getConfig();
-              return cfg;
-            })(),
-            notIdea: (() => {
-              // 默认组合不能落在 IDEA / Chrome 的已知占用键位上
-              const cfg = shortcuts.getConfig();
-              return !shortcuts.KNOWN_CONFLICTS[cfg.toggleWindow] && !shortcuts.KNOWN_CONFLICTS[cfg.quickAdd];
-            })(),
-            validate: (() => {
-              // 校验器：缺修饰键 / 非法主键必须被拒绝
-              return !shortcuts.validateAccel('Q').ok && !shortcuts.validateAccel('').ok
-                && shortcuts.validateAccel('CommandOrControl+Alt+Shift+Q').ok;
-            })(),
-            dupRejected: (() => {
-              const before = shortcuts.getConfig();
-              const r = shortcuts.applyConfig({ toggleWindow: 'CommandOrControl+Alt+Shift+X', quickAdd: 'CommandOrControl+Alt+Shift+X' });
-              shortcuts.applyConfig(before); // 还原
-              return r && r.ok === false;
-            })(),
+            fileItems,
+            storageNoEllipsis: fileItems.includes('存储位置') && !fileItems.some((l) => l !== '存储位置' && l.startsWith('存储位置')),
+            autoStartInFile: fileItems.includes('开机自启动'),
+            autoStartNotTop: !topItems.includes('开机自启动'),
           };
           console.log(`[SMOKE] Toast 层级 = z:${r13.zMask ? `(遮罩 ${r13.zMask})` : '?'} 挂 body=${r13.toastInBody ? '是' : '否'}；高于遮罩=${r13.toastAboveMask ? '是' : '否'}；不拦点击=${r13.toastNoPointer ? '是' : '否'}`);
           console.log(`[SMOKE] 分组折叠 = 表头 ${r13.groupHeads} 个（按钮语义=${r13.headIsButton ? '是' : '否'}）；折叠=${r13.headCollapsed ? '是' : '否'}；任务行减少=${r13.rowsShrunk ? '是' : '否'}；记忆=${JSON.stringify(r13.collapsedSaved)}；再展开=${r13.expandedAgain ? '是' : '否'}；清除=${r13.collapsedCleared ? '是' : '否'}`);
           console.log(`[SMOKE] 箭头尺寸 = 宽 ${r13.arrowWidth}px / 字号 ${r13.arrowFont}px（热区≥20、字号≥14：${r13.arrowWidth >= 20 && r13.arrowFont >= 14 ? '达标' : '未达标'}）`);
           console.log(`[SMOKE] 今天默认值 = ${r13.todayStart || '-'} ~ ${r13.todayEnd || '-'}（填今天=${r13.todayFilled ? '是' : '否'}）`);
           console.log(`[SMOKE] 详情描述 = 回填=${r13.notesFilled ? '是' : '否'}；状态「${r13.saveStateText}」（${r13.saveStateClass}）；标题落库=${r13.titleSaved ? '是' : '否'}；描述未被清空=${r13.notesKept ? '是' : '否'}；润色入口=${r13.polishBtn ? '有' : '无'}`);
-          console.log(`[SMOKE] 快捷键 = 入口${r13.scBtn ? '存在' : '缺失'}；弹窗=${r13.scModalOpened ? '打开' : '未打开'}；项数=${r13.scRows}；当前=${JSON.stringify(r13.scDefaults)}；避开 IDEA=${r13main.notIdea ? '是' : '否'}；校验器=${r13main.validate ? '正常' : '异常'}；重复被拒=${r13main.dupRejected ? '是' : '否'}`);
+          console.log(`[SMOKE] 工具栏清理 = 残留控件${r13.staleToolbarBtns && r13.staleToolbarBtns.length ? JSON.stringify(r13.staleToolbarBtns) : '无'}`);
+          console.log(`[SMOKE] File 菜单 = ${JSON.stringify(r13main.fileItems)}；存储位置无省略号=${r13main.storageNoEllipsis ? '是' : '否'}；开机自启动在 File 内=${r13main.autoStartInFile ? '是' : '否'}；顶层无自启动=${r13main.autoStartNotTop ? '是' : '否'}`);
           console.log(`[SMOKE] 历史弹窗尺寸 = 报告历史 ${r13.rpHisWidth}px（≥900=${r13.rpHisWidth >= 900 ? '是' : '否'}；完整在视口内=${r13.rpHisInViewport ? '是' : '否'}）；会议纪要历史入口=${r13.mthBtn ? '有' : '无'}`);
 
           /* ============ 第 14 轮：多任务详情编辑互不串改 ============ */
@@ -2273,10 +2290,10 @@ app.whenReady().then(() => {
             && r13.todayEditor && r13.todayFilled
             && r13.notesFilled && r13.titleSaved && r13.notesKept && r13.polishBtn
             && /已保存/.test(r13.saveStateText) && /s-saved/.test(r13.saveStateClass)
-            && r13.scBtn && r13.scModalOpened && r13.scRows === 2
+            && (!r13.staleToolbarBtns || r13.staleToolbarBtns.length === 0)
             && r13.rpHisBtn && r13.rpHisOpened && r13.rpHisWidth >= 900 && r13.rpHisInViewport
             && r13.mthBtn
-            && r13main.notIdea && r13main.validate && r13main.dupRejected
+            && r13main.storageNoEllipsis && r13main.autoStartInFile && r13main.autoStartNotTop
             // 第 14 轮：多任务详情编辑互不串改
             && r14.idsDistinct && r14.aRowFound && r14.bRowFound
             && r14.aOpened && r14.bUntouched && r14.aNotClonedFromB
@@ -2287,7 +2304,7 @@ app.whenReady().then(() => {
             && r15.detailCreated && /创建于 \d{4}-\d{2}-\d{2} /.test(r15.detailCreatedText)
             && r15.trendChips === 4 && r15.trendTitlesOk && r15.trendColsOk && r15.trendActiveOk && r15.trendSummary
             && r15.pRowFound && r15.polishBtn
-            && r15.masks1 === 1 && r15.loadingShown && r15.btnDisabled && /润色中/.test(r15.btnText)
+            && r15.masks1 === 1 && r15.loadingShown && r15.btnDisabled && /改写中/.test(r15.btnText)
             && r15.masks2 === 1 && r15.modalClosed && r15.btnRestored
             && r15.errShown && r15.retryBtn && r15.modalClosedB
             // 第 16 轮：标题层级 / 子任务计数 / 行内改名自适应 / 图片放大 / 侧栏调宽 / 统计口径
@@ -2310,12 +2327,15 @@ app.whenReady().then(() => {
               'r4:popClipped',             // 期望「没有被裁剪容器包住」
               'r9:tagBeforeActive',        // 期望「点击前未选中」
               'r10:tfNativeDates',         // 期望「原生 date 输入框 0 个」
+              'r15:masksBefore',           // 提示用：期望润色前没有残留遮罩 = 0
             ]);
+            let printed = 0;
             const dumpFalsy = (label, obj) => {
               const bad = Object.entries(obj || {})
                 .filter(([k, v]) => (v === false || v === null || v === undefined || v === 0 || v === '')
                   && !EXPECT_FALSY.has(`${label}:${k}`));
               if (bad.length) {
+                printed += 1;
                 console.log(`[SMOKE] 未通过项 · ${label}：${bad.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('；')}`);
               }
             };
@@ -2334,6 +2354,10 @@ app.whenReady().then(() => {
             dumpFalsy('r14', r14);
             dumpFalsy('r15', r15);
             dumpFalsy('r16', r16);
+            // 假值列表抓不到「值非假但不匹配」的条件（如 xx === '旧文案'），补一行提示免得对着 && 死磕。
+            if (!printed) {
+              console.log('[SMOKE] 未通过项：无假值 → 问题在字符串/数值比对上（比对值或界面文案已过时）');
+            }
           }
           console.log(allOk ? '[SMOKE] SMOKE_OK' : '[SMOKE] SMOKE_FAIL');
           isQuitting = true;
@@ -2352,7 +2376,6 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   isQuitting = true;
   stopReminderScheduler();
-  unregisterShortcuts();
   destroyTray();
 });
 

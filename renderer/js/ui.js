@@ -20,7 +20,6 @@ import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOpti
 import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
-import { bindShortcutsButton } from './shortcuts.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
 
@@ -130,8 +129,6 @@ function bindStaticEvents() {
   // AI 配置（原在「AI 报告」页内的配置面板；现统一从顶部菜单栏「AI 设置」打开）
   setAiSettingsHandlers({ toast, onChanged: () => { renderSidebarList(); } });
   listenAiSettingsMenu();
-  // 全局快捷键自定义（默认组合已避开 IDEA / Chrome 常用键位）
-  bindShortcutsButton();
   // 会议录制（工具栏按钮）
   bindRecordButton();
 
@@ -192,7 +189,7 @@ function bindStaticEvents() {
   // 主题
   document.getElementById('btn-theme').addEventListener('click', toggleTheme);
 
-  // 主进程事件：托盘/快捷键“快速添加” → 展开底部编辑器
+  // 主进程事件：托盘菜单“快速添加” → 展开底部编辑器
   api.on('ui:quick-add', () => {
     ensureTaskView();
     startAdd();
@@ -605,7 +602,11 @@ function compareTasks(a, b) {
   return a.id - b.id;
 }
 
-/** 将任务数组组织为树并按“父任务→子任务（缩进）”展平 */
+/**
+ * 将任务数组组织为树并按“父任务→子任务（缩进）”展平。
+ * 注意：父任务被筛选掉时子任务仍会作为一个 roots 渲染（只是缩进 0、没有父行），
+ * 所以节点上额外带一个 parentVisible 标记，供行内决定父任务提示是"纯标识"还是"可点链接"。
+ */
 function flattenTree(tasks) {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const children = new Map();
@@ -619,20 +620,23 @@ function flattenTree(tasks) {
     }
   }
   const result = [];
-  const walk = (t, depth) => {
-    result.push({ task: t, depth });
+  const walk = (t, depth, parentVisible) => {
+    result.push({ task: t, depth, parentVisible });
     // 默认收缩：仅在展开时递归渲染子任务
     if (!state.expandedTasks.has(t.id)) return;
     const kids = (children.get(t.id) || []).sort(compareTasks);
-    for (const k of kids) walk(k, depth + 1);
+    for (const k of kids) walk(k, depth + 1, true);
   };
-  for (const r of roots) walk(r, 0);
+  // 没有父任务（或父任务不在本列表里）的节点：parentVisible 只对"有父 id 但父行缺失"的节点有意义
+  for (const r of roots) walk(r, 0, !r.parent_id);
   return result;
 }
 
 function buildTaskList(nodes) {
   const items = nodes
-    .map(({ task: t, depth }) => (state.editingTaskId === t.id ? editEditorHtml(t) : taskItemHtml(t, depth)))
+    .map(({ task: t, depth, parentVisible }) => (state.editingTaskId === t.id
+      ? editEditorHtml(t)
+      : taskItemHtml(t, depth, parentVisible)))
     .join('');
   return `<ul class="task-list">${items}</ul>`;
 }
@@ -643,12 +647,24 @@ function groupPathAt(id) {
   return g ? groupPath(g, state.groups) : '';
 }
 
-function taskItemHtml(t, depth = 0) {
+function taskItemHtml(t, depth = 0, parentVisible = true) {
   const done = t.completed ? ' done' : '';
-  const isSub = depth > 0;
+  // 注意：判断"是不是子任务"必须看 t.parent_id，不能看 depth。
+  // 父任务被筛选掉时，子任务会作为 roots 渲染、depth = 0，但它依然是子任务。
+  const isSub = t.parent_id != null;
   const isOverdue = !t.completed && t.plan_end && t.plan_end < todayStr();
   const meta = [];
-  if (isSub && t.parent_title) meta.push(`<span class="meta-item parent-tag">↳ ${esc(t.parent_title)}</span>`);
+  // 父任务提示：
+  //  - 父任务就在上面（parentVisible）→ 缩进已说明层级，这里只给纯标识；
+  //  - 父任务不在当前列表（被视图 / 筛选过滤掉了）→ 做成链接，标注"父任务："并可直接点开，
+  //    否则只看到一个"↳ 某标题"，既点不动也不知道它在哪儿。
+  if (isSub && t.parent_title) {
+    meta.push(parentVisible
+      ? `<span class="meta-item parent-tag" title="父任务：${esc(t.parent_title)}">↳ ${esc(t.parent_title)}</span>`
+      : `<span class="meta-item parent-tag parent-link" role="link" tabindex="0"
+           data-act="goto-parent" data-parent="${t.parent_id}"
+           title="父任务不在当前列表，点击打开：${esc(t.parent_title)}">↳ 父任务：${esc(t.parent_title)}</span>`);
+  }
   meta.push(`<span class="pri-badge pri-${t.priority}">${PRIORITY_TEXT[t.priority]}</span>`);
   if (t.plan_start) meta.push(`<span class="meta-item">🗓 ${esc(t.plan_start)}</span>`);
   if (t.plan_end) meta.push(`<span class="meta-item due ${isOverdue ? 'overdue' : ''}">📅 ${esc(t.plan_end)}</span>`);
@@ -695,11 +711,32 @@ function taskItemHtml(t, depth = 0) {
   </li>`;
 }
 
+/**
+ * 打开父任务。
+ * 列表里的父任务链接（.parent-link）用的是 span[role=link]：既能点，也能聚焦后回车/空格触发，
+ * 键盘用户不至于"看得见点不动"。这里统一收口一次键盘处理。
+ */
+function openParentTask(parentId) {
+  if (!Number.isFinite(parentId) || parentId <= 0) return;
+  openDetail(parentId);
+}
+
 function bindTaskListEvents(container) {
   container.querySelectorAll('.task-item:not(.editing)').forEach((item) => {
+    item.addEventListener('keydown', (e) => {
+      const link = e.target.closest && e.target.closest('[data-act="goto-parent"]');
+      if (!link) return;
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      openParentTask(Number(link.dataset.parent));
+    });
     item.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-act]');
-      const id = Number(item.dataset.id);
+      // 子任务行嵌在父行 <li> 内部，点击会冒泡到父行；按「事件所属的那一行」取 id，
+      // 否则在子任务的按钮上点击会作用到父任务（例如把父任务的展开态翻回去）。
+      const owner = (btn && btn.closest('.task-item[data-id]')) || item;
+      const id = Number(owner.dataset.id);
       if (!btn) { openDetail(id); return; }
       const act = btn.dataset.act;
       if (act === 'drag') return; // 拖拽手柄：不触发打开详情
@@ -710,6 +747,7 @@ function bindTaskListEvents(container) {
         renderTasks();
       }
       else if (act === 'rename') startInlineRename(btn, id);
+      else if (act === 'goto-parent') openParentTask(Number(btn.dataset.parent));
       else if (act === 'edit') startEdit(id);
       else if (act === 'del') deleteTaskConfirm(id);
       else if (act === 'archive') archiveTask(id);
@@ -1482,12 +1520,16 @@ async function renderStats() {
   const ov = await api.stats.overview({ includeSubtasks: statsIncludeSubtasks });
 
   const maxGroup = Math.max(1, ...ov.byGroup.map((g) => g.active + g.done));
+  // 分组名带上级路径（"工作 / 前端"）：顶层分组只有自己的名字，子分组把父分组名一起显示出来，
+  // 否则不同父分组下的同名子分组在统计里完全无法区分。
+  const groupLabelOf = (g) => (g.parent_name ? `${g.parent_name} / ${g.name}` : g.name);
   const groupBars = ov.byGroup
     .map((g) => {
       const total = g.active + g.done;
       const pct = Math.round((total / maxGroup) * 100);
-      return `<div class="bar-row">
-        <span class="bar-label">${esc(g.name)}</span>
+      const label = groupLabelOf(g);
+      return `<div class="bar-row" title="${esc(label)}（进行中 ${g.active} · 已完成 ${g.done}）">
+        <span class="bar-label">${esc(label)}</span>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${esc(g.color)}"></div></div>
         <span class="bar-val">${total}</span>
       </div>`;

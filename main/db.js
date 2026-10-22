@@ -895,10 +895,12 @@ function overview(opts = {}) {
   const joinTop = opts && opts.includeSubtasks ? '' : 'AND t.parent_id IS NULL';
   const byGroup = db
     .prepare(
-      `SELECT g.id, g.name, g.color,
+      `SELECT g.id, g.name, g.color, g.parent_id,
+         pg.name AS parent_name, pg.color AS parent_color,
          SUM(CASE WHEN t.completed = 0 AND t.archived = 0 THEN 1 ELSE 0 END) AS active,
          SUM(CASE WHEN t.completed = 1 THEN 1 ELSE 0 END) AS done
        FROM groups g LEFT JOIN tasks t ON t.group_id = g.id ${joinTop}
+       LEFT JOIN groups pg ON pg.id = g.parent_id
        GROUP BY g.id ORDER BY g.sort_order`
     )
     .all()
@@ -906,6 +908,10 @@ function overview(opts = {}) {
       id: r.id,
       name: r.name,
       color: r.color,
+      // 同名子分组在不同父分组下看不出归属，把父分组名一并带上给界面拼 "父 / 子"
+      parent_id: r.parent_id ?? null,
+      parent_name: r.parent_name || '',
+      parent_color: r.parent_color || '',
       active: r.active || 0,
       done: r.done || 0,
     }));

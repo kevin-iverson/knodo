@@ -374,6 +374,16 @@ body {
 .meta-item.due.overdue { color: var(--danger); font-weight: 600; }
 .meta-item.done-at { color: var(--green); }
 .meta-item.parent-tag { color: var(--primary); }
+/* 父任务不在当前列表时的可点链接：下划线 + 手型光标，表明"这个能点" */
+.meta-item.parent-link {
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+  text-decoration-color: rgba(79, 124, 255, 0.45);
+  max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.meta-item.parent-link:hover { color: var(--primary-strong); text-decoration-color: currentColor; }
+.meta-item.parent-link:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 1px; border-radius: 4px;
+}
 .meta-item.subtask-progress { color: var(--text-2); }
 .pri-badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; }
 .pri-0 { background: #eef1f6; color: var(--text-2); }
@@ -498,7 +508,11 @@ body {
 .panel { background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 16px; }
 .panel h3 { font-size: 15px; margin-bottom: 14px; }
 .bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.bar-row .bar-label { width: 70px; font-size: 12.5px; color: var(--text-2); flex-shrink: 0; }
+.bar-row .bar-label {
+  /* 分组名现在是完整路径（"工作 / 前端"）：固定 70px 会把名字截成半截，改成上下限自适应 */
+  flex: 0 1 auto; min-width: 70px; max-width: 42%; font-size: 12.5px; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .bar-track { flex: 1; height: 10px; background: var(--bg-hover); border-radius: 5px; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 5px; background: var(--primary); }
 .bar-row .bar-val { width: 34px; font-size: 12px; color: var(--text-3); text-align: right; }
@@ -895,7 +909,17 @@ body {
 .flatpickr-months .flatpickr-prev-month:hover svg,
 .flatpickr-months .flatpickr-next-month:hover svg { fill: var(--primary); }
 .flatpickr-current-month input.cur-year { color: var(--text); }
-.flatpickr-weekday { color: var(--text-3); font-size: 11.5px; }
+/*
+ * 星期表头（周一…周日）：vendor 里写的是 `span.flatpickr-weekday`
+ * （font-weight:bolder + rgba(0,0,0,.54)），只用单个类名盖不住它 ——
+ * 必须用同等或更高优先级的选择器，否则颜色和字重都不会生效。
+ * 中文在 bolder 字重下会糊成一团（"周一/周二"尤其明显），这里压回常规字重，
+ * 颜色与其它次要文字（.meta-item）保持一致。
+ */
+.flatpickr-calendar span.flatpickr-weekday {
+  color: var(--text-3); font-size: 11.5px;
+  font-weight: 400; letter-spacing: 0.2px;
+}
 .flatpickr-day {
   color: var(--text); border-radius: 6px;
 }
@@ -1395,25 +1419,6 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .mth-ops { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
 .mth-empty { padding: 24px; text-align: center; color: var(--text-3); font-size: 13px; }
 
-/* ==================== 全局快捷键设置 ==================== */
-.sc-list { display: flex; flex-direction: column; gap: 10px; }
-.sc-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px; border: 1px solid var(--border);
-  border-radius: var(--radius-sm); background: var(--bg);
-}
-.sc-label { flex: 1; min-width: 0; font-size: 13px; color: var(--text); }
-.sc-label .sc-hint { display: block; font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
-.sc-input {
-  width: 240px; flex-shrink: 0; padding: 7px 10px; text-align: center;
-  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel);
-  color: var(--text); font-size: 13px; font-family: ui-monospace, "SF Mono", Consolas, monospace;
-  outline: none; cursor: pointer;
-}
-.sc-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, .16); }
-.sc-input.capturing { border-color: var(--primary); color: var(--primary-strong); }
-.sc-tip { font-size: 12px; color: var(--text-3); line-height: 1.6; }
-.sc-warn { font-size: 12px; color: var(--danger); line-height: 1.6; }
 
 /* ==================== 任务描述 AI 润色 ==================== */
 .np-head-ops { display: flex; align-items: center; gap: 6px; }

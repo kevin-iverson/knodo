@@ -19,7 +19,7 @@
 - 已完成任务归档与统计
 - **「今天」列表就地保留已完成任务**：勾选完成后不消失，直接打勾 / 置灰 / 删除线，并显示「今日已完成 N 个」提示条；**切换标签页再回来、甚至重启应用，今天做过的任务依然在列表里**（标记连同自然日存进 settings，跨天自动作废）；可点「隐藏已完成」立即移除（不改变视图本身的查询口径）
 - **点击任务标题即可行内改名**：不用再打开详情页，点一下标题就地变输入框，失焦或回车保存、Esc 放弃；只替换这一行节点，不整表重绘
-- 系统托盘 + 全局快捷键
+- 系统托盘常驻，可一键呼出 / 快速添加
 - 深色模式
 - 窗口关闭后最小化到托盘
 
@@ -99,11 +99,11 @@ todo-app/
 ├── package.json            # 依赖与脚本
 ├── assets/                 # 应用图标 / 托盘图标（由 scripts/gen-icon.js 生成）
 ├── main/                   # 主进程
-│   ├── main.js             # 入口：窗口生命周期、单实例、托盘/快捷键/提醒装配
+│   ├── main.js             # 入口：窗口生命周期、单实例、托盘/提醒装配、应用菜单
 │   ├── db.js               # SQLite 数据访问层（建表、迁移、CRUD、统计）
 │   ├── ipc.js              # IPC 处理器注册（渲染进程 ↔ 主进程）
 │   ├── tray.js             # 系统托盘（显示/隐藏、快速添加、退出）
-│   ├── shortcuts.js        # 全局快捷键
+│   ├── autostart.js        # 开机自启动（系统启动项读写）
 │   ├── reminders.js        # 提醒调度器
 │   ├── crypto.js           # API Key 本地加密（safeStorage，降级 Base64）
 │   ├── ai.js               # AI 接口调用（OpenAI 兼容 /chat/completions）
@@ -280,12 +280,11 @@ todo-app/
 - **文件格式**：JSON，包含 `groups` / `tags` / `tasks` / `task_tags` / `meetings` / `reports` / `ai_searches` / `settings` 数组（`schemaVersion` 现为 7），字段与数据模型一致；导入时兼容旧版 `due_at` 字段（自动映射为计划完成日期）。导入为覆盖式，历史报告与检索记录也会一并覆盖。
 - 备份**不含** AI / 语音 Key；会议目录里的音频文件不随 JSON 导出，需要单独保留 `recordings/` 目录。
 
-## 全局快捷键
+## 开机自启动
 
-| 快捷键 | 功能 |
-|---|---|
-| `Ctrl/Cmd + Shift + T` | 显示 / 隐藏主窗口 |
-| `Ctrl/Cmd + Shift + N` | 快速添加任务 |
+菜单 **File → 开机自启动**（勾选项）可开启 / 关闭；登录系统后自动在后台启动，只驻留托盘、不弹主窗口。
+勾选状态以系统实际登记的启动项为准（在「任务管理器 → 启动」里关闭也会同步反映）。
+便携版与开发调试模式下不可用（无法登记稳定的启动路径），菜单项会置灰。
 
 ## 说明
 
@@ -317,7 +316,7 @@ npm run dist:portable   # 只产出便携版（免安装）
 - 打包配置写在 `package.json` 的 `build` 字段；`scripts/build-win.js` 负责注入国内镜像（electron / NSIS / winCodeSign 资源从 npmmirror 下载，避免 GitHub 超时）。
 - `better-sqlite3` 使用官方预编译二进制（`prebuilds/`），**不需要** VS 生成工具，因此打包配置里 `npmRebuild: false`；其 `.node` 文件会通过 `asarUnpack` 解包到 `app.asar.unpacked` 才能被加载。
 - 安装版数据存 `%APPDATA%\todo-desktop\`；便携版数据存 exe 同级 `data\`（由 `PORTABLE_EXECUTABLE_DIR` 判定）。
-- **数据目录可配置**：菜单「数据存放位置…」可选任意目录（例如换到 D 盘），配置写在 `<用户数据目录>/config.json` 的 `dataDir` 字段，
+- **数据目录可配置**：菜单「File → 存储位置」可选任意目录（例如换到 D 盘），配置写在 `<用户数据目录>/config.json` 的 `dataDir` 字段，
   下次启动生效；可勾选把现有数据（`todo.db` + `attachments`）复制到新目录。配置目录不可用（盘未插入 / 被删 / 无写权限）时会自动回退默认目录并弹窗提示。
   录音文件（`recordings/`）仍留在用户数据目录：会议记录里存的是绝对路径，迁移会造成两份数据。
 - 首次打包需下载约 100MB 的 Electron 与 NSIS 资源，之后有缓存，单个 exe 产物约 116MB（Electron 运行时体积，非本项目代码大小；本项目代码仅约 6MB）。

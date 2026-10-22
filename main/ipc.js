@@ -14,7 +14,7 @@ const meeting = require('./meeting');
 const recording = require('./recording');
 const report = require('./report');
 const { markdownToDocx } = require('./docx');
-const shortcuts = require('./shortcuts');
+const autostart = require('./autostart');
 
 function getAsrConfig() {
   const baseUrl = db.getSetting('ai.asrBaseUrl', asr.DEFAULT_ASR_CONFIG.baseUrl);
@@ -109,15 +109,6 @@ function withDb(fn) {
 function registerIpc() {
   // 录制文件目录（userData/recordings）：handler 里一律通过 recording 模块访问
   recording.init(app.getPath('userData'));
-
-  /* ---------- 全局快捷键（可自定义） ---------- */
-  ipcMain.handle('shortcuts:get', () => ({
-    shortcuts: shortcuts.getConfig(),
-    actions: shortcuts.ACTIONS,
-    conflicts: shortcuts.KNOWN_CONFLICTS,
-  }));
-  ipcMain.handle('shortcuts:set', (_e, patch) => shortcuts.applyConfig(patch || {}));
-  ipcMain.handle('shortcuts:reset', () => shortcuts.resetConfig());
 
   /* ---------- 分组 ---------- */
   ipcMain.handle('groups:list', withDb(() => db.listGroups()));
@@ -623,6 +614,11 @@ function registerIpc() {
       return { ok: false, message: e.message };
     }
   });
+
+  /* ---------- 开机自启动（只读） ---------- */
+  // 写入入口只有应用菜单「File → 开机自启动」（见 main.js 的 toggleAutoStart），
+  // 这里只暴露状态读取，供界面核对系统里实际登记的启动项。
+  ipcMain.handle('app:getAutoStart', () => autostart.getState());
 
   /* ---------- 应用 / 主题 ---------- */
   ipcMain.handle('theme:get', () => db.getSetting('theme', 'system'));

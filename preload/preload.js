@@ -118,12 +118,6 @@ contextBridge.exposeInMainWorld('api', {
     export: () => call('data:export'),
     import: () => call('data:import'),
   },
-  // 全局快捷键（可自定义，存在 settings 里）
-  shortcuts: {
-    get: () => call('shortcuts:get'),
-    set: (patch) => call('shortcuts:set', patch),
-    reset: () => call('shortcuts:reset'),
-  },
   // AI 检索（含历史记录持久化）
   search: {
     ai: (keyword) => call('search:ai', keyword),
@@ -156,6 +150,8 @@ contextBridge.exposeInMainWorld('api', {
     quit: () => call('app:quit'),
     openExternal: (url) => call('app:openExternal', url),
     getVersion: () => call('app:getVersion'),
+    // 开机自启动状态（菜单项 File → 开机自启动 的写入入口在主进程；这里只读，供界面核对）
+    getAutoStart: () => call('app:getAutoStart'),
   },
   /**
    * 拖拽进来的 File 对象在 Electron 32+ 已没有 .path，必须用 webUtils 换绝对路径。
