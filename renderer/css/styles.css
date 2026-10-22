@@ -1187,15 +1187,55 @@ html.is-resizing .detail-foot { pointer-events: none; }
 }
 .search-results { list-style: none; display: flex; flex-direction: column; gap: 6px; }
 .search-result-item {
-  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 14px;
   background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-sm);
   cursor: pointer; transition: box-shadow 0.15s;
 }
 .search-result-item:hover { box-shadow: var(--shadow); border-color: var(--primary); }
+.sr-row { display: flex; align-items: center; gap: 10px; }
 .sr-status { font-size: 14px; }
 .sr-title { flex: 1; font-size: 14px; word-break: break-word; }
 .sr-meta { color: var(--text-3); font-size: 12px; white-space: nowrap; }
 .sr-arrow { color: var(--text-3); font-size: 16px; }
+
+/* 联想检索：命中依据 + 相关度条 */
+.sr-why { display: flex; align-items: center; gap: 8px; padding-left: 24px; }
+/* 只用边框 + 文字色表达强弱，不铺底色：浅色与深色主题下都不用另写一套覆写 */
+.sr-conf {
+  flex: none; font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 4px;
+  border: 1px solid var(--border); color: var(--text-3);
+}
+.sr-conf-high { color: var(--green); border-color: var(--green); }
+.sr-conf-mid { color: #d68b2c; border-color: #d68b2c; }
+.sr-conf-low { color: var(--text-3); }
+.sr-reasons {
+  flex: 1; min-width: 0; font-size: 12px; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sr-score {
+  flex: none; width: 54px; height: 4px; border-radius: 2px;
+  background: var(--border); overflow: hidden;
+}
+.sr-score i { display: block; height: 100%; background: var(--primary); }
+
+/* 结果类型提示条 */
+.sr-banner {
+  list-style: none; padding: 8px 14px; border-radius: var(--radius-sm);
+  font-size: 12.5px; color: var(--text-2); border: 1px dashed var(--border);
+}
+.sr-banner-unique { border-color: var(--green); color: var(--green); }
+.sr-banner-multi { border-color: #d68b2c; color: #d68b2c; }
+
+/* 确实无关联：说清"试过哪些方向"，而不是冷冰冰一句没找到 */
+.sr-empty {
+  list-style: none; padding: 14px 16px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-panel);
+}
+.sr-empty-title { font-size: 13.5px; color: var(--text); margin-bottom: 6px; }
+.sr-empty-sub { font-size: 12px; color: var(--text-3); margin: 8px 0 4px; }
+.sr-tried { list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.sr-tried li { font-size: 12px; color: var(--text-2); padding-left: 14px; position: relative; }
+.sr-tried li::before { content: '·'; position: absolute; left: 4px; color: var(--text-3); }
 
 /* AI 检索历史（持久化在 ai_searches 表，可回看 / 删除） */
 .search-history { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 14px; }

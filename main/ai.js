@@ -109,6 +109,75 @@ async function summarizeSearch(keyword, tasks, { baseUrl, apiKey, model }) {
 }
 
 /**
+ * 检索联想的语义重排（可选增强）。
+ *
+ * 本地引擎（search-assist.js）已经能召回候选，但对"意思相关、字面无关"的查询
+ * （例如搜「那个要请客户吃饭的事」，本地一条都命不中）无能为力。这里让模型在
+ * **已召回的候选池**里做语义判断 —— 只重排、只剔除，**绝不新增任务**，
+ * 从而保证结果不会凭空冒出任务库里不存在的条目。
+ *
+ * @param {string} keyword 用户关键词
+ * @param {Array} candidates 候选池（本地召回的 Top N，或兜底的最近更新任务）
+ * @param {object} cfg { baseUrl, apiKey, model }
+ * @returns {Promise<Array<{id:number, relevant:boolean, reason:string}>>}
+ */
+async function rankSearchCandidates(keyword, candidates, { baseUrl, apiKey, model }) {
+  if (!candidates.length) return [];
+  const list = candidates.map((t) => ({
+    id: t.id,
+    title: t.title,
+    status: t.completed ? '已完成' : (t.archived ? '已归档' : '进行中'),
+    group: t.group_name || '',
+    planEnd: t.plan_end || '',
+    tags: t.tag_names || [],
+    desc: (String(t.notes || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, 120),
+  }));
+  const userMsg = [
+    `用户想找的关键词："${keyword}"。`,
+    '下面是任务库里的候选任务（JSON 数组）：',
+    JSON.stringify(list),
+    '',
+    '请判断每条与用户意图的语义相关程度，按相关性从高到低排序。',
+    '硬性要求：',
+    '1. 只能评价上面给出的任务，不得新增、不得改写标题；',
+    '2. 明显无关的条目直接不输出（不要为了凑数保留）；',
+    '3. reason 用一句话说清"为什么认为相关"，指出是从哪个词/语义推出来的；',
+    '4. 只输出 JSON 数组，每项形如 {"id":123,"relevant":true,"reason":"..."}，不要任何额外文字。',
+  ].join('\n');
+  const raw = await callLLM({
+    baseUrl,
+    apiKey,
+    model,
+    messages: [
+      { role: 'system', content: '你是任务检索的语义匹配助手，只做相关性判断与排序，绝不编造任务。' },
+      { role: 'user', content: userMsg },
+    ],
+    temperature: 0.2,
+    // 重排是"锦上添花"，不能让它拖慢检索：20 秒拿不到结果就退回本地排序
+    timeoutMs: 20000,
+  });
+  return parseRankReply(raw, candidates.map((c) => c.id));
+}
+
+/** 解析模型返回的 JSON 数组：容错到「从回复里抠出第一个 [ ... ]」，并过滤掉不在候选池里的 id */
+function parseRankReply(raw, allowedIds) {
+  const text = String(raw || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '');
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start < 0 || end <= start) throw new Error('AI 返回的排序结果格式不可解析');
+  let arr;
+  try {
+    arr = JSON.parse(text.slice(start, end + 1));
+  } catch (e) {
+    throw new Error(`AI 返回的排序结果不是合法 JSON：${e.message}`);
+  }
+  const allowed = new Set(allowedIds.map(Number));
+  return arr
+    .filter((x) => x && allowed.has(Number(x.id)))
+    .map((x) => ({ id: Number(x.id), relevant: x.relevant !== false, reason: String(x.reason || '').trim() }));
+}
+
+/**
  * 润色预设：内置几种常见改写取向，界面上直接下拉选，选中后填进「自定义提示词」可再改。
  * instruction 会作为补充要求拼进用户提示，因此每条都写成一句明确的动作指令。
  */
@@ -197,5 +266,6 @@ module.exports = {
   callLLM,
   testConnection,
   summarizeSearch,
+  rankSearchCandidates,
   polishText,
 };

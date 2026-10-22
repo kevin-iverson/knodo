@@ -15,6 +15,7 @@ const recording = require('./recording');
 const report = require('./report');
 const { markdownToDocx } = require('./docx');
 const autostart = require('./autostart');
+const searchAssist = require('./search-assist');
 
 function getAsrConfig() {
   const baseUrl = db.getSetting('ai.asrBaseUrl', asr.DEFAULT_ASR_CONFIG.baseUrl);
@@ -224,33 +225,148 @@ function registerIpc() {
     return { ok: true, attachments: next.attachments };
   }));
 
-  /* ---------- AI 检索 ---------- */
+  /* ---------- AI 检索（含联想召回） ---------- */
   ipcMain.handle('search:ai', async (_e, keyword) => {
     const kw = (keyword || '').trim();
     if (!kw) return { ok: false, message: '请输入检索关键词' };
-    const tasks = db.searchTasks(kw, 30);
+
+    /*
+     * 检索分三步：
+     *   1) 精确层：先走原 SQL LIKE（标题/描述/标签原样命中）。命中即优先返回，
+     *      完全保留改造前的精确匹配能力；
+     *   2) 联想层：无精确命中时，用 search-assist 在本地做同义词/缩写/近似拼写/
+     *      状态/时间语义召回并打分，输出 Top 5 候选 + 命中依据；
+     *   3) 语义重排：配了 Key 且本地置信度不足（非唯一匹配）时，让模型在候选池内
+     *      重排并给出理由；失败不影响结果，降级到本地排序。
+     */
+    const exact = db.searchTasks(kw, 30);
+    let result;
+    if (exact.length) {
+      result = {
+        keyword: kw,
+        // 精确命中：第一条视为高置信唯一匹配；多条并列则待确认
+        type: exact.length === 1 ? 'unique' : 'candidates',
+        tasks: exact.slice(0, 5).map((t, i) => ({
+          ...t,
+          match: {
+            score: 100 - i,
+            reasons: [`精确匹配「${kw}」`],
+            relevance: i === 0 ? 100 : Math.max(40, 100 - i * 15),
+            confidence: i === 0 ? 'high' : 'mid',
+          },
+        })),
+        tried: [],
+      };
+      result.exactHit = true;
+    } else {
+      const pool = db.listTasks({ status: 'any' });
+      result = searchAssist.suggest(pool, kw, { topN: 5 });
+      result.exactHit = false;
+    }
+
     const cfg = getAiConfig();
     let summary = '';
     let degraded = !cfg.hasKey;
+    let reranked = false;
+
+    /*
+     * 语义重排（可选，仅在配了 Key 时）：
+     *   - 唯一匹配跳过：答案已经确定，再问模型只是浪费时间；
+     *   - 候选 >= 2 条：让模型在这些候选里挑出真正相关的并给出理由；
+     *   - 本地零召回：给模型看最近更新的 20 条，让它在"字面完全无关"时做纯语义兜底。
+     * 无论哪种情况，模型都只能在给定池里选 —— 不会凭空造出库里没有的任务。
+     * 重排失败归入 degraded，不影响本地结果返回。
+     */
+    const tryRerank = async () => {
+      if (result.type === 'unique') return;
+      const poolForAi = result.tasks.length >= 2
+        ? result.tasks
+        : db.listTasks({ status: 'any' })
+          .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))
+          .slice(0, 20)
+          .map((t) => ({
+            ...t,
+            match: t.match || { score: 0, reasons: ['AI 语义召回'], relevance: 50, confidence: 'low' },
+          }));
+      if (!poolForAi.length) return;
+
+      const ranked = await ai.rankSearchCandidates(kw, poolForAi, cfg);
+      const keep = ranked.filter((x) => x.relevant);
+      if (!keep.length) return; // 模型认为都不相关 → 保留本地判断（可能是 none）
+
+      const byId = new Map(poolForAi.map((t) => [Number(t.id), t]));
+      const reasonsById = new Map(keep.map((x) => [Number(x.id), x.reason]));
+      const ordered = [];
+      for (const x of keep) {
+        const t = byId.get(Number(x.id));
+        if (!t) continue;
+        ordered.push({
+          ...t,
+          match: { ...(t.match || {}), aiReason: reasonsById.get(Number(x.id)) || '', aiRanked: true },
+        });
+      }
+      // 本地候选里模型没提到的仍排在后面：AI 只做"提权"，不替我们做"否决"
+      for (const t of poolForAi) {
+        if (ordered.length >= 5) break;
+        if (keep.some((x) => Number(x.id) === Number(t.id))) continue;
+        ordered.push(t);
+      }
+      if (!ordered.length) return;
+      result.tasks = ordered.slice(0, 5);
+      reranked = true;
+      if (result.type === 'none') result.type = 'candidates'; // 纯语义兜底救回了结果
+      // 顺序已由模型重排，相关度条要跟着新顺序走，否则"排第一但条最短"会自相矛盾
+      result.tasks.forEach((t, i) => {
+        t.match = {
+          ...(t.match || {}),
+          relevance: i === 0 ? 100 : Math.max(35, 100 - i * 16),
+          confidence: i === 0 ? 'mid' : (t.match || {}).confidence || 'low',
+        };
+      });
+    };
+
     if (cfg.hasKey) {
+      // 重排与总结各自 try：重排失败不能把总结也一并拖成失败
       try {
-        summary = await ai.summarizeSearch(kw, tasks, cfg);
+        await tryRerank();
+      } catch (e) {
+        console.warn('[ipc] AI 语义重排失败，沿用本地排序', e && e.message);
+      }
+      try {
+        summary = await ai.summarizeSearch(kw, result.tasks, cfg);
       } catch (e) {
         degraded = true;
         summary = `AI 总结失败：${e.message}`;
       }
     }
+
     // 持久化：每次检索都留一份记录（关键词 + 总结 + 命中任务快照），可在检索页回看
     let savedId = null;
     try {
       const rec = db.createSearch({
-        keyword: kw, summary, task_count: tasks.length, tasks, degraded,
+        keyword: kw,
+        summary,
+        task_count: result.tasks.length,
+        tasks: result.tasks,
+        degraded,
       });
       savedId = rec ? rec.id : null;
     } catch (e) {
       console.warn('[ipc] 保存检索历史失败', e && e.message);
     }
-    return { ok: true, keyword: kw, tasks, summary, degraded, hasKey: cfg.hasKey, id: savedId };
+    return {
+      ok: true,
+      keyword: kw,
+      tasks: result.tasks,
+      type: result.type,
+      exactHit: !!result.exactHit,
+      tried: result.tried || [],
+      summary,
+      degraded,
+      reranked,
+      hasKey: cfg.hasKey,
+      id: savedId,
+    };
   });
 
   /* ---------- AI 检索历史 ---------- */

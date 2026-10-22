@@ -588,7 +588,8 @@ function listTasks(f = {}) {
     order = 't.sort_order ASC, t.completed ASC, (t.plan_end IS NULL) ASC, t.plan_end ASC, t.priority DESC, t.id ASC';
   }
 
-  const sql = `${TASK_SELECT} WHERE ${where.join(' AND ')} ORDER BY ${order}`;
+  // 没有任何筛选条件时（status:'any' 且不带其它过滤）不能拼出空 WHERE，否则 SQL 语法错误
+  const sql = `${TASK_SELECT}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY ${order}`;
   return db.prepare(sql).all(...params).map(normalizeTask);
 }
 

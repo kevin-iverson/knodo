@@ -2201,6 +2201,85 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 侧栏调宽 = ${JSON.stringify(r16.widths)}；拖拽生效=${r16.dragged ? '是' : '否'}；下限夹住=${r16.minClamped ? '是' : '否'}；拖时禁选中=${r16.selectDisabled ? '是' : '否'}；松手恢复=${r16.selectRestored ? '是' : '否'}；布局对齐=${r16.layoutAligned ? '是' : '否'}；主区可用=${r16.mainUsable ? '是' : '否'}；落库=${r16.persisted || '-'}px`);
           console.log(`[SMOKE] 统计口径 = 仅主任务 ${(r16.scopeCounts || [])[0]} / 含子任务 ${(r16.scopeCounts || [])[1]}；切换生效=${r16.scopeGrew ? '是' : '否'}；切回一致=${r16.scopeSwitchedBack ? '是' : '否'}`);
 
+          /* ============ 第 17 轮：AI 检索联想（精确优先 / 联想候选 / 确实无关联 三态） ============ */
+          // 清掉 Key：本轮只验证本地联想引擎（不依赖外网），否则不可达的 AI 地址会拖慢整轮
+          await mainWindow.webContents.executeJavaScript(`window.api.ai.clearKey()`);
+          const r17 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wait = (ms) => new Promise(r => setTimeout(r, ms));
+              try {
+              // 造数据：一条可精确命中、一条只能靠"缩写/同义"联想、一批用来验证 Top5 截断
+              const a = await window.api.tasks.create({ title: '联想用例-报销差旅费', notes: '<p>发票已寄出</p>' });
+              const b = await window.api.tasks.create({ title: '联想用例-登录界面改版', notes: '' });
+              await window.api.tasks.create({ title: '联想用例-接口性能优化', notes: '' });
+              const many = [];
+              for (let i = 1; i <= 8; i += 1) many.push(await window.api.tasks.create({ title: '联想用例-缺陷单' + i, notes: '' }));
+              const ids = [a.id, b.id, ...many.map((m) => m.id)];
+              out.seeded = ids.length;
+
+              // 1) 精确命中：应优先返回，且判定为唯一匹配
+              const r1 = await window.api.search.ai('报销差旅费');
+              out.exactType = r1.type;
+              out.exactHit = !!r1.exactHit;
+              out.exactTop = (r1.tasks[0] || {}).title;
+              out.exactReason = ((r1.tasks[0] || {}).match || {}).reasons || [];
+
+              // 2) 缩写联想：库里没有 "ui" 三个字母，但应通过 ui→界面 找到「登录界面改版」
+              const r2 = await window.api.search.ai('ui 改版');
+              out.assocType = r2.type;
+              out.assocCount = r2.tasks.length;
+              out.assocTop = (r2.tasks[0] || {}).title;
+              out.assocReasons = ((r2.tasks[0] || {}).match || {}).reasons || [];
+              out.assocIsAbbrev = out.assocReasons.some((s) => /缩写还原|同义词/.test(s));
+
+              // 3) 确实无关联：明确提示 + 说明已尝试的联想方向
+              const r3 = await window.api.search.ai('zzzqqqxyz无关词');
+              out.noneType = r3.type;
+              out.noneCount = r3.tasks.length;
+              out.noneTried = (r3.tried || []).length;
+
+              // 4) Top5 截断：8 条同义任务只能回来 5 条以内
+              const r4 = await window.api.search.ai('缺陷');
+              out.topCount = r4.tasks.length;
+              out.topCapped = r4.tasks.length <= 5 && r4.tasks.length > 0;
+              out.topHasScore = r4.tasks.every((t) => t.match && typeof t.match.score === 'number');
+
+              // 5) 界面渲染：走真实点击，检查三态各自的 DOM 与"命中依据"是否可见
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const searchIn = () => document.getElementById('ai-search-input');
+              nav('all'); await wait(300); nav('search'); await wait(500);
+              const runUi = async (kw) => {
+                searchIn().value = kw;
+                document.getElementById('ai-search-btn').click();
+                await wait(900);
+                const res = document.getElementById('ai-search-results');
+                return {
+                  items: res.querySelectorAll('.search-result-item').length,
+                  reasons: [...res.querySelectorAll('.sr-reasons')].map((e) => e.textContent),
+                  bannerUnique: !!res.querySelector('.sr-banner-unique'),
+                  bannerMulti: !!res.querySelector('.sr-banner-multi'),
+                  empty: !!res.querySelector('.sr-empty'),
+                  tried: res.querySelectorAll('.sr-tried li').length,
+                };
+              };
+              out.uiExact = await runUi('报销差旅费');
+              out.uiAssoc = await runUi('ui 改版');
+              out.uiNone = await runUi('zzzqqqxyz无关词');
+
+              // 清理
+              for (const id of ids) { try { await window.api.tasks.remove(id); } catch (e) {} }
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
+              return out;
+            })()
+          `);
+          if (r17.__fatal) console.log('[SMOKE][r17 fatal]', r17.__fatal);
+          console.log(`[SMOKE] 检索联想（精确）= 类型 ${r17.exactType}；精确命中=${r17.exactHit ? '是' : '否'}；首位「${r17.exactTop || '-'}」；依据 ${JSON.stringify(r17.exactReason)}`);
+          console.log(`[SMOKE] 检索联想（缩写 ui）= 类型 ${r17.assocType}；候选 ${r17.assocCount} 条；首位「${r17.assocTop || '-'}」；依据含联想标记=${r17.assocIsAbbrev ? '是' : '否'} ${JSON.stringify(r17.assocReasons)}`);
+          console.log(`[SMOKE] 检索联想（无关联）= 类型 ${r17.noneType}；候选 ${r17.noneCount} 条；已尝试方向 ${r17.noneTried} 条`);
+          console.log(`[SMOKE] 检索联想（Top5）= ${r17.topCount} 条（≤5=${r17.topCapped ? '是' : '否'}；均带分值=${r17.topHasScore ? '是' : '否'}）`);
+          console.log(`[SMOKE] 检索联想（界面）= 精确 ${JSON.stringify(r17.uiExact)}；联想 ${JSON.stringify(r17.uiAssoc)}；无关联 ${JSON.stringify(r17.uiNone)}`);
+
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
@@ -2317,7 +2396,15 @@ app.whenReady().then(() => {
             && r16.handleFound && r16.dragged && r16.minClamped && r16.selectDisabled
             && r16.selectRestored && r16.layoutAligned && r16.mainUsable && r16.noHOverflow
             && r16.persisted >= 180 && r16.scopeFound && r16.scopeGrew
-            && r16.scopeTopActive && r16.scopeAllActive && r16.scopeSwitchedBack && r16.trendRefreshed;
+            && r16.scopeTopActive && r16.scopeAllActive && r16.scopeSwitchedBack && r16.trendRefreshed
+            // 第 17 轮：AI 检索联想（精确优先 / 联想候选 / 确实无关联）
+            && r17.exactType === 'unique' && r17.exactHit && /报销差旅费/.test(r17.exactTop || '')
+            && r17.assocType !== 'none' && r17.assocCount >= 1 && r17.assocIsAbbrev
+            && r17.noneType === 'none' && r17.noneCount === 0 && r17.noneTried >= 1
+            && r17.topCapped && r17.topHasScore
+            && r17.uiExact.items >= 1 && r17.uiExact.bannerUnique && !r17.uiExact.empty
+            && r17.uiAssoc.items >= 1 && (r17.uiAssoc.reasons || []).some((s) => /缩写还原|同义词|关键词/.test(s))
+            && r17.uiNone.empty && r17.uiNone.items === 0 && r17.uiNone.tried >= 1;
           if (!allOk) {
             // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
             // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
@@ -2354,6 +2441,7 @@ app.whenReady().then(() => {
             dumpFalsy('r14', r14);
             dumpFalsy('r15', r15);
             dumpFalsy('r16', r16);
+            dumpFalsy('r17', r17);
             // 假值列表抓不到「值非假但不匹配」的条件（如 xx === '旧文案'），补一行提示免得对着 && 死磕。
             if (!printed) {
               console.log('[SMOKE] 未通过项：无假值 → 问题在字符串/数值比对上（比对值或界面文案已过时）');
