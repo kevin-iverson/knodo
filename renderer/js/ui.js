@@ -19,6 +19,7 @@ import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOptionsHtml } from './group-tree.js';
 import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
+import { renderNotes, setNotesHandlers, createNote, disposeNotes } from './notes.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
@@ -54,6 +55,7 @@ const VIEW_META = {
   reports: { title: 'AI 报告', desc: '基于本地数据自动生成日报 / 周报 / 月报' },
   search: { title: 'AI 检索', desc: '输入关键词检索任务，由 AI 生成总结' },
   meetings: { title: '会议纪要', desc: '录制 / 导入会议音频 → 语音转写 → AI 纪要 → 待办入库' },
+  notes: { title: '笔记', desc: 'Markdown 笔记 → 按目录 / 标签沉淀为知识库，可关联到任务并供 AI 检索' },
 };
 
 /** 会展示任务列表、因而消费分组/标签筛选的视图 */
@@ -80,6 +82,19 @@ export async function init() {
   setSearchHandlers({ openDetail, toast });
   // 会议录制 / 纪要：录制归档后自动跳到会议视图查看
   setMeetingsHandlers({ toast, refresh: () => { renderSidebar(); renderTasks(); } });
+  // 笔记视图：切走时销毁编辑器自动保存器（否则拿着已销毁的 DOM 继续写库）
+  setNotesHandlers({
+    toast,
+    // 走 render() 而不是 renderTasks()：#view 是共享容器，直接渲染任务列表会把笔记视图整块冲掉
+    refresh: () => { renderSidebar(); render(); },
+    switchView: async () => { state.view = 'notes'; renderSidebar(); await render(); },
+  });
+  api.on('ui:new-note', async () => {
+    state.view = 'notes';
+    renderSidebar();
+    await render();
+    await createNote();
+  });
   setRecorderHandlers({
     toast,
     onMeetingSaved: async (m) => {
@@ -270,7 +285,14 @@ function ensureTaskView() {
 
 /* ---------------- 渲染入口 ---------------- */
 
+let lastView = null;
+/** 任务 id → 关联笔记数（renderTasks 批量拉取，列表徽标用） */
+let noteCounts = {};
+
 async function render() {
+  // 离开笔记视图时销毁编辑器：整页 innerHTML 重建后，旧的自动保存器会继续写库
+  if (lastView === 'notes' && state.view !== 'notes') disposeNotes();
+  lastView = state.view;
   const meta = VIEW_META[state.view] || VIEW_META.all;
   document.getElementById('view-title').textContent = meta.title;
   document.getElementById('view-desc').textContent = meta.desc;
@@ -285,6 +307,7 @@ async function render() {
   if (state.view === 'reports') { await renderReports(); return; }
   if (state.view === 'search') { renderSearch(); return; }
   if (state.view === 'meetings') { await renderMeetings(); return; }
+  if (state.view === 'notes') { await renderNotes(); return; }
   await renderTasks();
 }
 
@@ -453,6 +476,8 @@ async function renderTasks() {
   // 展开的子节点可能被当前视图 / 筛选条件过滤掉（例如「今天」视图要求 plan_end <= 今天，
   // 而子任务往往没有日期）。为保证"点得开、看得见"，显式补拉已展开任务的子任务。
   await withExpandedChildren(tasks);
+  // 关联笔记数量：一次批量查询（避免每行一次 IPC）
+  noteCounts = await api.taskNotes.counts(tasks.map((t) => t.id)).catch(() => ({}));
   const viewEl = document.getElementById('view');
   const isArchived = state.view === 'archived';
   const hasFilters = state.currentGroup !== 'all' || !!state.search || state.priorityFilter !== 'all' || hasTimeFilter();
@@ -677,6 +702,9 @@ function taskItemHtml(t, depth = 0, parentVisible = true) {
   // 附件角标：列表里就能看出这条任务带了文件，不用点进详情
   const attCount = Array.isArray(t.attachments) ? t.attachments.length : 0;
   if (attCount) meta.push(`<span class="meta-item att-badge" title="附件 ${attCount} 个">📎 ${attCount}</span>`);
+  // 关联笔记角标：列表里就能看出这条任务引用了几篇笔记（数量由 renderTasks 一次批量拉取）
+  const noteCount = Number(noteCounts[t.id]) || 0;
+  if (noteCount) meta.push(`<span class="meta-item note-badge" title="关联笔记 ${noteCount} 篇">📝 ${noteCount}</span>`);
   // 分组标签显示完整路径（"工作 / 前端"），否则同名子分组看不出归属
   const groupLabel = t.group_name
     ? `<span class="meta-item group-tag" style="color:${esc(t.group_color)}" title="${esc(groupPathAt(t.group_id))}">● ${esc(groupPathAt(t.group_id))}</span>`

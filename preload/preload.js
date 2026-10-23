@@ -93,6 +93,50 @@ contextBridge.exposeInMainWorld('api', {
     update: (id, patch) => call('report:update', { id, patch }),
     remove: (id) => call('report:remove', id),
   },
+  // 笔记（Markdown 编辑 / 目录 / 标签）
+  notes: {
+    list: (f) => call('notes:list', f),
+    get: (id) => call('notes:get', id),
+    create: (p) => call('notes:create', p),
+    update: (id, patch) => call('notes:update', id, patch),
+    archive: (id, archived) => call('notes:archive', id, archived),
+    pin: (id, pinned) => call('notes:pin', id, pinned),
+    trash: (id) => call('notes:trash', id),
+    restore: (id) => call('notes:restore', id),
+    purge: (id) => call('notes:purge', id),
+    trashList: () => call('notes:trashList'),
+    emptyTrash: () => call('notes:emptyTrash'),
+    search: (keyword, opts) => call('notes:search', keyword, opts),
+  },
+  noteFolders: {
+    list: () => call('noteFolders:list'),
+    create: (p) => call('noteFolders:create', p),
+    update: (id, p) => call('noteFolders:update', id, p),
+    remove: (id) => call('noteFolders:delete', id),
+  },
+  noteTags: {
+    list: () => call('noteTags:list'),
+    create: (name, color) => call('noteTags:create', name, color),
+    remove: (id) => call('noteTags:delete', id),
+  },
+  // 任务 ↔ 笔记（多对多）
+  taskNotes: {
+    list: (taskId) => call('taskNotes:list', taskId),
+    set: (taskId, noteIds) => call('taskNotes:set', { taskId, noteIds }),
+    link: (taskId, noteId) => call('taskNotes:link', { taskId, noteId }),
+    unlink: (taskId, noteId) => call('taskNotes:unlink', { taskId, noteId }),
+    byNote: (noteId) => call('taskNotes:byNote', noteId),
+    counts: (taskIds) => call('taskNotes:counts', taskIds),
+  },
+  // 知识库（笔记沉淀 / AI 检索）
+  kb: {
+    list: () => call('kb:list'),
+    stats: (id) => call('kb:stats', id),
+    reindex: () => call('kb:reindex'),
+    indexNote: (id) => call('kb:indexNote', id),
+    ask: (p) => call('kb:ask', p),
+    retrieve: (p) => call('kb:retrieve', p),
+  },
   // 会议录制
   rec: {
     listSources: () => call('rec:listSources'),
@@ -166,7 +210,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   // 主进程事件
   on: (channel, cb) => {
-    const allowed = ['ui:quick-add', 'ui:focus-task', 'ui:ai-settings'];
+    const allowed = ['ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note'];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));
     }

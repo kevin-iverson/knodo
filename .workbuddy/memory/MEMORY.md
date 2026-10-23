@@ -11,18 +11,37 @@
   配置目录不可用时必须回退默认目录并提示，绝不能因此启动失败。录音（`recordings/`）不随数据目录迁移：
   会议表里存的是绝对路径。
 
+## SQLite / 全文检索
+- FTS5 统一用 **external content + `tokenize='trigram'`**（中文免外部分词器）；靠触发器同步。
+- 两个已踩的坑：
+  1. external content 表上调用 `snippet()` / `highlight()` 会直接报 `SQL logic error`，还会把整条
+     `bm25()` 查询一起废掉（只能静默降级 LIKE）→ 命中片段一律在应用层截取（见 `highlightOf()`）。
+  2. trigram 要求查询词 **≥ 3 字符**，短词必须回退 `LIKE`（`searchNotes` / `searchKbChunks` 已处理）。
+- 派生数据（分块、向量）**不进导入导出**，导入后由正文重建。
+
 ## Electron / 渲染层
 - 对话框（`showMessageBox` / `showOpenDialog`）第一个参数是父窗口，**不能传 `undefined`**：
   统一走 `main/main.js` 的 `msgBox()` / `dirDialog()`。
 - 拖拽文件取绝对路径必须用 preload 里的 `api.pathForFile(file)`（Electron 32+ 的 `File` 没有 `.path`）。
 - 详情抽屉、子任务树等「局部刷新」优先只替换局部 DOM：整页 `innerHTML` 重建会丢焦点 / 滚动位置，
   还会让旧自动保存器拿着已销毁的 DOM 继续写库（保存前必须 `flush` + `dispose`）。
+- **`#view` 是共享容器**：任务列表 `renderTasks()` 会整块重写它。任何非任务视图（笔记 / 会议 / 报告）
+  重进时必须检测自己的骨架还在不在（如 `!container.querySelector('.nt-wrap')`）再决定是否重建；
+  视图的 refresh 回调要调 `render()` 而不是 `renderTasks()`。
+- **事件委托挂在常驻容器上时只能用一次**：容器不随 innerHTML 重绘而换新，重复 `addEventListener`
+  会让一次点击触发 N 个处理器（弹窗开 N 个、删 N 次）→ 用 `WeakSet` 记已绑容器。
+- 模块间要互相跳转时（任务详情 ↔ 笔记视图）用 `await import()` 动态导入，避免静态循环依赖。
+- 第三方前端库一律 vendor 进 `renderer/vendor/`（离线运行），并在 `package.json` 登记来源；
+  EasyMDE 需 `autoDownloadFontAwesome:false`，图标用 CSS `::after` 兜底。
 
 ## 验证方式
 - 数据层：`npm run test:db`（`scripts/smoke-db.js`，不依赖 Electron）。
 - UI：`npm run smoke`；若在无桌面环境里卡住，可用
   `electron . --user-data-dir=<临时目录> --remote-debugging-port=9335` + CDP（参考 `scripts/check-packaged.js`）
   直接驱动 DOM 验证，注意**不要**指向真实用户数据目录。
+- **本机启动 electron 必须先清掉环境变量**：`env -u ELECTRON_RUN_AS_NODE ./node_modules/electron/dist/electron.exe .`
+  （该变量会让 electron.exe 退化成 node 直接跑 main.js，报 `app.requestSingleInstanceLock is not a function`）。
+  临时目录要每次新建，`rm -rf` 会撞上宿主的批量删除守卫。
 
 ## 发版流程（Gitee）
 1. 提交改动 → 改 `package.json` 版本 + `scripts/release-gitee.js` 里的发行说明（追加一段 `### vX.Y.Z 更新`）

@@ -9,6 +9,7 @@ const path = require('path');
 
 const db = require('../main/db');
 const report = require('../main/report');
+const knowledge = require('../main/knowledge');
 
 let passed = 0;
 let failed = 0;
@@ -270,9 +271,11 @@ check('列表按创建时间倒序', list[0].title === '评审会' && list.some(
 check('数量正确', list.length === 3); // 含上面那个「未命名会议」
 
 const exportSnap = db.exportData();
-check('导出含 meetings 且 schema 升级到 8',
-  exportSnap.schemaVersion === 8 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
-  && Array.isArray(exportSnap.reports) && Array.isArray(exportSnap.ai_searches));
+check('导出含 meetings 且 schema 升级到 10',
+  exportSnap.schemaVersion === 10 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
+  && Array.isArray(exportSnap.reports) && Array.isArray(exportSnap.ai_searches)
+  && Array.isArray(exportSnap.notes) && Array.isArray(exportSnap.note_folders)
+  && Array.isArray(exportSnap.task_notes) && Array.isArray(exportSnap.knowledge_bases));
 check('导出保留 todos 与 media_paths', (() => {
   const row = exportSnap.meetings.find((m) => m.id === m1.id);
   return !!row && row.title === '周会(改)' && typeof row.todos === 'string'
@@ -619,6 +622,98 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
     const t = db.dailyTrend({ range: '1y' });
     return Array.isArray(t.points) && t.points.length === 12;
   })());
+
+  console.log('\n[15] 笔记模块：目录 / 标签 / 检索');
+  const fRoot = db.createNoteFolder({ name: '技术方案' });
+  const fChild = db.createNoteFolder({ name: '前端', parentId: fRoot.id });
+  check('创建笔记目录（含层级）', !!fRoot.id && fChild.parent_id === fRoot.id);
+  check('同级目录重名被拒绝', (() => {
+    try { db.createNoteFolder({ name: '技术方案' }); return false; } catch (e) { return /同名/.test(e.message); }
+  })());
+  check('不同层级允许同名', db.createNoteFolder({ name: '前端', parentId: fChild.id }).parent_id === fChild.id);
+  const md = '# 灰度发布方案\n\n分两批放量，第一批 10%，观察 24 小时。\n\n| 批次 | 比例 |\n| --- | --- |\n| 1 | 10% |\n';
+  const n1 = db.createNote({
+    title: '灰度发布方案', contentMd: md, folderId: fChild.id, tagIds: [db.createNoteTag('方案').id],
+  });
+  check('摘要 / 字数 / 内容哈希自动生成',
+    n1.word_count > 0 && n1.excerpt.includes('灰度发布') && /^[0-9a-f]{40}$/.test(n1.content_hash));
+  const n2 = db.createNote({ title: '复盘：发布事故', contentMd: '事故原因：配置未同步。' });
+  check('标签挂在笔记上', (db.getNote(n1.id).tags || []).length === 1);
+  const nUpd = db.updateNote(n1.id, { content_md: `${md}\n补充：回滚策略。` });
+  check('改正文重算摘要 / 字数 / 哈希',
+    nUpd.content_hash !== n1.content_hash && nUpd.word_count > n1.word_count);
+  check('只改标题不重算内容哈希', db.updateNote(n1.id, { title: '灰度发布方案 v2' }).content_hash === nUpd.content_hash);
+  check('全文检索命中正文（≥3 字走 FTS）', db.searchNotes('灰度发布').some((n) => n.id === n1.id));
+  check('短关键词（<3 字）回退 LIKE', db.searchNotes('复盘').some((n) => n.id === n2.id));
+  check('归档后不出现在主列表', (() => {
+    db.setNoteArchived(n2.id, true);
+    return !db.listNotes({ archived: 'exclude' }).some((n) => n.id === n2.id);
+  })());
+  check('归档笔记仍可被检索', db.searchNotes('配置未同步').some((n) => n.id === n2.id));
+  db.setNoteArchived(n2.id, false);
+  check('目录筛选含子目录', db.listNotes({ folderId: fRoot.id, includeSubfolders: true }).some((n) => n.id === n1.id));
+  check('删除目录：笔记移到上级而不是被删', (() => {
+    db.deleteNoteFolder(fChild.id);
+    return db.getNote(n1.id).folder_id === fRoot.id;
+  })());
+
+  console.log('\n[16] 任务 ↔ 笔记（多对多）');
+  const tk = db.createTask({ title: '笔记关联用例' });
+  db.linkTaskNote(tk.id, n1.id);
+  db.linkTaskNote(tk.id, n2.id);
+  check('一个任务可引用多篇笔记', db.listTaskNotes(tk.id).length === 2);
+  check('重复关联幂等', (() => { db.linkTaskNote(tk.id, n1.id); return db.listTaskNotes(tk.id).length === 2; })());
+  check('批量取关联数量（列表徽标用）', db.noteCountsForTasks([tk.id])[tk.id] === 2);
+  db.unlinkTaskNote(tk.id, n2.id);
+  check('取消关联', db.listTaskNotes(tk.id).length === 1);
+  db.setTaskNotes(tk.id, [n1.id, n2.id]);
+  check('覆盖式设置引用', db.listTaskNotes(tk.id).length === 2);
+  check('按笔记反查引用它的任务', db.listNoteTasks(n1.id).some((t) => t.id === tk.id));
+  check('一篇笔记可被多个任务引用', (() => {
+    const tk2 = db.createTask({ title: '另一个任务' });
+    db.linkTaskNote(tk2.id, n1.id);
+    return db.listNoteTasks(n1.id).length === 2;
+  })());
+
+  console.log('\n[17] 知识库沉淀与删除策略');
+  knowledge.indexNote(n1.id);
+  knowledge.indexNote(n2.id);
+  check('笔记沉淀为分块并可召回', db.searchKbChunks({ query: '灰度发布' }).some((c) => c.sourceKey === `note:${n1.id}`));
+  check('召回结果带笔记 id 与出处', (() => {
+    const hits = knowledge.retrieve({ query: '配置未同步', topK: 5 });
+    return hits.length > 0 && hits[0].noteId === n2.id && !!hits[0].title;
+  })());
+  check('知识库统计可读', db.kbStats(1).chunk_count > 0 && db.kbStats(1).indexed_note_count >= 2);
+  const trashed = db.trashNote(n1.id);
+  check('软删除保留任务引用', !!trashed.deleted_at && db.listNoteTasks(n1.id).length >= 1);
+  check('回收站里的笔记不参与检索', !db.searchNotes('灰度发布', { deleted: 'exclude' }).length);
+  check('回收站里的笔记不参与知识库召回', (() => {
+    knowledge.removeNote(n1.id);
+    return !db.searchKbChunks({ query: '灰度发布' }).some((c) => c.sourceKey === `note:${n1.id}`);
+  })());
+  db.restoreNote(n1.id);
+  knowledge.indexNote(n1.id);
+  check('恢复后引用与召回都回来',
+    db.listNoteTasks(n1.id).length >= 1 && db.searchKbChunks({ query: '灰度发布' }).some((c) => c.sourceKey === `note:${n1.id}`));
+  const purged = db.purgeNote(n1.id);
+  check('彻底删除：先解除所有任务引用',
+    purged.unlinkedTasks.includes(tk.id) && db.getNote(n1.id) === null && db.listTaskNotes(tk.id).length === 1);
+
+  console.log('\n[18] 备份往返（笔记 + 引用 + 索引重建）');
+  const backup = db.exportData();
+  check('备份含笔记与关联，不含派生分块',
+    Array.isArray(backup.notes) && Array.isArray(backup.task_notes)
+    && !('kb_chunks' in backup) && !('kb_documents' in backup));
+  const before = {
+    notes: db.listNotes({ limit: 1000, archived: 'include' }).length,
+    links: db.listTaskNotes(tk.id).length,
+  };
+  db.importData(JSON.parse(JSON.stringify(backup)));
+  check('导入后笔记与引用完整保留',
+    db.listNotes({ limit: 1000, archived: 'include' }).length === before.notes
+    && db.listTaskNotes(tk.id).length === before.links);
+  const rebuilt = knowledge.indexAll();
+  check('导入后可按正文重建知识库索引', rebuilt.done >= 1 && db.kbStats(1).chunk_count > 0);
 
   console.log('\n====================');
   console.log(`结果：${passed} 通过，${failed} 失败`);

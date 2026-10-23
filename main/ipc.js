@@ -16,6 +16,7 @@ const report = require('./report');
 const { markdownToDocx } = require('./docx');
 const autostart = require('./autostart');
 const searchAssist = require('./search-assist');
+const knowledge = require('./knowledge');
 
 function getAsrConfig() {
   const baseUrl = db.getSetting('ai.asrBaseUrl', asr.DEFAULT_ASR_CONFIG.baseUrl);
@@ -692,6 +693,77 @@ function registerIpc() {
     return { ok: true, created: created.length, tasks: created };
   }));
 
+  /* ---------- 笔记（Markdown 编辑 / 目录 / 标签） ---------- */
+  ipcMain.handle('notes:list', withDb((f) => db.listNotes(f || {})));
+  ipcMain.handle('notes:get', withDb((id) => db.getNote(id)));
+  // 新建 / 更新后同步重建知识库索引：笔记保存即沉淀，不需要用户再点一次“同步”
+  ipcMain.handle('notes:create', withDb((p) => {
+    const note = db.createNote(p || {});
+    if (note) knowledge.indexNote(note.id);
+    return note;
+  }));
+  ipcMain.handle('notes:update', withDb((id, patch) => {
+    const note = db.updateNote(id, patch || {});
+    if (note) knowledge.indexNote(note.id);
+    return note;
+  }));
+  ipcMain.handle('notes:archive', withDb((id, archived) => db.setNoteArchived(id, !!archived)));
+  ipcMain.handle('notes:pin', withDb((id, pinned) => db.setNotePinned(id, !!pinned)));
+  // 软删除：保留任务引用，返回被引用次数供界面提示影响面
+  ipcMain.handle('notes:trash', withDb((id) => {
+    const refs = db.listNoteTasks(id).length;
+    const note = db.trashNote(id);
+    if (note) knowledge.removeNote(note.id);
+    return { note, refs };
+  }));
+  ipcMain.handle('notes:restore', withDb((id) => {
+    const note = db.restoreNote(id);
+    if (note) knowledge.indexNote(note.id);
+    return note;
+  }));
+  // 彻底删除：先摘引用再删正文，返回被解除引用的任务 id
+  ipcMain.handle('notes:purge', withDb((id) => {
+    const res = db.purgeNote(id);
+    knowledge.removeNote(id);
+    return res;
+  }));
+  ipcMain.handle('notes:trashList', withDb(() => db.listTrash()));
+  ipcMain.handle('notes:emptyTrash', withDb(() => ({ removed: db.emptyTrash() })));
+  ipcMain.handle('notes:search', withDb((keyword, opts) => db.searchNotes(keyword, opts || {})));
+
+  ipcMain.handle('noteFolders:list', withDb(() => db.listNoteFolders()));
+  ipcMain.handle('noteFolders:create', withDb((p) => db.createNoteFolder(p || {})));
+  ipcMain.handle('noteFolders:update', withDb((id, p) => db.updateNoteFolder(id, p || {})));
+  ipcMain.handle('noteFolders:delete', withDb((id) => ({ ok: !!db.deleteNoteFolder(id) })));
+
+  ipcMain.handle('noteTags:list', withDb(() => db.listNoteTags()));
+  ipcMain.handle('noteTags:create', withDb((name, color) => db.createNoteTag(name, color)));
+  ipcMain.handle('noteTags:delete', withDb((id) => ({ ok: !!db.deleteNoteTag(id) })));
+
+  /* ---------- 任务 ↔ 笔记（多对多） ---------- */
+  ipcMain.handle('taskNotes:list', withDb((taskId) => db.listTaskNotes(taskId)));
+  ipcMain.handle('taskNotes:set', withDb(({ taskId, noteIds }) => db.setTaskNotes(taskId, noteIds || [])));
+  ipcMain.handle('taskNotes:link', withDb(({ taskId, noteId }) => db.linkTaskNote(taskId, noteId)));
+  ipcMain.handle('taskNotes:unlink', withDb(({ taskId, noteId }) => db.unlinkTaskNote(taskId, noteId)));
+  /** 引用了某笔记的任务（删除前的影响面提示） */
+  ipcMain.handle('taskNotes:byNote', withDb((noteId) => db.listNoteTasks(noteId)));
+  /** 一批任务的笔记数（列表页徽标，一次查询避免 N+1） */
+  ipcMain.handle('taskNotes:counts', withDb((taskIds) => db.noteCountsForTasks(taskIds || [])));
+
+  /* ---------- 知识库（笔记沉淀 / AI 检索接入） ---------- */
+  ipcMain.handle('kb:list', withDb(() => db.listKnowledgeBases()));
+  ipcMain.handle('kb:stats', withDb((id) => db.kbStats(id || knowledge.NOTES_KB_ID)));
+  ipcMain.handle('kb:reindex', withDb(() => knowledge.indexAll()));
+  ipcMain.handle('kb:indexNote', withDb((id) => knowledge.indexNote(id)));
+  /** AI 提问：召回笔记片段 → 交给对话模型作答（无 AI 配置时降级为纯召回） */
+  ipcMain.handle('kb:ask', guard(async (_e, { question, topK, noteIds } = {}) => {
+    if (!db.isReady()) throw new Error('数据库未就绪');
+    return knowledge.answer({ question, cfg: chatConfig(), topK, noteIds });
+  }));
+  /** 只做召回不调模型（界面「检索笔记」按钮用） */
+  ipcMain.handle('kb:retrieve', withDb(({ query, topK, noteIds } = {}) =>
+    knowledge.retrieve({ query, topK, noteIds })));
+
   /* ---------- 数据导入 / 导出 ---------- */
   ipcMain.handle('data:export', async () => {
     const data = db.exportData();
@@ -708,7 +780,12 @@ function registerIpc() {
     return {
       ok: true,
       filePath,
-      counts: { groups: data.groups.length, tags: data.tags.length, tasks: data.tasks.length },
+      counts: {
+        groups: data.groups.length,
+        tags: data.tags.length,
+        tasks: data.tasks.length,
+        notes: (data.notes || []).length,
+      },
     };
   });
   ipcMain.handle('data:import', async () => {
@@ -725,7 +802,14 @@ function registerIpc() {
       const raw = fs.readFileSync(filePaths[0], 'utf8');
       const data = JSON.parse(raw);
       const counts = db.importData(data);
-      return { ok: true, filePath: filePaths[0], counts };
+      // 分块是派生数据，不随备份走：导入后立刻按正文重建笔记知识库索引
+      let reindexed = null;
+      try {
+        reindexed = knowledge.indexAll();
+      } catch (e) {
+        console.error('[ipc] 导入后重建知识库索引失败', e && e.message);
+      }
+      return { ok: true, filePath: filePaths[0], counts, reindexed };
     } catch (e) {
       return { ok: false, message: e.message };
     }

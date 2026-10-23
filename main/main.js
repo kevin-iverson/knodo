@@ -173,6 +173,20 @@ function buildAppMenu() {
         if (mainWindow) mainWindow.webContents.send('ui:ai-settings');
       },
     },
+    {
+      // 笔记模块入口：菜单里保留一个全局快捷键，笔记视图内也有「新建」按钮
+      label: '笔记',
+      submenu: [
+        {
+          label: '新建笔记',
+          accelerator: 'CmdOrCtrl+Shift+N',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:new-note');
+          },
+        },
+      ],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }

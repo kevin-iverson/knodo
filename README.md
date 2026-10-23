@@ -53,6 +53,14 @@
 - **待办入库**：从纪要里提取行动项（负责人 / 截止日期 / 优先级），**勾选后批量写入任务列表**，可选各自独立或挂在同一个父任务下；纪要可导出 Word / Markdown
 - 配置项独立：语音接口与对话模型分开填（DeepSeek 等纯文本服务不提供语音接口），详见《AI 接口配置》
 
+**笔记（Markdown 编辑 → 知识库沉淀 → 任务关联）**
+- **Markdown 编辑器**：EasyMDE 工具栏（标题 / 列表 / 代码块 / 链接 / 图片 / 表格）+ **markdown-it 实时预览**，支持「编辑 / 分栏 / 预览」三种模式；标题、目录、标签、正文改完约 0.7s 自动落库（状态条：未保存 / 保存中 / 已保存）
+- **目录与标签组织**：目录支持无限层级（同级不允许重名，与分组同一套规则），标签逗号分隔、不存在的自动创建；支持置顶与**归档**（归档后折叠出主列表，但仍可被检索与引用）
+- **搜索与回收站**：全文检索走 FTS5（中文 trigram，无需外部分词器），关键词不足 3 字自动回退模糊匹配；删除分「移入回收站（可恢复）」与「彻底删除」
+- **知识库沉淀**：笔记保存即自动切块入索引（按 Markdown 标题切分，块内带标题路径），可在「🧠 知识库问答」里以笔记为检索源向 AI 提问，答案带 `[n]` 出处、可点击跳回原笔记；未配置 AI 时降级为纯召回展示
+- **任务 ↔ 笔记（多对多）**：任务详情可一次关联多篇笔记（搜索 + 多选 + 顺手新建），列表项支持跳转查看与取消关联；任务列表行显示 `📝 N` 徽标；笔记侧也能看到被哪些任务引用
+- 详细设计见《[笔记模块设计与AI知识库接入](docs/笔记模块设计与AI知识库接入.md)》
+
 ## 快速开始
 
 ```bash
@@ -110,6 +118,7 @@ todo-app/
 │   ├── ai.js               # AI 接口调用（OpenAI 兼容 /chat/completions）
 │   ├── asr.js              # 语音转写（OpenAI 兼容 /audio/transcriptions，multipart 直传）
 │   ├── meeting.js          # 会议纪要生成 + 待办结构化提取（含长会分段提炼）
+│   ├── knowledge.js        # 知识库：笔记 → 文档 → 分块 → 检索召回 → AI 问答组装
 │   ├── recording.js        # 录制文件管理（会话目录 / 分片落盘 / 导入外部音频）
 │   ├── report.js           # 日报/周报/月报 生成（LLM + 本地降级）
 │   ├── search-assist.js    # 检索联想引擎（同义词/缩写/近似拼写/状态与时间语义召回 + 打分）
@@ -128,6 +137,9 @@ todo-app/
 │       ├── group-tree.js   # 分组树工具（层序展开 / 路径 / 下拉选项 / 子孙 id）
 │       ├── recorder.js     # 录制内核（源选择 / 混音 / 分片 / 浮动控制条）
 │       ├── meetings.js     # 会议纪要视图（转写 / 生成 / 待办勾选入库 / 导出）
+│       ├── notes.js        # 笔记视图（目录 / 列表 / EasyMDE 编辑 + 实时预览 / 回收站 / 知识库问答）
+│       ├── note-picker.js  # 笔记选择器（任务详情「关联笔记」多选面板）
+│       ├── markdown-lib.js # markdown-it 渲染封装（安全选项 + 降级回退）
 │       ├── ai-settings.js  # AI 设置弹窗（挂载在顶部工具栏，含语音接口配置）
 │       ├── markdown.js     # Markdown 渲染
 │       ├── autosave.js     # 编辑即时持久化（防抖 + 冲突回滚）
@@ -138,7 +150,9 @@ todo-app/
 │       ├── app.js          # 入口
 │   └── vendor/             # 前端第三方库（离线内置）
 │       ├── flatpickr/      # flatpickr 4.6 + 官方 CSS + 中文语言包
-│       └── tom-select/     # Tom Select 2.4（分组多选：搜索 / chips / 清除）+ 官方基础 CSS
+│       ├── tom-select/     # Tom Select 2.4（分组多选：搜索 / chips / 清除）+ 官方基础 CSS
+│       ├── markdown-it/    # markdown-it 14（Markdown → HTML，表格 / 代码块 / 链接 / 图片）
+│       └── easymde/        # EasyMDE 2（Markdown 编辑器：工具栏 / 快捷键 / 分栏预览）
 ├── scripts/
     ├── gen-icon.js         # 图标生成
     └── smoke-db.js         # 数据层冒烟测试
@@ -234,6 +248,36 @@ todo-app/
 | summary | TEXT | AI 生成的纪要（Markdown） |
 | todos | TEXT | 提取出的待办 JSON 数组（title / assignee / due / priority / detail） |
 | status | TEXT | `recorded` 已录制 → `transcribed` 已转写 → `summarized` 已出纪要 |
+
+### note_folders / notes / note_tags / note_tag_map — 笔记（迁移 v9）
+
+| 表 | 关键字段 | 说明 |
+|---|---|---|
+| note_folders | `parent_id`（自引用）、`color`、`sort_order` | 笔记目录，与分组同构，支持无限层级 |
+| notes | `folder_id`、`title`、`content_md`、`excerpt`、`pinned`、`archived`、`deleted_at`、`word_count`、`content_hash`、`source` | 正文为唯一权威来源，摘要 / 字数 / 哈希派生；`deleted_at` 非空 = 回收站 |
+| note_tags / note_tag_map | `name` UNIQUE / 多对多 | 与任务 `tags` 分开，避免互相污染筛选 |
+| notes_fts | FTS5 external content（trigram） | 全文检索，正文不重复存储 |
+
+### task_notes — 任务 ↔ 笔记（迁移 v9）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| task_id | INTEGER FK | 任务（`ON DELETE CASCADE`：删任务即摘引用） |
+| note_id | INTEGER FK | 笔记（`ON DELETE CASCADE`） |
+| created_at | TEXT | 关联时间 |
+
+### knowledge_bases / kb_documents / kb_chunks — 知识库（迁移 v10）
+
+| 表 | 说明 |
+|---|---|
+| knowledge_bases | 知识库注册表；内置「笔记知识库」固定 `id = 1`、`type = 'notes'` |
+| kb_documents | 文档；笔记对应 `source_key = 'note:<笔记id>'`，含 `content_hash` 用于增量判定 |
+| kb_chunks | 分块（按 Markdown 标题切分，带 `heading_path`），配 `kb_chunks_fts` 供检索召回 |
+| kb_vectors | 向量预留（一期只做关键词检索，不写入） |
+
+> 分块属派生数据，**不进导入导出**（可由笔记正文重建）；备份 `schemaVersion` 已升到 **10**，
+> 新增导出 `note_folders / notes / note_tags / note_tag_map / task_notes / knowledge_bases`，
+> 导入后自动全量重建索引。
 
 ## AI 检索的联想逻辑
 

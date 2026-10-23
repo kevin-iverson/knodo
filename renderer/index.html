@@ -3,12 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- img-src 放开 https：笔记里的外链图片要能显示（default-src 'self' 会拦掉 https 图片） -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self';" />
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; script-src 'self';" />
   <title>TODO 待办</title>
   <!-- 第三方依赖：flatpickr（日期范围选择）、tom-select（分组多选）。先加载厂商样式，再用本项目样式覆盖主题 -->
   <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css" />
   <link rel="stylesheet" href="vendor/tom-select/tom-select.min.css" />
+  <link rel="stylesheet" href="vendor/easymde/easymde.min.css" />
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
@@ -30,6 +32,7 @@
         <button class="nav-item" data-view="reports"><span class="nav-ico">🤖</span>AI 报告</button>
         <button class="nav-item" data-view="search"><span class="nav-ico">🔍</span>AI 检索</button>
         <button class="nav-item" data-view="meetings"><span class="nav-ico">🎙</span>会议纪要</button>
+        <button class="nav-item" data-view="notes"><span class="nav-ico">📝</span>笔记</button>
       </nav>
 
       <div class="sidebar-section">
@@ -113,6 +116,8 @@
   <script src="vendor/flatpickr/flatpickr.min.js"></script>
   <script src="vendor/flatpickr/l10n-zh.js"></script>
   <script src="vendor/tom-select/tom-select.complete.min.js"></script>
+  <script src="vendor/markdown-it/markdown-it.min.js"></script>
+  <script src="vendor/easymde/easymde.min.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

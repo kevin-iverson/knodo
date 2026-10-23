@@ -7,6 +7,7 @@ import { api, PRIORITY_TEXT, fmtDateTime } from './api.js';
 import { state, loadGroups, loadTags, refreshAll, noteCompletionChange } from './store.js';
 import { renderMarkdown } from './markdown.js';
 import { openPanelModal, openPromptModal } from './modal.js';
+import { openNotePicker } from './note-picker.js';
 import {
   dateRangeFieldHtml, bindDateRangeFields, validateDateRange,
   DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS, syncReminderWithPlanEnd, isAnyRangeOpen,
@@ -85,6 +86,74 @@ function attachmentsInnerHtml(list) {
  * 统一错误处理：把失败原因提示给用户，避免"点了没反应"。
  * 返回 true 表示成功，false 表示已提示并应中止后续刷新。
  */
+/** 关联笔记区块：数量 + 列表 + 「关联 / 查看 / 取消关联」入口 */
+function noteSectionHtml(notes) {
+  const list = notes || [];
+  const rows = list.map((n) => `
+    <li class="nt-link-item" data-note="${n.id}">
+      <span class="nt-link-main" title="${esc(n.title || '')}">
+        <span class="nt-link-title" data-act="note-open" data-note="${n.id}">📝 ${esc(n.title || '未命名笔记')}</span>
+        <span class="nt-link-excerpt">${esc(String(n.excerpt || '').slice(0, 64))}</span>
+      </span>
+      <span class="nt-link-ops">
+        <button class="ghost-btn tiny" data-act="note-open" data-note="${n.id}">查看</button>
+        <button class="ghost-btn tiny" data-act="note-unlink" data-note="${n.id}" title="取消与该笔记的关联（笔记本身保留）">✕</button>
+      </span>
+    </li>`).join('');
+  return `
+    <div class="detail-section" data-section="notes">
+      <div class="detail-section-head">
+        <span>关联笔记 <span class="att-count">${list.length}</span></span>
+        <span class="np-head-ops">
+          <button class="ghost-btn tiny" data-act="note-link" title="从笔记库里选择要关联的笔记（可多选）">＋ 关联笔记</button>
+        </span>
+      </div>
+      <div class="nt-link-list">${rows || '<div class="subtask-empty">尚未关联笔记</div>'}</div>
+    </div>`;
+}
+
+/** 只替换笔记区块：整页重建会丢描述编辑器的光标与滚动位置 */
+async function refreshNoteSection(drawer, taskId) {
+  const host = drawer.querySelector('[data-section="notes"]');
+  if (!host) return;
+  const notes = await api.taskNotes.list(taskId).catch(() => []);
+  const holder = document.createElement('div');
+  holder.innerHTML = noteSectionHtml(notes);
+  const next = holder.firstElementChild;
+  if (!next) return;
+  host.replaceWith(next);
+  bindNoteSectionEvents(drawer, Number(taskId));
+}
+
+/** 跳转到笔记视图并打开指定笔记（动态 import：避免与 notes.js 形成静态循环依赖） */
+async function openNoteView(noteId) {
+  const mod = await import('./notes.js');
+  await mod.focusNote(noteId);
+}
+
+function bindNoteSectionEvents(drawer, taskId) {
+  const host = drawer.querySelector('[data-section="notes"]');
+  if (!host) return;
+  host.querySelector('[data-act="note-link"]')?.addEventListener('click', async () => {
+    const res = await openNotePicker({ taskId });
+    if (!res.ok) return;
+    await refreshNoteSection(drawer, taskId);
+    handlers.toast(`已关联 ${res.noteIds.length} 篇笔记`);
+    handlers.refresh();
+  });
+  host.querySelectorAll('[data-act="note-open"]').forEach((b) => {
+    b.addEventListener('click', () => openNoteView(Number(b.dataset.note)));
+  });
+  host.querySelectorAll('[data-act="note-unlink"]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      await api.taskNotes.unlink(taskId, Number(b.dataset.note));
+      await refreshNoteSection(drawer, taskId);
+      handlers.toast('已取消关联（笔记本身保留）');
+      handlers.refresh();
+    });
+  });
+}
+
 async function guard(prefix, fn) {
   try {
     await fn();
@@ -380,6 +449,7 @@ async function renderDetail() {
   await loadTags();
 
   const subtreeHtml = await renderSubtreeHtml(id);
+  const linkedNotes = await api.taskNotes.list(id).catch(() => []);
   // 期间若已切换到别的任务 / 被又一次渲染取代，直接放弃本次结果
   if (token !== renderToken) return;
   // 描述必须回填：之前这里一直是空编辑器，用户看到的永远是「没有描述」，
@@ -457,6 +527,8 @@ async function renderDetail() {
           </div>
           <div class="att-list">${attachmentsInnerHtml(task.attachments)}</div>
         </div>
+
+        ${noteSectionHtml(linkedNotes)}
 
         <div class="detail-created" title="任务创建时间（不可修改）">🕒 创建于 ${esc(fmtDateTime(task.created_at))}</div>
       </div>
@@ -761,6 +833,7 @@ function bindDetailEvents(drawer, task) {
   bindSubtaskDrag(drawer);
 
   bindAttachmentEvents(drawer, task);
+  bindNoteSectionEvents(drawer, task.id);
 }
 
 /**
