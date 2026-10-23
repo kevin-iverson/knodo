@@ -4,7 +4,7 @@
  * 关闭窗口默认最小化到托盘，仅当显式退出时才真正退出。
  */
 const {
-  app, BrowserWindow, nativeTheme, ipcMain, session, Menu, dialog, shell,
+  app, BrowserWindow, nativeTheme, ipcMain, session, Menu, dialog, shell, protocol,
 } = require('electron');
 const fs = require('fs');
 const os = require('os');
@@ -60,6 +60,8 @@ function createWindow() {
     minWidth: 860,
     minHeight: 560,
     show: false,
+    // 深色主题下别让窗口先闪一下白底（applyTheme() 已在创建窗口之前执行）
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#15181f' : '#f5f6f8',
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
@@ -337,7 +339,32 @@ async function askRestart(fromDir, toDir, copied) {
   }
 }
 
+/**
+ * 本地媒体协议 todo-media://：笔记正文里的图片用 `![](todo-media:///note-12/xxx.png)` 引用，
+ * 由这里映射回 attachments 目录下的真实文件。
+ * 为什么不用 file://：file 协议受 CSP 与 allowFileAccessFromFiles 限制且会暴露整盘；
+ * 自定义协议只解析 attachments 根目录下的相对路径（越界返回失败），范围可控。
+ */
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'todo-media',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: false },
+  },
+]);
+
 app.whenReady().then(() => {
+  protocol.registerFileProtocol('todo-media', (req, callback) => {
+    try {
+      const u = new URL(req.url);
+      const rel = decodeURIComponent(`${u.host}${u.pathname}`.replace(/^\/+/, ''));
+      const abs = attachments.resolveMedia(rel);
+      if (!abs || !fs.existsSync(abs)) { callback({ error: -6 }); return; } // net::ERR_FILE_NOT_FOUND
+      callback({ path: abs });
+    } catch (e) {
+      callback({ error: -6 });
+    }
+  });
+
   // 数据目录：配置里指定的（自定义）目录优先；不可用时回退默认目录并在窗口出来后提示，
   // 保证「盘没插 / 路径被删 / 无写权限」都不会让应用起不来。
   storage.init({ userDataDir: app.getPath('userData'), defaultDir: app.getPath('userData') });

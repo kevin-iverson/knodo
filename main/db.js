@@ -351,6 +351,14 @@ const MIGRATIONS = [
        VALUES (1, '笔记知识库', 'notes', '📝', '#4f7cff', '{}', 1, 'ready', ?, ?)`
     ).run(t, t);
   },
+  // v11：笔记图片 / 附件（复用任务附件同一套落盘规则，目录改为 note-<id>）
+  // - notes.attachments 只存元数据 JSON（含**相对**路径），文件本体在
+  //   `<数据目录>/attachments/note-<id>/<附件id>_<文件名>`；与 tasks.attachments 同构，
+  //   因此备份/搬家后仍可解析。正文里引用图片用 `todo-media://` 协议（主进程注册），
+  //   不落 base64，避免笔记正文被几 MB 的 DataURL 撑爆。
+  (d) => {
+    d.exec("ALTER TABLE notes ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -1630,6 +1638,7 @@ const NOTE_FIELDS = ['folder_id', 'title', 'content_md', 'pinned', 'archived', '
 /** 列表不回传正文：列表页只需要摘要，正文由 getNote() 单独取 */
 const NOTE_LIST_COLUMNS = `n.id, n.folder_id, n.title, n.excerpt, n.pinned, n.archived, n.deleted_at,
   n.word_count, n.content_hash, n.source, n.source_ref, n.sort_order, n.created_at, n.updated_at,
+  n.attachments,
   (SELECT COUNT(*) FROM task_notes tn WHERE tn.note_id = n.id) AS ref_count`;
 
 /** 给一批笔记挂上 tags 数组与 ref_count（整数化） */
@@ -1649,7 +1658,16 @@ function attachNoteTags(rows) {
     if (!map.has(r.note_id)) map.set(r.note_id, []);
     map.get(r.note_id).push({ id: r.id, name: r.name, color: r.color });
   }
-  return rows.map((r) => ({ ...r, tags: map.get(r.id) || [], ref_count: Number(r.ref_count) || 0 }));
+  // attachments 是 JSON 字符串字段：列表页要用它显示「几张图」，这里统一解析一次
+  return rows.map((r) => ({
+    ...r,
+    tags: map.get(r.id) || [],
+    ref_count: Number(r.ref_count) || 0,
+    attachments: (() => {
+      const v = parseJsonField(r.attachments, []);
+      return Array.isArray(v) ? v : [];
+    })(),
+  }));
 }
 
 /**
@@ -1827,6 +1845,25 @@ function purgeNote(id) {
     return tasks;
   });
   return { noteId: Number(id), unlinkedTasks: run() };
+}
+
+/**
+ * 笔记附件（图片）元数据。
+ * 与 tasks.attachments 同一套约定：库里只存 {id,name,size,mime,path,added_at}，
+ * path 是相对 `attachments/` 的相对路径，文件本体由 main/attachments.js 落盘。
+ */
+function getNoteAttachments(noteId) {
+  const row = db.prepare('SELECT attachments FROM notes WHERE id = ?').get(noteId);
+  const list = parseJsonField(row ? row.attachments : '[]', []);
+  return Array.isArray(list) ? list : [];
+}
+
+/** 覆盖式写回附件列表，返回最新列表 */
+function setNoteAttachments(noteId, list = []) {
+  const arr = Array.isArray(list) ? list : [];
+  db.prepare('UPDATE notes SET attachments = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(arr), nowIso(), noteId);
+  return arr;
 }
 
 /** 回收站列表（按删除时间倒序） */
@@ -2143,6 +2180,24 @@ function searchKbChunks({ query, kbId = 1, topK = 8 } = {}) {
     .all(kbId, `%${kw}%`, k);
 }
 
+/**
+ * 取某篇笔记（source_key='note:<id>'）的分块，供「笔记级命中 → 取它的块」这条召回路线用。
+ * @param {string} sourceKey
+ * @param {number} limit 每篇最多取几个块
+ */
+function listKbChunksBySourceKey(sourceKey, limit = 3) {
+  const k = Number(limit) > 0 ? Number(limit) : 3;
+  return db
+    .prepare(
+      `SELECT c.id AS chunkId, c.doc_id AS docId, c.kb_id AS kbId, c.ord, c.heading_path AS headingPath,
+              c.content, d.source_key AS sourceKey, d.title, 0 AS score, '' AS snippet
+         FROM kb_chunks c JOIN kb_documents d ON d.id = c.doc_id
+        WHERE d.source_key = ?
+        ORDER BY c.ord ASC LIMIT ?`
+    )
+    .all(String(sourceKey || ''), k);
+}
+
 /** 知识库统计（管理面板 / 设置页展示） */
 function kbStats(kbId = 1) {
   const kb = getKnowledgeBase(kbId);
@@ -2167,7 +2222,7 @@ function kbStats(kbId = 1) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 10,
+    schemaVersion: 11,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
@@ -2319,8 +2374,8 @@ function importData(data) {
 
     const insNote = db.prepare(
       `INSERT INTO notes (id, folder_id, title, content_md, excerpt, pinned, archived, deleted_at,
-         word_count, content_hash, source, source_ref, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         word_count, content_hash, source, source_ref, sort_order, attachments, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const n of data.notes || []) {
       const content = n.content_md || '';
@@ -2329,6 +2384,7 @@ function importData(data) {
         n.excerpt || excerptOf(content), n.pinned ? 1 : 0, n.archived ? 1 : 0, n.deleted_at ?? null,
         Number(n.word_count) || wordCountOf(content), n.content_hash || hashText(content),
         n.source || 'manual', n.source_ref || '', n.sort_order ?? 0,
+        n.attachments || '[]',
         n.created_at || t0, n.updated_at || t0
       );
     }
@@ -2455,6 +2511,8 @@ module.exports = {
   trashNote,
   restoreNote,
   purgeNote,
+  getNoteAttachments,
+  setNoteAttachments,
   listTrash,
   emptyTrash,
   searchNotes,
@@ -2479,6 +2537,7 @@ module.exports = {
   deleteKbDocBySourceKey,
   syncKbCounts,
   searchKbChunks,
+  listKbChunksBySourceKey,
   kbStats,
   // 文本工具（分块 / 摘要复用）
   plainTextOf,

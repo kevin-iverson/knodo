@@ -724,6 +724,7 @@ body {
   display: flex; align-items: center; justify-content: center; padding: 24px;
 }
 .modal {
+  position: relative;
   width: 100%; max-width: 380px; background: var(--bg-panel);
   border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
   overflow: hidden;
@@ -732,7 +733,31 @@ body {
   max-height: calc(100vh - 48px);
   display: flex; flex-direction: column;
 }
-.modal-head { padding: 14px 18px; font-size: 14px; font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.modal-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 18px; font-size: 14px; font-weight: 600; color: var(--text);
+  border-bottom: 1px solid var(--border); flex: 0 0 auto;
+}
+/* 抬头文字：长标题省略，按钮永远可见（笔记标题可能很长） */
+.modal-head-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal-icon-btn {
+  flex: 0 0 auto; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 6px; background: transparent; color: var(--text-3);
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.modal-icon-btn:hover { background: var(--bg-hover); color: var(--text); }
+/* 右下角缩放手柄：只在可缩放弹窗上出现 */
+.modal-resize {
+  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; z-index: 5;
+  cursor: nwse-resize; touch-action: none;
+}
+.modal-resize::after {
+  content: ''; position: absolute; right: 3px; bottom: 3px; width: 8px; height: 8px;
+  border-right: 2px solid var(--text-3); border-bottom: 2px solid var(--text-3);
+  border-radius: 0 0 2px 0; opacity: 0.55;
+}
+.modal-resize:hover::after { opacity: 1; }
+.modal.is-resizing { user-select: none; }
 .modal-body { padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .field-label { font-size: 12px; color: var(--text-2); }
 .modal-input {
@@ -1494,17 +1519,21 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .np-error { padding: 40px; text-align: center; color: var(--danger); font-size: 13px; line-height: 1.6; word-break: break-all; }
 
 /* ---------------- 笔记视图（nt-*） ---------------- */
-.nt-wrap { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 24px; }
-.nt-toolbar { display: flex; align-items: center; gap: 8px; }
-.nt-toolbar .nt-spacer { flex: 1; }
+.nt-wrap { display: flex; flex-direction: column; gap: 14px; padding: 2px 0 20px; min-height: 0; }
+/* 工具栏允许换行：窗口窄 / 侧边栏被拖宽时，右侧的「知识库问答 / 共 N 篇」不会被挤出可视区 */
+.nt-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.nt-toolbar .nt-spacer { flex: 1 1 auto; min-width: 12px; }
 .nt-search {
-  width: 260px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  flex: 1 1 220px; min-width: 150px; max-width: 360px;
+  padding: 7px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-panel); color: var(--text); font: inherit; font-size: 13px; outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
-.nt-search:focus { border-color: var(--primary); }
-.nt-count { color: var(--text-2); font-size: 12px; }
+.nt-search:focus { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent); }
+.nt-count { color: var(--text-2); font-size: 12px; white-space: nowrap; }
 
-.nt-layout { display: grid; grid-template-columns: 220px 300px minmax(0, 1fr); gap: 14px; align-items: start; }
+/* 两栏：目录 / 列表。编辑在弹窗里做，不再占用第三栏（列表更宽，翻找更顺手） */
+.nt-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 14px; align-items: start; }
 .nt-side {
   background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 10px 8px; max-height: calc(100vh - 190px); overflow-y: auto;
@@ -1512,14 +1541,15 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .nt-side-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 4px 6px; font-size: 12px; color: var(--text-2); font-weight: 600;
+  letter-spacing: 0.3px;
 }
 .nt-folders, .nt-tags { list-style: none; margin-bottom: 10px; }
 .nt-folder, .nt-tag {
   display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: var(--radius-sm);
-  cursor: pointer; font-size: 13px;
+  cursor: pointer; font-size: 13px; transition: background 0.12s;
 }
 .nt-folder:hover, .nt-tag:hover { background: var(--bg-hover); }
-.nt-folder.active, .nt-tag.active { background: var(--bg-active); color: var(--primary); }
+.nt-folder.active, .nt-tag.active { background: var(--bg-active); color: var(--primary); font-weight: 500; }
 .nt-folder-name, .nt-tag-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nt-folder-ops { display: none; gap: 2px; }
 .nt-folder:hover .nt-folder-ops { display: flex; }
@@ -1531,19 +1561,27 @@ html.is-resizing .detail-foot { pointer-events: none; }
   max-height: calc(100vh - 190px); overflow-y: auto; padding-right: 4px;
 }
 .nt-item {
-  padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer;
+  padding: 12px 14px; border-radius: var(--radius); cursor: pointer;
   background: var(--bg-panel); border: 1px solid var(--border);
+  transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
 }
-.nt-item:hover { border-color: var(--primary); }
+.nt-item:hover { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); box-shadow: var(--shadow-sm); }
 .nt-item.active { border-color: var(--primary); background: var(--bg-active); }
 .nt-item-head { display: flex; align-items: center; gap: 6px; }
-.nt-item-title { font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-item-title { font-weight: 600; font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nt-item-excerpt {
-  margin-top: 4px; color: var(--text-3); font-size: 12px; line-height: 1.5;
+  margin-top: 5px; color: var(--text-3); font-size: 12.5px; line-height: 1.55;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.nt-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; color: var(--text-3); font-size: 11.5px; }
-.nt-item-ops { display: flex; gap: 6px; margin-top: 8px; }
+.nt-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; color: var(--text-3); font-size: 11.5px; }
+/* 行内操作：默认淡出、hover 显现，避免列表被一排按钮淹没 */
+.nt-item-ops { display: flex; gap: 6px; opacity: 0; transition: opacity 0.12s; }
+.nt-item:hover .nt-item-ops, .nt-item:focus-within .nt-item-ops { opacity: 1; }
+.nt-trash-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; list-style: none;
+  padding: 8px 12px; border-radius: var(--radius-sm); font-size: 12px; color: var(--text-2);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-panel)); border: 1px solid var(--border);
+}
 .nt-chip {
   padding: 1px 7px; border-radius: 999px; font-size: 11px;
   background: color-mix(in srgb, var(--c, #8896ab) 16%, transparent); color: var(--c, var(--text-2));
@@ -1553,39 +1591,80 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .nt-ref-badge { color: var(--primary); }
 
 .nt-empty {
-  padding: 28px; text-align: center; color: var(--text-3); font-size: 13px;
-  border: 1px dashed var(--border); border-radius: var(--radius-sm); list-style: none;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 44px 20px; text-align: center; color: var(--text-2); font-size: 13px;
+  border: 1px dashed var(--border); border-radius: var(--radius); list-style: none;
 }
+.nt-empty-ico { font-size: 26px; line-height: 1; opacity: 0.9; }
+.nt-empty-sub { color: var(--text-3); font-size: 12.5px; line-height: 1.6; max-width: 380px; }
+.nt-empty .primary-btn { margin-top: 6px; }
 .nt-empty-pane {
   padding: 60px 20px; text-align: center; color: var(--text-3); font-size: 13px;
   background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); min-height: 420px;
 }
 
-.nt-editor {
-  background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 14px; min-width: 0;
+/* ---- 编辑器（弹窗内） ---- */
+.nt-ed {
+  display: flex; flex-direction: column; gap: 10px;
+  flex: 1 1 auto; min-height: 0; padding: 12px 18px 12px;
 }
 .nt-ed-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .nt-title {
-  flex: 1; min-width: 220px; padding: 7px 10px; font-size: 15px; font-weight: 500;
-  border: 1px solid transparent; border-radius: var(--radius-sm); background: var(--bg); color: var(--text);
-  font-family: inherit; outline: none;
+  flex: 1 1 auto; min-width: 200px; padding: 6px 10px; font-size: 16px; font-weight: 600;
+  border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text);
+  font-family: inherit; outline: none; transition: border-color 0.12s, background 0.12s;
 }
+.nt-title:hover { background: var(--bg); }
 .nt-title:focus { border-color: var(--primary); background: var(--bg-panel); }
 .nt-ed-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.nt-save { font-size: 12px; color: var(--text-3); min-width: 52px; text-align: right; }
+.nt-save { font-size: 12px; color: var(--text-3); min-width: 52px; text-align: right; white-space: nowrap; }
 .nt-save.is-saving { color: var(--primary); }
 .nt-save.is-saved { color: var(--green); }
 .nt-save.is-error { color: var(--danger); }
 .nt-save.is-pending { color: var(--text-2); }
 
-.nt-ed-meta { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
+/* 分段控件（编辑 / 分栏 / 预览）：比三个独立 chip 更像「一个开关」 */
+.nt-seg {
+  display: inline-flex; padding: 2px; gap: 2px; flex: 0 0 auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 999px;
+}
+.nt-seg-btn {
+  border: none; background: transparent; color: var(--text-2); font: inherit; font-size: 12px;
+  padding: 4px 12px; border-radius: 999px; cursor: pointer; transition: background 0.12s, color 0.12s;
+}
+.nt-seg-btn:hover { color: var(--text); }
+.nt-seg-btn.active { background: var(--bg-panel); color: var(--primary); font-weight: 600; box-shadow: var(--shadow-sm); }
+
+.nt-ed-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; overflow: hidden; }
+.nt-field { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.nt-field-label { font-size: 12px; color: var(--text-3); flex: 0 0 auto; }
+.nt-field-tags { flex: 1 1 180px; min-width: 120px; }
+.nt-field-tags .nt-tag-input { flex: 1 1 auto; min-width: 0; }
 .nt-folder-select, .nt-tag-input {
   padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; outline: none;
 }
-.nt-tag-input { flex: 1; min-width: 180px; }
-.nt-meta-info { color: var(--text-3); font-size: 12px; }
+.nt-folder-select { max-width: 200px; cursor: pointer; }
+.nt-folder-select:focus, .nt-tag-input:focus { border-color: var(--primary); }
+.nt-meta-info {
+  margin-left: auto; color: var(--text-3); font-size: 12px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.nt-ed-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.nt-ed[data-mode="split"] .nt-ed-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.nt-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.nt-ed[data-mode="preview"] .nt-pane { display: none; }
+.nt-preview {
+  display: none; min-width: 0; min-height: 0; overflow: auto;
+  padding: 6px 16px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg); color: var(--text); font-size: 13.5px; line-height: 1.75; word-break: break-word;
+}
+.nt-ed[data-mode="split"] .nt-preview,
+.nt-ed[data-mode="preview"] .nt-preview { display: block; }
+.nt-preview-empty { color: var(--text-3); font-size: 13px; padding: 24px 0; }
+.nt-att, .nt-refs { flex: 0 0 auto; max-height: 130px; overflow: auto; }
+.nt-att:empty, .nt-refs:empty { display: none; }
 
 .nt-refs { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
 .nt-refs-title { font-size: 12px; color: var(--text-2); font-weight: 600; margin-bottom: 6px; }
@@ -1603,7 +1682,10 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .chip-danger { color: var(--danger); border-color: rgba(229, 72, 77, 0.4); }
 
 /* 知识库问答弹窗 */
-.modal-kb .modal, .modal-note-delete .modal { width: 640px; max-width: 92vw; }
+/* 尺寸类必须写成 .modal.modal-xxx（两个类）：
+   只写 .modal-note-editor .modal 是「后代选择器」，而 className 是加在 .modal **自身上**的，
+   那条规则永远不会命中 —— 之前笔记弹窗只有 380px 宽、内容挤压变形就是这个原因。 */
+.modal.modal-kb, .modal.modal-note-delete { width: 680px; max-width: 92vw; }
 .kb-form { display: flex; gap: 8px; }
 .kb-form .modal-input { flex: 1; }
 .kb-stat { margin: 10px 0; font-size: 12px; color: var(--text-2); }
@@ -1661,10 +1743,20 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .editor-preview a, .editor-preview-side a, .nt-guide a, .kb-answer a { color: var(--primary); }
 
 /* EasyMDE：离线运行（不下载 Font Awesome），工具栏图标用 CSS 文字/符号兜底 */
-.editor-toolbar { border-color: var(--border); background: var(--bg-panel); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+.editor-toolbar {
+  border-color: var(--border); background: var(--bg-panel);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  padding: 3px 4px; min-height: 0; opacity: 1;
+  /* 分栏时编辑区变窄：工具栏保持单行，放不下就横向滚动（换行会把正文顶下去，看着很乱） */
+  white-space: nowrap; overflow-x: auto; overflow-y: hidden;
+}
+.editor-toolbar::-webkit-scrollbar { height: 4px; }
+.editor-toolbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .editor-toolbar button {
-  color: var(--text-2) !important; border: none; background: none; min-width: 30px;
+  color: var(--text-2) !important; border: none; background: none;
+  width: 27px; min-width: 27px; height: 27px; padding: 0; margin: 0 1px;
   display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: middle;
 }
 .editor-toolbar button:hover, .editor-toolbar button.active { background: var(--bg-hover) !important; color: var(--primary) !important; }
 .editor-toolbar button i { display: none; }
@@ -1693,6 +1785,12 @@ html.is-resizing .detail-foot { pointer-events: none; }
   border-color: var(--border) !important; background: var(--bg-panel); color: var(--text);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm); font-family: Consolas, "Microsoft YaHei", monospace;
 }
+/* 编辑区字号 / 行高对齐正文阅读节奏；Markdown 标题只做轻微放大 ——
+   照搬 EasyMDE 默认的 1.6em 会让「# 标题」在编辑器里比预览还大，看着像排版坏了 */
+.nt-ed .CodeMirror { font-size: 13.5px; line-height: 1.75; }
+.cm-s-easymde .cm-header-1 { font-size: 1.3em; }
+.cm-s-easymde .cm-header-2 { font-size: 1.16em; }
+.cm-s-easymde .cm-header-3 { font-size: 1.06em; }
 .CodeMirror-gutters { background: var(--bg); border-right-color: var(--border); }
 .CodeMirror-cursor { border-left-color: var(--text); }
 .CodeMirror-selected { background: var(--bg-active); }
@@ -1723,7 +1821,7 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .nt-link-ops { display: flex; gap: 4px; flex-shrink: 0; }
 .note-badge { color: var(--primary); }
 
-.modal-note-picker .modal { width: 620px; max-width: 92vw; }
+.modal.modal-note-picker { width: 660px; max-width: 92vw; }
 .np-picker-form { display: flex; gap: 8px; }
 .np-picker-form .modal-input { flex: 1; }
 .np-picker-count { margin: 8px 0; font-size: 12px; color: var(--text-2); }
@@ -1747,3 +1845,50 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .np-pick-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .np-pick-sub { font-size: 11.5px; color: var(--text-3); }
 .np-picker-empty { padding: 20px; text-align: center; color: var(--text-3); font-size: 12.5px; }
+
+/* ---------------- 笔记编辑弹窗（弹窗形态，不整屏覆盖；可拖拽缩放） ---------------- */
+.modal.modal-note-editor {
+  /* 默认就「大弹窗」：留出四周空隙，仍能看见列表在后面（不是整屏覆盖）；
+     想更大可以拖右下角手柄，或点抬头右上角的 ⤢ 最大化 */
+  width: min(1120px, 88vw);
+  height: min(820px, 84vh);
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  display: flex; flex-direction: column;
+}
+.modal.modal-note-editor .modal-head { flex: 0 0 auto; padding: 10px 12px 10px 18px; }
+.modal.modal-note-editor .modal-body {
+  flex: 1 1 auto; min-height: 0; padding: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.modal.modal-note-editor .modal-foot { flex: 0 0 auto; }
+.modal.modal-note-editor > .modal-error { margin: 0 18px; }
+/* 编辑区吃满弹窗高度，内部各自滚动（正文 / 预览 / 附件条），而不是整块页面滚动 */
+.nt-pane .EasyMDEContainer { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.nt-pane .EasyMDEContainer .CodeMirror {
+  flex: 1 1 auto; height: 100%; min-height: 160px;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
+.modal.modal-note-editor .editor-toolbar { flex: 0 0 auto; }
+
+/* 图片条（落盘后的附件，可直接打开 / 删除 / 复制 Markdown 引用） */
+.nt-att-list {
+  list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px;
+}
+.nt-att-list li {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 4px; max-width: 240px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);
+}
+.nt-att-thumb {
+  width: 34px; height: 34px; object-fit: cover; border-radius: 4px; cursor: pointer;
+  background: var(--bg-hover); flex: 0 0 34px;
+}
+.nt-att-name {
+  font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 纯 textarea 兜底（EasyMDE 缺失时）也要撑满编辑区 */
+.nt-pane .nt-md-fallback { flex: 1 1 auto; width: 100%; min-height: 160px; }
+.kb-flag {
+  display: inline-block; margin-top: 8px; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent);
+}

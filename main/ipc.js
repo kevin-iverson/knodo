@@ -2,7 +2,7 @@
 /**
  * IPC 处理器注册：将渲染进程的请求映射到数据库 / AI / 报告等模块。
  */
-const { ipcMain, dialog, shell, app, desktopCapturer } = require('electron');
+const { ipcMain, dialog, shell, app, desktopCapturer, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const db = require('./db');
@@ -17,6 +17,15 @@ const { markdownToDocx } = require('./docx');
 const autostart = require('./autostart');
 const searchAssist = require('./search-assist');
 const knowledge = require('./knowledge');
+
+/**
+ * 附件相对路径 → 笔记正文里可引用的 todo-media:// URL。
+ * 逐段 encodeURIComponent：中文 / 空格文件名也能正常显示（主进程侧解码回原路径）。
+ */
+function mediaUrlOf(entry) {
+  const rel = String((entry && entry.path) || '').replace(/^\/+/, '');
+  return `todo-media:///${rel.split('/').map(encodeURIComponent).join('/')}`;
+}
 
 function getAsrConfig() {
   const baseUrl = db.getSetting('ai.asrBaseUrl', asr.DEFAULT_ASR_CONFIG.baseUrl);
@@ -725,11 +734,116 @@ function registerIpc() {
   ipcMain.handle('notes:purge', withDb((id) => {
     const res = db.purgeNote(id);
     knowledge.removeNote(id);
+    // 文件本体随笔记一起清掉（库记录已删，不清理会留下孤儿文件）
+    attachments.removeOwnerDir('note', id);
     return res;
   }));
   ipcMain.handle('notes:trashList', withDb(() => db.listTrash()));
   ipcMain.handle('notes:emptyTrash', withDb(() => ({ removed: db.emptyTrash() })));
   ipcMain.handle('notes:search', withDb((keyword, opts) => db.searchNotes(keyword, opts || {})));
+
+  /* ---------- 笔记附件（图片粘贴 / 插入） ---------- */
+  // 复用任务附件同一套落盘规则（main/attachments.js），只是宿主目录换成 note-<id>：
+  // 正文里存 `todo-media:///<相对路径>`，不把 base64 塞进 Markdown。
+  const noteAttachmentsOf = (noteId) => {
+    const note = db.getNote(noteId);
+    if (!note) throw new Error('笔记不存在或已被删除');
+    return db.getNoteAttachments(noteId);
+  };
+  const findNoteAttachment = (noteId, attId) => {
+    const entry = noteAttachmentsOf(noteId).find((a) => String(a.id) === String(attId));
+    if (!entry) throw new Error('附件不存在（可能已被删除）');
+    return entry;
+  };
+
+  ipcMain.handle('noteAttachments:list', withDb((noteId) => db.getNoteAttachments(noteId)));
+
+  /** 选择本地图片插入（支持多选） */
+  ipcMain.handle('noteAttachments:pick', withDb(async (noteId) => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '插入图片',
+      buttonLabel: '插入',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true, entries: [] };
+    const cur = noteAttachmentsOf(noteId);
+    const entries = [];
+    const failed = [];
+    for (const p of filePaths) {
+      try { entries.push(attachments.importInto('note', noteId, p)); }
+      catch (e) { failed.push(e && e.message ? e.message : String(e)); }
+    }
+    if (!entries.length) throw new Error(failed[0] || '没有可插入的图片');
+    const list = db.setNoteAttachments(noteId, [...cur, ...entries]);
+    return { ok: true, entries, attachments: list, failed };
+  }));
+
+  /** 拖拽 / 文件管理器拖入：渲染层把 File 转成绝对路径后传进来 */
+  ipcMain.handle('noteAttachments:addPaths', withDb((noteId, paths) => {
+    const list = (Array.isArray(paths) ? paths : []).filter((p) => typeof p === 'string' && p.trim());
+    if (!list.length) return { ok: false, message: '没有可插入的文件', entries: [] };
+    const cur = noteAttachmentsOf(noteId);
+    const entries = [];
+    const failed = [];
+    for (const p of list) {
+      try { entries.push(attachments.importInto('note', noteId, p)); }
+      catch (e) { failed.push(e && e.message ? e.message : String(e)); }
+    }
+    if (!entries.length) throw new Error(failed[0] || '没有可插入的文件');
+    const next = db.setNoteAttachments(noteId, [...cur, ...entries]);
+    return { ok: true, entries, attachments: next, failed };
+  }));
+
+  /**
+   * 粘贴截图：渲染层没有 fs 权限，把剪贴板图片的 data URL 传过来由主进程落盘。
+   * @returns {{ok:boolean, entry:object, attachments:Array, url:string}} url 可直接写进 Markdown
+   */
+  ipcMain.handle('noteAttachments:pasteImage', withDb((noteId, dataUrl, name = '') => {
+    const cur = noteAttachmentsOf(noteId);
+    const entry = attachments.importDataUrl('note', noteId, dataUrl, name);
+    const list = db.setNoteAttachments(noteId, [...cur, entry]);
+    return { ok: true, entry, attachments: list, url: mediaUrlOf(entry) };
+  }));
+
+  ipcMain.handle('noteAttachments:remove', withDb((noteId, attId) => {
+    const cur = noteAttachmentsOf(noteId);
+    const entry = cur.find((a) => String(a.id) === String(attId));
+    if (!entry) throw new Error('附件不存在（可能已被删除）');
+    attachments.removeFile(entry);
+    const list = db.setNoteAttachments(noteId, cur.filter((a) => String(a.id) !== String(attId)));
+    return { ok: true, attachments: list };
+  }));
+
+  ipcMain.handle('noteAttachments:open', withDb(async (noteId, attId) => {
+    const entry = findNoteAttachment(noteId, attId);
+    if (!attachments.exists(entry)) throw new Error(`文件已丢失：${entry.name}`);
+    const err = await shell.openPath(attachments.absPath(entry));
+    if (err) throw new Error(`打开失败：${err}`);
+    return { ok: true };
+  }));
+
+  ipcMain.handle('noteAttachments:reveal', withDb((noteId, attId) => {
+    const entry = findNoteAttachment(noteId, attId);
+    if (!attachments.exists(entry)) throw new Error(`文件已丢失：${entry.name}`);
+    shell.showItemInFolder(attachments.absPath(entry));
+    return { ok: true };
+  }));
+
+  ipcMain.handle('noteAttachments:saveAs', withDb(async (noteId, attId) => {
+    const entry = findNoteAttachment(noteId, attId);
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: '保存图片',
+      defaultPath: entry.name,
+      filters: [{ name: '所有文件', extensions: ['*'] }],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+    attachments.saveAs(entry, filePath);
+    return { ok: true, filePath };
+  }));
 
   ipcMain.handle('noteFolders:list', withDb(() => db.listNoteFolders()));
   ipcMain.handle('noteFolders:create', withDb((p) => db.createNoteFolder(p || {})));
@@ -823,8 +937,12 @@ function registerIpc() {
   /* ---------- 应用 / 主题 ---------- */
   ipcMain.handle('theme:get', () => db.getSetting('theme', 'system'));
   ipcMain.handle('theme:set', (_e, mode) => {
-    db.setSetting('theme', mode);
-    return mode;
+    // 只存库不生效是这里以前的 bug：切换主题后窗口标题栏 / 原生菜单 / 滚动条
+    // 仍停在旧主题，直到下次启动才变 —— 表现为「主题样式异常」。
+    const m = ['system', 'light', 'dark'].includes(mode) ? mode : 'system';
+    db.setSetting('theme', m);
+    nativeTheme.themeSource = m;
+    return m;
   });
   // 强调色（用于区分分组 / 标签的主色，仅影响新渲染的日历高亮等元素）
   ipcMain.handle('accent:get', () => db.getSetting('accent', ''));

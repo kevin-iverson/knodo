@@ -145,41 +145,240 @@ function removeNote(noteId) {
   return db.deleteKbDocBySourceKey(`note:${noteId}`);
 }
 
+/* ------------------------------ 查询理解 ------------------------------ */
+
+/** 取 query 的二元组集合（中文没有空格分词，二元组是最划算的字面重叠特征） */
+function bigrams(s) {
+  const t = String(s || '').toLowerCase().replace(/[\s，。、；：！？,.:;!?()（）「」【】]/g, '');
+  const out = new Set();
+  if (!t) return out;
+  if (t.length === 1) { out.add(t); return out; }
+  for (let i = 0; i < t.length - 1; i += 1) out.add(t.slice(i, i + 2));
+  return out;
+}
+
+/** 字面覆盖率：query 的二元组有多少出现在文本里（0~1），用于给「同一路召回内部」排优先级 */
+function coverageOf(query, text) {
+  const bg = bigrams(query);
+  if (!bg.size) return 0;
+  const lower = String(text || '').toLowerCase();
+  let hit = 0;
+  bg.forEach((g) => { if (lower.includes(g)) hit += 1; });
+  return hit / bg.size;
+}
+
+const EXPAND_SYSTEM_PROMPT = [
+  '你是检索助手。用户会给一个问题，请把它改写成更适合关键词检索的查询词。',
+  '要求：',
+  '1. 输出 3-5 个查询词，覆盖原问题的同义说法、核心实体、以及拆分后的子问题；',
+  '2. 每个查询词 2-12 个字，不要带解释、不要带序号；',
+  '3. 只输出 JSON 数组，例如 ["灰度发布", "放量策略", "回滚方案"]；',
+  '4. 无法确定时至少原样返回原问题。',
+].join('\n');
+
+/** 从模型回复里取出字符串数组（容忍 Markdown 代码围栏 / 逐行输出 / 带序号） */
+function parseListReply(raw) {
+  const text = String(raw || '').trim();
+  const block = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
+  const body = block ? block[1] : text;
+  try {
+    const parsed = JSON.parse(body);
+    if (Array.isArray(parsed)) return parsed.map((x) => String(x || '').trim()).filter(Boolean);
+  } catch (e) { /* 不是 JSON，走逐行兜底 */ }
+  return body
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^\s*[-*•\d]+[.、)]?\s*/, '').replace(/^["'「]|["'」]$/g, '').trim())
+    .filter(Boolean);
+}
+
 /**
- * 召回：关键词（FTS5 trigram）→ 分块 → 按笔记聚合并裁剪到 TopK。
- * @param {object} opts { query, topK, kbId, noteIds }
- * @returns {Array<{noteId:number|null, title:string, headingPath:string, content:string, score:number, chunkId:number}>}
+ * 查询改写 / 关键词扩展：配了 AI 就让它给出同义与拆分后的查询词，多路召回能显著捞回
+ * 「说法不同但语义相同」的笔记；没配 AI 或调用失败就原样单路召回（降级不影响可用性）。
+ * @returns {Promise<string[]>} 查询词列表（首个永远是原始问题）
  */
-function retrieve({ query, topK = DEFAULT_TOP_K, kbId = NOTES_KB_ID, noteIds = null } = {}) {
-  const k = Number(topK) > 0 ? Number(topK) : DEFAULT_TOP_K;
-  // 多召回一些再按笔记聚合，避免同一篇笔记占满名额导致答案视角单一
-  const raw = db.searchKbChunks({ query, kbId, topK: Math.max(k * 3, 12) });
-  const allowed = Array.isArray(noteIds) && noteIds.length ? new Set(noteIds.map(Number)) : null;
-  const hits = [];
-  for (const r of raw) {
-    const noteId = parseNoteId(r.sourceKey);
-    if (allowed && (noteId == null || !allowed.has(noteId))) continue;
-    hits.push({
-      chunkId: r.chunkId,
-      noteId,
-      title: r.title || '',
-      headingPath: r.headingPath || '',
-      content: String(r.content || ''),
-      score: Number(r.score) || 0,
+async function expandQuery(query, cfg = {}) {
+  const q = String(query || '').trim();
+  const base = q ? [q] : [];
+  if (!q || !cfg || !cfg.apiKey) return base;
+  try {
+    const raw = await ai.callLLM({
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey,
+      model: cfg.model,
+      messages: [
+        { role: 'system', content: EXPAND_SYSTEM_PROMPT },
+        { role: 'user', content: `问题：${q}` },
+      ],
+      temperature: 0.2,
+      timeoutMs: 12000,
     });
+    const list = parseListReply(raw).filter((x) => x.length >= 2 && x.length <= 40);
+    const merged = [];
+    for (const x of [q, ...list]) {
+      if (!merged.some((m) => m === x)) merged.push(x);
+    }
+    return merged.slice(0, 5);
+  } catch (e) {
+    return base;
   }
+}
+
+/* ------------------------------ 召回 ------------------------------ */
+
+/** RRF（Reciprocal Rank Fusion）常数：名次越靠前收益越大，且不受各路分数量纲影响 */
+const RRF_K = 60;
+
+/** 笔记级召回：先命中「哪篇笔记相关」，再取它的前几个分块 —— 补 FTS5 逐块匹配的视野盲区 */
+function noteLevelChunks(keyword, kbId, limit = 2) {
+  const notes = db.searchNotes(keyword, { limit: 8, deleted: 'exclude', archived: 'include' });
+  const out = [];
+  for (const n of notes) {
+    const rows = db.listKbChunksBySourceKey(`note:${n.id}`, limit);
+    rows.forEach((r) => out.push(r));
+  }
+  return out;
+}
+
+function toHit(r) {
+  return {
+    chunkId: r.chunkId,
+    noteId: parseNoteId(r.sourceKey),
+    title: r.title || '',
+    headingPath: r.headingPath || '',
+    content: String(r.content || ''),
+    score: 0,
+  };
+}
+
+/**
+ * 智能召回：查询改写 → 多路召回（分块 FTS / 笔记级 / LIKE 兜底）→ RRF 融合 → AI 重排。
+ *
+ * 为什么要多路：FTS5 trigram 只认字面连续片段，「上次那个回滚方案」这类口语化提问命中率很差；
+ * 先让模型改写成若干查询词，再分别从「分块」与「笔记」两个粒度召回，最后用 RRF 融合名次
+ * （避免直接相加不同量纲的分数），配了 AI 时再让模型对候选做一次语义重排。
+ *
+ * @param {object} opts { query, topK, kbId, noteIds, cfg }
+ * @returns {Promise<Array>} hits（含 score / matchedBy / coverage 便于界面展示命中原因）
+ */
+async function retrieve({ query, topK = DEFAULT_TOP_K, kbId = NOTES_KB_ID, noteIds = null, cfg = {} } = {}) {
+  const k = Number(topK) > 0 ? Number(topK) : DEFAULT_TOP_K;
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const variants = await expandQuery(q, cfg);
+  const allowed = Array.isArray(noteIds) && noteIds.length ? new Set(noteIds.map(Number)) : null;
+
+  const pool = new Map(); // chunkId → { hit, rrf, routes:Set }
+  const pushRoute = (rows, name, weight) => {
+    rows.forEach((r, idx) => {
+      const noteId = parseNoteId(r.sourceKey);
+      if (allowed && (noteId == null || !allowed.has(noteId))) return;
+      const hit = toHit(r);
+      const cur = pool.get(hit.chunkId);
+      if (cur) {
+        cur.rrf += weight / (RRF_K + idx + 1);
+        cur.routes.add(name);
+        return;
+      }
+      pool.set(hit.chunkId, { hit, rrf: weight / (RRF_K + idx + 1), routes: new Set([name]) });
+    });
+  };
+
+  const wide = Math.max(k * 4, 16);
+  for (const v of variants) {
+    pushRoute(db.searchKbChunks({ query: v, kbId, topK: wide }), v.length >= 3 ? 'fts' : 'like', 1);
+    pushRoute(noteLevelChunks(v, kbId, 2), 'note', 0.8);
+  }
+
+  // 融合分 = RRF 名次分 + 字面覆盖 + 标题/路径命中 + 同笔记多块的递减
+  let ranked = [...pool.values()].map((e) => {
+    const cov = coverageOf(q, `${e.hit.title}\n${e.hit.headingPath}\n${e.hit.content}`);
+    const titleHit = e.hit.title && q && String(e.hit.title).toLowerCase().includes(q.toLowerCase()) ? 0.08 : 0;
+    const pathHit = e.hit.headingPath && coverageOf(q, e.hit.headingPath) > 0.5 ? 0.04 : 0;
+    const score = e.rrf + cov * 0.35 + titleHit + pathHit;
+    return { ...e.hit, score, coverage: cov, matchedBy: [...e.routes].join('+') };
+  }).sort((a, b) => b.score - a.score);
+
+  // AI 语义重排：只在候选足够多时做，失败/超时就沿用融合分（降级不影响可用性）
+  const order = await rerankWithAI(q, ranked.slice(0, Math.min(ranked.length, 12)), cfg);
+  if (order && order.length) {
+    const picked = [];
+    const rest = ranked.slice();
+    for (const idx of order) {
+      const h = ranked[idx];
+      if (!h) continue;
+      picked.push({ ...h, score: h.score + 0.25, reranked: true });
+      const pos = rest.findIndex((x) => x.chunkId === h.chunkId);
+      if (pos >= 0) rest.splice(pos, 1);
+    }
+    ranked = [...picked, ...rest];
+  }
+
   // 同一篇笔记最多保留 2 个块：既保证多样性，又不让长笔记刷屏
   const perNote = new Map();
-  const picked = [];
-  for (const h of hits) {
+  const out = [];
+  for (const h of ranked) {
     const key = h.noteId == null ? `chunk-${h.chunkId}` : `note-${h.noteId}`;
     const c = perNote.get(key) || 0;
     if (c >= 2) continue;
     perNote.set(key, c + 1);
-    picked.push(h);
-    if (picked.length >= k) break;
+    out.push({ ...h, score: c === 0 ? h.score : h.score * 0.7 });
+    if (out.length >= k) break;
   }
-  return picked;
+  return out;
+}
+
+const RERANK_SYSTEM_PROMPT = [
+  '你是检索重排器。根据用户问题给候选片段按相关度从高到低排序。',
+  '只输出编号序列（JSON 数组），例如 [3,1,2]；不要输出其它内容。',
+  '只保留确实相关的编号，完全无关的可以省略。',
+].join('\n');
+
+/** 解析模型给出的编号序列（容忍 [1,2] / 1,2,3 / 逐行输出） */
+function parseIndexReply(raw, max) {
+  const text = String(raw || '').trim();
+  const block = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
+  const body = block ? block[1] : text;
+  let nums = [];
+  try {
+    const parsed = JSON.parse(body);
+    if (Array.isArray(parsed)) nums = parsed.map((x) => Number(x));
+  } catch (e) {
+    nums = (body.match(/\d+/g) || []).map(Number);
+  }
+  return nums
+    .filter((n) => Number.isInteger(n) && n >= 1 && n <= max)
+    .map((n) => n - 1)
+    .filter((n, i, arr) => arr.indexOf(n) === i);
+}
+
+/**
+ * AI 重排：让模型对候选片段做一次语义排序（关键词召回捞得全，但排序不一定贴合语义）。
+ * @returns {Promise<number[]|null>} 候选下标顺序；不可用 / 失败时返回 null
+ */
+async function rerankWithAI(query, cands, cfg = {}) {
+  if (!cfg || !cfg.apiKey || !cands.length || cands.length < 3) return null;
+  const list = cands.map((h, i) => {
+    const head = `[${i + 1}] ${h.title}${h.headingPath ? ` › ${h.headingPath}` : ''}`;
+    const body = String(h.content || '').replace(/\s+/g, ' ').slice(0, 140);
+    return `${head}\n${body}`;
+  }).join('\n');
+  try {
+    const raw = await ai.callLLM({
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey,
+      model: cfg.model,
+      messages: [
+        { role: 'system', content: RERANK_SYSTEM_PROMPT },
+        { role: 'user', content: `问题：${query}\n\n候选：\n${list}` },
+      ],
+      temperature: 0,
+      timeoutMs: 20000,
+    });
+    const order = parseIndexReply(raw, cands.length);
+    return order.length ? order : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 function parseNoteId(sourceKey) {
@@ -225,10 +424,12 @@ const QA_SYSTEM_PROMPT = [
 async function answer({ question, cfg = {}, topK = DEFAULT_TOP_K, noteIds = null } = {}) {
   const q = String(question || '').trim();
   if (!q) return { answer: '', hits: [], degraded: true, reason: 'empty' };
-  const hits = retrieve({ query: q, topK, noteIds });
-  if (!hits.length) return { answer: '', hits: [], degraded: true, reason: 'no-hit' };
-  if (!cfg || !cfg.apiKey) {
-    return { answer: '', hits, degraded: true, reason: 'no-ai' };
+  const hasAi = !!(cfg && cfg.apiKey);
+  const hits = await retrieve({ query: q, topK, noteIds, cfg });
+  const meta = { reranked: hits.some((h) => h.reranked) };
+  if (!hits.length) return { answer: '', hits: [], degraded: true, reason: 'no-hit', meta };
+  if (!hasAi) {
+    return { answer: '', hits, degraded: true, reason: 'no-ai', meta };
   }
   const context = buildContext(hits);
   try {
@@ -243,9 +444,9 @@ async function answer({ question, cfg = {}, topK = DEFAULT_TOP_K, noteIds = null
       temperature: 0.2,
       timeoutMs: 60000,
     });
-    return { answer: text, hits, degraded: false };
+    return { answer: text, hits, degraded: false, meta };
   } catch (e) {
-    return { answer: '', hits, degraded: true, reason: (e && e.message) || 'AI 调用失败' };
+    return { answer: '', hits, degraded: true, reason: (e && e.message) || 'AI 调用失败', meta };
   }
 }
 
@@ -258,6 +459,8 @@ module.exports = {
   indexNote,
   indexAll,
   removeNote,
+  expandQuery,
+  rerankWithAI,
   retrieve,
   buildContext,
   answer,

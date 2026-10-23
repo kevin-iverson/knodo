@@ -108,6 +108,17 @@ contextBridge.exposeInMainWorld('api', {
     emptyTrash: () => call('notes:emptyTrash'),
     search: (keyword, opts) => call('notes:search', keyword, opts),
   },
+  // 笔记图片 / 附件（复用任务附件落盘规则，宿主目录 note-<id>）
+  noteAttachments: {
+    list: (noteId) => call('noteAttachments:list', noteId),
+    pick: (noteId) => call('noteAttachments:pick', noteId),
+    addPaths: (noteId, paths) => call('noteAttachments:addPaths', noteId, paths),
+    pasteImage: (noteId, dataUrl, name) => call('noteAttachments:pasteImage', noteId, dataUrl, name),
+    remove: (noteId, attId) => call('noteAttachments:remove', noteId, attId),
+    open: (noteId, attId) => call('noteAttachments:open', noteId, attId),
+    reveal: (noteId, attId) => call('noteAttachments:reveal', noteId, attId),
+    saveAs: (noteId, attId) => call('noteAttachments:saveAs', noteId, attId),
+  },
   noteFolders: {
     list: () => call('noteFolders:list'),
     create: (p) => call('noteFolders:create', p),

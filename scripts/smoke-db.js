@@ -10,6 +10,7 @@ const path = require('path');
 const db = require('../main/db');
 const report = require('../main/report');
 const knowledge = require('../main/knowledge');
+const attachments = require('../main/attachments');
 
 let passed = 0;
 let failed = 0;
@@ -271,8 +272,8 @@ check('列表按创建时间倒序', list[0].title === '评审会' && list.some(
 check('数量正确', list.length === 3); // 含上面那个「未命名会议」
 
 const exportSnap = db.exportData();
-check('导出含 meetings 且 schema 升级到 10',
-  exportSnap.schemaVersion === 10 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
+check('导出含 meetings 且 schema 升级到 11',
+  exportSnap.schemaVersion === 11 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
   && Array.isArray(exportSnap.reports) && Array.isArray(exportSnap.ai_searches)
   && Array.isArray(exportSnap.notes) && Array.isArray(exportSnap.note_folders)
   && Array.isArray(exportSnap.task_notes) && Array.isArray(exportSnap.knowledge_bases));
@@ -679,8 +680,8 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
   knowledge.indexNote(n1.id);
   knowledge.indexNote(n2.id);
   check('笔记沉淀为分块并可召回', db.searchKbChunks({ query: '灰度发布' }).some((c) => c.sourceKey === `note:${n1.id}`));
-  check('召回结果带笔记 id 与出处', (() => {
-    const hits = knowledge.retrieve({ query: '配置未同步', topK: 5 });
+  check('召回结果带笔记 id 与出处', await (async () => {
+    const hits = await knowledge.retrieve({ query: '配置未同步', topK: 5 });
     return hits.length > 0 && hits[0].noteId === n2.id && !!hits[0].title;
   })());
   check('知识库统计可读', db.kbStats(1).chunk_count > 0 && db.kbStats(1).indexed_note_count >= 2);
@@ -714,6 +715,45 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
     && db.listTaskNotes(tk.id).length === before.links);
   const rebuilt = knowledge.indexAll();
   check('导入后可按正文重建知识库索引', rebuilt.done >= 1 && db.kbStats(1).chunk_count > 0);
+
+  console.log('\n[19] 笔记图片附件（复用 attachments 落盘规则）');
+  attachments.init(path.join(tmpDir, 'attachments'));
+  const png1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const noteForImg = db.createNote({ title: '带图笔记', contentMd: '# 标题\n\n正文' });
+  const imgEntry = attachments.importDataUrl('note', noteForImg.id, png1x1, '截图.png');
+  check('图片落盘到 note-<id> 目录',
+    imgEntry.path.startsWith(`note-${noteForImg.id}/`) && fs.existsSync(path.join(tmpDir, 'attachments', imgEntry.path)));
+  db.setNoteAttachments(noteForImg.id, [imgEntry]);
+  check('附件元数据进出库一致',
+    db.getNoteAttachments(noteForImg.id).length === 1
+    && db.getNote(noteForImg.id).attachments.length === 1);
+  check('todo-media 只解析附件目录内的相对路径',
+    attachments.resolveMedia(imgEntry.path) !== null
+    && attachments.resolveMedia('../../evil.png') === null
+    && attachments.resolveMedia('task-1/../../x.png') === null);
+  check('非图片 / 空数据被拒绝', (() => {
+    try { attachments.importDataUrl('note', noteForImg.id, 'data:text/plain;base64,aaaa', 'a.txt'); return false; } catch (e) { /* 预期 */ }
+    try { attachments.importDataUrl('note', noteForImg.id, 'not-a-data-url'); return false; } catch (e) { return true; }
+  })());
+  attachments.removeOwnerDir('note', noteForImg.id);
+  check('彻底删除笔记时图片目录一并清掉', !fs.existsSync(path.join(tmpDir, 'attachments', `note-${noteForImg.id}`)));
+  check('任务附件目录仍是 task-<id>', (() => {
+    const e = attachments.importInto('task', 999, path.join(tmpDir, 'todo.db'));
+    const ok = e.path.startsWith('task-999/');
+    attachments.removeOwnerDir('task', 999);
+    return ok;
+  })());
+
+  console.log('\n[20] 智能检索（无 AI 时的降级路径）');
+  const qNote = db.createNote({ title: '灰度发布方案', contentMd: '## 放量节奏\n\n第一批放量 10%，观察 24 小时。' });
+  knowledge.indexNote(qNote.id);
+  const noAiHits = await knowledge.retrieve({ query: '放量节奏', topK: 5 });
+  check('无 AI 配置也能多路召回', noAiHits.length > 0 && noAiHits.some((h) => h.noteId === qNote.id));
+  check('召回结果带命中来源标记', noAiHits.every((h) => typeof h.matchedBy === 'string' && h.matchedBy.length > 0));
+  check('未配置 AI 时查询改写原样返回', (await knowledge.expandQuery('放量节奏', {})).join('|') === '放量节奏');
+  check('重排在候选不足时不调用模型', (await knowledge.rerankWithAI('x', [], {})) === null);
+  const shortQ = await knowledge.retrieve({ query: '灰度', topK: 5 });
+  check('短查询（<3 字）走 LIKE 兜底也能命中', shortQ.length > 0);
 
   console.log('\n====================');
   console.log(`结果：${passed} 通过，${failed} 失败`);

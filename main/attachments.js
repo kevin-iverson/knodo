@@ -1,11 +1,12 @@
 'use strict';
 /**
- * 任务附件落盘层。
+ * 附件落盘层（任务 / 笔记共用）。
  *
  * 设计要点：
- * - 文件本体存在 `<数据目录>/attachments/task-<id>/<附件id>_<原文件名>`，数据库 tasks.attachments
- *   只保存元数据（含**相对**路径），这样「数据目录」整体搬家 / 备份后附件仍然有效；
- * - 附件 id 独立于任务 id，重名文件不会互相覆盖；
+ * - 文件本体存在 `<数据目录>/attachments/<owner>-<id>/<附件id>_<原文件名>`，
+ *   owner 目前只有 task / note 两种；库里（tasks.attachments / notes.attachments）只保存
+ *   元数据（含**相对**路径），这样「数据目录」整体搬家 / 备份后附件仍然有效；
+ * - 附件 id 独立于宿主 id，重名文件不会互相覆盖；
  * - 该模块不依赖 Electron，可单独用 Node 做冒烟测试（dialog / shell 在 ipc 层）。
  */
 const fs = require('fs');
@@ -26,6 +27,12 @@ const MIME_BY_EXT = {
   '.zip': 'application/zip', '.rar': 'application/vnd.rar', '.7z': 'application/x-7z-compressed',
   '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.mp4': 'video/mp4',
   '.webm': 'video/webm', '.mov': 'video/quicktime', '.json': 'application/json', '.csv': 'text/csv',
+};
+
+/** MIME → 扩展名（粘贴图片时按类型补后缀，保证预览 / 系统打开能识别） */
+const EXT_BY_MIME = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+  'image/bmp': 'bmp', 'image/svg+xml': 'svg',
 };
 
 let root = '';
@@ -51,8 +58,13 @@ function ensureRoot() {
   fs.mkdirSync(root, { recursive: true });
 }
 
+/** 宿主目录：task-<id> / note-<id>（笔记图片复用同一套落盘规则，只是宿主不同） */
+function ownerDir(kind, id) {
+  return path.join(root, `${kind}-${Number(id)}`);
+}
+
 function taskDir(taskId) {
-  return path.join(root, `task-${Number(taskId)}`);
+  return ownerDir('task', taskId);
 }
 
 /** 文件名清洗：保留中文，替换 Windows 非法字符与路径分隔符，防止写到目录外 */
@@ -86,12 +98,13 @@ function absPath(entry) {
 }
 
 /**
- * 把一个磁盘文件复制进任务附件目录。
- * @param {number} taskId 任务 id
+ * 把一个磁盘文件复制进宿主附件目录。
+ * @param {'task'|'note'} kind 宿主类型
+ * @param {number} ownerId 宿主 id
  * @param {string} srcPath 源文件绝对路径
  * @returns {{id:string,name:string,size:number,mime:string,path:string,added_at:string}}
  */
-function importFile(taskId, srcPath) {
+function importInto(kind, ownerId, srcPath) {
   ensureRoot();
   const src = path.resolve(String(srcPath || ''));
   let st;
@@ -107,7 +120,7 @@ function importFile(taskId, srcPath) {
   const id = newId();
   const name = safeBaseName(src);
   const stored = `${id}_${name}`;
-  const dir = taskDir(taskId);
+  const dir = ownerDir(kind, ownerId);
   try {
     fs.mkdirSync(dir, { recursive: true });
     fs.copyFileSync(src, path.join(dir, stored));
@@ -119,7 +132,53 @@ function importFile(taskId, srcPath) {
     name,
     size: st.size,
     mime: mimeOf(name),
-    path: `task-${Number(taskId)}/${stored}`,
+    path: `${kind}-${Number(ownerId)}/${stored}`,
+    added_at: new Date().toISOString(),
+  };
+}
+
+/** 任务附件（历史签名保持不变） */
+function importFile(taskId, srcPath) {
+  return importInto('task', taskId, srcPath);
+}
+
+/**
+ * 把剪贴板里的图片（渲染层给的 data URL）直接落盘——笔记粘贴截图走这条路。
+ * 渲染层没有 fs 权限，只能把字节以 base64 传过来，由主进程写文件。
+ * @param {'task'|'note'} kind
+ * @param {number} ownerId
+ * @param {string} dataUrl 'data:image/png;base64,...'
+ * @param {string} [name] 期望文件名（不含扩展名时按 MIME 补）
+ */
+function importDataUrl(kind, ownerId, dataUrl, name = '') {
+  ensureRoot();
+  const m = /^data:([^;,]+)?(;charset=[^;,]+)?;base64,(.*)$/is.exec(String(dataUrl || ''));
+  if (!m) throw new Error('剪贴板内容不是有效的图片数据');
+  const mime = (m[1] || 'image/png').toLowerCase();
+  if (!mime.startsWith('image/')) throw new Error(`暂不支持 ${mime} 类型的粘贴内容`);
+  const buf = Buffer.from(m[3] || '', 'base64');
+  if (!buf.length) throw new Error('剪贴板里的图片是空的');
+  if (buf.length > MAX_FILE_BYTES) {
+    throw new Error(`图片 ${(buf.length / 1024 / 1024).toFixed(1)}MB，超过单文件 ${MAX_FILE_BYTES / 1024 / 1024}MB 上限`);
+  }
+  const ext = EXT_BY_MIME[mime] || (mime.split('/')[1] || 'png');
+  const base = safeBaseName(String(name || '').trim() || `粘贴图片-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}`);
+  const fileName = /\.[a-z0-9]{2,5}$/i.test(base) ? base : `${base}.${ext}`;
+  const id = newId();
+  const stored = `${id}_${fileName}`;
+  const dir = ownerDir(kind, ownerId);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, stored), buf);
+  } catch (e) {
+    throw new Error(`保存图片失败：${e && e.message ? e.message : e}`);
+  }
+  return {
+    id,
+    name: fileName,
+    size: buf.length,
+    mime,
+    path: `${kind}-${Number(ownerId)}/${stored}`,
     added_at: new Date().toISOString(),
   };
 }
@@ -163,14 +222,34 @@ function removeFile(entry) {
   }
 }
 
-/** 删除某个任务的全部附件文件（任务 / 子任务被删除时调用） */
-function removeTaskDir(taskId) {
+/** 删除某个宿主的整个附件目录（任务 / 笔记被彻底删除时调用） */
+function removeOwnerDir(kind, ownerId) {
   if (!root) return;
   try {
-    fs.rmSync(taskDir(taskId), { recursive: true, force: true });
+    fs.rmSync(ownerDir(kind, ownerId), { recursive: true, force: true });
   } catch (e) {
-    console.warn('[attachments] 清理任务附件目录失败：', e && e.message);
+    console.warn('[attachments] 清理附件目录失败：', e && e.message);
   }
+}
+
+/** 删除某个任务的全部附件文件（任务 / 子任务被删除时调用） */
+function removeTaskDir(taskId) {
+  removeOwnerDir('task', taskId);
+}
+
+/**
+ * 解析 `todo-media://` 协议请求 → 磁盘绝对路径。
+ * 只接受 attachments 根目录下的相对路径（越界一律 null），避免任意文件被读走。
+ * @param {string} rel 形如 'note-12/abc123_x.png'
+ * @returns {string|null}
+ */
+function resolveMedia(rel) {
+  if (!root) return null;
+  const clean = String(rel || '').replace(/^\/+/, '');
+  if (!clean) return null;
+  const abs = path.resolve(root, clean);
+  if (abs !== root && !abs.startsWith(root + path.sep)) return null;
+  return abs;
 }
 
 module.exports = {
@@ -178,10 +257,16 @@ module.exports = {
   init,
   getRoot,
   taskDir,
+  ownerDir,
+  importInto,
   importFile,
+  importDataUrl,
   absPath,
   exists,
   saveAs,
   removeFile,
+  removeOwnerDir,
   removeTaskDir,
+  resolveMedia,
+  mimeOf,
 };

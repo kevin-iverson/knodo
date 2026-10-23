@@ -125,18 +125,32 @@ export function openPromptModal(opts) {
  * @param {(root:HTMLElement) => Promise<string|void>} [opts.onSubmit]
  *        提供时底部按钮变为“确认”语义：返回字符串 = 校验失败并就地展示，否则关闭。
  *        不提供时保持原有的“关闭”语义（历史调用不受影响）。
+ * @param {() => void} [opts.onClose]
+ *        关闭钩子：Esc / 点遮罩 / 点按钮都会走这里。带自动保存的弹窗（如笔记编辑器）
+ *        用它做最后一次 flush —— 否则用户改完直接按 Esc 会丢最后一次输入。
+ * @param {boolean} [opts.showClose] 头部右侧显示 ✕ 关闭按钮（大弹窗建议开）
+ * @param {string} [opts.headHtml] 头部右侧的额外按钮（调用方自备的可信 HTML）
+ * @param {boolean} [opts.resizable] 右下角显示缩放手柄，可拖动改大小（双击手柄恢复默认）
+ * @param {string} [opts.resizeKey] 尺寸记忆键：同一键的弹窗下次打开沿用上次大小
+ * @param {number} [opts.minWidth] 缩放最小宽度（默认 520）
+ * @param {number} [opts.minHeight] 缩放最小高度（默认 380）
  * @returns {Promise<boolean>} 是否以“确认”关闭
  */
 export function openPanelModal({
   title, html = '', className = '', onMount, okText = '关闭',
-  extraButtons = [], onSubmit,
+  extraButtons = [], onSubmit, onClose, showClose = false, headHtml = '',
+  resizable = false, resizeKey = '', minWidth = 520, minHeight = 380,
 }) {
   return new Promise((resolve) => {
     const mask = document.createElement('div');
     mask.className = 'modal-mask';
     mask.innerHTML = `
       <div class="modal modal-panel${className ? ` ${esc(className)}` : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
-        <div class="modal-head">${esc(title)}</div>
+        <div class="modal-head">
+          <span class="modal-head-text">${esc(title)}</span>
+          ${headHtml}
+          ${showClose ? '<button type="button" class="modal-icon-btn" data-modal="close" title="关闭（Esc）" aria-label="关闭">✕</button>' : ''}
+        </div>
         <div class="modal-body">${html}</div>
         <div class="modal-error" hidden></div>
         <div class="modal-foot">
@@ -156,8 +170,16 @@ export function openPanelModal({
       errEl.hidden = !msg;
       mask.querySelector('.modal').classList.toggle('has-error', !!msg);
     };
+    let disposeResize = null;
     const close = (ok) => {
       document.removeEventListener('keydown', onKey, true);
+      if (typeof disposeResize === 'function') {
+        try { disposeResize(); } catch (e) { /* 清理失败不拦住关闭 */ }
+        disposeResize = null;
+      }
+      if (typeof onClose === 'function') {
+        try { onClose(); } catch (e) { /* 关闭钩子失败不能拦住关闭 */ }
+      }
       mask.remove();
       resolve(ok);
     };
@@ -177,6 +199,10 @@ export function openPanelModal({
       }
     });
     mask.addEventListener('click', (e) => { if (e.target === mask) close(false); });
+    mask.querySelector('[data-modal="close"]')?.addEventListener('click', () => close(false));
+    if (resizable) {
+      disposeResize = mountResize(mask.querySelector('.modal'), { key: resizeKey, minWidth, minHeight });
+    }
 
     extraButtons.forEach((b) => {
       const el = mask.querySelector(`[data-extra="${b.label}"]`);
@@ -184,7 +210,9 @@ export function openPanelModal({
       el.addEventListener('click', async () => {
         showError('');
         try {
-          const msg = await b.handler(mask);
+          // 第二个参数给 handler 一个「关掉自己」的口子：比如笔记编辑器里的「删除」，
+          // 删完就该连窗口一起关，否则会停在一篇已不存在的笔记上。
+          const msg = await b.handler(mask, () => close(false));
           if (msg) showError(msg);
         } catch (e) {
           showError((e && e.message) || '操作失败，请重试');
@@ -194,6 +222,127 @@ export function openPanelModal({
 
     if (typeof onMount === 'function') onMount(mask, () => close(false));
   });
+}
+
+/**
+ * 给面板弹窗装一个右下角缩放手柄。
+ *
+ * 为什么不用 CSS 的 `resize: both`：它要求元素 overflow 非 visible（会和 `.modal` 的
+ * `overflow: hidden` + 内部滚动打架），而且手柄样式不可控、拖拽时不会触发子元素重排回调。
+ * 这里用 pointer 事件自己算尺寸，同时：
+ *  - 尺寸按 key 存 localStorage，下次打开沿用（用户把笔记窗口拉大一次就够了）；
+ *  - 双击手柄清除记忆、回到 CSS 默认尺寸；
+ *  - 窗口变小时自动收缩，避免弹窗被顶出可视区。
+ * @returns {() => void} 清理函数（关闭弹窗时调用）
+ */
+function mountResize(modal, { key = '', minWidth = 520, minHeight = 380 } = {}) {
+  if (!modal) return null;
+  const storeKey = `modal-size:${key || 'default'}`;
+  const defaultStyle = { width: modal.style.width, height: modal.style.height };
+  let maximized = false;
+
+  const clamp = (w, h) => {
+    const maxW = Math.max(minWidth, window.innerWidth - 32);
+    const maxH = Math.max(minHeight, window.innerHeight - 32);
+    return {
+      w: Math.max(minWidth, Math.min(Math.round(w), maxW)),
+      h: Math.max(minHeight, Math.min(Math.round(h), maxH)),
+    };
+  };
+  const apply = (w, h) => {
+    const { w: W, h: H } = clamp(w, h);
+    modal.style.maxWidth = `${window.innerWidth - 32}px`;
+    modal.style.maxHeight = `${window.innerHeight - 32}px`;
+    modal.style.width = `${W}px`;
+    modal.style.height = `${H}px`;
+    return { W, H };
+  };
+  const remember = () => {
+    try {
+      const r = modal.getBoundingClientRect();
+      localStorage.setItem(storeKey, JSON.stringify({ w: Math.round(r.width), h: Math.round(r.height) }));
+    } catch (e) { /* 隐私模式 / 存储配额不可用时静默降级为「只本次有效」 */ }
+  };
+  const restore = () => {
+    try {
+      const raw = localStorage.getItem(storeKey);
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (s && s.w > 0 && s.h > 0) apply(s.w, s.h);
+    } catch (e) { /* 记忆值损坏就按默认尺寸打开 */ }
+  };
+  const notifyResize = () => modal.dispatchEvent(new CustomEvent('modal:resize'));
+
+  restore();
+
+  const grip = document.createElement('div');
+  grip.className = 'modal-resize';
+  grip.title = '拖动调整窗口大小（双击恢复默认）';
+  grip.setAttribute('role', 'separator');
+  grip.setAttribute('aria-label', '调整弹窗大小');
+  modal.appendChild(grip);
+
+  const onGripDown = (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const r = modal.getBoundingClientRect();
+    const start = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
+    maximized = false;
+    modal.classList.add('is-resizing');
+    grip.setPointerCapture(e.pointerId);
+    const onMove = (ev) => {
+      apply(start.w + (ev.clientX - start.x), start.h + (ev.clientY - start.y));
+      notifyResize();
+    };
+    const onUp = () => {
+      grip.removeEventListener('pointermove', onMove);
+      grip.removeEventListener('pointerup', onUp);
+      grip.removeEventListener('pointercancel', onUp);
+      modal.classList.remove('is-resizing');
+      remember();
+      notifyResize();
+    };
+    grip.addEventListener('pointermove', onMove);
+    grip.addEventListener('pointerup', onUp);
+    grip.addEventListener('pointercancel', onUp);
+  };
+  grip.addEventListener('pointerdown', onGripDown);
+  grip.addEventListener('dblclick', () => {
+    try { localStorage.removeItem(storeKey); } catch (e) { /* 忽略 */ }
+    modal.style.width = defaultStyle.width;
+    modal.style.height = defaultStyle.height;
+    maximized = false;
+    notifyResize();
+  });
+
+  // 最大化 / 还原：由头部按钮触发（弹窗管理器把口子挂在元素上，调用方不必持有内部变量）
+  let savedSize = null;
+  modal.__toggleMax = () => {
+    if (maximized) {
+      maximized = false;
+      if (savedSize) apply(savedSize.w, savedSize.h);
+      else { modal.style.width = defaultStyle.width; modal.style.height = defaultStyle.height; }
+    } else {
+      const r = modal.getBoundingClientRect();
+      savedSize = { w: r.width, h: r.height };
+      maximized = true;
+      apply(window.innerWidth - 32, window.innerHeight - 32);
+    }
+    notifyResize();
+    return maximized;
+  };
+
+  const onWinResize = () => {
+    const r = modal.getBoundingClientRect();
+    apply(r.width, r.height);
+    notifyResize();
+  };
+  window.addEventListener('resize', onWinResize);
+
+  return () => {
+    window.removeEventListener('resize', onWinResize);
+    try { delete modal.__toggleMax; } catch (e) { /* 忽略 */ }
+  };
 }
 
 /** 归一化颜色值：#abc → #aabbcc，非法值返回 '' */
