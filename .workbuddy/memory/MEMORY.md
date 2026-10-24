@@ -39,6 +39,11 @@
   视图的 refresh 回调要调 `render()` 而不是 `renderTasks()`。
 - **事件委托挂在常驻容器上时只能用一次**：容器不随 innerHTML 重绘而换新，重复 `addEventListener`
   会让一次点击触发 N 个处理器（弹窗开 N 个、删 N 次）→ 用 `WeakSet` 记已绑容器。
+- **委托与「逐个元素的直接绑定」不能混用**（已踩两次：见第 40~41 行与这里的组合）。骨架会被重建的
+  视图（笔记 / 会议等）里，`bindEvents` 首次执行时顺手给某个具体 input/text 挂的监听器，
+  在骨架重建后就永久失联 —— 因为容器已在 WeakSet 里、`bindEvents` 不会再跑，而那个元素是全新的。
+  **凡是会随骨架重建的控件，一律走容器级委托**（`#nt-search` 的 input/keydown 就是这么修的）；
+  重建后记得把视图状态（关键词、选中项）回填进新节点。
 - 模块间要互相跳转时（任务详情 ↔ 笔记视图）用 `await import()` 动态导入，避免静态循环依赖。
 - **弹窗（`openPanelModal`）里放编辑器 / 做二选一确认时的三个约定**（都是踩过的坑）：
   1. 需要「关闭前保存」就传 `onClose`（Esc / 点遮罩也会走）；
@@ -75,6 +80,19 @@
 - **CDP 临时脚本的两个坑**：① WebSocket 开着会吊住 node 事件循环，结尾必须 `process.exit(0)`，
   否则看着像「卡住」；② `document.querySelector('.nt-empty')` 会命中**侧栏标签列表**的
   「暂无标签」，断言必须限定作用域（`.nt-col .nt-list .nt-empty`）。
+- **`renderer/js/note-find.js`：笔记正文查找 / 替换（Ctrl+F / Ctrl+H）**。
+  匹配复用 EasyMDE dist 里已打包的 `cm.getSearchCursor(q, {line:0,ch:0}, {caseFold, multiline:true})`
+  （dist 只带了 searchcursor，没有 addon/search 的面板），浮条 UI 自己画。三个要点：
+  ① 全部替换必须**倒序**（先改后面的，前面的 {line,ch} 才不会错位）；
+  ② 快捷键要在**捕获阶段**拦 —— CodeMirror pcDefault 里已绑 `"Ctrl-F": "find"`；
+  ③ Esc 要在宿主层（`handleFindShortcut`）兜住，因为焦点常常还在正文里、浮条自身收不到。
+
+## 「今天 / 今日已完成」的口径
+- `state.recentlyDone`（`renderer/js/store.js`）是「今天完成的任务就地保留」标记，存 settings 带自然日，
+  跨天自动作废、点「隐藏已完成」清空。**记录不分视图、只有「今天」列表负责展示**：
+  `noteCompletionChange(id, completed, parentId)` 在任何视图的勾选入口都要调。
+- 子任务全部勾完时 `db.toggleTask` 会递归把父任务标记完成，这类「连带完成」的祖先由
+  `rememberCompletedAncestors()` 补记，否则父任务会从今天列表里凭空消失、只剩一排子任务。
 
 ## 验证方式
 - 数据层：`npm run test:db`（`scripts/smoke-db.js`，不依赖 Electron）。

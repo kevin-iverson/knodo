@@ -26,6 +26,7 @@ import {
   wrapStyledText, TEXT_COLORS, BG_COLORS,
 } from './markdown-lib.js';
 import { openDetail } from './detail.js';
+import { openFindBar, closeFindBar, isFindOpen } from './note-find.js';
 
 let notify = () => {};
 let onChanged = () => {};
@@ -99,6 +100,10 @@ export async function renderNotes(containerSelector = '#view') {
       boundContainers.add(container);
     }
     boundRoot = container;
+    // 搜索框的监听是「委托在容器上」而不是绑在这个 input 上的（原因见 bindEvents 的注释），
+    // 这里只需把关键词回填回去，避免看起来没搜、列表却还被过滤着
+    const searchInput = container.querySelector('#nt-search');
+    if (searchInput) searchInput.value = keyword;
     await refresh(container);
     // 骨架重建后右栏是空的：把上一篇重新打开，避免「切个视图回来内容没了」
     if (activeNoteId) {
@@ -126,7 +131,10 @@ function shellHtml() {
     <div class="nt-wrap">
       <div class="nt-toolbar">
         <button class="primary-btn" data-nt="new">＋ 新建笔记</button>
-        <input class="nt-search" id="nt-search" type="text" placeholder="搜索笔记（标题 / 正文全文，实时匹配）" />
+        <!-- 搜索框的值由 renderNotes 在骨架重建后按 keyword 回填：
+             否则「搜到一半切走再回来」会看到空输入框，却仍处在筛选态 -->
+        <input class="nt-search" id="nt-search" type="text" autocomplete="off"
+               placeholder="搜索笔记（标题 / 正文全文，实时匹配）" />
         <button class="chip" data-nt="toggle-archived">🗄 归档夹</button>
         <button class="chip" data-nt="toggle-trash">🗑 回收站</button>
         <span class="nt-spacer"></span>
@@ -801,7 +809,12 @@ function switchMode(m) {
   if (mode !== 'edit') refreshPreview();
   // 切换后编辑器宽度变了 → 重新测量（否则行号 / 光标的横向位置会错）
   if (mode !== 'preview') {
-    setTimeout(() => { refreshEditorLayout(); try { editor && editor.codemirror.focus(); } catch (e) { /* 忽略 */ } }, 20);
+    setTimeout(() => {
+      refreshEditorLayout();
+      // 查找 / 替换浮条开着时不要抢焦点（Ctrl+F 会自动切到分栏，这时焦点该留在查找框里）
+      if (isFindOpen()) return;
+      try { editor && editor.codemirror.focus(); } catch (e) { /* 忽略 */ }
+    }, 20);
   }
 }
 
@@ -1073,8 +1086,10 @@ function bindModalEvents(mask) {
       if (saver) await saver.flush();
     }
   });
+  // 与右栏同一套快捷键（弹窗挂在 body 下，#view 的委托够不到它，得自己绑一份）
+  mask.addEventListener('keydown', handleFindShortcut, true);
   mask.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 's' && e.target.closest && e.target.closest('.nt-dp')) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S') && e.target.closest && e.target.closest('.nt-dp')) {
       e.preventDefault();
       flushNow().then(() => notify('已保存'));
     }
@@ -1110,9 +1125,12 @@ function bindEvents(root) {
     else if (act === 'dp-delete') { await deleteFromDetail(); }
   });
 
-  // 右栏输入 → 防抖保存（委托在常驻容器上，详情重绘不需要重新绑定）
+  // 输入框混用两种绑定方式会踩坑：
+  // bindEvents 只在「骨架首次创建」时执行一次（容器进了 WeakSet 就不再重复绑），
+  // 而切走再回来时骨架会重建、#nt-search 是全新节点 —— 直接挂在旧节点上的监听就永远失联了，
+  // 表现为「顶部搜索框打不出结果」。所以搜索框与其他输入一样走容器级委托。
   root.addEventListener('input', (e) => {
-    if (e.target.id === 'nt-search') return;
+    if (e.target.id === 'nt-search') { scheduleSearch(root, e.target.value); return; }
     if (e.target.closest('.nt-dp') && saver) saver.schedule();
   });
   root.addEventListener('change', async (e) => {
@@ -1128,29 +1146,97 @@ function bindEvents(root) {
   root.addEventListener('click', (e) => {
     if (e.target.classList && e.target.classList.contains('nt-dp-state') && saver) saver.flush();
   });
+  // 捕获阶段吃掉 Ctrl+F / Ctrl+H：CodeMirror 的默认键表里本身就绑了 Ctrl-F → find
+  // （lib/codemirror.js 的 pcDefault）—— 虽然 search 插件没一起打包、实际不会执行，
+  // 但在捕获阶段先拦最稳，避免以后补了插件再跟它抢按键
+  root.addEventListener('keydown', handleFindShortcut, true);
   root.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 's' && e.target.closest('.nt-dp')) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S') && e.target.closest('.nt-dp')) {
       e.preventDefault();
       flushNow().then(() => notify('已保存'));
+      return;
+    }
+    // 搜索框：Enter 立即检索（不等防抖），Esc 退出搜索
+    if (e.target.id === 'nt-search') {
+      if (e.key === 'Enter') { e.preventDefault(); runSearch(root, e.target.value); }
+      else if (e.key === 'Escape') { e.preventDefault(); clearSearch(); }
     }
   });
+}
 
-  const search = root.querySelector('#nt-search');
-  if (search) {
-    let timer;
-    // 实时匹配：输入停 200ms 就检索一次（本地 FTS，足够快）
-    search.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        const next = search.value.trim();
-        if (next === keyword) return;
-        keyword = next;
-        if (keyword) { showTrash = false; }
-        await loadList(root);
-        syncToolbar(root);
-      }, 200);
-    });
+/* ---------------- 顶部搜索（标题 / 正文全文） ---------------- */
+
+/** 输入停顿 220ms 才检索；本地 FTS + LIKE 兜底，足够快 */
+let searchTimer = null;
+function scheduleSearch(root, value) {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => runSearch(root, value), 220);
+}
+
+/** 执行一次检索（防抖到期 / Enter 都会走到这里） */
+async function runSearch(root = boundRoot, value = '') {
+  const next = String(value == null ? '' : value).trim();
+  if (next === keyword) return;
+  keyword = next;
+  if (keyword) showTrash = false; // 搜索优先：不用再手动退出回收站才看得到结果
+  if (!root) return;
+  await loadList(root);
+  syncToolbar(root);
+}
+
+/* ---------------- 正文查找 / 替换（Ctrl+F / Ctrl+H） ---------------- */
+
+/** 找 / 替换的目标：编辑器可能还没挂好，所以传 getter 而不是直接传实例 */
+function findTarget() {
+  return {
+    pane: detailPane(),
+    getCm: () => (editor && editor.codemirror) || null,
+    onChange: () => { if (saver) saver.schedule(); schedulePreviewRefresh(); },
+  };
+}
+
+/** 打开浮条：没编辑器要给出可用提示，而不是默默什么都不发生 */
+function openNoteFind({ replace = false } = {}) {
+  const pane = detailPane();
+  if (!pane) return;
+  const target = findTarget();
+  if (!target.getCm()) { notify('先双击正文或切到「分栏 / 编辑」，再查找替换'); return; }
+  // 预览模式下编辑区是 display:none 的，命中标记看不见 —— 自动切成「分栏」，
+  // 左边看源码里的高亮、右边看渲染结果，不必再手动切一次
+  if (mode === 'preview') switchMode('split');
+  const seed = editor && editor.codemirror ? editor.codemirror.getSelection() : '';
+  const ok = openFindBar({ ...target, replace, seed });
+  if (!ok) notify('编辑器还没准备好，请稍后再试');
+}
+
+/**
+ * 快捷键判定（右栏与弹窗共用）。
+ * 只吃「焦点落在笔记详情面板内」的 Ctrl+F / Ctrl+H —— 列表搜索框等处的 Ctrl+F 不受影响。
+ * @returns {boolean} 是否已消费该按键
+ */
+function handleFindShortcut(e) {
+  if (!e || e.altKey) return false;
+  const k = String(e.key || '');
+  const t = e.target;
+  const inPane = !!(t && typeof t.closest === 'function' && t.closest('.nt-dp'));
+  if (!inPane) return false;
+
+  // 浮条开着时 Esc 也能关（焦点可能仍在正文里，浮条自己的 keydown 收不到）
+  if (k === 'Escape') {
+    if (!isFindOpen()) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    closeFindBar();
+    return true;
   }
+
+  if (!(e.ctrlKey || e.metaKey)) return false;
+  const lower = k.toLowerCase();
+  if (lower !== 'f' && lower !== 'h') return false;
+  e.preventDefault();
+  e.stopPropagation();
+  openNoteFind({ replace: lower === 'h' });
+  return true;
 }
 
 async function onToolbar(act) {
@@ -1390,6 +1476,9 @@ function disposeEditor() {
   disposeSaver();
   clearTimeout(previewTimer);
   previewTimer = null;
+  // 查找 / 替换浮条挂在详情面板里：整个 innerHTML 重建前必须撤掉，
+  // 否则它会拿着已销毁的 CodeMirror 继续打标记 / 调 replaceRange
+  closeFindBar({ keepFocus: true });
   if (editorObserver) {
     try { editorObserver.disconnect(); } catch (e) { /* 忽略 */ }
     editorObserver = null;

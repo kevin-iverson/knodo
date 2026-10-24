@@ -1662,6 +1662,38 @@ html.is-resizing .detail-foot { pointer-events: none; }
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* ---- 正文查找 / 替换浮条（Ctrl+F / Ctrl+H，见 js/note-find.js） ----
+   位置：详情面板里「元信息行」与「正文滚动区」之间，所以切预览 / 分栏 / 编辑都不会跟着某一栏挪 */
+.nt-find {
+  flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px;
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+.nt-find-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* 替换行默认收起，Ctrl+H / 点 ⇄ 才展开（两级特异性高于上面的 .nt-find-row） */
+.nt-find .nt-find-replace { display: none; }
+.nt-find.is-replace .nt-find-replace { display: flex; }
+.nt-find-input, .nt-find-replace-input {
+  flex: 1 1 auto; min-width: 80px; max-width: 260px;
+  padding: 4px 8px; font: inherit; font-size: 12.5px; outline: none;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-panel); color: var(--text);
+}
+.nt-find-input:focus, .nt-find-replace-input:focus { border-color: var(--primary); }
+/* 没命中就地标红，不用弹红 toast 打断输入节奏 */
+.nt-find-input.is-none { border-color: var(--danger); }
+.nt-find-count {
+  flex: 0 0 auto; min-width: 52px; text-align: center;
+  font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums;
+}
+.nt-find-count.is-none { color: var(--danger); }
+.nt-find-toggle.active { background: var(--bg-active); color: var(--primary); font-weight: 600; }
+/* 命中处：普通命中淡黄、当前命中加一道主色描边（暗色主题下另给透明度版本） */
+.cm-find-hit { background: #fff3a3; border-radius: 2px; }
+.cm-find-current { background: #ffd55c; box-shadow: 0 0 0 1px var(--primary); }
+[data-theme="dark"] .cm-find-hit { background: rgba(255, 214, 10, 0.22); }
+[data-theme="dark"] .cm-find-current { background: rgba(255, 214, 10, 0.42); box-shadow: 0 0 0 1px var(--primary); }
+
 .nt-ed-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .nt-ed[data-mode="split"] .nt-ed-body,
 .nt-dp[data-mode="split"] .nt-dp-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }

@@ -731,8 +731,8 @@ function bindDetailEvents(drawer, task) {
 
   drawer.querySelector('[data-act="toggle"]').addEventListener('click', async () => {
     const next = await api.tasks.toggle(task.id);
-    // 与列表勾选保持一致：今天视图里保留刚完成的任务
-    noteCompletionChange(task.id, !!(next && next.completed));
+    // 与列表勾选保持一致：今天完成的任务保留在「今天」列表里（详情抽屉里勾的同样要记）
+    noteCompletionChange(task.id, !!(next && next.completed), task.parent_id);
     await refreshAll();
     handlers.refresh();
     renderDetail();
@@ -960,7 +960,12 @@ function bindSubtaskRowEvents(drawer, parentId) {
     const sid = Number(li.dataset.id);
 
     li.querySelector('[data-act="subtask-toggle"]').addEventListener('click', async () => {
-      const ok = await guard('更新子任务失败', () => api.tasks.toggle(sid));
+      const ok = await guard('更新子任务失败', async () => {
+        const next = await api.tasks.toggle(sid);
+        // 子任务被勾完时父任务会被自动标记完成：这里要把「连带完成」的祖先也记进今日已完成，
+        // 否则父任务会从「今天」列表里凭空消失、只剩下一排子任务
+        noteCompletionChange(sid, !!(next && next.completed), next && next.parent_id);
+      });
       if (!ok) return;
       await refreshSubtasks(drawer, parentId);
       await syncDetailSideEffects(parentId);

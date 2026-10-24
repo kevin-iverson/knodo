@@ -1278,8 +1278,8 @@ async function dropReorder(item, fromIdStr) {
 
 async function toggleTask(id) {
   const t = await api.tasks.toggle(id);
-  // 「今天」视图：勾选完成后不要立刻消失 —— 记下来，随后重绘时补拉回来
-  noteCompletionChange(id, !!(t && t.completed));
+  // 今天完成的任务保留在「今天」列表里：任何视图里勾的都要记（这里是列表勾选入口）
+  noteCompletionChange(id, !!(t && t.completed), t && t.parent_id);
   await refreshAll();
   renderSidebarList();
   renderTasks();
