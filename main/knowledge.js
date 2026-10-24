@@ -119,7 +119,8 @@ function indexNote(noteId) {
     contentHash: note.content_hash,
     status: 'indexed',
   });
-  const chunkCount = db.replaceKbChunks(doc.id, chunkMarkdown(note.content_md, note.title));
+  // 分块前剥掉颜色 / 高亮标记：检索不需要样式，留着只会污染提示词与关键词定位
+  const chunkCount = db.replaceKbChunks(doc.id, chunkMarkdown(db.stripStyleMarks(note.content_md), note.title));
   return { indexed: true, docId: doc.id, chunkCount };
 }
 
@@ -228,6 +229,9 @@ async function expandQuery(query, cfg = {}) {
 /** RRF（Reciprocal Rank Fusion）常数：名次越靠前收益越大，且不受各路分数量纲影响 */
 const RRF_K = 60;
 
+/** 片段长度：够读清上下文，又不至于把结果列表撑爆 */
+const SNIPPET_LEN = 180;
+
 /** 笔记级召回：先命中「哪篇笔记相关」，再取它的前几个分块 —— 补 FTS5 逐块匹配的视野盲区 */
 function noteLevelChunks(keyword, kbId, limit = 2) {
   const notes = db.searchNotes(keyword, { limit: 8, deleted: 'exclude', archived: 'include' });
@@ -237,6 +241,40 @@ function noteLevelChunks(keyword, kbId, limit = 2) {
     rows.forEach((r) => out.push(r));
   }
   return out;
+}
+
+/**
+ * 模糊召回：把查询切成词元（中文二元组 / 英文词）按覆盖率捞笔记，再取它的分块。
+ * 补的是 FTS trigram 只认连续短语的盲区 —— 用户问「上次那个灰度 发布策略」，
+ * 库里写的是「灰度发布」，FTS 直接扑空，但词元「灰度 / 发布」能命中。
+ */
+function fuzzyChunks(keyword, kbId, limit = 2) {
+  const notes = db.fuzzySearchNotes(keyword, { limit: 6, archived: 'include' });
+  const out = [];
+  for (const n of notes) {
+    const rows = db.listKbChunksBySourceKey(`note:${n.id}`, limit);
+    rows.forEach((r) => out.push(r));
+  }
+  return out;
+}
+
+/**
+ * 截出「围绕命中词」的原文片段。
+ * 之前直接取块首 220 字，用户看到的内容经常跟问题没关系（块是按标题切的，可能很长），
+ * 没法判断这条为什么被召回 —— 溯源的前提是「命中在哪儿就展示哪儿」。
+ * @returns {{snippet:string, matchTerm:string, snippetStart:number}}
+ */
+function snippetOfHit(content, query, variants = []) {
+  const terms = [...new Set([query, ...variants, ...db.fuzzyTokens(query, 6)])]
+    .filter((t) => t && String(t).length >= 2)
+    .sort((a, b) => String(b).length - String(a).length); // 长词优先：定位更准
+  for (const t of terms) {
+    const seg = db.snippetOf(content, t, SNIPPET_LEN);
+    if (seg.hit) return { snippet: seg.text, matchTerm: t, snippetStart: seg.start };
+  }
+  // 一个词都没落上（多半是被 AI 重排捞回来的语义相关）→ 退化成块首，至少内容可读
+  const seg = db.snippetOf(content, '', SNIPPET_LEN);
+  return { snippet: seg.text, matchTerm: '', snippetStart: 0 };
 }
 
 function toHit(r) {
@@ -254,11 +292,11 @@ function toHit(r) {
  * 智能召回：查询改写 → 多路召回（分块 FTS / 笔记级 / LIKE 兜底）→ RRF 融合 → AI 重排。
  *
  * 为什么要多路：FTS5 trigram 只认字面连续片段，「上次那个回滚方案」这类口语化提问命中率很差；
- * 先让模型改写成若干查询词，再分别从「分块」与「笔记」两个粒度召回，最后用 RRF 融合名次
+ * 先让模型改写成若干查询词，再从「分块 / 笔记 / 模糊词元」三个粒度召回，最后用 RRF 融合名次
  * （避免直接相加不同量纲的分数），配了 AI 时再让模型对候选做一次语义重排。
  *
  * @param {object} opts { query, topK, kbId, noteIds, cfg }
- * @returns {Promise<Array>} hits（含 score / matchedBy / coverage 便于界面展示命中原因）
+ * @returns {Promise<Array>} hits（含 score / relevance / matchedBy / coverage / snippet 便于界面展示命中原因与溯源）
  */
 async function retrieve({ query, topK = DEFAULT_TOP_K, kbId = NOTES_KB_ID, noteIds = null, cfg = {} } = {}) {
   const k = Number(topK) > 0 ? Number(topK) : DEFAULT_TOP_K;
@@ -287,6 +325,7 @@ async function retrieve({ query, topK = DEFAULT_TOP_K, kbId = NOTES_KB_ID, noteI
   for (const v of variants) {
     pushRoute(db.searchKbChunks({ query: v, kbId, topK: wide }), v.length >= 3 ? 'fts' : 'like', 1);
     pushRoute(noteLevelChunks(v, kbId, 2), 'note', 0.8);
+    pushRoute(fuzzyChunks(v, kbId, 2), 'fuzzy', 0.7);
   }
 
   // 融合分 = RRF 名次分 + 字面覆盖 + 标题/路径命中 + 同笔记多块的递减
@@ -316,12 +355,20 @@ async function retrieve({ query, topK = DEFAULT_TOP_K, kbId = NOTES_KB_ID, noteI
   // 同一篇笔记最多保留 2 个块：既保证多样性，又不让长笔记刷屏
   const perNote = new Map();
   const out = [];
+  // 相关度：按本轮最高分归一到 0~100（不同查询的融合分量纲不同，绝对值没有可比性）
+  const topScore = ranked.length ? Math.max(ranked[0].score, 0.0001) : 1;
   for (const h of ranked) {
     const key = h.noteId == null ? `chunk-${h.chunkId}` : `note-${h.noteId}`;
     const c = perNote.get(key) || 0;
     if (c >= 2) continue;
     perNote.set(key, c + 1);
-    out.push({ ...h, score: c === 0 ? h.score : h.score * 0.7 });
+    const score = c === 0 ? h.score : h.score * 0.7;
+    out.push({
+      ...h,
+      score,
+      relevance: Math.max(5, Math.min(100, Math.round((score / topScore) * 100))),
+      ...snippetOfHit(h.content, q, variants),
+    });
     if (out.length >= k) break;
   }
   return out;

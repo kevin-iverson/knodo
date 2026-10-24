@@ -6,6 +6,7 @@
 import { api, PRIORITY_TEXT, fmtDateTime } from './api.js';
 import { state, loadGroups, loadTags, refreshAll, noteCompletionChange } from './store.js';
 import { renderMarkdown } from './markdown.js';
+import { renderStyledInline } from './markdown-lib.js';
 import { openPanelModal, openPromptModal } from './modal.js';
 import { openNotePicker } from './note-picker.js';
 import {
@@ -93,7 +94,7 @@ function noteSectionHtml(notes) {
     <li class="nt-link-item" data-note="${n.id}">
       <span class="nt-link-main" title="${esc(n.title || '')}">
         <span class="nt-link-title" data-act="note-open" data-note="${n.id}">📝 ${esc(n.title || '未命名笔记')}</span>
-        <span class="nt-link-excerpt">${esc(String(n.excerpt || '').slice(0, 64))}</span>
+        <span class="nt-link-excerpt">${renderStyledInline(n.excerpt || '', 64)}</span>
       </span>
       <span class="nt-link-ops">
         <button class="ghost-btn tiny" data-act="note-open" data-note="${n.id}">查看</button>
@@ -125,10 +126,10 @@ async function refreshNoteSection(drawer, taskId) {
   bindNoteSectionEvents(drawer, Number(taskId));
 }
 
-/** 跳转到笔记视图并打开指定笔记（动态 import：避免与 notes.js 形成静态循环依赖） */
+/** 打开关联笔记：弹窗编辑器就地查看 / 编辑（不再跳转到笔记标签页） */
 async function openNoteView(noteId) {
   const mod = await import('./notes.js');
-  await mod.focusNote(noteId);
+  await mod.openNoteModal(Number(noteId));
 }
 
 function bindNoteSectionEvents(drawer, taskId) {

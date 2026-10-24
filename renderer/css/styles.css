@@ -1532,8 +1532,12 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .nt-search:focus { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent); }
 .nt-count { color: var(--text-2); font-size: 12px; white-space: nowrap; }
 
-/* 两栏：目录 / 列表。编辑在弹窗里做，不再占用第三栏（列表更宽，翻找更顺手） */
-.nt-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 14px; align-items: start; }
+/* 三栏：目录 / 标签 → 笔记列表 → 笔记内容（与「任务列表 + 详情抽屉」同一套左右分栏心智） */
+.nt-layout { display: grid; grid-template-columns: 200px minmax(240px, 310px) minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 1180px) {
+  /* 窗口不够宽时先压缩目录栏，保证右栏正文还有可读宽度 */
+  .nt-layout { grid-template-columns: 168px minmax(220px, 260px) minmax(0, 1fr); }
+}
 .nt-side {
   background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 10px 8px; max-height: calc(100vh - 190px); overflow-y: auto;
@@ -1556,9 +1560,15 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .nt-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; }
 .nt-tag-count { color: var(--text-3); font-size: 11px; }
 
+.nt-col { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.nt-list-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 20px; padding: 0 2px; font-size: 12px; color: var(--text-2);
+}
+.nt-lh-kw b { color: var(--primary); }
 .nt-list {
   list-style: none; display: flex; flex-direction: column; gap: 8px;
-  max-height: calc(100vh - 190px); overflow-y: auto; padding-right: 4px;
+  max-height: calc(100vh - 210px); overflow-y: auto; padding-right: 4px;
 }
 .nt-item {
   padding: 12px 14px; border-radius: var(--radius); cursor: pointer;
@@ -1588,6 +1598,7 @@ html.is-resizing .detail-foot { pointer-events: none; }
   max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .nt-chip-danger { background: rgba(229, 72, 77, 0.14); color: var(--danger); }
+.nt-chip-hit { background: color-mix(in srgb, var(--primary) 15%, transparent); color: var(--primary); font-weight: 600; }
 .nt-ref-badge { color: var(--primary); }
 
 .nt-empty {
@@ -1652,17 +1663,82 @@ html.is-resizing .detail-foot { pointer-events: none; }
 }
 
 .nt-ed-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
-.nt-ed[data-mode="split"] .nt-ed-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.nt-ed[data-mode="split"] .nt-ed-body,
+.nt-dp[data-mode="split"] .nt-dp-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .nt-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.nt-ed[data-mode="preview"] .nt-pane { display: none; }
+.nt-ed[data-mode="preview"] .nt-pane,
+.nt-dp[data-mode="preview"] .nt-pane { display: none; }
 .nt-preview {
   display: none; min-width: 0; min-height: 0; overflow: auto;
   padding: 6px 16px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg); color: var(--text); font-size: 13.5px; line-height: 1.75; word-break: break-word;
 }
 .nt-ed[data-mode="split"] .nt-preview,
-.nt-ed[data-mode="preview"] .nt-preview { display: block; }
+.nt-ed[data-mode="preview"] .nt-preview,
+.nt-dp[data-mode="split"] .nt-preview,
+.nt-dp[data-mode="preview"] .nt-preview { display: block; }
 .nt-preview-empty { color: var(--text-3); font-size: 13px; padding: 24px 0; }
+
+/* ---- 右栏：笔记详情（就地查看 / 编辑） ---- */
+.nt-detail { min-width: 0; }
+.nt-dp {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 14px 12px; min-width: 0;
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
+  max-height: calc(100vh - 150px); overflow: hidden;
+}
+.nt-dp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: 0 0 auto; }
+.nt-dp-title {
+  flex: 1 1 auto; min-width: 160px; padding: 6px 10px; font-size: 16px; font-weight: 600;
+  border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text);
+  font-family: inherit; outline: none; transition: border-color 0.12s, background 0.12s;
+}
+.nt-dp-title:hover { background: var(--bg); }
+.nt-dp-title:focus { border-color: var(--primary); background: var(--bg-panel); }
+.nt-dp-close {
+  border: none; background: none; color: var(--text-3); font-size: 18px; line-height: 1;
+  cursor: pointer; padding: 2px 6px; border-radius: var(--radius-sm);
+}
+.nt-dp-close:hover { color: var(--text); background: var(--bg-hover); }
+.nt-dp-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 0 0 auto; }
+/* 中段整体滚动：正文再长 / 附件再多，底部操作条也固定可见（之前会被 max-height 裁掉） */
+.nt-dp-scroll {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.nt-dp-body { flex: 1 0 auto; min-height: 260px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.nt-att, .nt-refs { flex: 0 0 auto; max-height: 150px; overflow-y: auto; }
+.nt-dp-foot {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 0 auto;
+  border-top: 1px solid var(--border); padding-top: 10px;
+}
+.nt-dp-foot .nt-spacer { flex: 1 1 auto; }
+.nt-dp-state { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+.nt-dp-state.is-pending { color: var(--warning, #f59e0b); }
+.nt-dp-state.is-saving { color: var(--primary); }
+.nt-dp-state.is-saved { color: var(--green); }
+.nt-dp-state.is-error { color: var(--danger); cursor: pointer; text-decoration: underline; }
+
+/* 取色板（挂在 body 上，避免被编辑区裁剪） */
+.nt-palette {
+  position: fixed; z-index: 400; width: 176px; padding: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+}
+.nt-palette-title { font-size: 11.5px; color: var(--text-2); }
+.nt-palette-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.nt-swatch {
+  height: 24px; padding: 0; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--bg); cursor: pointer;
+}
+.nt-swatch:hover { border-color: var(--primary); }
+.nt-swatch i { display: block; width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border); }
+.nt-palette-clear {
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);
+  color: var(--text-2); font: inherit; font-size: 12px; padding: 4px 8px; cursor: pointer;
+}
+.nt-palette-clear:hover { border-color: var(--primary); color: var(--primary); }
 .nt-att, .nt-refs { flex: 0 0 auto; max-height: 130px; overflow: auto; }
 .nt-att:empty, .nt-refs:empty { display: none; }
 
@@ -1709,8 +1785,46 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .kb-hit-title:hover { color: var(--primary); }
 .kb-hit-path { color: var(--text-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kb-hit-body { margin-top: 4px; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+/* 相关度条：与任务检索结果同一套表现，一眼看出哪条最贴题 */
+.kb-rel {
+  flex: 0 0 56px; height: 5px; border-radius: 3px; background: var(--bg);
+  border: 1px solid var(--border); overflow: hidden; margin-left: auto;
+}
+.kb-rel i { display: block; height: 100%; background: var(--primary); }
+
+/* 字体颜色 / 背景高亮 / 关键词命中（==文字=={c:#hex;bg:#hex} 与搜索高亮共用一套视觉） */
+.md-mark {
+  padding: 0 2px; border-radius: 3px; background: #fff3a3; color: inherit;
+}
+.md-color { padding: 0 1px; }
+[data-theme="dark"] .md-mark { background: rgba(255, 236, 130, 0.26); color: var(--text); }
+.kw-hit {
+  padding: 0 1px; border-radius: 3px; color: inherit;
+  background: color-mix(in srgb, var(--primary) 32%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--primary) 60%, transparent);
+}
+
+/* 未保存改动确认 */
+.modal.modal-note-unsaved { width: 420px; max-width: 92vw; }
 
 /* Markdown 正文（预览 / 答案 / 帮助） */
+.markdown-body img { max-width: 100%; border-radius: 6px; }
+.markdown-body table { border-collapse: collapse; margin: 10px 0; font-size: 12.5px; width: auto; }
+.markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.markdown-body th { background: var(--bg); }
+.markdown-body blockquote {
+  margin: 8px 0; padding: 6px 12px; border-left: 3px solid var(--primary); color: var(--text-2); background: var(--bg);
+}
+.markdown-body code { padding: 1px 5px; border-radius: 4px; background: var(--bg-hover); font-size: 12.5px; }
+.markdown-body pre { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg); overflow: auto; margin: 8px 0; }
+.markdown-body pre code { background: none; padding: 0; }
+.markdown-body h1 { font-size: 18px; margin: 14px 0 8px; }
+.markdown-body h2 { font-size: 16px; margin: 12px 0 6px; }
+.markdown-body h3 { font-size: 14px; margin: 10px 0 6px; }
+.markdown-body p { margin: 8px 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 22px; margin: 8px 0; }
+.markdown-body li { margin: 3px 0; }
+.markdown-body a { color: var(--primary); }
 .editor-preview, .editor-preview-side, .nt-guide, .kb-answer {
   font-size: 13.5px; line-height: 1.75; word-break: break-word;
 }
@@ -1774,6 +1888,10 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .editor-toolbar button.nt-ico-link::after { content: '🔗'; }
 .editor-toolbar button.nt-ico-image::after { content: '🖼'; }
 .editor-toolbar button.nt-ico-table::after { content: '▦'; }
+.editor-toolbar button.nt-ico-color::after { content: 'A'; font-weight: 700; color: #e5484d; }
+.editor-toolbar button.nt-ico-bg::after {
+  content: 'H'; font-weight: 700; color: #1f2328; background: #fff3a3; padding: 0 3px; border-radius: 3px;
+}
 .editor-toolbar button.nt-ico-hr::after { content: '—'; }
 .editor-toolbar button.nt-ico-preview::after { content: '👁'; }
 .editor-toolbar button.nt-ico-split::after { content: '◧'; }
@@ -1863,6 +1981,12 @@ html.is-resizing .detail-foot { pointer-events: none; }
 }
 .modal.modal-note-editor .modal-foot { flex: 0 0 auto; }
 .modal.modal-note-editor > .modal-error { margin: 0 18px; }
+/* 弹窗里的详情面板：吃满弹窗，去掉自带边框 / 限高（限高交给弹窗 + 内部滚动区） */
+.modal.modal-note-editor .nt-dp {
+  max-height: none; height: 100%; min-height: 0;
+  border: none; border-radius: 0; background: transparent; padding: 10px 16px 12px;
+}
+.modal.modal-note-editor .nt-dp-body { min-height: 200px; }
 /* 编辑区吃满弹窗高度，内部各自滚动（正文 / 预览 / 附件条），而不是整块页面滚动 */
 .nt-pane .EasyMDEContainer { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .nt-pane .EasyMDEContainer .CodeMirror {

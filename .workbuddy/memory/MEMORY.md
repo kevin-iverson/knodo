@@ -12,6 +12,10 @@
 - **本地图片（`todo-media://`）**：笔记正文里的本地图片写 `todo-media:///<相对路径>`，
   由 `main/main.js` 注册的自定义协议映射回附件文件（只认 attachments 目录内，越界返回 -6）。
   不要用 `file://`（CSP 限制 + 等于放开整盘）。CSP 的 `img-src` 已含 `'self' data: https: todo-media:`。
+- **笔记颜色 / 高亮不占新列**：以 `==文字=={c:#e5484d;bg:#fff3a3}` 内联标记写进 `notes.content_md`。
+  导入导出、FTS 触发器、知识库分块天然生效。`word_count / content_hash / notes_fts / kb_chunks`
+  一律先过 `db.stripStyleMarks()`；`excerpt` **保留**标记（`plainTextOf(md, keepStyle=true)`）供卡片渲染。
+  渲染靠 `renderer/js/markdown-lib.js` 的 markdown-it 内联插件 `styledTextPlugin`（`html:false`，色值只放行 `#hex`）。
 - **数据目录**：`<userData>/config.json` 的 `dataDir` 决定库与附件位置；`main/storage.js` 负责解析 / 探测 / 迁移。
   配置目录不可用时必须回退默认目录并提示，绝不能因此启动失败。录音（`recordings/`）不随数据目录迁移：
   会议表里存的是绝对路径。
@@ -59,6 +63,18 @@
   Windows 的原生菜单条由系统绘制、不跟应用主题，要彻底一致只能改自绘标题栏。
 - 第三方前端库一律 vendor 进 `renderer/vendor/`（离线运行），并在 `package.json` 登记来源；
   EasyMDE 需 `autoDownloadFontAwesome:false`，图标用 CSS `::after` 兜底。
+
+- **「取消」的基线 = 最后一次保存成功的状态**，不是「打开时的快照」：每次 save 回调成功后都要让
+  `baseline` 前移，否则自动保存已落库再点取消会把已保存内容一起撤掉（用户看到「已保存 14:53」
+  却回到更早版本，语义自相矛盾）。取消 = 撤销自上次保存以来的改动。
+- **笔记详情面板的两种宿主**：右栏（#view 内）与弹窗（`openNoteModal`，任务详情点关联笔记时用）
+  共用同一套 detailHtml/mountEditor/bindSaver；`editor`/`saver` 是模块级单例，**换宿主前必须
+  dispose 旧的**；`detailPane()` 等查询要优先命中 `modalRoot`（弹窗挂 body，#view 的事件委托
+  够不到它，弹窗要自己绑一份委托）。底部操作条不能被 max-height 裁：滚动区用 `.nt-dp-scroll`
+  包住正文/附件/引用，foot 放外面。色板色块只能用 `background:` 预览（空元素设 `color:` 看不见）。
+- **CDP 临时脚本的两个坑**：① WebSocket 开着会吊住 node 事件循环，结尾必须 `process.exit(0)`，
+  否则看着像「卡住」；② `document.querySelector('.nt-empty')` 会命中**侧栏标签列表**的
+  「暂无标签」，断言必须限定作用域（`.nt-col .nt-list .nt-empty`）。
 
 ## 验证方式
 - 数据层：`npm run test:db`（`scripts/smoke-db.js`，不依赖 Electron）。

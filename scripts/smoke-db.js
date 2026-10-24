@@ -652,6 +652,30 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
   })());
   check('归档笔记仍可被检索', db.searchNotes('配置未同步').some((n) => n.id === n2.id));
   db.setNoteArchived(n2.id, false);
+  check('检索结果带匹配次数 / 标题命中 / 命中片段', (() => {
+    const hit = db.searchNotes('灰度').find((n) => n.id === n1.id);
+    return !!hit && hit.matchCount >= 2 && hit.titleHit === true
+      && hit.snippet.includes('灰度') && !('content_md' in hit); // 正文不下发给渲染层
+  })());
+  check('标题命中的笔记排在最前', (() => {
+    const rows = db.searchNotes('灰度');
+    return rows.length > 0 && rows[0].id === n1.id;
+  })());
+  check('多词 / 带空格的查询有模糊兜底（FTS 短语扑空时不返回空）', (() => {
+    const rows = db.searchNotes('灰度 方案');
+    return rows.some((n) => n.id === n1.id);
+  })());
+  check('模糊检索返回词元覆盖率', (() => {
+    const rows = db.fuzzySearchNotes('灰度 发布策略');
+    const hit = rows.find((n) => n.id === n1.id);
+    return !!hit && hit.fuzzyScore > 0 && hit.fuzzyScore <= 1;
+  })());
+  check('颜色 / 高亮标记：不进字数，但保留在摘要里供卡片渲染', (() => {
+    const n = db.createNote({ title: '样式用例', contentMd: '这是==重点=={c:#e5484d}内容' });
+    const ok = n.excerpt.includes('==重点=={c:#e5484d}') && n.word_count === 6;
+    db.purgeNote(n.id);
+    return ok;
+  })());
   check('目录筛选含子目录', db.listNotes({ folderId: fRoot.id, includeSubfolders: true }).some((n) => n.id === n1.id));
   check('删除目录：笔记移到上级而不是被删', (() => {
     db.deleteNoteFolder(fChild.id);
@@ -683,6 +707,15 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
   check('召回结果带笔记 id 与出处', await (async () => {
     const hits = await knowledge.retrieve({ query: '配置未同步', topK: 5 });
     return hits.length > 0 && hits[0].noteId === n2.id && !!hits[0].title;
+  })());
+  check('召回结果带命中片段与相关度（便于溯源）', await (async () => {
+    const hits = await knowledge.retrieve({ query: '灰度发布', topK: 5 });
+    return hits.length > 0 && !!hits[0].snippet
+      && hits[0].relevance >= 50 && hits[0].relevance <= 100;
+  })());
+  check('模糊路由参与召回（换序 / 拆分的问法）', await (async () => {
+    const hits = await knowledge.retrieve({ query: '灰度 放量策略', topK: 5 });
+    return hits.some((h) => String(h.matchedBy || '').includes('fuzzy'));
   })());
   check('知识库统计可读', db.kbStats(1).chunk_count > 0 && db.kbStats(1).indexed_note_count >= 2);
   const trashed = db.trashNote(n1.id);

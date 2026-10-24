@@ -1489,9 +1489,24 @@ function hashText(s) {
   return nodeCrypto.createHash('sha1').update(String(s || '')).digest('hex');
 }
 
-/** Markdown → 纯文本（摘要 / 字数统计 / 检索兜底都用它） */
-function plainTextOf(md) {
-  return String(md || '')
+/**
+ * 去掉「字体颜色 / 背景高亮」标记：`==文字=={c:#e5484d;bg:#fff3a3}` → `文字`。
+ * 标记只是给渲染层看的，摘要 / 字数 / 检索 / 知识库分块都按纯文本处理，
+ * 否则用户搜「灰度」会因为正文里写着 `{c:#...}` 之类的字符而命中错位。
+ * @param {string} md
+ */
+function stripStyleMarks(md) {
+  return String(md || '').replace(/==([^=\n]+)==(?:\{[^{}\n]*\})?/g, '$1');
+}
+
+/**
+ * Markdown → 纯文本（摘要 / 字数 / 检索都用它）。
+ * @param {string} md
+ * @param {boolean} [keepStyle=false] 保留颜色 / 高亮标记。
+ *   摘要要保留（列表卡片要按原色渲染），字数与检索不要（标记不该被当成正文去匹配）。
+ */
+function plainTextOf(md, keepStyle = false) {
+  return (keepStyle ? String(md || '') : stripStyleMarks(md))
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`[^`]*`/g, ' ')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
@@ -1513,8 +1528,12 @@ function wordCountOf(md) {
   return en + zh;
 }
 
+/**
+ * 摘要：保留颜色 / 高亮标记（列表卡片要按原色渲染），
+ * 字数 / 检索仍走 plainTextOf 的剥离版本。
+ */
 function excerptOf(md, len = 120) {
-  const plain = plainTextOf(md);
+  const plain = plainTextOf(md, true);
   return plain.length > len ? `${plain.slice(0, len)}…` : plain;
 }
 
@@ -1522,15 +1541,38 @@ function excerptOf(md, len = 120) {
  * 命中片段（搜索结果高亮用）。
  * 不用 FTS 的 snippet()：external content 表上调用它会直接报 "SQL logic error"，
  * 因此在应用层按关键词定位截取——反正列表里本来就有纯文本摘要，开销可忽略。
+ * @returns {{text:string, start:number, hit:boolean}} start 是片段在纯文本里的起始下标
  */
-function highlightOf(text, keyword, len = 90) {
+function snippetOf(text, keyword, len = 90) {
   const plain = plainTextOf(text);
   const kw = String(keyword || '');
   const i = kw ? plain.toLowerCase().indexOf(kw.toLowerCase()) : -1;
-  if (i < 0) return plain.length > len ? `${plain.slice(0, len)}…` : plain;
+  if (i < 0) {
+    return { text: plain.length > len ? `${plain.slice(0, len)}…` : plain, start: 0, hit: false };
+  }
   const start = Math.max(0, i - Math.floor(len / 3));
   const seg = plain.slice(start, start + len);
-  return `${start > 0 ? '…' : ''}${seg}${start + len < plain.length ? '…' : ''}`;
+  return {
+    text: `${start > 0 ? '…' : ''}${seg}${start + len < plain.length ? '…' : ''}`,
+    start,
+    hit: true,
+  };
+}
+
+/** 兼容旧调用：只要片段文本 */
+function highlightOf(text, keyword, len = 90) {
+  return snippetOf(text, keyword, len).text;
+}
+
+/** 关键词在文本里出现的次数（不重叠、大小写不敏感） */
+function countMatches(text, keyword) {
+  const kw = String(keyword || '').toLowerCase();
+  if (!kw) return 0;
+  const s = String(text || '').toLowerCase();
+  let n = 0;
+  let i = s.indexOf(kw);
+  while (i >= 0) { n += 1; i = s.indexOf(kw, i + kw.length); }
+  return n;
 }
 
 /* ---------------- 笔记目录 ---------------- */
@@ -1887,9 +1929,20 @@ function emptyTrash() {
   return ids.length;
 }
 
+/** 检索列：比列表多取正文——命中片段与匹配次数都要基于正文算（返回前会把正文摘掉） */
+const NOTE_SEARCH_COLUMNS = `${NOTE_LIST_COLUMNS}, n.content_md`;
+
 /**
  * 全文检索（FTS5 trigram；关键词 < 3 字符时回退 LIKE——trigram 不支持更短的查询）。
- * @returns 笔记列表 + score / highlight（命中片段）
+ *
+ * 除了 bm25，这里再补三个界面真正需要的量：
+ * - matchCount：关键词在「标题 + 正文」里的总命中次数（展示「N 处匹配」）；
+ * - titleHit：是否命中标题（找「那篇叫 X 的笔记」时标题命中应优先）；
+ * - snippet / snippetStart：围绕首次命中的原文片段，供界面高亮与溯源；
+ * 最终按「FTS 名次 + 命中次数 + 标题命中」的融合分排序——只用 bm25 时，
+ * 标题完全命中但正文短的笔记会排在正文里关键词刷了一堆的长文后面。
+ *
+ * @returns 笔记列表（含 score / matchCount / titleHit / snippet / snippetStart）
  */
 function searchNotes(keyword, opts = {}) {
   const kw = String(keyword || '').trim();
@@ -1902,33 +1955,134 @@ function searchNotes(keyword, opts = {}) {
   if (deleted === 'exclude') where.push('n.deleted_at IS NULL');
   else if (deleted === 'only') where.push('n.deleted_at IS NOT NULL');
   if (archived === 'exclude') where.push('n.archived = 0');
+  const w = where.length ? ` AND ${where.join(' AND ')}` : '';
 
   // trigram 查询词至少 3 字符，且要做短语化处理（转义双引号后整体加引号）
+  let rows = null;
   if (kw.length >= 3) {
     const phrase = `"${kw.replace(/"/g, '""')}"`;
     try {
-      const rows = db
+      rows = db
         .prepare(
-          `SELECT ${NOTE_LIST_COLUMNS}, bm25(notes_fts) AS score
+          `SELECT ${NOTE_SEARCH_COLUMNS}, bm25(notes_fts) AS score
              FROM notes_fts f JOIN notes n ON n.id = f.rowid
-            WHERE notes_fts MATCH ? ${where.length ? `AND ${where.join(' AND ')}` : ''}
+            WHERE notes_fts MATCH ?${w}
             ORDER BY score ASC LIMIT ?`
         )
         .all(phrase, limit);
-      return attachNoteTags(rows).map((r) => ({ ...r, highlight: highlightOf(`${r.title} ${r.excerpt}`, kw) }));
     } catch (e) {
       // FTS 语句被判为非法（特殊字符等）时静默降级到 LIKE，不让搜索直接崩掉
       console.warn('[db] 笔记全文检索降级为 LIKE：', e && e.message);
+      rows = null;
     }
   }
-  const rows = db
+  if (!rows || !rows.length) {
+    // trigram 只认连续片段：「灰度 方案」这种带空格 / 换序的输入会直接零命中。
+    // 先退 LIKE（整串），再退模糊词元 —— 保证「实时搜索框里打到一半」也有东西可看。
+    rows = db
+      .prepare(
+        `SELECT ${NOTE_SEARCH_COLUMNS}, 0 AS score FROM notes n
+          WHERE (n.title LIKE ? OR n.content_md LIKE ?)${w}
+          ORDER BY n.pinned DESC, n.updated_at DESC LIMIT ?`
+      )
+      .all(`%${kw}%`, `%${kw}%`, limit);
+  }
+  if (!rows.length) {
+    // 模糊兜底要卡一道覆盖率：只留「至少命中一半词元」的笔记。
+    // 不设门槛的话搜「灰度发布」会把只含「发布」的《发布事故》也捞出来，反而像搜错了。
+    rows = fuzzyNoteRows(kw, { limit, deleted, archived })
+      .filter((r) => (Number(r.fuzzy_hits) || 0) / Math.max(1, Number(r.fuzzy_total) || 1) >= 0.5);
+  }
+
+  const total = rows.length || 1;
+  return attachNoteTags(rows)
+    .map((r, idx) => {
+      const titleHit = countMatches(r.title, kw) > 0;
+      const matchCount = countMatches(r.title, kw) + countMatches(r.content_md, kw);
+      const seg = snippetOf(r.content_md, kw, 110);
+      // 正文没命中（只在标题里）时退化成摘要，避免片段和标题重复
+      const snippet = seg.hit ? seg.text : snippetOf(r.excerpt || r.content_md, '', 110).text;
+      const { content_md: _omit, ...rest } = r;
+      void _omit;
+      return {
+        ...rest,
+        score: ((total - idx) / total) * 0.6
+          + (Math.min(matchCount, 20) / 20) * 0.25
+          + (titleHit ? 0.15 : 0),
+        matchCount,
+        titleHit,
+        snippet,
+        snippetStart: seg.hit ? seg.start : 0,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * 查询 → 模糊检索词元：中文切二元组（没有空格分词，二元组是最划算的字面特征），
+ * 英文 / 数字按词切，整体去重并截断（SQL 里每个词元要占两组 LIKE 参数）。
+ */
+function fuzzyTokens(keyword, max = 8) {
+  const s = String(keyword || '').toLowerCase();
+  const out = [];
+  for (const w of s.match(/[a-z0-9]{2,}/g) || []) out.push(w);
+  // 中文不能用 \W 清洗（\W 在 JS 里匹配所有非 [A-Za-z0-9_] 的字符，汉字也会被当成标点删掉），
+  // 这里只取 CJK 字符做二元组
+  const cjk = (s.match(/[㐀-鿿぀-ヿ]/g) || []).join('');
+  if (cjk.length === 1) out.push(cjk);
+  else for (let i = 0; i < cjk.length - 1; i += 1) out.push(cjk.slice(i, i + 2));
+  return [...new Set(out.filter((x) => x))].slice(0, max);
+}
+
+/**
+ * 模糊检索底层查询：把查询切成词元后逐元 LIKE，按「命中不同词元的个数」打分。
+ * 补 FTS trigram 只认连续片段的盲区 —— 用户搜「灰度 发布策略」，
+ * 库里写的是「灰度发布」，FTS 直接扑空，但词元「灰度 / 发布」能命中。
+ *
+ * @returns 原始行（含 content_md 与 fuzzy_hits / fuzzy_total，供 searchNotes 继续算指标）
+ */
+function fuzzyNoteRows(kw, { limit = 20, deleted = 'exclude', archived = 'include' } = {}) {
+  const tokens = fuzzyTokens(kw);
+  if (!tokens.length) return [];
+  const where = [];
+  if (deleted === 'exclude') where.push('n.deleted_at IS NULL');
+  else if (deleted === 'only') where.push('n.deleted_at IS NOT NULL');
+  if (archived === 'exclude') where.push('n.archived = 0');
+
+  // 每个词元两组参数：WHERE 里一组（命中任一即入选），SELECT 里一组（累加覆盖率）
+  const likePair = '(n.title LIKE ? OR n.content_md LIKE ?)';
+  const conds = tokens.map(() => likePair);
+  const scoreExpr = tokens.map(() => `(CASE WHEN ${likePair} THEN 1 ELSE 0 END)`).join(' + ');
+  const params = [];
+  tokens.forEach((t) => params.push(`%${t}%`, `%${t}%`));
+
+  return db
     .prepare(
-      `SELECT ${NOTE_LIST_COLUMNS}, 0 AS score FROM notes n
-        WHERE (n.title LIKE ? OR n.content_md LIKE ?) ${where.length ? `AND ${where.join(' AND ')}` : ''}
-        ORDER BY n.pinned DESC, n.updated_at DESC LIMIT ?`
+      `SELECT ${NOTE_SEARCH_COLUMNS}, (${scoreExpr}) AS fuzzy_hits, ${tokens.length} AS fuzzy_total
+         FROM notes n
+        WHERE (${conds.join(' OR ')})${where.length ? ` AND ${where.join(' AND ')}` : ''}
+        ORDER BY fuzzy_hits DESC, n.updated_at DESC LIMIT ?`
     )
-    .all(`%${kw}%`, `%${kw}%`, limit);
-  return attachNoteTags(rows).map((r) => ({ ...r, highlight: highlightOf(`${r.title} ${r.excerpt}`, kw) }));
+    .all(...params, ...params, limit);
+}
+
+/**
+ * 模糊检索（对外）。
+ * @returns 笔记列表（含 fuzzyScore：0~1 的词元覆盖率）
+ */
+function fuzzySearchNotes(keyword, opts = {}) {
+  const kw = String(keyword || '').trim();
+  if (!kw) return [];
+  const rows = fuzzyNoteRows(kw, {
+    limit: Number(opts.limit) || 20,
+    deleted: opts.deleted || 'exclude',
+    archived: opts.archived || 'include',
+  });
+  return attachNoteTags(rows).map((r) => {
+    const { content_md: _omit, ...rest } = r;
+    void _omit;
+    return { ...rest, fuzzyScore: (Number(r.fuzzy_hits) || 0) / Math.max(1, Number(r.fuzzy_total) || 1) };
+  });
 }
 
 /* ---------------- 笔记标签 ---------------- */
@@ -2516,6 +2670,11 @@ module.exports = {
   listTrash,
   emptyTrash,
   searchNotes,
+  fuzzySearchNotes,
+  fuzzyTokens,
+  snippetOf,
+  stripStyleMarks,
+  countMatches,
   listNoteTags,
   createNoteTag,
   deleteNoteTag,
