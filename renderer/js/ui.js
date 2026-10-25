@@ -24,6 +24,8 @@ import { bindRecordButton, setRecorderHandlers } from './recorder.js';
 import { openSalaryModal, setSalaryHandlers } from './salary.js';
 import { openFormatterWindow, setFormatterHandlers } from './code-format.js';
 import { openDiffWindow, setDiffHandlers } from './text-diff.js';
+import { openSyncModal, setSyncHandlers } from './sync.js';
+import { openJsonViewWindow, setJsonViewHandlers } from './json-view.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
 
@@ -163,6 +165,18 @@ function bindStaticEvents() {
   });
   // 会议录制（工具栏按钮）
   bindRecordButton();
+
+  // 对外同步（导出到腾讯文档 / ima 等第三方）
+  setSyncHandlers({ toast });
+  document.getElementById('btn-sync')?.addEventListener('click', () => {
+    openSyncModal().catch((e) => toast(`打开导出面板失败：${(e && e.message) || e}`));
+  });
+
+  // 实用工具 → JSON 查看器（顶部菜单栏入口）
+  setJsonViewHandlers({ toast });
+  api.on('ui:json-viewer', () => {
+    openJsonViewWindow().catch((e) => toast(`打开 JSON 查看器失败：${(e && e.message) || e}`));
+  });
 
   // 数据导入 / 导出
   document.getElementById('btn-export').addEventListener('click', exportData);
@@ -1564,11 +1578,19 @@ async function renderStats() {
   viewEl.innerHTML = '<div class="empty">加载中…</div>';
   const ov = await api.stats.overview({ includeSubtasks: statsIncludeSubtasks });
 
-  const maxGroup = Math.max(1, ...ov.byGroup.map((g) => g.active + g.done));
+  // 按分组树的前序顺序排列（父分组后紧跟其子分组），与侧边栏层级一致；
+  // 统计里出现但已不在分组树中的（异常数据）排到最后。
+  const treeOrder = new Map(
+    flattenGroupTree(state.groups, { respectExpansion: false }).map(({ g }, i) => [g.id, i]),
+  );
+  const sortedByGroup = [...ov.byGroup].sort(
+    (a, b) => (treeOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (treeOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  );
+  const maxGroup = Math.max(1, ...sortedByGroup.map((g) => g.active + g.done));
   // 分组名带上级路径（"工作 / 前端"）：顶层分组只有自己的名字，子分组把父分组名一起显示出来，
   // 否则不同父分组下的同名子分组在统计里完全无法区分。
   const groupLabelOf = (g) => (g.parent_name ? `${g.parent_name} / ${g.name}` : g.name);
-  const groupBars = ov.byGroup
+  const groupBars = sortedByGroup
     .map((g) => {
       const total = g.active + g.done;
       const pct = Math.round((total / maxGroup) * 100);
@@ -1590,7 +1612,7 @@ async function renderStats() {
       const pct = ov.active > 0 ? Math.round((c / ov.active) * 100) : 0;
       return `<div class="bar-row">
         <span class="bar-label">${PRIORITY_TEXT[p]}</span>
-        <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${PRIORITY_COLOR[p]}"></div></div>
         <span class="bar-val">${c}</span>
       </div>`;
     })

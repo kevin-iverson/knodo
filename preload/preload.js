@@ -168,6 +168,11 @@ contextBridge.exposeInMainWorld('api', {
     summarize: (id) => call('meeting:summarize', id),
     importTodos: (p) => call('meeting:importTodos', p),
   },
+  // 对外同步：导出成第三方产品可直接使用的格式（腾讯文档 CSV / ima Markdown）
+  sync: {
+    exportTasks: (p) => call('sync:exportTasks', p),
+    exportNotes: (p) => call('sync:exportNotes', p),
+  },
   // 数据导入 / 导出
   data: {
     export: () => call('data:export'),
@@ -229,7 +234,7 @@ contextBridge.exposeInMainWorld('api', {
   on: (channel, cb) => {
     const allowed = [
       'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary',
-      'ui:code-format', 'ui:text-diff',
+      'ui:code-format', 'ui:text-diff', 'ui:json-viewer',
     ];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));

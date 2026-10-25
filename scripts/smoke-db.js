@@ -788,6 +788,65 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
   const shortQ = await knowledge.retrieve({ query: '灰度', topK: 5 });
   check('短查询（<3 字）走 LIKE 兜底也能命中', shortQ.length > 0);
 
+  console.log('\n[21] 对外同步导出（任务 CSV/MD、笔记 MD/ZIP）');
+  const sync = require('../main/sync');
+  const syncRoot = db.createGroup({ name: '同步-父分组' });
+  const syncKid = db.createGroup({ name: '同步-子分组', parentId: syncRoot.id });
+  db.createGroup({ name: '同步-另一个' });
+  db.createTask({ title: '父组任务A', groupId: syncRoot.id, priority: 3, tagIds: [] });
+  db.createTask({ title: '子组任务B', groupId: syncKid.id, priority: 1 });
+  const syncOther = db.listGroups().find((g) => g.name === '同步-另一个');
+  db.createTask({ title: '另一组任务C', groupId: syncOther.id });
+  const doneTask = db.createTask({ title: '已完成D', groupId: syncRoot.id });
+  db.toggleTask(doneTask.id); // 走与界面一致的完成入口，completed / completed_at 一起落库
+
+  const tRows = sync.collectTasks({ status: 'all' });
+  const mine = tRows.filter((r) => String(r.group).startsWith('同步'));
+  const seq = mine.map((r) => r.group);
+  const kidAt = seq.indexOf('同步-父分组 / 同步-子分组');
+  const otherAt = seq.indexOf('同步-另一个');
+  check('任务按分组树顺序导出（父组整块排完才到它的子组）',
+    mine.length === 4 && seq[0] === '同步-父分组' && kidAt > 0
+    && seq.slice(0, kidAt).every((g) => g === '同步-父分组')
+    && otherAt > kidAt);
+  check('任务字段落到导出行里（优先级 / 状态 / 分组）',
+    mine.some((r) => r.title === '父组任务A' && r.priority === '紧急')
+    && mine.some((r) => r.title === '已完成D' && r.status === '已完成'));
+  check('只导出进行中时不带已完成任务',
+    sync.collectTasks({ status: 'active' }).every((r) => r.status !== '已完成'));
+  const mdOut = sync.tasksToMarkdown(tRows, { status: 'all' });
+  check('Markdown 导出是表格且带标题',
+    mdOut.startsWith('# 任务导出') && mdOut.includes('| 标题 | 分组 | 优先级 |') && mdOut.split('\n').length > 5);
+  const csvOut = sync.tasksToCsv(tRows, { status: 'all' });
+  check('CSV 带 BOM 且表头完整（可直接导入在线表格）',
+    csvOut.charCodeAt(0) === 0xfeff && csvOut.includes('"标题","分组","优先级"'));
+  check('CSV 单元格里的逗号 / 引号被正确转义', (() => {
+    const one = sync.tasksToCsv([{ title: 'a,b "x"', group: 'g', priority: '中', status: '进行中',
+      planStart: '', planEnd: '', completedAt: '', tags: '', subtasks: '', parent: '', notes: '' }]);
+    return one.includes('"a,b ""x"""');
+  })());
+
+  const syncFolder = db.createNoteFolder({ name: '同步-目录' });
+  db.createNote({
+    title: '同步笔记/含斜杠',
+    contentMd: '# 标题\n\n带==高亮=={c:#e5484d;bg:#fff} 的正文',
+    folderId: syncFolder.id,
+  });
+  db.createNote({ title: '另一篇', contentMd: '普通正文', folderId: syncFolder.id });
+  const nEntries = sync.collectNotes({ folderId: syncFolder.id });
+  check('笔记导出带上目录层级并去掉高亮标记',
+    nEntries.length === 2
+    && nEntries.every((e) => e.folderPath === '同步-目录')
+    && !nEntries.some((e) => e.md.includes('{c:#e5484d')));
+  const singleMd = sync.notesToSingleMarkdown(nEntries);
+  check('单文件笔记导出含每篇标题', singleMd.includes('## 同步笔记/含斜杠') && singleMd.includes('## 另一篇'));
+  const zipBuf = sync.notesToZip(nEntries);
+  // 文件名在 ZIP 头里是明文（UTF-8），直接按字节找，别用 latin1 比中文
+  const hasName = zipBuf.indexOf(Buffer.from('同步笔记_含斜杠.md', 'utf8')) > 0;
+  check('笔记压缩包是合法 ZIP 且文件名已清洗',
+    zipBuf.slice(0, 2).toString('latin1') === 'PK' && hasName && zipBuf.length > 200);
+  check('导出文件名带时间戳', /^Knodo-任务-\d{8}-\d{4}\.csv$/.test(sync.defaultName('任务', 'csv')));
+
   console.log('\n====================');
   console.log(`结果：${passed} 通过，${failed} 失败`);
   db.close();

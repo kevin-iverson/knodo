@@ -50,20 +50,21 @@ export async function copyText(text) {
 
 /* ---------------- 语言表 ---------------- */
 
+/** hljs = 该语言在 highlight.js 里的名字（空 = 不高亮） */
 const LANGS = [
   { id: 'auto', label: '自动识别' },
-  { id: 'json', label: 'JSON', engine: 'prettier', parser: 'json', indent: 2 },
-  { id: 'javascript', label: 'JavaScript', engine: 'prettier', parser: 'babel', indent: 2 },
-  { id: 'typescript', label: 'TypeScript', engine: 'prettier', parser: 'typescript', indent: 2 },
-  { id: 'html', label: 'HTML', engine: 'prettier', parser: 'html', indent: 2 },
-  { id: 'css', label: 'CSS', engine: 'prettier', parser: 'css', indent: 2 },
-  { id: 'scss', label: 'SCSS', engine: 'prettier', parser: 'scss', indent: 2 },
-  { id: 'less', label: 'Less', engine: 'prettier', parser: 'less', indent: 2 },
-  { id: 'markdown', label: 'Markdown', engine: 'prettier', parser: 'markdown', indent: 2 },
-  { id: 'yaml', label: 'YAML', engine: 'prettier', parser: 'yaml', indent: 2 },
-  { id: 'xml', label: 'XML', engine: 'xml', indent: 4 },
-  { id: 'sql', label: 'SQL', engine: 'sql', indent: 2 },
-  { id: 'java', label: 'Java', engine: 'prettier', parser: 'java', indent: 4 },
+  { id: 'json', label: 'JSON', engine: 'prettier', parser: 'json', indent: 2, hljs: 'json' },
+  { id: 'javascript', label: 'JavaScript', engine: 'prettier', parser: 'babel', indent: 2, hljs: 'javascript' },
+  { id: 'typescript', label: 'TypeScript', engine: 'prettier', parser: 'typescript', indent: 2, hljs: 'typescript' },
+  { id: 'html', label: 'HTML', engine: 'prettier', parser: 'html', indent: 2, hljs: 'xml' },
+  { id: 'css', label: 'CSS', engine: 'prettier', parser: 'css', indent: 2, hljs: 'css' },
+  { id: 'scss', label: 'SCSS', engine: 'prettier', parser: 'scss', indent: 2, hljs: 'scss' },
+  { id: 'less', label: 'Less', engine: 'prettier', parser: 'less', indent: 2, hljs: 'less' },
+  { id: 'markdown', label: 'Markdown', engine: 'prettier', parser: 'markdown', indent: 2, hljs: 'markdown' },
+  { id: 'yaml', label: 'YAML', engine: 'prettier', parser: 'yaml', indent: 2, hljs: 'yaml' },
+  { id: 'xml', label: 'XML', engine: 'xml', indent: 4, hljs: 'xml' },
+  { id: 'sql', label: 'SQL', engine: 'sql', indent: 2, hljs: 'sql' },
+  { id: 'java', label: 'Java', engine: 'prettier', parser: 'java', indent: 4, hljs: 'java' },
 ];
 
 const SQL_DIALECTS = [
@@ -87,6 +88,7 @@ const KEYWORD_CASE = [
 const DEFAULTS = {
   lang: 'auto', indent: 2, useTabs: false, printWidth: 100,
   sqlDialect: 'sql', keywordCase: 'preserve',
+  highlight: true, // 语法高亮（highlight.js）
 };
 
 const langOf = (id) => LANGS.find((l) => l.id === id) || LANGS[1];
@@ -125,8 +127,64 @@ export function resolveLang(langId, text) {
 
 let corePromise = null;
 let javaPromise = null;
+let hlPromise = null;
 const loadCore = () => (corePromise || (corePromise = import('../vendor/tools/format-core.mjs')));
 const loadJava = () => (javaPromise || (javaPromise = import('../vendor/tools/format-java.mjs')));
+
+/**
+ * 语言 id（或 'auto' + 文本）→ highlight.js 语言名；该语言没有高亮规则时返回 ''。
+ * 文本对比窗口也用它，两个工具的着色口径保持一致。
+ */
+export function hljsLangOf(langId, text) {
+  return resolveLang(langId, text).hljs || '';
+}
+
+/** 已加载的 highlight 模块（加载后 highlightSync 才能同步出结果） */
+let hlMod = null;
+const loadHl = () => (hlPromise || (hlPromise = import('../vendor/tools/highlight.mjs').then((m) => {
+  hlMod = m;
+  return m;
+})));
+
+/**
+ * 同步版高亮：给「一次拼出整段 HTML」的场景用（文本对比的差异行就是这么渲染的）。
+ * 调用前先 await loadHighlightModule()；模块没就绪或语言不支持时返回**转义后的纯文本**。
+ */
+export function highlightSync(text, langId, on = true) {
+  const src = String(text == null ? '' : text);
+  const name = on ? hljsLangOf(langId, src) : '';
+  if (!name || !hlMod) return esc(src);
+  try {
+    return hlMod.highlightCode(src, name);
+  } catch (e) {
+    return esc(src);
+  }
+}
+
+export const loadHighlightModule = () => loadHl();
+
+/**
+ * 把文本按语言高亮写进元素（关掉高亮 / 语言不支持时退化为转义后的纯文本）。
+ * @param {HTMLElement} el <code> 之类的容器
+ * @param {string} text
+ * @param {string} langId 业务语言 id
+ * @param {boolean} on 是否启用高亮
+ */
+export async function paintHighlight(el, text, langId, on = true) {
+  if (!el) return;
+  const src = String(text == null ? '' : text);
+  const name = on ? hljsLangOf(langId, src) : '';
+  if (!name) {
+    el.textContent = src; // textContent 天然转义，不走 innerHTML
+    return;
+  }
+  try {
+    const mod = await loadHl();
+    el.innerHTML = mod.highlightCode(src, name);
+  } catch (e) {
+    el.textContent = src;
+  }
+}
 
 /**
  * 格式化文本（纯逻辑，UI 与文本对比都走这里）。
@@ -254,6 +312,9 @@ function formatterHtml(cfg) {
           <select class="fmt-ctl fmt-kw">${opt(KEYWORD_CASE, cfg.keywordCase)}</select>
         </label>
         <span class="fmt-spacer"></span>
+        <label class="fmt-check" title="按当前语言给两侧代码上色（highlight.js）">
+          <input type="checkbox" class="fmt-ctl fmt-hl"${cfg.highlight !== false ? ' checked' : ''} /><span>语法高亮</span>
+        </label>
         <button type="button" class="primary-btn fmt-run">格式化</button>
       </div>
       <div class="fmt-panes">
@@ -263,8 +324,13 @@ function formatterHtml(cfg) {
             <span class="fmt-count fmt-in-count">0 行</span>
             <button type="button" class="mini-btn fmt-clear" title="清空输入">清空</button>
           </div>
-          <textarea class="fmt-area fmt-in" spellcheck="false" wrap="off"
-                    placeholder="把代码粘贴进来（Ctrl+Enter 格式化，Tab 缩进）"></textarea>
+          <!-- 高亮层在 textarea 之下：textarea 文字透明、只留光标，看到的是 <pre> 里的着色结果。
+               textarea 仍是值的主人（复制 / 自动保存 / 冒烟断言都读它），高亮只是视觉层。 -->
+          <div class="fmt-editor">
+            <pre class="fmt-hl" aria-hidden="true"><code class="fmt-hl-code fmt-in-hl"></code></pre>
+            <textarea class="fmt-area fmt-in" spellcheck="false" wrap="off"
+                      placeholder="把代码粘贴进来（Ctrl+Enter 格式化，Tab 缩进）"></textarea>
+          </div>
         </section>
         <section class="fmt-pane">
           <div class="fmt-pane-head">
@@ -272,8 +338,11 @@ function formatterHtml(cfg) {
             <span class="fmt-count fmt-out-count">—</span>
             <button type="button" class="mini-btn fmt-copy" title="复制结果">复制</button>
           </div>
-          <textarea class="fmt-area fmt-out" readonly spellcheck="false" wrap="off"
-                    placeholder="格式化结果（只读）"></textarea>
+          <div class="fmt-editor">
+            <pre class="fmt-hl" aria-hidden="true"><code class="fmt-hl-code fmt-out-hl"></code></pre>
+            <textarea class="fmt-area fmt-out" readonly spellcheck="false" wrap="off"
+                      placeholder="格式化结果（只读）"></textarea>
+          </div>
         </section>
       </div>
       <div class="fmt-status" data-state="idle">选好语言后点「格式化」，或按 Ctrl+Enter。</div>
@@ -303,6 +372,33 @@ function bindFormatter(root, win, cfg, initialText) {
     $('.fmt-in-count').textContent = countText(inEl.value);
     $('.fmt-out-count').textContent = outEl.value ? countText(outEl.value) : '—';
   };
+
+  /**
+   * 刷新某个编辑区的高亮层。
+   * 高亮库按需加载且是异步的，连续输入时用 paintSeq 序号丢弃过期结果，
+   * 否则先发的慢请求会盖掉后发的新内容（粘贴大段文本时很容易出现）。
+   */
+  let hlSeq = 0;
+  const paint = async (which) => {
+    const el = which === 'in' ? inEl : outEl;
+    const code = which === 'in' ? $('.fmt-in-hl') : $('.fmt-out-hl');
+    const pre = code && code.parentElement;
+    const seq = ++hlSeq;
+    const on = state.highlight !== false;
+    await paintHighlight(code, el.value, state.lang, on);
+    if (seq !== hlSeq || !pre) return;
+    // 尾部补一个换行：<pre> 末尾的空行不占位，textarea 滚到底时两层会差一行
+    if (on && el.value) code.insertAdjacentHTML('beforeend', '\n');
+  };
+  const paintBoth = () => { paint('in'); paint('out'); };
+
+  /** 同步两层滚动（横向 wrap=off 也要跟，否则长行会错位） */
+  const syncScroll = (src, which) => {
+    const pre = (which === 'in' ? $('.fmt-in-hl') : $('.fmt-out-hl'))?.parentElement;
+    if (!pre) return;
+    pre.scrollTop = src.scrollTop;
+    pre.scrollLeft = src.scrollLeft;
+  };
   /** 语言相关选项的显隐：SQL 才显示方言 / 关键字，prettier 系才显示行宽 */
   const syncOptionVisibility = () => {
     const lang = resolveLang(state.lang, inEl.value);
@@ -319,6 +415,7 @@ function bindFormatter(root, win, cfg, initialText) {
     printWidth: Number($('.fmt-width').value) || 100,
     sqlDialect: $('.fmt-dialect').value,
     keywordCase: $('.fmt-kw').value,
+    highlight: $('.fmt-hl').checked,
   });
   const persist = () => {
     Object.assign(state, readOpts());
@@ -333,11 +430,13 @@ function bindFormatter(root, win, cfg, initialText) {
     }
     const opts = readOpts();
     persist();
+    state.highlight = opts.highlight;
     setStatus('格式化中…', 'idle');
     try {
       const { text, lang } = await formatText(src, opts);
       outEl.value = text;
       syncCounts();
+      paint('out');
       const auto = opts.lang === 'auto' ? `自动识别 → ${lang.label} · ` : '';
       setStatus(`${auto}已格式化 · ${text.split('\n').length} 行 · ${lang.label}`, 'ok');
     } catch (e) {
@@ -356,11 +455,13 @@ function bindFormatter(root, win, cfg, initialText) {
       inEl.value = SAMPLES[lang.id] || SAMPLES.json;
       syncCounts();
       syncOptionVisibility();
+      paint('in');
       await run();
     } else if (t.classList.contains('fmt-clear')) {
       inEl.value = '';
       outEl.value = '';
       syncCounts();
+      paintBoth();
       setStatus('已清空。', 'idle');
       inEl.focus();
     } else if (t.classList.contains('fmt-copy') || t.classList.contains('fmt-copy2')) {
@@ -371,12 +472,19 @@ function bindFormatter(root, win, cfg, initialText) {
       if (!outEl.value) return;
       inEl.value = outEl.value;
       syncCounts();
+      paint('in');
       notify('已把结果写回输入');
     }
   });
 
   root.addEventListener('change', (e) => {
     if (!e.target.classList.contains('fmt-ctl') && !e.target.classList.contains('fmt-tabs')) return;
+    if (e.target.classList.contains('fmt-hl')) {
+      state.highlight = e.target.checked;
+      paintBoth();
+      persist();
+      return;
+    }
     if (e.target.classList.contains('fmt-lang')) {
       state.lang = e.target.value;
       // 切语言时把缩进切成该语言的常见值（Java / XML 用 4）
@@ -384,6 +492,7 @@ function bindFormatter(root, win, cfg, initialText) {
       if (preset && state.lang !== 'auto') $('.fmt-indent').value = String(preset);
     }
     syncOptionVisibility();
+    paintBoth(); // 切语言 / 缩进后着色口径可能变
     persist();
   });
 
@@ -391,8 +500,14 @@ function bindFormatter(root, win, cfg, initialText) {
     if (e.target === inEl) {
       syncCounts();
       if (state.lang === 'auto') syncOptionVisibility();
+      paint('in');
     }
   });
+
+  root.addEventListener('scroll', (e) => {
+    if (e.target === inEl) syncScroll(inEl, 'in');
+    else if (e.target === outEl) syncScroll(outEl, 'out');
+  }, true);
 
   // Tab 缩进（否则 Tab 会把焦点移出文本域）、Ctrl+Enter 格式化
   root.addEventListener('keydown', (e) => {
@@ -417,5 +532,6 @@ function bindFormatter(root, win, cfg, initialText) {
   }
   syncOptionVisibility();
   syncCounts();
+  paintBoth();
   inEl.focus();
 }

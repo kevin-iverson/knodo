@@ -14,7 +14,9 @@
  */
 import { api } from './api.js';
 import { openToolWindow } from './tool-window.js';
-import { formatText, LANG_OPTIONS, copyText } from './code-format.js';
+import {
+  formatText, LANG_OPTIONS, copyText, highlightSync, loadHighlightModule,
+} from './code-format.js';
 
 let notify = () => {};
 export function setDiffHandlers({ toast } = {}) {
@@ -26,7 +28,14 @@ const esc = (s) =>
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-const DEFAULTS = { lang: 'auto', ignoreWs: false, ignoreBlank: false, ignoreCase: false, mode: 'split' };
+const DEFAULTS = {
+  lang: 'auto',
+  ignoreWs: false,
+  ignoreBlank: false,
+  ignoreCase: false,
+  mode: 'split',
+  highlight: true, // 差异行按语言上色（与格式化窗口同一套 highlight.js 口径）
+};
 /** 差异行渲染上限：超大文本只渲染前 N 行，避免一次插入几万行把界面卡死 */
 const MAX_ROWS = 4000;
 const WORD_DIFF_MAX = 4000;
@@ -132,14 +141,19 @@ function splitRows(ops, limit) {
   return rows;
 }
 
-function renderSplit(container, rows, stats) {
+/**
+ * 并排 / 内联两种视图共用的「行渲染」。
+ * @param {object} ctx {lang:string, on:boolean} —— 差异行按什么语言上色、是否上色
+ */
+function renderSplit(container, rows, stats, ctx) {
+  const h = (t) => highlightSync(t, ctx.lang, ctx.on);
   let html = '';
   for (const r of rows) {
     if (r.kind === 'same') {
       const a = r.a;
       html += '<div class="df-row same">'
-        + `<span class="df-ln">${a.idx + 1}</span><span class="df-cell">${esc(a.text) || '&nbsp;'}</span>`
-        + `<span class="df-ln">${(a.idxB == null ? a.idx : a.idxB) + 1}</span><span class="df-cell">${esc(a.textB || a.text) || '&nbsp;'}</span>`
+        + `<span class="df-ln">${a.idx + 1}</span><span class="df-cell">${h(a.text) || '&nbsp;'}</span>`
+        + `<span class="df-ln">${(a.idxB == null ? a.idx : a.idxB) + 1}</span><span class="df-cell">${h(a.textB || a.text) || '&nbsp;'}</span>`
         + '</div>';
       continue;
     }
@@ -147,32 +161,33 @@ function renderSplit(container, rows, stats) {
     const a = r.add;
     html += `<div class="df-row${d ? ' del' : ''}${a ? ' add' : ''}">`
       + `<span class="df-ln${d ? ' del' : ''}">${d ? d.idx + 1 : ''}</span>`
-      + `<span class="df-cell${d ? ' del' : ' pad'}"${d ? ` data-wd="l"` : ''}>${d ? esc(d.text) || '&nbsp;' : ''}</span>`
+      + `<span class="df-cell${d ? ' del' : ' pad'}"${d ? ' data-wd="l"' : ''}>${d ? h(d.text) || '&nbsp;' : ''}</span>`
       + `<span class="df-ln${a ? ' add' : ''}">${a ? a.idx + 1 : ''}</span>`
-      + `<span class="df-cell${a ? ' add' : ' pad'}"${a ? ` data-wd="r"` : ''}>${a ? esc(a.text) || '&nbsp;' : ''}</span>`
+      + `<span class="df-cell${a ? ' add' : ' pad'}"${a ? ' data-wd="r"' : ''}>${a ? h(a.text) || '&nbsp;' : ''}</span>`
       + `</div>`;
   }
   container.innerHTML = html || `<div class="df-empty">${esc(stats.emptyText || '两侧内容一致，没有差异。')}</div>`;
 }
 
-function renderInline(container, ops, limit) {
+function renderInline(container, ops, limit, ctx) {
+  const h = (t) => highlightSync(t, ctx.lang, ctx.on);
   let html = '';
   let n = 0;
   for (const op of ops) {
     if (n >= limit) break;
     n += 1;
     if (op.type === 'common') {
-      html += `<div class="df-row same inline">`
+      html += '<div class="df-row same inline">'
         + `<span class="df-ln">${op.idx + 1}</span><span class="df-ln">${(op.idxB == null ? op.idx : op.idxB) + 1}</span>`
-        + `<span class="df-sign"> </span><span class="df-cell">${esc(op.text) || '&nbsp;'}</span></div>`;
+        + `<span class="df-sign"> </span><span class="df-cell">${h(op.text) || '&nbsp;'}</span></div>`;
     } else if (op.type === 'del') {
       html += `<div class="df-row del inline">`
         + `<span class="df-ln del">${op.idx + 1}</span><span class="df-ln"></span>`
-        + `<span class="df-sign del">-</span><span class="df-cell del" data-wd="l">${esc(op.text) || '&nbsp;'}</span></div>`;
+        + `<span class="df-sign del">-</span><span class="df-cell del" data-wd="l">${h(op.text) || '&nbsp;'}</span></div>`;
     } else {
       html += `<div class="df-row add inline">`
         + `<span class="df-ln"></span><span class="df-ln add">${op.idx + 1}</span>`
-        + `<span class="df-sign add">+</span><span class="df-cell add" data-wd="r">${esc(op.text) || '&nbsp;'}</span></div>`;
+        + `<span class="df-sign add">+</span><span class="df-cell add" data-wd="r">${h(op.text) || '&nbsp;'}</span></div>`;
     }
   }
   container.innerHTML = html;
@@ -208,6 +223,8 @@ function diffHtml(cfg) {
         <label class="df-check" title="比较前折叠每行首尾与连续空白"><input type="checkbox" class="df-ctl df-ws"${cfg.ignoreWs ? ' checked' : ''} /><span>忽略空白</span></label>
         <label class="df-check" title="比较前跳过空行"><input type="checkbox" class="df-ctl df-blank"${cfg.ignoreBlank ? ' checked' : ''} /><span>忽略空行</span></label>
         <label class="df-check" title="比较前统一转小写"><input type="checkbox" class="df-ctl df-case"${cfg.ignoreCase ? ' checked' : ''} /><span>忽略大小写</span></label>
+        <span class="df-sep"></span>
+        <label class="df-check" title="差异行按上面的语言上色"><input type="checkbox" class="df-ctl df-hl"${cfg.highlight !== false ? ' checked' : ''} /><span>语法高亮</span></label>
         <span class="df-spacer"></span>
         <span class="df-seg">
           <button type="button" class="df-mode${cfg.mode === 'split' ? ' active' : ''}" data-mode="split">并排</button>
@@ -255,6 +272,7 @@ function bindDiff(root, win, cfg, initialA, initialB) {
     ignoreBlank: $('.df-blank').checked,
     ignoreCase: $('.df-case').checked,
     mode: state.mode,
+    highlight: $('.df-hl').checked,
   });
 
   const persist = () => {
@@ -262,8 +280,8 @@ function bindDiff(root, win, cfg, initialA, initialB) {
     api.ui.setToolPref('diff', state).catch(() => {});
   };
 
-  /** 词级高亮补丁：渲染完骨架后，给成对出现的改动行补上 <span> */
-  const paintWordDiff = async (rows) => {
+  /** 词级高亮补丁：渲染完骨架后，给成对出现的改动行补上 <span>（片段同样按语言上色） */
+  const paintWordDiff = async (rows, ctx) => {
     const pairs = [];
     for (const r of rows) {
       if (r.kind === 'pair' && r.del && r.add
@@ -281,7 +299,7 @@ function bindDiff(root, win, cfg, initialA, initialB) {
       let left = '';
       let right = '';
       for (const p of parts) {
-        const v = esc(p.value);
+        const v = highlightSync(p.value, ctx.lang, ctx.on);
         if (p.added) { right += `<span class="df-w add">${v}</span>`; continue; }
         if (p.removed) { left += `<span class="df-w del">${v}</span>`; continue; }
         left += v;
@@ -308,6 +326,9 @@ function bindDiff(root, win, cfg, initialA, initialB) {
       return;
     }
     try {
+      // 渲染要用同步高亮，先把 highlight 模块拉起来（内部有缓存，只第一次真加载）
+      if (state.highlight !== false) await loadHighlightModule();
+      const ctx = { lang: $('.df-lang').value, on: state.highlight !== false };
       const { ops } = await computeOps(aText, bText, opts);
       lastOps = ops;
       const del = ops.filter((o) => o.type === 'del').length;
@@ -319,11 +340,11 @@ function bindDiff(root, win, cfg, initialA, initialB) {
         return;
       }
       if (mode === 'inline') {
-        renderInline(viewEl, ops, MAX_ROWS);
+        renderInline(viewEl, ops, MAX_ROWS, ctx);
       } else {
         const rows = splitRows(ops, MAX_ROWS);
-        renderSplit(viewEl, rows, {});
-        await paintWordDiff(rows);
+        renderSplit(viewEl, rows, {}, ctx);
+        await paintWordDiff(rows, ctx);
       }
     } catch (e) {
       viewEl.innerHTML = `<div class="df-empty err">对比失败：${esc(String((e && e.message) || e))}</div>`;

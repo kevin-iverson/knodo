@@ -206,6 +206,15 @@ function buildAppMenu() {
           },
         },
         {
+          // JSON 查看器：树形展示 + 语法高亮 + 键名/值搜索 + JSONPath 查询
+          label: 'JSON 查看器',
+          accelerator: 'CmdOrCtrl+Shift+J',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:json-viewer');
+          },
+        },
+        {
           label: '实时薪资',
           accelerator: 'CmdOrCtrl+Shift+S',
           click: () => {
@@ -818,6 +827,43 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] AI 设置（菜单栏）= 工具栏按钮已移除${dom.aiToolbarBtnGone ? '✓' : '✗'}；菜单项${dom.aiMenuItem ? '存在' : '缺失'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
           console.log(`[SMOKE] AI 设置排版 = ${dom.aiCols} 列；分区 ${dom.aiSections} 个；字段 ${dom.aiFieldCount} 个；弹窗高 ${dom.aiBox ? dom.aiBox.h : '-'}px / 视口 ${dom.aiBox ? dom.aiBox.vh : '-'}px；完整在视口内=${dom.aiInViewport ? '是' : '否'}；底部按钮可点=${dom.aiFootReachable ? '是' : '否'}；内容无需滚动=${dom.aiBodyScrolls ? '是' : '否'}；横向无溢出=${dom.aiNoHOverflow ? '是' : '否'}`);
           console.log(`[SMOKE] 标签新增弹窗 = ${dom.tagModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.tagAdded ? '是' : '否'}`);
+
+          // 对外同步面板（顶栏「☁ 同步」）：打开 → 选项齐全 → 关闭无残留
+          const syncOut = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const waitUntil = async (fn, timeout = 4000) => {
+                const t0 = Date.now();
+                for (;;) {
+                  if (fn()) return true;
+                  if (Date.now() - t0 > timeout) return false;
+                  await new Promise((r) => setTimeout(r, 50));
+                }
+              };
+              try {
+                out.btnExists = !!document.getElementById('btn-sync');
+                document.getElementById('btn-sync').click();
+                out.opened = await waitUntil(() => !!document.querySelector('.modal-sync'));
+                const root = document.querySelector('.modal-sync');
+                out.taskFields = !!(root && root.querySelector('.sync-task-format')
+                  && root.querySelector('.sync-task-status') && root.querySelector('.sync-task-group'));
+                out.noteFields = !!(root && root.querySelector('.sync-note-pack')
+                  && root.querySelector('.sync-note-folder') && root.querySelector('.sync-note-tag'));
+                out.groupOptions = root ? root.querySelectorAll('.sync-task-group option').length : 0;
+                out.exportBtns = root ? root.querySelectorAll('.sync-btn-tasks, .sync-btn-notes').length : 0;
+                // 关闭：走弹窗自带的「关闭」按钮，确认不残留遮罩
+                const okBtn = root && root.querySelector('.modal-foot [data-modal="ok"]');
+                if (okBtn) okBtn.click();
+                out.closed = await waitUntil(() => !document.querySelector('.modal-sync'));
+                out.noMask = !document.querySelector('.modal-mask');
+              } catch (e) {
+                out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 3).join(' | ');
+              }
+              return out;
+            })()
+          `);
+          if (syncOut.__fatal) console.log('[SMOKE][sync fatal]', syncOut.__fatal);
+          console.log(`[SMOKE] 对外同步面板 = 按钮${syncOut.btnExists ? '有' : '无'}；打开=${syncOut.opened ? '成功' : '失败'}；任务字段=${syncOut.taskFields ? '齐全' : '缺失'}；笔记字段=${syncOut.noteFields ? '齐全' : '缺失'}；分组选项 ${syncOut.groupOptions} 个；导出按钮 ${syncOut.exportBtns} 个；关闭=${syncOut.closed ? '成功' : '失败'}；无残留遮罩=${syncOut.noMask ? '是' : '否'}`);
 
           // 详情侧边栏：拖拽调宽 + 子任务添加（局部刷新，不重绘整页）
           const detail = await mainWindow.webContents.executeJavaScript(`
@@ -2473,8 +2519,58 @@ app.whenReady().then(() => {
                 out.afterFormat = view.querySelectorAll('.df-cell.del').length;
                 out.formatConverged = /一致/.test(view.textContent);
                 out.formattedA = (dwin.querySelector('.df-a') || {}).value || '';
+                // 语法高亮：差异行里应出现 highlight.js 的 token 节点
+                await feed('{"a":1}', '{"a":2}');
+                out.diffHl = view.querySelectorAll('.df-cell .hljs-attr').length;
+                const hlBox = dwin.querySelector('.df-hl');
+                out.diffHlToggle = !!hlBox;
+                if (hlBox) {
+                  hlBox.checked = false; hlBox.dispatchEvent(new Event('change', { bubbles: true }));
+                  await wait(700);
+                  out.diffHlOff = view.querySelectorAll('.hljs-attr').length === 0;
+                  hlBox.checked = true; hlBox.dispatchEvent(new Event('change', { bubbles: true }));
+                  await wait(700);
+                }
 
-                /* ---- 6) 关闭后不留残留 ---- */
+                /* ---- 6) JSON 查看器：树形渲染 + 搜索 + JSONPath ---- */
+                const jvm = await import('./js/json-view.js');
+                await jvm.openJsonViewWindow();
+                await wait(600);
+                const jwin = q('.tool-win[data-tool="json-view"]');
+                out.jvOpened = !!jwin;
+                const jArea = jwin && jwin.querySelector('.jv-area');
+                const jTree = jwin && jwin.querySelector('.jv-tree');
+                if (jArea) {
+                  jArea.value = '{"user":{"name":"ada","age":8},"items":[{"id":1},{"id":2}]}';
+                  jArea.dispatchEvent(new Event('input', { bubbles: true }));
+                  await wait(1200);
+                }
+                const jStatus = jwin && jwin.querySelector('.jv-status');
+                out.jvParsed = !!jStatus && jStatus.dataset.state === 'ok';
+                // 组件是 shadow DOM，只能从宿主元素判断"有没有渲染出内容"
+                out.jvTree = !!jTree && (jTree.shadowRoot ? jTree.shadowRoot.querySelectorAll('li[part="property"]').length : 0);
+                const jSearch = jwin && jwin.querySelector('.jv-search');
+                if (jSearch) {
+                  jSearch.value = 'ada';
+                  jSearch.dispatchEvent(new Event('input', { bubbles: true }));
+                  await wait(600);
+                  jwin.querySelector('.jv-next').click();
+                  await wait(400);
+                  out.jvHits = (jwin.querySelector('.jv-hits') || {}).textContent || '';
+                  jwin.querySelector('.jv-reset').click();
+                  await wait(300);
+                }
+                const jPath = jwin && jwin.querySelector('.jv-path');
+                if (jPath) {
+                  jPath.value = '$.items[1].id';
+                  jwin.querySelector('.jv-run-path').click();
+                  await wait(700);
+                }
+                const jRes = jwin && jwin.querySelector('.jv-result');
+                out.jvQuery = (jRes ? jRes.textContent : '').trim().slice(0, 40);
+                if (jwin) { jwin.querySelector('[data-act="close"]').click(); await wait(250); }
+
+                /* ---- 7) 关闭后不留残留 ---- */
                 dwin.querySelector('[data-act="close"]').click(); await wait(250);
                 win.querySelector('[data-act="close"]').click(); await wait(250);
                 out.closed = document.querySelectorAll('.tool-win').length === 0;
@@ -2487,6 +2583,8 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 实用工具·格式化 = 开窗=${r18.fmtOpened ? '是' : '否'}（无遮罩=${r18.noMask ? '是' : '否'}）JSON=${r18.jsonOk ? '✓' : '✗'} XML=${r18.xmlOk ? '✓' : '✗'} SQL=${r18.sqlOk ? '✓' : '✗'} Java=${r18.javaOk ? '✓' : '✗'} 自动识别=${r18.autoOk ? '✓' : '✗'}；其它语言全通过=${r18.multiOk ? '✓' : '✗'}${r18.multiOk ? '' : '（' + JSON.stringify(r18.multi) + '）'}；语法错误提示=${r18.errShown ? '有' : '无'}（${r18.statusText || '-'}）`);
           console.log(`[SMOKE] 实用工具·浮窗 = 最小化=${r18.minApplied ? '✓' : '✗'} 还原=${r18.minRestored ? '✓' : '✗'}；最大化=${r18.maxApplied ? '✓' : '✗'} 还原=${r18.maxRestored ? '✓' : '✗'}；开着仍能操作主界面=${r18.mainUsable ? '是' : '否'}；两窗共存=${r18.bothOpen ? '是' : '否'}`);
           console.log(`[SMOKE] 实用工具·对比 = 行 ${r18.diffRows}（增 ${r18.diffAdd} / 删 ${r18.diffDel}）统计「${r18.diffStat || '-'}」；内联=${r18.inlineRows} 行 / ${r18.inlineSigns} 个符号；忽略大小写生效=${r18.caseIgnored ? '是' : '否'}；格式化后收敛=${r18.formatConverged ? '是' : '否'}（前 ${r18.beforeFormat} → 后 ${r18.afterFormat}）；关闭=${r18.closed ? '✓' : '✗'}${r18.err ? '；异常=' + r18.err : ''}`);
+          console.log(`[SMOKE] 实用工具·高亮 = 差异行 token ${r18.diffHl} 个；开关=${r18.diffHlToggle ? '有' : '无'}；关掉后无 token=${r18.diffHlOff ? '是' : '否'}`);
+          console.log(`[SMOKE] 实用工具·JSON 查看器 = 开窗=${r18.jvOpened ? '是' : '否'}；解析=${r18.jvParsed ? '成功' : '失败'}；树节点 ${r18.jvTree} 个；搜索「ada」=${r18.jvHits || '-'}；JSONPath 结果「${r18.jvQuery || '-'}」`);
 
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
@@ -2496,6 +2594,9 @@ app.whenReady().then(() => {
             && dom.reopened && dom.closedByTrigger && dom.calInViewport && dom.persistedMatches
             && dom.groupModalOpened && dom.groupAdded && dom.dupErrorShown
             && dom.tagModalOpened && dom.tagAdded
+            // 对外同步面板（顶栏「☁ 同步」）
+            && syncOut.btnExists && syncOut.opened && syncOut.taskFields && syncOut.noteFields
+            && syncOut.groupOptions >= 2 && syncOut.exportBtns === 2 && syncOut.closed && syncOut.noMask
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
             && dom.aiToolbarBtnGone && dom.aiMenuItem && dom.aiModalOpened && dom.aiModalCount === 1
@@ -2620,7 +2721,11 @@ app.whenReady().then(() => {
             && r18.diffOpened && r18.bothOpen && r18.diffRows >= 3 && r18.diffAdd >= 1 && r18.diffDel >= 1
             && r18.inlineRows >= 3 && r18.inlineSigns >= 2 && r18.splitBack
             && r18.caseDiff >= 1 && r18.caseIgnored
-            && r18.beforeFormat >= 1 && r18.formatConverged && r18.closed && !r18.err;
+            && r18.beforeFormat >= 1 && r18.formatConverged && r18.closed && !r18.err
+            // 第 19 轮：语法高亮 + JSON 查看器
+            && r18.diffHl >= 1 && r18.diffHlToggle && r18.diffHlOff
+            && r18.jvOpened && r18.jvParsed && r18.jvTree >= 1 && /命中|个/.test(r18.jvHits || '')
+            && /2/.test(r18.jvQuery || '');
           if (!allOk) {
             // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
             // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
@@ -2643,6 +2748,7 @@ app.whenReady().then(() => {
               }
             };
             dumpFalsy('dom', dom);
+            dumpFalsy('sync', syncOut);
             dumpFalsy('detail', detail);
             dumpFalsy('feat', feat);
             dumpFalsy('r4', r4);

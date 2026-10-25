@@ -20,6 +20,9 @@ const TARGETS = [
   { entry: 'format-core.mjs', out: 'format-core.mjs' },
   { entry: 'format-java.mjs', out: 'format-java.mjs' },
   { entry: 'diff.mjs', out: 'diff.mjs' },
+  { entry: 'highlight.mjs', out: 'highlight.mjs' },
+  { entry: 'json-viewer.mjs', out: 'json-viewer.mjs' },
+  { entry: 'jsonpath.mjs', out: 'jsonpath.mjs' },
 ];
 
 async function build() {
