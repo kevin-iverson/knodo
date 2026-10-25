@@ -22,6 +22,16 @@ const { app } = require('electron');
 /** 开机拉起时附加的命令行参数，主进程据此判断「这次是被自启动唤起的」 */
 const AUTOSTART_FLAG = '--autostart';
 
+/**
+ * 启动项在注册表 / 系统启动列表里的显示名。
+ * 改名（品牌重塑）时必须同步改这里，并且清理旧名字 —— 否则用户的任务管理器里
+ * 会同时躺着「旧名」「新名」两条启动项，两条都指向同一个 exe。
+ */
+const LOGIN_ITEM_NAME = 'Knodo';
+/** 历史用过的启动项名，启动时自动迁移到 LOGIN_ITEM_NAME（保留用户原本的开/关状态） */
+const LEGACY_LOGIN_ITEM_NAMES = ['TODO待办'];
+let legacyMigrated = false;
+
 /** 便携版：electron-builder 会把单文件包解压到临时目录运行，路径不固定 */
 function isPortable() {
   return !!process.env.PORTABLE_EXECUTABLE_DIR;
@@ -50,7 +60,7 @@ function loginItemOptions(openAtLogin) {
   if (process.platform === 'win32') {
     // Windows 会把 name 作为注册表项名，显式给一个稳定名字，
     // 否则升级 / 改 productName 后旧项不会被覆盖，会出现两条启动项。
-    opts.name = 'TODO待办';
+    opts.name = LOGIN_ITEM_NAME;
     opts.path = process.execPath;
     opts.args = openAtLogin ? [AUTOSTART_FLAG] : [];
   } else {
@@ -62,12 +72,35 @@ function loginItemOptions(openAtLogin) {
 }
 
 /**
+ * 把旧品牌名的启动项迁移到当前名字（每个进程只跑一次）。
+ * 只在旧项「确实是开着的」时才动手：把状态带到新名字上再删旧项，
+ * 用户原来开着自启动，升级后不会莫名其妙被关掉。
+ */
+function migrateLegacyLoginItem() {
+  if (legacyMigrated || process.platform !== 'win32') return;
+  legacyMigrated = true;
+  for (const oldName of LEGACY_LOGIN_ITEM_NAMES) {
+    try {
+      const s = app.getLoginItemSettings({ name: oldName, path: process.execPath, args: [AUTOSTART_FLAG] });
+      if (!s || !s.openAtLogin) continue;
+      app.setLoginItemSettings({ openAtLogin: true, name: LOGIN_ITEM_NAME, path: process.execPath, args: [AUTOSTART_FLAG] });
+      app.setLoginItemSettings({ openAtLogin: false, name: oldName, path: process.execPath, args: [] });
+      console.log(`[autostart] 启动项「${oldName}」已迁移为「${LOGIN_ITEM_NAME}」`);
+    } catch (e) {
+      // 迁移失败不影响启动，用户可在菜单里手动重开
+      console.error('[autostart] 迁移旧启动项失败：', e && e.message);
+    }
+  }
+}
+
+/**
  * 读取当前状态。
  * @returns {{supported:boolean, enabled:boolean, reason:string}}
  */
 function getState() {
   const avail = availability();
   if (!avail.supported) return { supported: false, enabled: false, reason: avail.reason };
+  migrateLegacyLoginItem();
   let enabled = false;
   try {
     const s = app.getLoginItemSettings({ path: process.execPath, args: [AUTOSTART_FLAG] });

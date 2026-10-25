@@ -6,7 +6,7 @@
   <!-- img-src 放开 https：笔记里的外链图片要能显示（default-src 'self' 会拦掉 https 图片） -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: todo-media:; script-src 'self';" />
-  <title>TODO 待办</title>
+  <title>Knodo</title>
   <!-- 第三方依赖：flatpickr（日期范围选择）、tom-select（分组多选）。先加载厂商样式，再用本项目样式覆盖主题 -->
   <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css" />
   <link rel="stylesheet" href="vendor/tom-select/tom-select.min.css" />
@@ -18,8 +18,31 @@
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-logo">✓</span>
-        <span class="brand-name">TODO 待办</span>
+        <!-- Knodo 标识（与 assets/knodo.svg 同一套几何）：环 = 知识回路，K = 清单竖条 + 斜臂，圆环上 3 个节点 = 知识关联 -->
+        <span class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 256 256">
+            <defs>
+              <linearGradient id="knodoMark" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#2E5BFF" />
+                <stop offset="0.5" stop-color="#2450E8" />
+                <stop offset="1" stop-color="#16C8E8" />
+              </linearGradient>
+            </defs>
+            <rect width="256" height="256" rx="60.16" fill="url(#knodoMark)" />
+            <g fill="#fff" stroke="#fff" stroke-linecap="round">
+              <circle cx="128" cy="128" r="101.12" fill="none" stroke-width="13.82" />
+              <line x1="72.96" y1="60.16" x2="72.96" y2="195.84" stroke-width="23.55" />
+              <line x1="72.96" y1="128" x2="157.69" y2="61.8" stroke-width="24.58" />
+              <line x1="72.96" y1="128" x2="157.69" y2="194.2" stroke-width="24.58" />
+              <line x1="157.69" y1="61.8" x2="207.68" y2="65.74" stroke-width="7.17" opacity="0.85" />
+              <line x1="157.69" y1="194.2" x2="207.68" y2="190.26" stroke-width="7.17" opacity="0.85" />
+              <circle cx="207.68" cy="65.74" r="14.08" stroke="none" />
+              <circle cx="229.12" cy="128" r="14.08" stroke="none" />
+              <circle cx="207.68" cy="190.26" r="14.08" stroke="none" />
+            </g>
+          </svg>
+        </span>
+        <span class="brand-name" title="Knodo — 知识化待办（Knowledge + Todo）">Knodo</span>
       </div>
 
       <nav class="nav">

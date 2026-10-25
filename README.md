@@ -1,6 +1,25 @@
-# TODO 待办 — Windows 桌面端个人待办应用
+<div align="center">
 
-基于 **Electron + better-sqlite3** 的桌面端 TODO 应用。界面简洁、操作高效、**数据全部本地存储**（SQLite 文件位于用户数据目录，不联网、不上传）。
+<img src="assets/knodo.svg" width="120" alt="Knodo"/>
+
+# Knodo
+
+**Knowledge + Todo** — 把「待办清单」和「知识沉淀」放进同一个应用。
+
+基于 **Electron + better-sqlite3** 的 Windows 桌面应用，界面简洁、操作高效，**数据全部本地存储**（SQLite，不联网、不上传）。
+
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
+![Runtime](https://img.shields.io/badge/Electron-32-47848F)
+![License](https://img.shields.io/badge/license-private-lightgrey)
+
+</div>
+
+---
+
+> **品牌与内部标识的区别（改名前必读）**
+> 对外名称统一为 **Knodo**，取自打包配置 `build.productName`；`package.json` 的 `name`（`todo-desktop`）与 `build.appId` 是**内部标识**，刻意保持不变 ——
+> Electron 用 `name` 决定用户数据目录（`%APPDATA%\todo-desktop`），改了会让老用户升级后看到空数据；
+> `appId` 则决定安装目录与卸载项。改品牌名时只动 `productName` / `shortcutName` / 界面文案 / 图标即可。
 
 ## 功能一览
 
@@ -387,8 +406,8 @@ npm run dist:portable   # 只产出便携版（免安装）
 
 | 文件 | 说明 |
 |---|---|
-| `TODO待办-<版本>-安装版.exe` | NSIS 安装程序，可选安装目录、自动建桌面/开始菜单快捷方式，安装界面为中文 |
-| `TODO待办-<版本>-便携版.exe` | 单文件绿色版，双击即用；数据写在 exe 同级的 `data/` 目录，整个文件夹拷走即可换机 |
+| `Knodo-<版本>-安装版.exe` | NSIS 安装程序，可选安装目录、自动建桌面/开始菜单快捷方式，安装界面为中文 |
+| `Knodo-<版本>-便携版.exe` | 单文件绿色版，双击即用；数据写在 exe 同级的 `data/` 目录，整个文件夹拷走即可换机 |
 | `dist/win-unpacked/` | 未压缩的可直接运行副本（调试用） |
 
 要点：
@@ -402,7 +421,7 @@ npm run dist:portable   # 只产出便携版（免安装）
 - 首次打包需下载约 100MB 的 Electron 与 NSIS 资源，之后有缓存，单个 exe 产物约 116MB（Electron 运行时体积，非本项目代码大小；本项目代码仅约 6MB）。
 - 版本升级改 `package.json` 里的 `version` 即可，文件名与卸载条目会随之变化。
 
-打包后自检（可选）：带调试端口启动 `dist\win-unpacked\TODO待办.exe --remote-debugging-port=9333`，再执行 `node scripts/check-packaged.js 9333`，会输出标题、DOM 渲染结果与渲染层异常。
+打包后自检（可选）：带调试端口启动 `dist\win-unpacked\Knodo.exe --remote-debugging-port=9333`，再执行 `node scripts/check-packaged.js 9333`，会输出标题、DOM 渲染结果与渲染层异常。
 
 ## 发布 Gitee 发行版（供他人直接下载）
 
@@ -416,7 +435,7 @@ npm run dist
 #    - 只保留 zh-CN / zh-TW / en-US 语言包
 #    - 移除 dxcompiler.dll（WebGPU 编译器，本应用未用到）
 #    - 7z -mx=9 极限压缩（7za 位于 electron-builder 缓存目录）
-# 产物放入 dist/release/TODO待办-<版本>-win64.7z
+# 产物放入 dist/release/Knodo-<版本>-win64.7z
 ```
 
 ```bash

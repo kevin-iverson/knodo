@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Knodo">
+  <!-- Knodo 标识：O = 知识回路；K = 清单竖条 + 两条斜臂；圆环上 3 个节点 = 知识关联 -->
+  <defs>
+    <linearGradient id="kg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2E5BFF"/>
+      <stop offset="0.5" stop-color="#2450E8"/>
+      <stop offset="1" stop-color="#16C8E8"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="256" height="256" rx="60.16" fill="url(#kg)"/>
+  <g fill="#fff" stroke="#fff" stroke-linecap="round">
+    <circle cx="128.00" cy="128.00" r="101.12" fill="none" stroke-width="13.82"/>
+    <line x1="72.96" y1="60.16" x2="72.96" y2="195.84" stroke-width="23.55"/>
+    <line x1="72.96" y1="128.00" x2="157.69" y2="61.80" stroke-width="24.58"/>
+    <line x1="72.96" y1="128.00" x2="157.69" y2="194.20" stroke-width="24.58"/>
+    <line x1="157.69" y1="61.80" x2="207.68" y2="65.74" stroke-width="7.17" opacity="0.85"/>
+    <line x1="157.69" y1="194.20" x2="207.68" y2="190.26" stroke-width="7.17" opacity="0.85"/>
+    <circle cx="207.68" cy="65.74" r="14.08" stroke="none"/>
+    <circle cx="229.12" cy="128.00" r="14.08" stroke="none"/>
+    <circle cx="207.68" cy="190.26" r="14.08" stroke="none"/>
+  </g>
+</svg>

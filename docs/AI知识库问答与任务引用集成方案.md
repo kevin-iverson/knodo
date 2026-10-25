@@ -1,4 +1,4 @@
-# TODO 待办 →「AI 知识库问答」平台 + 任务多知识库引用升级方案
+# Knodo →「AI 知识库问答」平台 + 任务多知识库引用升级方案
 
 > 面向当前 Electron + better-sqlite3 + 本地 OpenAI 兼容 AI 网关的桌面应用，**增量扩展**，不推倒重来。
 > 复用现有能力：数据层迁移机制（`main/db.js` 的 `MIGRATIONS` + `user_version`）、IPC/preload 通道与 `guard`/`withDb` 包装、

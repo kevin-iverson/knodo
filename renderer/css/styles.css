@@ -81,13 +81,13 @@ body {
 .sidebar-resizer.is-active::after { opacity: 1; background: var(--primary); }
 
 .brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 16px; }
+/* 品牌标识：内联 SVG（与 assets/knodo.svg 同一套几何），自带圆角与渐变底色，
+   所以这里只做尺寸约束，不要再画背景，否则会叠出双层圆角 */
 .brand-logo {
-  width: 26px; height: 26px; border-radius: 7px;
-  background: linear-gradient(135deg, #4f7cff, #23b07e);
-  color: #fff; display: flex; align-items: center; justify-content: center;
-  font-weight: 700;
+  width: 26px; height: 26px; flex: none; overflow: hidden; border-radius: 7px;
 }
-.brand-name { font-weight: 600; font-size: 15px; }
+.brand-logo svg { width: 100%; height: 100%; display: block; }
+.brand-name { font-weight: 600; font-size: 15px; letter-spacing: 0.2px; }
 
 .nav { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
 .nav-item {

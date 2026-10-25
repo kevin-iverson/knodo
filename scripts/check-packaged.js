@@ -3,7 +3,7 @@
  * 打包产物体检脚本（开发辅助，非应用运行时依赖）。
  *
  * 用法：先给已打包的应用开远程调试端口，例如
- *   dist\win-unpacked\TODO待办.exe --remote-debugging-port=9333
+ *   dist\win-unpacked\Knodo.exe --remote-debugging-port=9333
  * 然后：
  *   node scripts/check-packaged.js [port]
  *

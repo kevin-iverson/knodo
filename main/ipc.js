@@ -883,7 +883,7 @@ function registerIpc() {
     const data = db.exportData();
     const { canceled, filePath } = await dialog.showSaveDialog({
       title: '导出任务数据',
-      defaultPath: `todo-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      defaultPath: `knodo-backup-${new Date().toISOString().slice(0, 10)}.json`,
       filters: [
         { name: 'JSON 文件', extensions: ['json'] },
         { name: '所有文件', extensions: ['*'] },

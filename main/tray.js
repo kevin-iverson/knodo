@@ -11,7 +11,7 @@ function setupTray({ getWindow, onShow, onQuickAdd, onQuit }) {
   const iconPath = path.join(__dirname, '..', 'assets', 'tray.png');
   const image = nativeImage.createFromPath(iconPath);
   tray = new Tray(image);
-  tray.setToolTip('TODO 待办');
+  tray.setToolTip('Knodo');
 
   const menu = Menu.buildFromTemplate([
     { label: '显示主界面', click: onShow },

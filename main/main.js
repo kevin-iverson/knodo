@@ -37,6 +37,12 @@ if (process.env.PORTABLE_EXECUTABLE_DIR) {
   app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'));
 }
 
+// Windows 任务栏 / 通知的身份标识（AppUserModelID）。
+// 不设的话，任务栏按钮会沿用宿主进程（开发期是 electron.exe）的身份，
+// 于是图标与通知标题都跟品牌对不上；改成自己的 ID 后，Windows 才会按本应用的
+// 窗口图标来画，也顺带避开了「同名 exe 的旧图标被系统缓存住」的问题。
+if (process.platform === 'win32') app.setAppUserModelId('com.workbuddy.knodo');
+
 let mainWindow = null;
 let isQuitting = false;
 /**

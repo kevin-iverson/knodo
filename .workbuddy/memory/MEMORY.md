@@ -1,5 +1,27 @@
 # 项目长期约定
 
+## 品牌与标识（Knodo）
+- **对外名称 = `build.productName`（Knodo）**；`package.json` 的 `name`（`todo-desktop`）与
+  `build.appId` 是**内部标识，绝不能跟着改**：Electron 用 `name` 决定用户数据目录，
+  真实安装版的数据就在 `%APPDATA%\todo-desktop`（历史上 productName 是「TODO待办」，
+  该目录并不存在 → 证明数据目录只认 `name`）。改品牌只动
+  `productName` / `nsis.shortcutName` / 界面文案 / 图标。
+- 发布脚本用 `BRAND` 常量（取自 `pkg.build.productName`）拼 Release 标题与附件名，不要用 `pkg.name`。
+- **图标由 `scripts/gen-icon.js` 手写光栅器生成，不要换成图片素材**：矢量几何 + 4× 超采样
+  （预乘平均），改一个数字就能重出全部尺寸，16px 还有单独的简化几何。
+  三档：`full`(≥48) / `simple`(24~47) / `tiny`(16，去节点且竖条右移)。
+  脚本可被 `require`（只导出函数、不写文件），检查脚本靠这个复用 `rasterize`。
+- 标识语义：圆环 = 知识回路（O）；竖条 = 清单勾选竖条（K 的竖线），两端顶到圆环内缘成一条弦；
+  两条斜臂从竖条中点射出，经**与斜臂共线**的细连线接到圆环节点（共 3 个节点）。
+  改图形时别破坏这几条：竖条别悬空、竖条与圆环左弧别贴太近（会挤出一条像渲染瑕疵的细缝）、
+  细连线别横着浮空。
+- **任务栏图标**：`app.setAppUserModelId('com.workbuddy.knodo')` 必须设，否则任务栏沿用宿主
+  electron.exe 的身份与图标缓存。打包版 exe 的图标是打包时嵌入的（`build.win.icon` → `assets/icon.ico`），
+  改图标后**必须重新打包**才在安装版里生效。
+- **改启动项名字要迁移**：`main/autostart.js` 的 `LOGIN_ITEM_NAME` 改名时，把旧名加进
+  `LEGACY_LOGIN_ITEM_NAMES`，`getState()` 会在启动时带着原开关状态迁移并删掉旧项；
+  不迁移的话任务管理器里会同时躺着两条启动项，或者用户的自启动被静默关掉。
+
 ## 数据模型
 - **分组名唯一性作用域 = 同一 parent_id**（顶级自成一级）；不同层级允许同名。
   校验在 `main/db.js` 的 `assertGroupName()`，`createGroup` / `updateGroup` 都必须走它。

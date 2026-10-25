@@ -8,8 +8,8 @@
  * 3. 额外参数透传，例如 `npm run dist -- --target portable` 只出免安装版。
  *
  * 产物默认输出到 dist/：
- *   - TODO待办-<version>-安装版.exe   （NSIS 安装程序，可选安装目录、建快捷方式）
- *   - TODO待办-<version>-便携版.exe   （portable 单文件，双击即用，数据存自身目录同级）
+ *   - Knodo-<version>-安装版.exe   （NSIS 安装程序，可选安装目录、建快捷方式）
+ *   - Knodo-<version>-便携版.exe   （portable 单文件，双击即用，数据存自身目录同级）
  */
 const fs = require('fs');
 const path = require('path');
