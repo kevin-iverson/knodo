@@ -2,7 +2,7 @@
 /**
  * 预加载脚本：通过 contextBridge 向渲染进程暴露安全的最小 API 面。
  */
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 /**
  * 统一包装 invoke：
@@ -58,10 +58,19 @@ contextBridge.exposeInMainWorld('api', {
     create: (name, color) => call('tags:create', name, color),
     remove: (id) => call('tags:delete', id),
   },
+  // 任务附件：文件本体存在主进程的数据目录里，渲染层只拿元数据
+  attachments: {
+    pick: (taskId) => call('attachments:pick', taskId),
+    addPaths: (taskId, paths) => call('attachments:addPaths', taskId, paths),
+    open: (taskId, attId) => call('attachments:open', taskId, attId),
+    reveal: (taskId, attId) => call('attachments:reveal', taskId, attId),
+    saveAs: (taskId, attId) => call('attachments:saveAs', taskId, attId),
+    remove: (taskId, attId) => call('attachments:remove', taskId, attId),
+  },
   // 统计
   stats: {
-    overview: () => call('stats:overview'),
-    trend: (days) => call('stats:trend', days),
+    overview: (p) => call('stats:overview', p),
+    trend: (p) => call('stats:trend', p),
   },
   // AI 配置（对话 + 语音）
   ai: {
@@ -71,6 +80,8 @@ contextBridge.exposeInMainWorld('api', {
     test: (p) => call('ai:test', p),
     clearAsrKey: () => call('ai:clearAsrKey'),
     testAsr: (p) => call('ai:testAsr', p),
+    polish: (p) => call('ai:polish', p),
+    savePolish: (p) => call('ai:savePolish', p),
   },
   // 报告（含历史记录持久化）
   report: {
@@ -81,6 +92,61 @@ contextBridge.exposeInMainWorld('api', {
     get: (id) => call('report:get', id),
     update: (id, patch) => call('report:update', { id, patch }),
     remove: (id) => call('report:remove', id),
+  },
+  // 笔记（Markdown 编辑 / 目录 / 标签）
+  notes: {
+    list: (f) => call('notes:list', f),
+    get: (id) => call('notes:get', id),
+    create: (p) => call('notes:create', p),
+    update: (id, patch) => call('notes:update', id, patch),
+    archive: (id, archived) => call('notes:archive', id, archived),
+    pin: (id, pinned) => call('notes:pin', id, pinned),
+    trash: (id) => call('notes:trash', id),
+    restore: (id) => call('notes:restore', id),
+    purge: (id) => call('notes:purge', id),
+    trashList: () => call('notes:trashList'),
+    emptyTrash: () => call('notes:emptyTrash'),
+    search: (keyword, opts) => call('notes:search', keyword, opts),
+  },
+  // 笔记图片 / 附件（复用任务附件落盘规则，宿主目录 note-<id>）
+  noteAttachments: {
+    list: (noteId) => call('noteAttachments:list', noteId),
+    pick: (noteId) => call('noteAttachments:pick', noteId),
+    addPaths: (noteId, paths) => call('noteAttachments:addPaths', noteId, paths),
+    pasteImage: (noteId, dataUrl, name) => call('noteAttachments:pasteImage', noteId, dataUrl, name),
+    remove: (noteId, attId) => call('noteAttachments:remove', noteId, attId),
+    open: (noteId, attId) => call('noteAttachments:open', noteId, attId),
+    reveal: (noteId, attId) => call('noteAttachments:reveal', noteId, attId),
+    saveAs: (noteId, attId) => call('noteAttachments:saveAs', noteId, attId),
+  },
+  noteFolders: {
+    list: () => call('noteFolders:list'),
+    create: (p) => call('noteFolders:create', p),
+    update: (id, p) => call('noteFolders:update', id, p),
+    remove: (id) => call('noteFolders:delete', id),
+  },
+  noteTags: {
+    list: () => call('noteTags:list'),
+    create: (name, color) => call('noteTags:create', name, color),
+    remove: (id) => call('noteTags:delete', id),
+  },
+  // 任务 ↔ 笔记（多对多）
+  taskNotes: {
+    list: (taskId) => call('taskNotes:list', taskId),
+    set: (taskId, noteIds) => call('taskNotes:set', { taskId, noteIds }),
+    link: (taskId, noteId) => call('taskNotes:link', { taskId, noteId }),
+    unlink: (taskId, noteId) => call('taskNotes:unlink', { taskId, noteId }),
+    byNote: (noteId) => call('taskNotes:byNote', noteId),
+    counts: (taskIds) => call('taskNotes:counts', taskIds),
+  },
+  // 知识库（笔记沉淀 / AI 检索）
+  kb: {
+    list: () => call('kb:list'),
+    stats: (id) => call('kb:stats', id),
+    reindex: () => call('kb:reindex'),
+    indexNote: (id) => call('kb:indexNote', id),
+    ask: (p) => call('kb:ask', p),
+    retrieve: (p) => call('kb:retrieve', p),
   },
   // 会议录制
   rec: {
@@ -126,19 +192,39 @@ contextBridge.exposeInMainWorld('api', {
   ui: {
     getDetailWidth: () => call('ui:getDetailWidth'),
     setDetailWidth: (w) => call('ui:setDetailWidth', w),
+    getSidebarWidth: () => call('ui:getSidebarWidth'),
+    setSidebarWidth: (w) => call('ui:setSidebarWidth', w),
     getTagFilter: () => call('ui:getTagFilter'),
     setTagFilter: (id) => call('ui:setTagFilter', id),
     getTodayDone: () => call('ui:getTodayDone'),
     setTodayDone: (p) => call('ui:setTodayDone', p),
+    // 实用工具「实时薪资」：月薪 + 上下班时间的配置（存 settings，下次打开直接回填）
+    getSalary: () => call('ui:getSalary'),
+    setSalary: (p) => call('ui:setSalary', p),
+    getCollapsedGroups: () => call('ui:getCollapsedGroups'),
+    setCollapsedGroups: (keys) => call('ui:setCollapsedGroups', keys),
   },
   app: {
     quit: () => call('app:quit'),
     openExternal: (url) => call('app:openExternal', url),
     getVersion: () => call('app:getVersion'),
+    // 开机自启动状态（菜单项 File → 开机自启动 的写入入口在主进程；这里只读，供界面核对）
+    getAutoStart: () => call('app:getAutoStart'),
+  },
+  /**
+   * 拖拽进来的 File 对象在 Electron 32+ 已没有 .path，必须用 webUtils 换绝对路径。
+   * 拿到路径后再交给 attachments.addPaths 复制进数据目录。
+   */
+  pathForFile: (file) => {
+    try {
+      return (webUtils && webUtils.getPathForFile && webUtils.getPathForFile(file)) || '';
+    } catch (e) {
+      return '';
+    }
   },
   // 主进程事件
   on: (channel, cb) => {
-    const allowed = ['ui:quick-add', 'ui:focus-task'];
+    const allowed = ['ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary'];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));
     }

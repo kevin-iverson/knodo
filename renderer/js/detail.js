@@ -3,9 +3,12 @@
  * 任务详情页（右侧抽屉）：基础信息编辑、树形子任务层级（可拖拽排序）、
  * 所见即所得 Markdown 描述（支持快捷键与粘贴图片，图片直接插入光标处）。
  */
-import { api, PRIORITY_TEXT } from './api.js';
+import { api, PRIORITY_TEXT, fmtDateTime } from './api.js';
 import { state, loadGroups, loadTags, refreshAll, noteCompletionChange } from './store.js';
 import { renderMarkdown } from './markdown.js';
+import { renderStyledInline } from './markdown-lib.js';
+import { openPanelModal, openPromptModal } from './modal.js';
+import { openNotePicker } from './note-picker.js';
 import {
   dateRangeFieldHtml, bindDateRangeFields, validateDateRange,
   DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS, syncReminderWithPlanEnd, isAnyRangeOpen,
@@ -27,10 +30,131 @@ const esc = (s) =>
 let handlers = { refresh: () => {}, toast: () => {} };
 export function setDetailHandlers(h) { handlers = { ...handlers, ...h }; }
 
+/* ---------------- 附件 ---------------- */
+
+/** 文件大小：B / KB / MB / GB，保留一位小数，0 字节也给出可读值 */
+function fmtSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`;
+}
+
+/** 按 MIME / 扩展名给一个图标，扫一眼就知道是什么类型的附件 */
+function attIcon(a) {
+  const mime = String((a && a.mime) || '');
+  const name = String((a && a.name) || '').toLowerCase();
+  if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name)) return '🖼';
+  if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi)$/.test(name)) return '🎬';
+  if (mime.startsWith('audio/') || /\.(mp3|wav|m4a|ogg|flac)$/.test(name)) return '🎵';
+  if (mime === 'application/pdf' || /\.pdf$/.test(name)) return '📕';
+  if (/\.(xls|xlsx|csv)$/.test(name)) return '📊';
+  if (/\.(doc|docx)$/.test(name)) return '📄';
+  if (/\.(zip|rar|7z|tar|gz)$/.test(name)) return '🗜';
+  return '📎';
+}
+
+/** 附件唯一键：新数据都有 id，老数据（base64 内联）可能只有 name，兜底用 name 定位 */
+function attKey(a) {
+  return String((a && (a.id || a.name)) || '');
+}
+
+/** 附件列表 HTML（空态也在这里，方便整体替换） */
+function attachmentsInnerHtml(list) {
+  const arr = Array.isArray(list) ? list : [];
+  if (!arr.length) {
+    return '<div class="att-empty">暂无附件：点右上「＋ 添加附件」，或把文件拖到这里</div>';
+  }
+  return arr.map((a) => `
+    <div class="att-row" data-att="${esc(attKey(a))}" title="${esc(a.name)}">
+      <span class="att-icon">${attIcon(a)}</span>
+      <span class="att-main">
+        <span class="att-name">${esc(a.name)}</span>
+        <span class="att-meta">${fmtSize(a.size)}${a.added_at ? ` · ${esc(fmtDateTime(a.added_at))}` : ''}</span>
+      </span>
+      <span class="att-ops">
+        <button data-att-act="open" title="用系统默认程序打开">打开</button>
+        <button data-att-act="save" title="另存为…">下载</button>
+        <button class="del" data-att-act="del" title="删除附件">删除</button>
+      </span>
+    </div>`).join('');
+}
+
 /**
  * 统一错误处理：把失败原因提示给用户，避免"点了没反应"。
  * 返回 true 表示成功，false 表示已提示并应中止后续刷新。
  */
+/** 关联笔记区块：数量 + 列表 + 「关联 / 查看 / 取消关联」入口 */
+function noteSectionHtml(notes) {
+  const list = notes || [];
+  const rows = list.map((n) => `
+    <li class="nt-link-item" data-note="${n.id}">
+      <span class="nt-link-main" title="${esc(n.title || '')}">
+        <span class="nt-link-title" data-act="note-open" data-note="${n.id}">📝 ${esc(n.title || '未命名笔记')}</span>
+        <span class="nt-link-excerpt">${renderStyledInline(n.excerpt || '', 64)}</span>
+      </span>
+      <span class="nt-link-ops">
+        <button class="ghost-btn tiny" data-act="note-open" data-note="${n.id}">查看</button>
+        <button class="ghost-btn tiny" data-act="note-unlink" data-note="${n.id}" title="取消与该笔记的关联（笔记本身保留）">✕</button>
+      </span>
+    </li>`).join('');
+  return `
+    <div class="detail-section" data-section="notes">
+      <div class="detail-section-head">
+        <span>关联笔记 <span class="att-count">${list.length}</span></span>
+        <span class="np-head-ops">
+          <button class="ghost-btn tiny" data-act="note-link" title="从笔记库里选择要关联的笔记（可多选）">＋ 关联笔记</button>
+        </span>
+      </div>
+      <div class="nt-link-list">${rows || '<div class="subtask-empty">尚未关联笔记</div>'}</div>
+    </div>`;
+}
+
+/** 只替换笔记区块：整页重建会丢描述编辑器的光标与滚动位置 */
+async function refreshNoteSection(drawer, taskId) {
+  const host = drawer.querySelector('[data-section="notes"]');
+  if (!host) return;
+  const notes = await api.taskNotes.list(taskId).catch(() => []);
+  const holder = document.createElement('div');
+  holder.innerHTML = noteSectionHtml(notes);
+  const next = holder.firstElementChild;
+  if (!next) return;
+  host.replaceWith(next);
+  bindNoteSectionEvents(drawer, Number(taskId));
+}
+
+/** 打开关联笔记：弹窗编辑器就地查看 / 编辑（不再跳转到笔记标签页） */
+async function openNoteView(noteId) {
+  const mod = await import('./notes.js');
+  await mod.openNoteModal(Number(noteId));
+}
+
+function bindNoteSectionEvents(drawer, taskId) {
+  const host = drawer.querySelector('[data-section="notes"]');
+  if (!host) return;
+  host.querySelector('[data-act="note-link"]')?.addEventListener('click', async () => {
+    const res = await openNotePicker({ taskId });
+    if (!res.ok) return;
+    await refreshNoteSection(drawer, taskId);
+    handlers.toast(`已关联 ${res.noteIds.length} 篇笔记`);
+    handlers.refresh();
+  });
+  host.querySelectorAll('[data-act="note-open"]').forEach((b) => {
+    b.addEventListener('click', () => openNoteView(Number(b.dataset.note)));
+  });
+  host.querySelectorAll('[data-act="note-unlink"]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      await api.taskNotes.unlink(taskId, Number(b.dataset.note));
+      await refreshNoteSection(drawer, taskId);
+      handlers.toast('已取消关联（笔记本身保留）');
+      handlers.refresh();
+    });
+  });
+}
+
 async function guard(prefix, fn) {
   try {
     await fn();
@@ -44,6 +168,69 @@ async function guard(prefix, fn) {
 
 /** 渲染令牌：异步任务结束得太晚时就丢弃结果，避免旧内容覆盖新内容（表现为闪一下再变回去） */
 let renderToken = 0;
+
+/**
+ * 本轮渲染的监听器控制器。
+ * #detail-drawer 是常驻节点（只换 innerHTML），之前每次 renderDetail 都往上再挂一批
+ * input/change 监听，于是开着 A 再开 B 时，A 的自动保存器仍然活着并把 B 的内容写进 A。
+ * 每次渲染前 abort 上一轮，保证同一时刻只有一个自动保存器。
+ *
+ * 注意：abort 只能摘掉监听器，**取消不了已经排队的防抖计时器**。计时器到期时旧保存器
+ * 仍然会执行 read()（读的是"当前抽屉 DOM"，此时已经是另一个任务）再 save() 到
+ * **旧任务的 id** —— 这才是"改 A 把 B 覆盖 / 两个任务互相串改"的根因。
+ * 所以监听器之外还必须有一份保存器登记表，渲染前逐个「先 flush 再 dispose」。
+ */
+let renderAbort = null;
+
+/**
+ * 本轮渲染创建的自动保存器登记表。
+ * - 'main'：主任务抽屉级保存器（bindDetailAutoSave）
+ * - 'subtask'：每个子任务行一个（bindSubtaskAutoSave）
+ * 渲染前按范围回收：flush 把还没落库的改动立刻写掉（此时 DOM 仍是旧任务的，写的一定是
+ * 它自己的数据），dispose 再取消计时器并作废回调，旧保存器从此不可能再写库。
+ */
+let activeSavers = [];
+
+/** 登记一个保存器，便于统一回收 */
+function trackSaver(saver, scope) {
+  if (saver) activeSavers.push({ saver, scope });
+  return saver;
+}
+
+/**
+ * 回收保存器。
+ * @param {string} [scope] 只回收指定范围（'subtask' = 仅子任务行）；不传 = 全部回收
+ */
+function disposeSavers(scope) {
+  const keep = [];
+  for (const entry of activeSavers) {
+    if (scope && entry.scope !== scope) { keep.push(entry); continue; }
+    try {
+      // flush 内部同步取值（read 在第一个 await 之前执行），所以这里拿到的必然是
+      // 「回收那一刻」的 DOM 值 —— 也就是旧任务自己的内容，不会串到别的任务上。
+      const p = entry.saver.flush();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (_e) { /* 回收阶段不再抛错 */ }
+    try { entry.saver.dispose(); } catch (_e) { /* 同上 */ }
+  }
+  activeSavers = keep;
+}
+
+/**
+ * 抽屉当前展示的确实是 id 这个任务吗？
+ * 双重校验：state 里的当前任务 id + 抽屉 DOM 上打的标记（DOM 可能是上一轮留下的）。
+ * 任何一次写入前都要过这一关 —— 即使还有漏网的旧保存器，也只能"什么都不做"，
+ * 绝不能把别的任务的内容写进自己。
+ */
+function isDrawerShowing(id) {
+  const drawer = document.getElementById('detail-drawer');
+  return !!drawer && state.detailTaskId === id && String(drawer.dataset.taskId) === String(id);
+}
+
+/** 描述被 AI 润色前的原文（用于「还原原文」） */
+let polishBackup = '';
+/** 润色是否正在进行：连点「AI 润色」只应弹一个窗、发一次请求 */
+let polishBusy = false;
 
 /* ---------------- 侧边栏宽度（拖拽调整 + 记忆） ---------------- */
 
@@ -179,25 +366,33 @@ function bindResizer(drawer) {
   });
 
   // 窗口变窄时收敛到上限内，避免面板超出视口
+  // 挂在 window 上不会随 innerHTML 消失，必须跟着本轮渲染一起作废，否则越挂越多
   window.addEventListener('resize', () => {
     if (detailWidth == null || resizing) return;
     const w = clampDetailWidth(detailWidth);
     if (w !== detailWidth) { detailWidth = w; }
     applyDetailWidth(panel);
-  });
+  }, { signal: renderAbort ? renderAbort.signal : undefined });
 }
 
 export function openDetail(id) {
+  // 切换任务前先把上一个任务还没落库的改动写掉：此刻 state.detailTaskId 仍是旧值、
+  // 抽屉 DOM 也还是旧任务的，flush 写到的一定是旧任务自己的数据，不会串到新任务上。
+  // （顺序很关键：先落库再改 state，否则身份校验会把这次补写判成"越权"而丢掉改动。）
+  disposeSavers();
   state.detailTaskId = id;
   renderDetail();
 }
 
 export function closeDetail() {
-  state.detailTaskId = null;
+  // 关闭前把还在防抖队列里的改动落库（否则最后一下输入会被抽屉隐藏一起带走）
+  disposeSavers(); // 主任务 + 所有子任务：flush 后 dispose，避免关掉后还有保存器在跑
   const drawer = document.getElementById('detail-drawer');
+  state.detailTaskId = null;
   if (drawer) {
     drawer.hidden = true;
-    drawer.dataset.opened = ''; // 下次打开重新播放入场动画
+    drawer.dataset.opened = '';  // 下次打开重新播放入场动画
+    delete drawer.dataset.taskId; // 身份标记一并作废：此后任何保存器都不许再写
   }
 }
 
@@ -242,6 +437,12 @@ async function renderDetail() {
   // 画面上就是“闪一下/抖一下”。推迟到指针抬起后再补一次重绘。
   if (resizing) { pendingRender = true; return; }
   const token = ++renderToken;
+  // 作废上一轮挂在抽屉上的监听器（抽屉是常驻节点，不清理会越挂越多）
+  if (renderAbort) renderAbort.abort();
+  // 同时回收上一轮的保存器：此时抽屉还是上一个任务的 DOM，flush 写的是它自己的数据；
+  // 之后旧保存器被 dispose，再也不会拿新任务的 DOM 去写旧任务的 id。
+  disposeSavers();
+  renderAbort = new AbortController();
 
   const task = await api.tasks.get(id);
   if (!task) { drawer.hidden = true; state.detailTaskId = null; return; }
@@ -249,8 +450,14 @@ async function renderDetail() {
   await loadTags();
 
   const subtreeHtml = await renderSubtreeHtml(id);
+  const linkedNotes = await api.taskNotes.list(id).catch(() => []);
   // 期间若已切换到别的任务 / 被又一次渲染取代，直接放弃本次结果
   if (token !== renderToken) return;
+  // 描述必须回填：之前这里一直是空编辑器，用户看到的永远是「没有描述」，
+  // 而且自动保存会把空内容当成最新值写库 —— 改一下标题，描述就被清空了。
+  const notesHtml = notesToHtml(task.notes);
+  polishBackup = '';
+  polishBusy = false; // 换任务 = 上一轮润色作废，按钮与防重标记一起复位
   const parentInfo = task.parent_id
     ? `<div class="detail-parent" data-act="goto-parent" data-parent="${task.parent_id}">↳ 所属父任务：${esc(task.parent_title || '未知')}</div>`
     : '';
@@ -265,7 +472,7 @@ async function renderDetail() {
       <div class="detail-resizer" data-act="resize" title="拖拽调整宽度（双击恢复默认）" role="separator" aria-orientation="vertical"></div>
       <div class="detail-head">
         <button class="detail-check${task.completed ? ' done' : ''}" data-act="toggle" title="完成/取消">${task.completed ? '✓' : ''}</button>
-        <input class="detail-title" placeholder="任务标题" value="${esc(task.title)}" />
+        <input class="detail-title" placeholder="任务标题" value="${esc(task.title)}" spellcheck="false" />
         <button class="detail-close" data-act="close" title="关闭">×</button>
       </div>
       <div class="detail-body">
@@ -300,10 +507,31 @@ async function renderDetail() {
         </div>
 
         <div class="detail-section">
-          <div class="detail-section-head"><span>描述</span></div>
-          <div class="detail-notes-editor markdown-body" contenteditable="true"
-               data-placeholder="支持 Markdown 快捷键（Ctrl+B 加粗 / Ctrl+I 斜体），可直接粘贴图片…"></div>
+          <div class="detail-section-head">
+            <span>描述</span>
+            <span class="np-head-ops">
+              <button class="ghost-btn tiny" data-act="md-help" title="查看 Markdown 快捷键">?</button>
+              <button class="ghost-btn tiny" data-act="polish" title="用 AI 改写这段描述（可选预设或自定义提示词），先预览再决定是否采纳">✨ AI 改写</button>
+              <button class="ghost-btn tiny" data-act="polish-restore" title="放弃润色结果，恢复润色前的原文" hidden>↩ 还原原文</button>
+            </span>
+          </div>
+          <div class="detail-notes-editor markdown-body" contenteditable="true" spellcheck="false"
+               data-placeholder="支持 Markdown 快捷键，点左上角「?」查看；可直接粘贴图片…">${notesHtml}</div>
         </div>
+
+        <div class="detail-section">
+          <div class="detail-section-head">
+            <span>附件 <span class="att-count">${(task.attachments || []).length}</span></span>
+            <span class="np-head-ops">
+              <button class="ghost-btn tiny" data-act="att-add" title="选择本地文件添加附件（支持多选，也可直接把文件拖进来）">＋ 添加附件</button>
+            </span>
+          </div>
+          <div class="att-list">${attachmentsInnerHtml(task.attachments)}</div>
+        </div>
+
+        ${noteSectionHtml(linkedNotes)}
+
+        <div class="detail-created" title="任务创建时间（不可修改）">🕒 创建于 ${esc(fmtDateTime(task.created_at))}</div>
       </div>
       <div class="detail-foot">
         <button class="danger-btn" data-act="delete">删除</button>
@@ -316,15 +544,17 @@ async function renderDetail() {
 
   drawer.hidden = false;
   drawer.dataset.opened = '1';
+  // 打上"这块 DOM 属于哪个任务"的标记：保存器写库前据此校验身份
+  drawer.dataset.taskId = String(task.id);
   await ensureDetailWidth();
   bindResizer(drawer);
   bindDateRangeFields(drawer); // 主任务 + 子任务新增区 + 各行内的日期范围控件
   bindReminder(drawer);
   // 范围被清除/修改后同步提醒预设（依赖完成日期的预设会自动回到“不提醒”）
-  drawer.addEventListener(DATE_RANGE_EVENT, (e) => syncReminderWithPlanEnd(drawer, e.detail.planEnd));
+  drawer.addEventListener(DATE_RANGE_EVENT, (e) => syncReminderWithPlanEnd(drawer, e.detail.planEnd), { signal: renderAbort.signal });
   bindDetailEvents(drawer, task);
   // 即时持久化：挂载在事件绑定之后，保证能监听到同一批事件
-  drawer.__autoSave = bindDetailAutoSave(drawer, task);
+  drawer.__autoSave = bindDetailAutoSave(drawer, task, notesHtml);
 }
 
 /**
@@ -357,6 +587,124 @@ function subtaskItemHtml(s) {
   </li>`;
 }
 
+/* ---------------- 描述编辑器：Markdown 快捷键与帮助 ---------------- */
+
+/** 快捷键清单：帮助弹窗与 keydown 分发共用同一份数据 */
+const MD_SHORTCUTS = [
+  { keys: 'Ctrl+B', desc: '加粗', cmd: 'bold' },
+  { keys: 'Ctrl+I', desc: '斜体', cmd: 'italic' },
+  { keys: 'Ctrl+U', desc: '下划线', cmd: 'underline' },
+  { keys: 'Ctrl+1 / 2 / 3', desc: '一 / 二 / 三级标题', cmd: 'heading' },
+  { keys: 'Ctrl+Shift+7', desc: '有序列表（1. 2. 3.）', cmd: 'ol' },
+  { keys: 'Ctrl+Shift+8', desc: '无序列表（*）', cmd: 'ul' },
+  { keys: 'Ctrl+\\', desc: '清除样式（还原为正文）', cmd: 'clear' },
+];
+
+/**
+ * 在描述编辑器里执行一个 Markdown 格式化命令。
+ * 用 execCommand：虽已标记废弃，但 Chromium（Electron）里依旧稳定可用，
+ * 且天生与 contenteditable 的撤销栈 / 选区协同，比手动改 DOM 可靠得多。
+ */
+function execMdCommand(editor, cmd) {
+  editor.focus();
+  document.execCommand(cmd, false);
+}
+
+/** 标题级别快捷键：Ctrl+1/2/3 切换 h1/h2/h3；对同级标题再按一次还原为正文 */
+function execHeading(editor, level) {
+  const block = (document.queryCommandValue('formatBlock') || '').toLowerCase();
+  const tag = `h${level}`;
+  document.execCommand('formatBlock', false, block === tag ? 'p' : tag);
+}
+
+const MD_BLOCK_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'DIV', 'BLOCKQUOTE', 'PRE']);
+
+/**
+ * 清除样式（Ctrl+\）。
+ * 关键坑：选区折叠（光标停着没选中任何文字）时，removeFormat 在 Chromium 里不作用于任何内容，
+ * 表现就是「按了没反应」。所以光标折叠时先自动选中光标所在的整个块，再清内联格式、还原为正文。
+ */
+function clearMdStyles(editor) {
+  editor.focus();
+  const sel = document.getSelection();
+  if (sel && sel.rangeCount > 0 && sel.getRangeAt(0).collapsed) {
+    // 从光标向上找编辑器内的块级元素，全选其内容
+    let node = sel.anchorNode;
+    let block = null;
+    while (node && node !== editor) {
+      if (node.nodeType === Node.ELEMENT_NODE && MD_BLOCK_TAGS.has(node.tagName)) { block = node; break; }
+      node = node.parentNode;
+    }
+    if (block) {
+      const range = document.createRange();
+      range.selectNodeContents(block);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+  document.execCommand('removeFormat', false);
+  document.execCommand('unlink', false);
+  document.execCommand('formatBlock', false, 'p');
+}
+
+/** 「?」帮助弹窗：展示常用 Markdown 快捷键 */
+function showMdHelp() {
+  const rows = MD_SHORTCUTS.map((s) => `
+    <tr><td class="md-key">${esc(s.keys)}</td><td>${esc(s.desc)}</td></tr>`).join('');
+  openPanelModal({
+    title: 'Markdown 快捷键',
+    className: 'modal-md-help',
+    html: `
+      <table class="md-help-table">
+        <thead><tr><th>快捷键</th><th>功能</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="md-help-tip">另外：可直接粘贴截图到描述里，图片会插入光标处。</div>`,
+  });
+}
+
+/** 绑定描述编辑器的键盘快捷键（挂在抽屉内，随抽屉重建自动回收） */
+function bindMdShortcuts(editor, drawer) {
+  editor.addEventListener('keydown', (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (!mod) return;
+    const key = e.key.toLowerCase();
+    const schedule = () => { if (drawer.__autoSave) drawer.__autoSave.schedule(); };
+
+    if (key === '1' || key === '2' || key === '3') {
+      e.preventDefault();
+      execHeading(editor, Number(key));
+      schedule();
+      return;
+    }
+    if (e.shiftKey && (key === '&' || e.code === 'Digit7')) { // Shift+7 = '&'
+      e.preventDefault();
+      document.execCommand('insertOrderedList', false);
+      schedule();
+      return;
+    }
+    if (e.shiftKey && (key === '*' || e.code === 'Digit8')) { // Shift+8 = '*'
+      e.preventDefault();
+      document.execCommand('insertUnorderedList', false);
+      schedule();
+      return;
+    }
+    if (key === '\\' || e.code === 'Backslash') {
+      // 清除样式：先去内联格式，再把所在块还原为正文段落
+      e.preventDefault();
+      clearMdStyles(editor);
+      schedule();
+      return;
+    }
+    if (key === 'b' || key === 'i' || key === 'u') {
+      const cmd = { b: 'bold', i: 'italic', u: 'underline' }[key];
+      e.preventDefault();
+      execMdCommand(editor, cmd);
+      schedule();
+    }
+  });
+}
+
 /**
  * Esc 关闭抽屉。用模块级单一监听（而不是每次开抽屉 add + once 到期失效）：
  * ① 面板打开时 Esc 只收起日期面板，不连带关掉抽屉；
@@ -383,8 +731,8 @@ function bindDetailEvents(drawer, task) {
 
   drawer.querySelector('[data-act="toggle"]').addEventListener('click', async () => {
     const next = await api.tasks.toggle(task.id);
-    // 与列表勾选保持一致：今天视图里保留刚完成的任务
-    noteCompletionChange(task.id, !!(next && next.completed));
+    // 与列表勾选保持一致：今天完成的任务保留在「今天」列表里（详情抽屉里勾的同样要记）
+    noteCompletionChange(task.id, !!(next && next.completed), task.parent_id);
     await refreshAll();
     handlers.refresh();
     renderDetail();
@@ -411,8 +759,7 @@ function bindDetailEvents(drawer, task) {
 
   // 所见即所得描述：粘贴图片插入光标处
   const editor = drawer.querySelector('.detail-notes-editor');
-  editor.addEventListener('paste', (e) => {
-    const items = e.clipboardData && e.clipboardData.items;
+  editor.addEventListener('paste', (e) => {    const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
     for (const item of items) {
       if (item.kind === 'file' && item.type && item.type.startsWith('image/')) {
@@ -424,6 +771,27 @@ function bindDetailEvents(drawer, task) {
       }
     }
   });
+
+  // Markdown 快捷键 + 「?」帮助弹窗
+  bindMdShortcuts(editor, drawer);
+  const mdHelpBtn = drawer.querySelector('[data-act="md-help"]');
+  if (mdHelpBtn) mdHelpBtn.addEventListener('click', showMdHelp);
+
+  // 描述 AI 润色：结果先预览，采纳后可一键还原原文
+  const polishBtn = drawer.querySelector('[data-act="polish"]');
+  if (polishBtn) polishBtn.addEventListener('click', () => runPolish(drawer));
+  const restoreBtn = drawer.querySelector('[data-act="polish-restore"]');
+  if (restoreBtn) {
+    restoreBtn.addEventListener('click', () => {
+      const editor = drawer.querySelector('.detail-notes-editor');
+      if (!editor) return;
+      editor.innerHTML = polishBackup;
+      polishBackup = '';
+      restoreBtn.hidden = true;
+      if (drawer.__autoSave) drawer.__autoSave.schedule();
+      handlers.toast('已还原润色前的原文');
+    });
+  }
 
   // 子任务：添加（只重绘子树，输入框保留焦点，避免整页重建造成的闪烁）
   const subtaskInput = drawer.querySelector('.subtask-input');
@@ -464,6 +832,106 @@ function bindDetailEvents(drawer, task) {
   // 子任务：勾选 / 删除（统一由 bindSubtaskRowEvents 绑定，只重绘子树）
   bindSubtaskRowEvents(drawer, task.id);
   bindSubtaskDrag(drawer);
+
+  bindAttachmentEvents(drawer, task);
+  bindNoteSectionEvents(drawer, task.id);
+}
+
+/**
+ * 附件区块交互：添加（选择文件 / 拖拽拖入）、打开、下载（另存为）、删除。
+ * 增删后只替换 .att-list 的内容，不整页重绘抽屉 —— 描述编辑器里的光标与滚动位置都要保住。
+ */
+function bindAttachmentEvents(drawer, task) {
+  const listEl = drawer.querySelector('.att-list');
+  if (!listEl) return;
+  const signal = renderAbort ? renderAbort.signal : undefined;
+
+  /** 用最新的任务数据刷新附件列表与计数 */
+  const reload = async () => {
+    const fresh = await api.tasks.get(task.id).catch(() => null);
+    if (!fresh) return;
+    task.attachments = fresh.attachments || [];
+    listEl.innerHTML = attachmentsInnerHtml(task.attachments);
+    const cnt = drawer.querySelector('.att-count');
+    if (cnt) cnt.textContent = String(task.attachments.length);
+    // 列表页的附件角标也要跟着变
+    await refreshAll();
+    handlers.refresh();
+  };
+
+  const addPaths = async (paths) => {
+    const list = (paths || []).filter(Boolean);
+    if (!list.length) return;
+    const ok = await guard('添加附件失败', async () => {
+      const res = await api.attachments.addPaths(task.id, list);
+      if (res && res.failed && res.failed.length) {
+        handlers.toast(`已添加 ${res.added} 个附件，${res.failed.length} 个失败：${res.failed[0]}`);
+      } else if (res && res.added) {
+        handlers.toast(`已添加 ${res.added} 个附件`);
+      }
+    });
+    if (ok) await reload();
+  };
+
+  const addBtn = drawer.querySelector('[data-act="att-add"]');
+  if (addBtn) {
+    addBtn.addEventListener('click', async () => {
+      const ok = await guard('添加附件失败', async () => {
+        const res = await api.attachments.pick(task.id);
+        if (res && res.canceled) return;
+        if (res && res.failed && res.failed.length) {
+          handlers.toast(`已添加 ${res.added} 个附件，${res.failed.length} 个失败：${res.failed[0]}`);
+        } else if (res && res.added) {
+          handlers.toast(`已添加 ${res.added} 个附件`);
+        }
+      });
+      if (ok) await reload();
+    });
+  }
+
+  // 行内操作：事件委托，列表重绘后不需要重新绑定
+  listEl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-att-act]');
+    if (!btn) return;
+    const row = btn.closest('[data-att]');
+    const key = row ? row.dataset.att : '';
+    const name = row ? (row.title || '该附件') : '该附件';
+    const act = btn.dataset.attAct;
+    if (act === 'open') {
+      await guard('打开附件失败', () => api.attachments.open(task.id, key));
+    } else if (act === 'save') {
+      const ok = await guard('保存附件失败', async () => {
+        const res = await api.attachments.saveAs(task.id, key);
+        if (res && res.ok) handlers.toast('附件已保存');
+      });
+      if (!ok) return;
+    } else if (act === 'del') {
+      if (!confirm(`删除附件「${name}」？文件会从数据目录中一并删除。`)) return;
+      const ok = await guard('删除附件失败', () => api.attachments.remove(task.id, key));
+      if (ok) { handlers.toast('附件已删除'); await reload(); }
+    }
+  }, { signal });
+
+  // 拖拽添加：把文件直接拖到附件区
+  listEl.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    listEl.classList.add('drag-over');
+  }, { signal });
+  listEl.addEventListener('dragleave', () => listEl.classList.remove('drag-over'), { signal });
+  listEl.addEventListener('drop', async (e) => {
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault(); // 阻止 Electron 默认「把文件当页面打开」
+    listEl.classList.remove('drag-over');
+    // Electron 32+ 的 File 已没有 .path，必须通过 preload 的 webUtils 换绝对路径
+    const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
+    if (!paths.length) {
+      handlers.toast('无法读取拖入文件的路径，请改用「＋ 添加附件」');
+      return;
+    }
+    await addPaths(paths);
+  }, { signal });
 }
 
 /**
@@ -474,6 +942,9 @@ function bindDetailEvents(drawer, task) {
 async function refreshSubtasks(drawer, parentId) {
   const container = drawer.querySelector('.subtask-container');
   if (!container) return;
+  // 整块替换 innerHTML 前先回收子任务行的保存器：行被销毁后它们的计时器仍在跑，
+  // 到期会用已脱离文档的旧 DOM 再写一遍库（拖拽/勾选后可能把刚改过的值覆盖回去）。
+  disposeSavers('subtask');
   const html = await renderSubtreeHtml(parentId);
   container.innerHTML = html || '<div class="subtask-empty">暂无子任务</div>';
   bindDateRangeFields(container); // 子任务行内的日期范围控件
@@ -489,7 +960,12 @@ function bindSubtaskRowEvents(drawer, parentId) {
     const sid = Number(li.dataset.id);
 
     li.querySelector('[data-act="subtask-toggle"]').addEventListener('click', async () => {
-      const ok = await guard('更新子任务失败', () => api.tasks.toggle(sid));
+      const ok = await guard('更新子任务失败', async () => {
+        const next = await api.tasks.toggle(sid);
+        // 子任务被勾完时父任务会被自动标记完成：这里要把「连带完成」的祖先也记进今日已完成，
+        // 否则父任务会从「今天」列表里凭空消失、只剩下一排子任务
+        noteCompletionChange(sid, !!(next && next.completed), next && next.parent_id);
+      });
       if (!ok) return;
       await refreshSubtasks(drawer, parentId);
       await syncDetailSideEffects(parentId);
@@ -513,6 +989,8 @@ function bindSubtaskAutoSave(li, sid, parentId, drawer) {
   if (!titleEl || !priEl) return;
 
   const read = () => {
+    // 行已被重绘替换（脱离文档）→ 不再写库，避免用旧 DOM 覆盖服务端的新值
+    if (!li.isConnected) return null;
     const title = titleEl.value.trim();
     if (!title) return null; // 标题为空时不写库，等用户继续输入
     const range = validateDateRange(li);
@@ -525,7 +1003,7 @@ function bindSubtaskAutoSave(li, sid, parentId, drawer) {
     };
   };
 
-  const saver = createAutoSave({
+  const saver = trackSaver(createAutoSave({
     delay: DETAIL_AUTO_SAVE_DELAY,
     read,
     save: (payload) => api.tasks.update(sid, payload),
@@ -542,7 +1020,7 @@ function bindSubtaskAutoSave(li, sid, parentId, drawer) {
       // 不重绘子树（会打断输入），只刷新列表页与进度
       refreshAll().then(() => { handlers.refresh(); syncDetailSideEffects(parentId); });
     },
-  });
+  }), 'subtask');
 
   saver.setBaseline({
     title: titleEl.value,
@@ -560,6 +1038,309 @@ function bindSubtaskAutoSave(li, sid, parentId, drawer) {
   // 行内回车 → 立即保存
   titleEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saver.flush(); } });
 }
+
+/* ---------------- 描述 AI 润色 ---------------- */
+
+/** 纯文本 → 编辑器 HTML（按空行分段，段内换行转 <br>） */
+function plainToEditorHtml(text) {
+  return String(text || '')
+    .split(/\n{2,}/)
+    .map((block) => {
+      const line = esc(block.trim()).replace(/\n/g, '<br>');
+      return line ? `<p>${line}</p>` : '';
+    })
+    .filter(Boolean)
+    .join('');
+}
+
+/**
+ * 润色任务描述：预览 → 采纳 / 重新润色 / 取消；采纳后仍可「还原原文」。
+ * 不直接改写编辑器：AI 结果不一定更好，先看再决定才不会把原文弄丢。
+ *
+ * 反馈三条铁律：点下去立刻有加载态；成功/失败都有明确文案；过程中按钮禁用防重复触发。
+ * 早期这里整个函数是 async 且没有任何 catch —— 一旦内部抛错（例如漏 import），
+ * 就变成一条无人处理的 rejected Promise，界面上完全看不出来，表现为"点了没反应"。
+ */
+async function runPolish(drawer) {
+  if (polishBusy) return; // 防重复触发：已有一次润色在进行
+  const editor = drawer.querySelector('.detail-notes-editor');
+  const btn = drawer.querySelector('[data-act="polish"]');
+  if (!editor) return;
+  const source = editor.innerText.replace(/\u00a0/g, ' ').trim();
+  if (!source) { handlers.toast('描述还是空的，先写点内容再润色'); return; }
+
+  const btnLabel = btn ? btn.textContent : '';
+  const setBtnBusy = (on) => {
+    if (!btn) return;
+    btn.disabled = on;
+    btn.textContent = on ? '改写中…' : btnLabel;
+  };
+
+  // 防重标记必须在**第一个 await 之前**置位：否则连点两次会各自都通过这道判断，
+  // 于是弹出两个一模一样的弹窗、发两次请求（冒烟第 15 轮就是这么抓出来的）。
+  polishBusy = true;
+  setBtnBusy(true);
+  try {
+    let cfg = null;
+    try { cfg = await api.ai.getConfig(); } catch (e) { cfg = null; }
+    if (!cfg || !cfg.hasKey) {
+      handlers.toast('未配置 AI 接口 Key，请到顶部菜单栏「AI 设置」中填写');
+      return;
+    }
+    await openPolishModal(drawer, editor, source, cfg.polish || null);
+  } catch (e) {
+    // 兜底：连弹窗都打不开（渲染异常等）也要让用户看到原因
+    console.error('[detail][polish]', e);
+    handlers.toast(`AI 润色失败：${(e && e.message) || '未知错误'}`);
+  } finally {
+    setBtnBusy(false);
+    polishBusy = false;
+  }
+}
+
+/**
+ * 打开润色预览弹窗（改写取向 / 自定义提示词 + 原文与结果对照）。
+ * 弹窗内部的请求一律自行兜错并就地渲染错误 + 重试入口：
+ * openPanelModal 不 await onMount，里面的异常没人接，会变成静默失败。
+ *
+ * 上半区（.np-ctl）是常驻的提示词输入区，下半区（.np-out）是结果区——
+ * 两者分开渲染，重跑时输入的内容不会因为结果区被替换而丢失。
+ */
+async function openPolishModal(drawer, editor, source, polishCfg) {
+  const cfg = polishCfg || {};
+  const builtIn = cfg.presets || DEFAULT_POLISH_PRESETS;
+  const savedInstruction = cfg.instruction || '';
+
+  /** 预设下拉：内置 + 用户自建 */
+  const fillPresets = (list, customList) => {
+    const all = [...(list || []), ...(customList || [])];
+    polishPresets = all;
+    const sel = mask && mask.querySelector('.np-preset');
+    if (!sel) return;
+    sel.innerHTML = all
+      .map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`)
+      .join('') + '<option value="__manage__">管理自建预设…</option>';
+    syncPresetSelection();
+  };
+
+  /** 让下拉选中项与当前提示词一致：命中某个预设就选它，否则落到「自定义」 */
+  const syncPresetSelection = () => {
+    const sel = mask && mask.querySelector('.np-preset');
+    const ta = mask && mask.querySelector('.np-instruction');
+    if (!sel || !ta) return;
+    const hit = polishPresets.find((p) => p.instruction && p.instruction === ta.value.trim());
+    if (hit) sel.value = hit.id;
+    else sel.value = ta.value.trim() ? 'custom' : 'default';
+  };
+
+  let mask = null;
+  let polishPresets = [...builtIn, ...(cfg.customPresets || [])];
+
+  const presetOptionsHtml = polishPresets
+    .map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`)
+    .join('') + '<option value="__manage__">管理自建预设…</option>';
+
+  const html = `
+    <div class="np-ctl">
+      <div class="np-ctl-row">
+        <label class="np-ctl-label" for="np-preset">改写取向</label>
+        <select class="np-preset" id="np-preset">${presetOptionsHtml}</select>
+      </div>
+      <div class="np-ctl-row">
+        <label class="np-ctl-label" for="np-instruction">自定义提示词</label>
+        <textarea class="np-instruction" id="np-instruction" rows="2" spellcheck="false"
+          placeholder="例：只保留三条要点 / 改成给客户看的口吻 / 输出英文">${esc(savedInstruction)}</textarea>
+      </div>
+      <div class="np-ctl-ops">
+        <button type="button" class="ghost-btn" data-np="save-preset">💾 存为我的预设</button>
+        <span class="np-spacer"></span>
+        <button type="button" class="primary-btn" data-np="run">✨ 开始改写</button>
+      </div>
+    </div>
+    <div class="np-out"><div class="np-loading">正在改写，请稍候…</div></div>`;
+
+  await openPanelModal({
+    title: 'AI 改写描述',
+    className: 'modal-xl',
+    okText: '关闭',
+    html,
+    onMount: async (m, close) => {
+      mask = m;
+      const body = mask.querySelector('.modal-body');
+      const out = mask.querySelector('.np-out');
+      const ta = mask.querySelector('.np-instruction');
+      const sel = mask.querySelector('.np-preset');
+      if (!body || !out) return;
+      let polished = '';
+      let busy = false;
+
+      const showLoading = (text) => { out.innerHTML = `<div class="np-loading">${esc(text)}</div>`; };
+      const showError = (msg) => {
+        out.innerHTML = `
+          <div class="np-error">${esc(msg)}</div>
+          <div class="np-ops">
+            <span class="np-spacer"></span>
+            <button type="button" class="ghost-btn" data-np="retry">🔁 重新改写</button>
+          </div>`;
+      };
+      const showCompare = (text) => {
+        out.innerHTML = `
+          <div class="np-compare">
+            <div class="np-pane">
+              <div class="np-pane-title">原文</div>
+              <div class="np-box">${esc(source)}</div>
+            </div>
+            <div class="np-pane">
+              <div class="np-pane-title">改写后</div>
+              <div class="np-box polished">${esc(text)}</div>
+            </div>
+          </div>
+          <div class="np-ops">
+            <button type="button" class="ghost-btn" data-np="retry">🔁 重新改写</button>
+            <span class="np-spacer"></span>
+            <button type="button" class="ghost-btn" data-np="cancel">取消</button>
+            <button type="button" class="primary-btn" data-np="accept">✅ 采纳</button>
+          </div>`;
+      };
+
+      // 切换预设 → 把该预设的提示词填进输入框（选「自定义」时保留用户自己写的内容）
+      if (sel) {
+        sel.addEventListener('change', () => {
+          if (sel.value === '__manage__') { openPresetManager(); return; }
+          const p = polishPresets.find((x) => x.id === sel.value);
+          if (p && p.id !== 'custom') ta.value = p.instruction || '';
+        });
+      }
+      if (ta) ta.addEventListener('input', syncPresetSelection);
+      // 记住这次用的提示词，下次打开自动带出（失败不影响改写结果，只吞掉）
+      const remember = (instruction) => {
+        api.ai.savePolish({ instruction }).catch(() => {});
+      };
+
+      const run = async (isRetry) => {
+        if (busy) return;
+        busy = true;
+        showLoading(isRetry ? '正在重新改写，请稍候…' : '正在改写，请稍候…');
+        try {
+          const r = await api.ai.polish({ text: source, instruction: (ta && ta.value.trim()) || '' });
+          if (!r || !r.ok) throw new Error((r && r.message) || '改写失败');
+          polished = r.text || '';
+        } catch (e) {
+          busy = false;
+          if (!mask.isConnected) return; // 请求期间用户已关窗，不再操作已卸载的 DOM
+          // 超时 / 网络异常 / 接口报错统一在这里翻译成一句人话
+          const raw = (e && e.message) ? e.message : '未知错误';
+          const tip = /超时|timeout/i.test(raw) ? 'AI 改写超时' : 'AI 改写失败';
+          showError(`${tip}：${raw}`);
+          handlers.toast(`${tip}：${raw}`);
+          return;
+        }
+        busy = false;
+        if (!mask.isConnected) return;
+        if (!polished) {
+          showError('AI 没有返回有效内容，请稍后重试');
+          return;
+        }
+        showCompare(polished);
+      };
+
+      /** 自建预设管理：列出已有预设，可删除；新增走「存为我的预设」 */
+      const openPresetManager = async () => {
+        const custom = polishPresets.filter((p) => p.id.startsWith('custom:'));
+        const rows = custom.length
+          ? custom.map((p) => `
+              <tr>
+                <td>${esc(p.label)}</td>
+                <td class="np-preset-text">${esc(p.instruction || '')}</td>
+                <td><button type="button" class="ghost-btn tiny" data-del="${esc(p.label)}">删除</button></td>
+              </tr>`).join('')
+          : '<tr><td colspan="3" class="np-empty">还没有自建预设，可在润色弹窗里点「存为我的预设」添加</td></tr>';
+        await openPanelModal({
+          title: '我的润色预设',
+          html: `<table class="md-help-table np-preset-table">
+              <thead><tr><th>名称</th><th>提示词</th><th></th></tr></thead>
+              <tbody>${rows}</tbody></table>`,
+          onMount: async (root, closeMgr) => {
+            root.addEventListener('click', async (e) => {
+              const del = e.target.closest('[data-del]');
+              if (!del) return;
+              try {
+                const next = await api.ai.savePolish({ deletePreset: del.dataset.del });
+                polishPresets = [...(next.presets || []), ...(next.customPresets || [])];
+                handlers.toast('已删除预设');
+                closeMgr();
+              } catch (err) {
+                handlers.toast(`删除预设失败：${(err && err.message) || '未知错误'}`);
+              }
+            });
+          },
+        });
+        sel.value = ta && ta.value.trim() ? 'custom' : 'default';
+      };
+
+      // 事件委托挂在常驻的 .modal-body 上：主体内容会被反复替换，委托才不会失效
+      body.addEventListener('click', async (e) => {
+        const hit = e.target.closest('[data-np]');
+        if (!hit) return;
+        const act = hit.dataset.np;
+        if (act === 'cancel') { close(); return; }
+        if (act === 'retry') { await run(true); return; }
+        if (act === 'run') { const ins = ta ? ta.value.trim() : ''; remember(ins); await run(false); return; }
+        if (act === 'save-preset') {
+          const instruction = ta ? ta.value.trim() : '';
+          if (!instruction) { handlers.toast('先写点提示词，再存为预设'); return; }
+          const label = await openPromptModal({
+            title: '存为我的预设',
+            label: '预设名称',
+            placeholder: '如：给客户的周报口吻',
+            okText: '保存',
+            onSubmit: async (v) => {
+              const name = (v || '').trim();
+              if (!name) return '请填写预设名称';
+              if (polishPresets.some((p) => !p.id.startsWith('custom:') && p.label === name)) {
+                return '与内置预设重名，换一个名字';
+              }
+              try {
+                const next = await api.ai.savePolish({ instruction, savePreset: { label: name, instruction } });
+                polishPresets = [...(next.presets || []), ...(next.customPresets || [])];
+                // 重绘下拉并把自建预设补进去
+                fillPresets(next.presets, next.customPresets);
+                const mine = polishPresets.find((p) => p.id === `custom:${name}`);
+                if (mine && sel) sel.value = mine.id;
+              } catch (err) {
+                return (err && err.message) || '保存失败，请重试';
+              }
+              return undefined;
+            },
+          });
+          if (label) handlers.toast('已保存为我的预设');
+          return;
+        }
+        if (act === 'accept') {
+          if (!polished) { close(); return; }
+          polishBackup = editor.innerHTML;
+          editor.innerHTML = plainToEditorHtml(polished);
+          const restoreBtn = drawer.querySelector('[data-act="polish-restore"]');
+          if (restoreBtn) restoreBtn.hidden = false;
+          if (drawer.__autoSave) drawer.__autoSave.schedule();
+          handlers.toast('已采纳改写结果');
+          close();
+        }
+      });
+
+      syncPresetSelection();
+      await run(false);
+    },
+  });
+}
+
+/** 内置润色预设兜底：主进程配置没取到时界面也不至于空白 */
+const DEFAULT_POLISH_PRESETS = [
+  { id: 'default', label: '润色优化（推荐）', instruction: '在保持原意的前提下重写：理清逻辑顺序，让目标、产出与约束一目了然，去掉口语化赘词。' },
+  { id: 'concise', label: '精简压缩', instruction: '大幅精简：保留全部事实与结论，删掉重复与修饰，字数尽量压到原文的 60% 以内。' },
+  { id: 'checklist', label: '转结构化清单', instruction: '改写成结构化清单：先一句总述，再用「1. 2. 3.」列出可执行条目，每条一句话、以动词开头。' },
+  { id: 'custom', label: '自定义', instruction: '' },
+];
 
 /**
  * 子任务变化后的“非视觉”副作用：刷新列表页数据与父任务勾选状态。
@@ -702,6 +1483,13 @@ function collectDetailPayload(drawer, { quiet = false } = {}) {
   };
 }
 
+/** 保存状态的时间戳（"已保存 14:03" 比干巴巴的"已保存"更有说服力） */
+function nowLabel() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /** 详情保存状态提示 */
 function setDetailSaveState(drawer, status, message) {
   const el = drawer.querySelector('.detail-save-state');
@@ -711,19 +1499,34 @@ function setDetailSaveState(drawer, status, message) {
   el.title = status === 'error' ? (message || '保存失败，点击重试') : '修改会自动保存';
 }
 
-/** 详情面板的即时持久化：任意字段改动 → 防抖后自动写库 */
-function bindDetailAutoSave(drawer, task) {
-  const read = () => collectDetailPayload(drawer, { quiet: true });
+/**
+ * 详情面板的即时持久化：任意字段改动 → 防抖后自动写库。
+ * notesHtml 是渲染时实际写进编辑器的 HTML —— 基线必须用它（而不是库里的原始字符串），
+ * 否则浏览器归一化后的 innerHTML 与库里的文本永远不相等，会出现"没改也写库"。
+ */
+function bindDetailAutoSave(drawer, task, notesHtml) {
+  // 身份校验是最后一道闸：抽屉已经切到别的任务（或已关闭）时，read 直接返回 null，
+  // 本次保存整个作废 —— 宁可少写一次，也绝不能把 B 的内容写进 A。
+  const read = () => (isDrawerShowing(task.id) ? collectDetailPayload(drawer, { quiet: true }) : null);
+  const notesEl = drawer.querySelector('.detail-notes-editor');
+  const baselineNotes = notesHtml != null ? notesHtml : (task.notes || '');
 
-  const saver = createAutoSave({
+  const saver = trackSaver(createAutoSave({
     delay: DETAIL_AUTO_SAVE_DELAY,
     read,
     save: async (payload) => {
+      if (!isDrawerShowing(task.id)) return null; // 二次校验：写入前再确认一次身份
       const tagIds = await resolveTagIds(drawer.querySelector('.detail-tags').value);
       return api.tasks.update(task.id, { ...payload, tagIds });
     },
     onStatus: (status, info) => {
-      setDetailSaveState(drawer, status, status === 'error' ? (info === 'conflict' ? '任务已不存在' : '保存失败，点击重试') : '');
+      setDetailSaveState(
+        drawer,
+        status,
+        status === 'error' ? (info === 'conflict' ? '任务已不存在' : '保存失败，点击重试')
+          : status === 'saved' ? `已保存 ${nowLabel()}`
+            : '',
+      );
     },
     onError: (e) => {
       handlers.toast(`自动保存失败：${(e && e.message) || '未知错误'}`);
@@ -737,7 +1540,7 @@ function bindDetailAutoSave(drawer, task) {
       // 不重绘抽屉（会打断输入 / 丢失光标），只同步列表页数据
       refreshAll().then(() => handlers.refresh());
     },
-  });
+  }), 'main');
 
   saver.setBaseline({
     title: task.title,
@@ -746,28 +1549,34 @@ function bindDetailAutoSave(drawer, task) {
     planStart: task.plan_start,
     planEnd: task.plan_end,
     reminderAt: task.reminder_at,
-    notes: task.notes || '',
+    notes: baselineNotes,
   });
 
+  const signal = renderAbort ? renderAbort.signal : undefined;
+  // 子任务区有自己的保存器（bindSubtaskAutoSave），这里的抽屉级监听要避开它，
+  // 否则动一个子任务标题会连带把父任务整体再写一遍。
+  const fromSubtask = (e) => !!e.target.closest('.subtask-item, .subtask-add');
   // 输入类字段
-  drawer.addEventListener('input', () => saver.schedule());
+  drawer.addEventListener('input', (e) => { if (!fromSubtask(e)) saver.schedule(); }, { signal });
   // 下拉 / 日期等（change 不冒泡到 input，两类都监听）
-  drawer.addEventListener('change', () => saver.schedule());
-  drawer.addEventListener(DATE_RANGE_EVENT, () => saver.schedule());
+  drawer.addEventListener('change', (e) => { if (!fromSubtask(e)) saver.schedule(); }, { signal });
+  drawer.addEventListener(DATE_RANGE_EVENT, () => saver.schedule(), { signal });
   // 富文本描述：粘贴图片不触发 input，需要单独监听
-  const notesEl = drawer.querySelector('.detail-notes-editor');
   if (notesEl) {
-    notesEl.addEventListener('input', () => saver.schedule());
-    notesEl.addEventListener('paste', () => saver.schedule());
+    notesEl.addEventListener('input', () => saver.schedule(), { signal });
+    notesEl.addEventListener('paste', () => saver.schedule(), { signal });
   }
+  // 点击状态标签 → 立即重试
   const stateEl = drawer.querySelector('.detail-save-state');
-  if (stateEl) stateEl.addEventListener('click', () => saver.flush());
+  if (stateEl) stateEl.addEventListener('click', () => saver.flush(), { signal });
 
   return saver;
 }
 
 /** 「保存」按钮：立即写入（自动保存已覆盖日常改动，这里是手动 flush） */
 async function saveDetail(drawer, task) {
+  // 抽屉里的 DOM 必须确实是这个任务的：否则宁可不保存，也不能把 A 的界面写成 B 的数据
+  if (!isDrawerShowing(task.id)) return;
   const payload = collectDetailPayload(drawer);
   if (!payload) return;
   const saver = drawer.__autoSave;

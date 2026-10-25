@@ -3,12 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- img-src 放开 https：笔记里的外链图片要能显示（default-src 'self' 会拦掉 https 图片） -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self';" />
-  <title>TODO 待办</title>
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: todo-media:; script-src 'self';" />
+  <title>Knodo</title>
   <!-- 第三方依赖：flatpickr（日期范围选择）、tom-select（分组多选）。先加载厂商样式，再用本项目样式覆盖主题 -->
   <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css" />
   <link rel="stylesheet" href="vendor/tom-select/tom-select.min.css" />
+  <link rel="stylesheet" href="vendor/easymde/easymde.min.css" />
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
@@ -16,8 +18,31 @@
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-logo">✓</span>
-        <span class="brand-name">TODO 待办</span>
+        <!-- Knodo 标识（与 assets/knodo.svg 同一套几何）：环 = 知识回路，K = 清单竖条 + 斜臂，圆环上 3 个节点 = 知识关联 -->
+        <span class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 256 256">
+            <defs>
+              <linearGradient id="knodoMark" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#2E5BFF" />
+                <stop offset="0.5" stop-color="#2450E8" />
+                <stop offset="1" stop-color="#16C8E8" />
+              </linearGradient>
+            </defs>
+            <rect width="256" height="256" rx="60.16" fill="url(#knodoMark)" />
+            <g fill="#fff" stroke="#fff" stroke-linecap="round">
+              <circle cx="128" cy="128" r="101.12" fill="none" stroke-width="13.82" />
+              <line x1="72.96" y1="60.16" x2="72.96" y2="195.84" stroke-width="23.55" />
+              <line x1="72.96" y1="128" x2="157.69" y2="61.8" stroke-width="24.58" />
+              <line x1="72.96" y1="128" x2="157.69" y2="194.2" stroke-width="24.58" />
+              <line x1="157.69" y1="61.8" x2="207.68" y2="65.74" stroke-width="7.17" opacity="0.85" />
+              <line x1="157.69" y1="194.2" x2="207.68" y2="190.26" stroke-width="7.17" opacity="0.85" />
+              <circle cx="207.68" cy="65.74" r="14.08" stroke="none" />
+              <circle cx="229.12" cy="128" r="14.08" stroke="none" />
+              <circle cx="207.68" cy="190.26" r="14.08" stroke="none" />
+            </g>
+          </svg>
+        </span>
+        <span class="brand-name" title="Knodo — 知识化待办（Knowledge + Todo）">Knodo</span>
       </div>
 
       <nav class="nav">
@@ -26,6 +51,7 @@
         <button class="nav-item" data-view="all"><span class="nav-ico">📋</span>全部任务</button>
         <button class="nav-item" data-view="completed"><span class="nav-ico">✅</span>已完成</button>
         <button class="nav-item" data-view="archived"><span class="nav-ico">🗂</span>归档</button>
+        <button class="nav-item" data-view="notes"><span class="nav-ico">📝</span>笔记</button>
         <button class="nav-item" data-view="stats"><span class="nav-ico">📊</span>统计</button>
         <button class="nav-item" data-view="reports"><span class="nav-ico">🤖</span>AI 报告</button>
         <button class="nav-item" data-view="search"><span class="nav-ico">🔍</span>AI 检索</button>
@@ -49,6 +75,10 @@
       </div>
     </aside>
 
+    <!-- 侧边栏与主区之间的拖拽把手：拖动调整侧边栏宽度（双击恢复默认） -->
+    <div class="sidebar-resizer" id="sidebar-resizer" title="拖拽调整侧边栏宽度（双击恢复默认）"
+         role="separator" aria-orientation="vertical" aria-label="调整侧边栏宽度"></div>
+
     <!-- 主区域 -->
     <main class="main">
       <header class="topbar">
@@ -64,7 +94,7 @@
           <button class="text-btn" id="btn-export" title="导出全部任务数据为 JSON 文件">📤 导出</button>
           <button class="text-btn" id="btn-archive-done" title="归档已完成任务">🗂 归档</button>
           <button class="text-btn" id="btn-record" title="录制会议音频（或屏幕），结束后转文字并生成纪要">⏺ 录制</button>
-          <button class="text-btn" id="btn-ai-settings" title="配置 AI 接口地址、模型与密钥">⚙ AI 设置</button>
+          <!-- AI 设置 / 开机自启动 已移到顶部菜单栏（主进程应用菜单） -->
           <button class="text-btn" id="btn-theme" title="切换主题">🌓 主题</button>
           <button class="primary-btn" id="btn-new-task">＋ 新建任务</button>
         </div>
@@ -109,6 +139,8 @@
   <script src="vendor/flatpickr/flatpickr.min.js"></script>
   <script src="vendor/flatpickr/l10n-zh.js"></script>
   <script src="vendor/tom-select/tom-select.complete.min.js"></script>
+  <script src="vendor/markdown-it/markdown-it.min.js"></script>
+  <script src="vendor/easymde/easymde.min.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

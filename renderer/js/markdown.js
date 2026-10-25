@@ -20,12 +20,46 @@ function safeUrl(url) {
   return '#';
 }
 
+/** 只认 #rgb / #rrggbb / #rrggbbaa：色值会拼进 style 属性，必须白名单校验 */
+const HEX_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+/**
+ * 颜色 / 高亮标记 `==文字=={c:#e5484d;bg:#fff3a3}` → <mark>/<span>。
+ * 与 markdown-lib.js 的插件是同一套语法（本文件是库缺失时的降级渲染器，逻辑必须对齐）；
+ * inner 传进来的已经是转义后的文本，色值只放行 #hex，避免 style 注入。
+ */
+function styledMark(inner, rawAttrs) {
+  const attrs = { color: '', bg: '' };
+  String(rawAttrs || '').split(';').forEach((part) => {
+    const [k, v] = String(part || '').split(':').map((s) => String(s || '').trim());
+    if (!k || !v) return;
+    const val = v.startsWith('#') ? v : `#${v}`;
+    if (!HEX_RE.test(val)) return;
+    if (k === 'c' || k === 'color') attrs.color = val;
+    else if (k === 'bg' || k === 'background') attrs.bg = val;
+  });
+  const isMark = !!attrs.bg || !String(rawAttrs || '').trim();
+  const style = [];
+  if (attrs.color) style.push(`color:${attrs.color}`);
+  if (attrs.bg) style.push(`background:${attrs.bg}`);
+  const attrStyle = style.length ? ` style="${style.join(';')}"` : '';
+  const tag = isMark ? 'mark' : 'span';
+  return `<${tag} class="${isMark ? 'md-mark' : 'md-color'}"${attrStyle}>${inner}</${tag}>`;
+}
+
 function inline(text) {
   let s = escapeHtml(text);
   // 行内代码 `code`
   s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // 字体颜色 / 背景高亮 ==文字=={c:#hex;bg:#hex}（属性段可选）
+  s = s.replace(/==([^=\n]+)==(?:\{([^}\n]*)\})?/g, (_m, txt, attrs) => {
+    const st = String(attrs || '');
+    if (st && !/^([cb]g?|color|background)\s*:/i.test(st)) return _m;
+    return styledMark(txt, st);
+  });
   // 图片 ![alt](url)
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => `<img src="${safeUrl(url)}" alt="${alt}">`);
+  // md-image：图片双击放大预览的挂载点（见 image-zoom.js）
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => `<img class="md-image" src="${safeUrl(url)}" alt="${alt}" loading="lazy">`);
   // 链接 [text](url)
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, txt, url) => `<a href="${safeUrl(url)}" target="_blank" rel="noopener">${txt}</a>`);
   // 粗体 ** ** / __ __

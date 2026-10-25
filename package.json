@@ -1,7 +1,7 @@
 {
   "name": "todo-desktop",
-  "version": "1.0.0",
-  "description": "Windows 桌面端个人 TODO 待办应用（Electron + SQLite，本地存储 + AI 报告）",
+  "version": "1.6.0",
+  "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": "WorkBuddy",
   "license": "MIT",
@@ -17,7 +17,9 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "easymde": "^2.21.0",
     "flatpickr": "^4.6.13",
+    "markdown-it": "^14.3.3",
     "tom-select": "^2.4.3"
   },
   "devDependencies": {
@@ -26,7 +28,7 @@
   },
   "build": {
     "appId": "com.workbuddy.todo-desktop",
-    "productName": "TODO待办",
+    "productName": "Knodo",
     "copyright": "Copyright © 2026 WorkBuddy",
     "directories": {
       "output": "dist",
@@ -37,7 +39,11 @@
       "preload/**/*",
       "renderer/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/better-sqlite3/deps/**/*",
+      "!node_modules/better-sqlite3/src/**/*",
+      "!node_modules/better-sqlite3/prebuilds/darwin*",
+      "!node_modules/better-sqlite3/prebuilds/linux*"
     ],
     "asar": true,
     "asarUnpack": [
@@ -49,7 +55,10 @@
     },
     "win": {
       "icon": "assets/icon.ico",
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -57,14 +66,20 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "TODO 待办",
+      "shortcutName": "Knodo",
       "language": "2052",
-      "installerLanguages": ["zh_CN"],
+      "installerLanguages": [
+        "zh_CN"
+      ],
       "deleteAppDataOnUninstall": false,
       "artifactName": "${productName}-${version}-安装版.${ext}"
     },
     "portable": {
       "artifactName": "${productName}-${version}-便携版.${ext}"
-    }
+    },
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ]
   }
 }

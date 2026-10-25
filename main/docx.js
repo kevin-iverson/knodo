@@ -352,8 +352,8 @@ function coreXml(title) {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 <dc:title>${escapeXml(title)}</dc:title>
-<dc:creator>TODO 待办</dc:creator>
-<cp:lastModifiedBy>TODO 待办</cp:lastModifiedBy>
+<dc:creator>Knodo</dc:creator>
+<cp:lastModifiedBy>Knodo</cp:lastModifiedBy>
 <dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created>
 <dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>
 </cp:coreProperties>`;

@@ -1,18 +1,20 @@
 'use strict';
 /**
- * 主进程入口：窗口生命周期、单实例锁、托盘、全局快捷键、提醒调度。
+ * 主进程入口：窗口生命周期、单实例锁、托盘、提醒调度。
  * 关闭窗口默认最小化到托盘，仅当显式退出时才真正退出。
  */
 const {
-  app, BrowserWindow, nativeTheme, ipcMain, session,
+  app, BrowserWindow, nativeTheme, ipcMain, session, Menu, dialog, shell, protocol,
 } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const db = require('./db');
+const storage = require('./storage');
+const attachments = require('./attachments');
 const { registerIpc } = require('./ipc');
 const { setupTray, destroyTray } = require('./tray');
-const { registerShortcuts, unregisterShortcuts } = require('./shortcuts');
+const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
 const { markdownToDocx } = require('./docx');
 const reportMod = require('./report');
@@ -35,8 +37,19 @@ if (process.env.PORTABLE_EXECUTABLE_DIR) {
   app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'));
 }
 
+// Windows 任务栏 / 通知的身份标识（AppUserModelID）。
+// 不设的话，任务栏按钮会沿用宿主进程（开发期是 electron.exe）的身份，
+// 于是图标与通知标题都跟品牌对不上；改成自己的 ID 后，Windows 才会按本应用的
+// 窗口图标来画，也顺带避开了「同名 exe 的旧图标被系统缓存住」的问题。
+if (process.platform === 'win32') app.setAppUserModelId('com.workbuddy.knodo');
+
 let mainWindow = null;
 let isQuitting = false;
+/**
+ * 静默启动：由开机自启动（--autostart）拉起时只驻留托盘，不弹主窗口。
+ * 冒烟测试也走这条路（它自己控制窗口显隐）。
+ */
+const silentLaunch = autostart.isAutoStarted() || isSmoke;
 
 // 单实例锁
 const gotLock = app.requestSingleInstanceLock();
@@ -53,6 +66,8 @@ function createWindow() {
     minWidth: 860,
     minHeight: 560,
     show: false,
+    // 深色主题下别让窗口先闪一下白底（applyTheme() 已在创建窗口之前执行）
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#15181f' : '#f5f6f8',
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
@@ -65,7 +80,8 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   mainWindow.once('ready-to-show', () => {
-    if (!isSmoke) mainWindow.show();
+    // 开机自启动唤起时只驻留托盘，不弹主窗口（用户想用时点托盘图标即可）
+    if (!isSmoke && !silentLaunch) mainWindow.show();
   });
 
   // 关闭 → 最小化到托盘
@@ -84,6 +100,19 @@ function showWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+/**
+ * 对话框统一入口：有主窗口就挂成模态对话框，没有（极早期 / 窗口已关）就不带父窗口。
+ * Electron 的签名是 showMessageBox([browserWindow,] options)，第一个参数传 undefined 会报参数错误，
+ * 所以这里必须用两个分支，而不是 `mainWindow || undefined`。
+ */
+function msgBox(opts) {
+  return mainWindow ? dialog.showMessageBox(mainWindow, opts) : dialog.showMessageBox(opts);
+}
+
+function dirDialog(opts) {
+  return mainWindow ? dialog.showOpenDialog(mainWindow, opts) : dialog.showOpenDialog(opts);
 }
 
 function toggleWindow() {
@@ -107,10 +136,253 @@ function applyTheme() {
   nativeTheme.themeSource = mode; // 'system' | 'light' | 'dark'
 }
 
+/**
+ * 应用菜单：保留系统默认的 File / Edit / View / Window（role 复用默认行为），
+ * 末尾追加「AI 设置」与「实用工具」——原来在顶部工具栏，挪到菜单栏后非任务视图才能整排隐藏工具区。
+ * 与"应用级设置"同类的项（存储位置、开机自启动）统一收进 File 菜单，其余菜单保持系统默认分组。
+ *
+ * 注：笔记不再是独立菜单项（入口统一到左侧导航，避免两处入口不一致）。
+ * 全局快捷键 CmdOrCtrl+Shift+N（新建笔记）继续保留 —— 它是窗口级快捷键，不属于某个菜单的功能入口。
+ */
+function buildAppMenu() {
+  const auto = autostart.getState();
+  const template = [
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    {
+      // 显式构建 File 菜单：不用 role: 'fileMenu'，以便在同一个子菜单里追加自定义项；
+      // Exit 行为与默认一致。
+      // 分组：存储位置（数据层）｜ 开机自启动（系统启动项）｜ Exit。
+      label: 'File',
+      submenu: [
+        {
+          label: '存储位置',
+          click: () => {
+            showWindow();
+            openStorageDialog();
+          },
+        },
+        { type: 'separator' },
+        {
+          // 开机自启动：勾选项直接反映系统里实际登记的启动项，点一下即写系统设置
+          label: '开机自启动',
+          type: 'checkbox',
+          checked: auto.enabled,
+          enabled: auto.supported,
+          click: (item) => toggleAutoStart(item.checked),
+        },
+        { type: 'separator' },
+        { role: 'quit', label: 'Exit' },
+      ],
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    {
+      label: 'AI 设置',
+      click: () => {
+        showWindow();
+        if (mainWindow) mainWindow.webContents.send('ui:ai-settings');
+      },
+    },
+    {
+      // 实用工具：都是「弹窗形态的小工具」，不占视图，随时可用
+      label: '实用工具',
+      submenu: [
+        {
+          label: '实时薪资',
+          accelerator: 'CmdOrCtrl+Shift+S',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:salary');
+          },
+        },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/**
+ * 切换开机自启动（File 菜单勾选项的唯一入口）。
+ * 失败时重建菜单让勾选状态回到系统实际值，并弹出原因——避免"看着开了其实没开"。
+ * 返回结构同时供 IPC 使用，渲染层据此保持状态一致。
+ */
+async function toggleAutoStart(next) {
+  const res = autostart.setEnabled(!!next);
+  // 记一份用户意图（换机器 / 重装后仍能看出偏好）；读取一律以系统状态为准
+  db.setSetting('app.autoStart', res.enabled ? '1' : '0');
+  buildAppMenu(); // 重建菜单，让勾选状态与系统实际状态一致
+  if (mainWindow) mainWindow.webContents.send('ui:autostart-changed', res);
+  if (!res.ok) {
+    await msgBox({
+      type: 'warning',
+      title: '开机自启动',
+      message: next ? '未能开启开机自启动' : '未能关闭开机自启动',
+      detail: res.reason || '未知原因',
+      buttons: ['好'],
+      noLink: true,
+    });
+  }
+  return res;
+}
+
+/**
+ * 「数据存放位置」对话框：查看当前目录 → 选新目录 → 探测写权限 → 可选迁移现有数据 → 重启生效。
+ * 之所以全程用原生对话框：切换目录涉及关库 / 重启，放在渲染层做容易出现「界面还在、库已换」的中间态。
+ */
+async function openStorageDialog() {
+  const info = storage.getInfo();
+  const detail = info.source === 'fallback'
+    ? `⚠️ 你之前配置的目录当前不可用：\n${info.wanted}\n原因：${info.error}\n\n本次已临时使用默认目录，数据不会写进那个失效路径。`
+    : info.isCustom
+      ? '这是你自定义的目录。数据库（todo.db）与任务附件（attachments）都在这里。'
+      : '默认目录在系统用户数据目录下（通常位于 C 盘）。选一个其它盘符的目录可以把数据挪出 C 盘。';
+  const buttons = ['选择新目录…', '打开当前目录'];
+  if (info.isCustom) buttons.push('恢复默认目录');
+  buttons.push('取消');
+  const cancelId = buttons.length - 1;
+  const { response } = await msgBox({
+    type: info.source === 'fallback' ? 'warning' : 'info',
+    title: '数据存放位置',
+    message: `当前数据目录：\n${info.dir}`,
+    detail,
+    buttons,
+    defaultId: 0,
+    cancelId,
+    noLink: true,
+  });
+  const picked = buttons[response];
+  if (picked === '打开当前目录') {
+    const err = await shell.openPath(info.dir);
+    if (err) dialog.showErrorBox('无法打开目录', err);
+    return;
+  }
+  if (picked === '恢复默认目录') {
+    try {
+      storage.clearDataDir();
+    } catch (e) {
+      dialog.showErrorBox('恢复默认目录失败', e.message);
+      return;
+    }
+    await askRestart(info.dir, info.defaultDir, false);
+    return;
+  }
+  if (picked !== '选择新目录…') return;
+
+  const pick = await dirDialog({
+    title: '选择数据存放目录',
+    buttonLabel: '使用此目录',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (pick.canceled || !pick.filePaths || !pick.filePaths.length) return;
+  const target = pick.filePaths[0];
+
+  const test = storage.probe(target);
+  if (!test.ok) {
+    dialog.showErrorBox('目录不可用', `无法写入该目录：\n${target}\n\n原因：${test.error}\n\n请换一个目录，或检查磁盘权限。`);
+    return;
+  }
+  if (path.resolve(target) === path.resolve(info.dir)) {
+    msgBox({
+      type: 'info', title: '数据存放位置', message: '这已经是当前的数据目录了。', buttons: ['好'], noLink: true,
+    });
+    return;
+  }
+  if (fs.existsSync(path.join(target, storage.DB_NAME))) {
+    dialog.showErrorBox('目标目录已有数据', `该目录下已存在 ${storage.DB_NAME}：\n${target}\n\n为避免覆盖已有数据，请换一个空目录（或先把旧文件移走）。`);
+    return;
+  }
+
+  // 有数据时才问「是否迁移」，空库直接切过去即可
+  let copy = false;
+  const hasData = db.isReady() && db.listTasks({ status: 'all' }).length > 0;
+  if (hasData) {
+    const ans = await msgBox({
+      type: 'question',
+      title: '迁移现有数据',
+      message: '是否把当前数据复制到新目录？',
+      detail: `当前目录：${info.dir}\n新目录：${target}\n\n复制内容：数据库（todo.db）+ 任务附件。 `
+        + '录音文件仍留在原目录（会议记录里存的是绝对路径），不影响回放。',
+      buttons: ['复制并切换', '仅切换（新目录为空）', '取消'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    });
+    if (ans.response === 2) return;
+    copy = ans.response === 0;
+  }
+
+  try {
+    if (copy) {
+      // 源目录以「当前打开的数据库文件」为准，避免配置与实际运行目录不一致时复制错地方
+      const fromDir = path.dirname(db.getDbPath() || path.join(info.dir, storage.DB_NAME));
+      await storage.migrateTo(target, (dest) => db.backupTo(dest), fromDir);
+    }
+    storage.setDataDir(target);
+  } catch (e) {
+    dialog.showErrorBox('切换数据目录失败', `${e && e.message ? e.message : e}\n\n数据目录未做任何修改，仍在使用：${info.dir}`);
+    return;
+  }
+  await askRestart(info.dir, target, copy);
+}
+
+/** 切换成功后询问是否立即重启（配置已落盘，重启才真正换库） */
+async function askRestart(fromDir, toDir, copied) {
+  const { response } = await msgBox({
+    type: 'info',
+    title: '数据目录已更新',
+    message: '数据目录已保存，重启后生效',
+    detail: `新目录：${toDir}${copied ? '\n已复制：数据库 + 任务附件' : '\n新目录为空（原有数据仍留在原目录）'}\n\n是否立即重启？`,
+    buttons: ['立即重启', '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (response === 0) {
+    isQuitting = true;
+    app.relaunch();
+    app.exit(0);
+  } else if (copied) {
+    // 不重启的话当前进程仍写在旧库上，新目录里的副本会停留在这一刻 —— 提醒一句
+    console.log(`[storage] 已配置新目录 ${toDir}（来自 ${fromDir}），等待重启生效`);
+  }
+}
+
+/**
+ * 本地媒体协议 todo-media://：笔记正文里的图片用 `![](todo-media:///note-12/xxx.png)` 引用，
+ * 由这里映射回 attachments 目录下的真实文件。
+ * 为什么不用 file://：file 协议受 CSP 与 allowFileAccessFromFiles 限制且会暴露整盘；
+ * 自定义协议只解析 attachments 根目录下的相对路径（越界返回失败），范围可控。
+ */
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'todo-media',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: false },
+  },
+]);
+
 app.whenReady().then(() => {
-  db.init(app.getPath('userData'));
+  protocol.registerFileProtocol('todo-media', (req, callback) => {
+    try {
+      const u = new URL(req.url);
+      const rel = decodeURIComponent(`${u.host}${u.pathname}`.replace(/^\/+/, ''));
+      const abs = attachments.resolveMedia(rel);
+      if (!abs || !fs.existsSync(abs)) { callback({ error: -6 }); return; } // net::ERR_FILE_NOT_FOUND
+      callback({ path: abs });
+    } catch (e) {
+      callback({ error: -6 });
+    }
+  });
+
+  // 数据目录：配置里指定的（自定义）目录优先；不可用时回退默认目录并在窗口出来后提示，
+  // 保证「盘没插 / 路径被删 / 无写权限」都不会让应用起不来。
+  storage.init({ userDataDir: app.getPath('userData'), defaultDir: app.getPath('userData') });
+  const dataInfo = storage.resolve();
+  db.init(dataInfo.dir);
+  attachments.init(path.join(dataInfo.dir, storage.ATTACH_DIR));
   applyTheme();
   registerIpc();
+  buildAppMenu();
 
   // 录制需要麦克风 / 屏幕采集权限：这是本机应用、且由用户主动点「录制」触发，
   // 不弹 Chromium 的权限气泡而是直接放行；其它权限（定位、通知等）一律拒绝。
@@ -119,6 +391,21 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+
+  // 配置的数据目录不可用：提示用户本次实际使用的目录（数据没丢，只是回退到了默认位置）
+  if (!dataInfo.ok && !isSmoke) {
+    msgBox({
+      type: 'warning',
+      title: '数据目录不可用',
+      message: '配置的数据目录无法使用，本次已回退到默认目录',
+      detail: `配置目录：${dataInfo.wanted}\n原因：${dataInfo.error}\n\n本次实际使用：${dataInfo.dir}\n\n`
+        + '可在菜单「File → 存储位置」里重新指定目录（例如重新插上移动硬盘后再试）。',
+      buttons: ['好', '去设置'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    }).then(({ response }) => { if (response === 1) openStorageDialog(); }).catch(() => {});
+  }
 
   setupTray({
     getWindow: () => mainWindow,
@@ -130,7 +417,6 @@ app.whenReady().then(() => {
     },
   });
 
-  registerShortcuts({ onToggle: toggleWindow, onQuickAdd: quickAdd });
   startReminderScheduler({ onFocusTask: focusTask });
 
   ipcMain.handle('app:quit', () => { isQuitting = true; app.quit(); });
@@ -161,6 +447,11 @@ app.whenReady().then(() => {
           const dom = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const out = {};
+              try {
+              // 新建任务的默认计划日期跟随视图（「今天」视图会预填今天），
+              // 下面这组断言是按「空范围两次点选」设计的，先切到「全部任务」再展开编辑器
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await new Promise(r => setTimeout(r, 400));
               out.addRowExists = !!document.querySelector('[data-act="start-add"]');
               out.noModal = !document.querySelector('.modal-mask');
               out.timeFilterBtn = !!document.querySelector('#btn-time-filter');
@@ -354,41 +645,143 @@ app.whenReady().then(() => {
               rowOf('全部').click();
               await new Promise(r => setTimeout(r, 300));
 
-              /* ---- AI 配置：从工具栏打开 → 填表 → 保存 → 回读 ---- */
-              const aiBtn = document.getElementById('btn-ai-settings');
-              out.aiToolbarBtn = !!aiBtn && aiBtn.textContent.indexOf('AI 设置') > -1;
-              if (aiBtn) {
-                aiBtn.click();
-                await new Promise(r => setTimeout(r, 250));
-                const aiModal = document.querySelector('.modal-mask');
-                // 回归：若前面有弹窗没关干净，这里会抓错弹窗（分组弹窗是单栏的），故显式记录数量
-                out.aiModalCount = document.querySelectorAll('.modal-mask').length;
-                out.aiModalOpened = !!aiModal;
-                if (aiModal) {
-                  // 排版回归：两栏网格、两张分区卡片、整体不超出视口、底部按钮可点
-                  const box = aiModal.querySelector('.modal').getBoundingClientRect();
-                  out.aiCols = getComputedStyle(aiModal.querySelector('.form-grid')).gridTemplateColumns.split(' ').length;
-                  out.aiSections = aiModal.querySelectorAll('.form-section').length;
-                  out.aiFieldCount = aiModal.querySelectorAll('.modal-field').length;
-                  out.aiInViewport = box.top >= 0 && box.bottom <= window.innerHeight && box.left >= 0 && box.right <= window.innerWidth;
-                  const okRect = aiModal.querySelector('[data-modal="ok"]').getBoundingClientRect();
-                  out.aiFootReachable = okRect.bottom <= window.innerHeight && okRect.top >= 0;
-                  const bd = aiModal.querySelector('.modal-body');
-                  out.aiBodyScrolls = bd.scrollHeight <= bd.clientHeight + 2;
-                  out.aiBox = { h: Math.round(box.height), vh: window.innerHeight };
-                  out.aiNoHOverflow = document.documentElement.scrollWidth <= window.innerWidth;
-                  aiModal.querySelector('[data-field="baseUrl"]').value = 'https://smoke.example.com';
-                  aiModal.querySelector('[data-field="model"]').value = 'smoke-model';
-                  aiModal.querySelector('[data-modal="ok"]').click();
-                  await new Promise(r => setTimeout(r, 500));
-                }
+              /* ---- AI 设置入口已挪到顶部菜单栏：工具栏里不应再有该按钮 ---- */
+              out.aiToolbarBtnGone = !document.getElementById('btn-ai-settings');
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
+              return out;
+            })()
+          `);
+          if (dom.__fatal) console.log('[SMOKE][dom fatal]', dom.__fatal);
+
+          /* ---- 非任务视图隐藏顶部工具区：统计 / AI 报告 / AI 检索 / 会议纪要 ---- */
+          const tbVis = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const right = document.querySelector('.topbar-right');
+              const bar = document.getElementById('filter-bar');
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              for (const v of ['stats', 'reports', 'search', 'meetings']) {
+                nav(v);
+                await new Promise(r => setTimeout(r, 600));
+                out[v + 'Hidden'] = right.hidden && bar.hidden;
+              }
+              nav('all');
+              await new Promise(r => setTimeout(r, 600));
+              out.taskShown = !right.hidden && !bar.hidden;
+              return out;
+            })()
+          `);
+          console.log(`[SMOKE] 非任务视图工具区隐藏 = 统计${tbVis.statsHidden ? '✓' : '✗'} 报告${tbVis.reportsHidden ? '✓' : '✗'} 检索${tbVis.searchHidden ? '✓' : '✗'} 纪要${tbVis.meetingsHidden ? '✓' : '✗'}；回到任务视图恢复=${tbVis.taskShown ? '是' : '否'}`);
+
+          /* ---- 分组自定义颜色：预设色 + 取色器自由取色 → 落库 → 视觉标识同步 ---- */
+          const gcOut = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              try {
+              document.getElementById('btn-add-group').click();
+              await new Promise(r => setTimeout(r, 350));
+              const mask = document.querySelector('.modal-mask');
+              out.modalOpened = !!mask;
+              const hex = mask.querySelector('.color-hex');
+              const native = mask.querySelector('.color-native');
+              const hidden = mask.querySelector('[data-field="color"]');
+              out.hasNativePicker = !!native && native.type === 'color';
+              out.hasHexInput = !!hex;
+              out.defaultAuto = hidden.value === 'auto';
+              out.presetCount = mask.querySelectorAll('.color-swatch:not(.is-auto)').length;
+              const setHex = async (v) => {
+                hex.value = v;
+                hex.dispatchEvent(new Event('input', { bubbles: true }));
+                await new Promise(r => setTimeout(r, 60));
+              };
+              await setHex('#ff00aa');
+              out.customValue = hidden.value;
+              out.nativeSynced = native.value;
+              await setHex('#abc');
+              out.abbrevNormalized = hidden.value;
+              await setHex('zzz');                 // 非法输入：值应保持上一个有效色（#aabbcc）
+              out.invalidKept = hidden.value;
+              await setHex('#ff00aa');
+              // 点预设色也要能切回去
+              mask.querySelector('.color-swatch:not(.is-auto)').click();
+              await new Promise(r => setTimeout(r, 60));
+              out.presetPicked = hidden.value;
+              await setHex('#ff00aa');
+              mask.querySelector('[data-field="name"]').value = '自定义色分组';
+              mask.querySelector('[data-modal="ok"]').click();
+              await new Promise(r => setTimeout(r, 900));
+              const li = [...document.querySelectorAll('#group-list .group-item')]
+                .find((e) => (e.querySelector('.group-name') || {}).textContent === '自定义色分组');
+              out.created = !!li;
+              out.dotColor = li ? getComputedStyle(li.querySelector('.group-dot')).backgroundColor : '';
+              const g = (await window.api.groups.list()).find((x) => x.name === '自定义色分组');
+              out.persisted = g ? g.color : '';
+              // 编辑回显：已有自定义色时不能再回退成 auto
+              if (li) {
+                li.querySelector('[data-act="edit"]').click();
+                await new Promise(r => setTimeout(r, 350));
+                const m2 = document.querySelector('.modal-mask');
+                out.editValue = m2 ? m2.querySelector('[data-field="color"]').value : '';
+                out.editHex = m2 ? m2.querySelector('.color-hex').value : '';
+                const cancel = m2 && m2.querySelector('[data-modal="cancel"]');
+                if (cancel) { cancel.click(); await new Promise(r => setTimeout(r, 250)); }
+              }
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
+              return out;
+            })()
+          `);
+          if (gcOut.__fatal) console.log('[SMOKE][group-color fatal]', gcOut.__fatal);
+          console.log(`[SMOKE] 分组自定义颜色 = 取色器${gcOut.hasNativePicker ? '有' : '无'}；默认自动=${gcOut.defaultAuto ? '是' : '否'}；预设 ${gcOut.presetCount} 个；自定义值=${gcOut.customValue || '-'}；缩写归一化=${gcOut.abbrevNormalized || '-'}；非法值保持=${gcOut.invalidKept || '-'}；落库=${gcOut.persisted || '-'}；侧栏色点=${gcOut.dotColor || '-'}；编辑回显=${gcOut.editValue || '-'}`);
+          Object.assign(dom, {
+            gcModalOpened: gcOut.modalOpened, gcPicker: gcOut.hasNativePicker && gcOut.hasHexInput,
+            gcAuto: gcOut.defaultAuto, gcCustom: gcOut.customValue === '#ff00aa',
+            gcAbbrev: gcOut.abbrevNormalized === '#aabbcc', gcInvalidKept: gcOut.invalidKept === '#aabbcc',
+            gcPreset: !!gcOut.presetPicked, gcCreated: gcOut.created,
+            gcDot: /rgb\(255,\s*0,\s*170\)/.test(gcOut.dotColor || ''),
+            gcPersisted: gcOut.persisted === '#ff00aa', gcEditEcho: gcOut.editValue === '#ff00aa',
+          });
+
+          /* ---- AI 配置：菜单栏「AI 设置」→ 弹窗 → 填表 → 保存 → 回读 ---- */
+          const aiMenuItem = Menu.getApplicationMenu().items.find((i) => i.label === 'AI 设置');
+          console.log(`[SMOKE] 菜单栏「AI 设置」= ${aiMenuItem ? '存在' : '缺失'}`);
+          mainWindow.webContents.send('ui:ai-settings');
+          await new Promise(r => setTimeout(r, 500));
+          const aiOut = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              try {
+              const aiModal = document.querySelector('.modal-mask');
+              // 回归：若前面有弹窗没关干净，这里会抓错弹窗（分组弹窗是单栏的），故显式记录数量
+              out.aiModalCount = document.querySelectorAll('.modal-mask').length;
+              out.aiModalOpened = !!aiModal;
+              if (aiModal) {
+                // 排版回归：两栏网格、两张分区卡片、整体不超出视口、底部按钮可点
+                const box = aiModal.querySelector('.modal').getBoundingClientRect();
+                out.aiCols = getComputedStyle(aiModal.querySelector('.form-grid')).gridTemplateColumns.split(' ').length;
+                out.aiSections = aiModal.querySelectorAll('.form-section').length;
+                out.aiFieldCount = aiModal.querySelectorAll('.modal-field').length;
+                out.aiInViewport = box.top >= 0 && box.bottom <= window.innerHeight && box.left >= 0 && box.right <= window.innerWidth;
+                const okRect = aiModal.querySelector('[data-modal="ok"]').getBoundingClientRect();
+                out.aiFootReachable = okRect.bottom <= window.innerHeight && okRect.top >= 0;
+                const bd = aiModal.querySelector('.modal-body');
+                out.aiBodyScrolls = bd.scrollHeight <= bd.clientHeight + 2;
+                out.aiBox = { h: Math.round(box.height), vh: window.innerHeight };
+                out.aiNoHOverflow = document.documentElement.scrollWidth <= window.innerWidth;
+                aiModal.querySelector('[data-field="baseUrl"]').value = 'https://smoke.example.com';
+                aiModal.querySelector('[data-field="model"]').value = 'smoke-model';
+                aiModal.querySelector('[data-modal="ok"]').click();
+                await new Promise(r => setTimeout(r, 500));
               }
               const cfg = await window.api.ai.getConfig();
               out.aiSavedUrl = cfg.baseUrl;
               out.aiSavedModel = cfg.model;
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
               return out;
             })()
           `);
+          if (aiOut.__fatal) console.log('[SMOKE][ai fatal]', aiOut.__fatal);
+          Object.assign(dom, aiOut, { aiMenuItem: !!aiMenuItem });
+          Object.assign(dom, { tbStatsHidden: tbVis.statsHidden, tbReportsHidden: tbVis.reportsHidden, tbSearchHidden: tbVis.searchHidden, tbMeetingsHidden: tbVis.meetingsHidden, tbTaskShown: tbVis.taskShown });
           console.log(`[SMOKE] 底部"添加任务"入口 = ${dom.addRowExists ? '存在' : '缺失'}`);
           console.log(`[SMOKE] 弹窗已移除 = ${dom.noModal ? '是' : '否'}`);
           console.log(`[SMOKE] 时间筛选面板 = ${dom.timeFilterBtn && dom.timeFilterPanel ? '存在' : '缺失'}`);
@@ -405,7 +798,7 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 取消后编辑器关闭 = ${dom.editorClosed ? '成功' : '失败'}`);
           console.log(`[SMOKE] 分组：新增=${dom.groupAdded ? '是' : '否'}（${dom.groupCountBefore} → ${dom.groupCount}）；重名错误=${dom.dupErrorShown ? '已提示' : '未提示'}`);
           console.log(`[SMOKE] 子分组：父行含箭头=${dom.hasArrow ? '是' : '否'}；上级默认带入=${dom.parentPresetMatched ? '是' : '否'}；子分组可见=${dom.childRowVisible ? '是' : '否'}；折叠后隐藏=${dom.childHiddenAfterCollapse ? '是' : '否'}；再展开回来=${dom.childBackAfterExpand ? '是' : '否'}；父筛选含子任务=${dom.parentFilterIncludesChildTask ? '是' : '否'}`);
-          console.log(`[SMOKE] AI 设置（工具栏）= 按钮${dom.aiToolbarBtn ? '存在' : '缺失'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
+          console.log(`[SMOKE] AI 设置（菜单栏）= 工具栏按钮已移除${dom.aiToolbarBtnGone ? '✓' : '✗'}；菜单项${dom.aiMenuItem ? '存在' : '缺失'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
           console.log(`[SMOKE] AI 设置排版 = ${dom.aiCols} 列；分区 ${dom.aiSections} 个；字段 ${dom.aiFieldCount} 个；弹窗高 ${dom.aiBox ? dom.aiBox.h : '-'}px / 视口 ${dom.aiBox ? dom.aiBox.vh : '-'}px；完整在视口内=${dom.aiInViewport ? '是' : '否'}；底部按钮可点=${dom.aiFootReachable ? '是' : '否'}；内容无需滚动=${dom.aiBodyScrolls ? '是' : '否'}；横向无溢出=${dom.aiNoHOverflow ? '是' : '否'}`);
           console.log(`[SMOKE] 标签新增弹窗 = ${dom.tagModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.tagAdded ? '是' : '否'}`);
 
@@ -578,7 +971,7 @@ app.whenReady().then(() => {
 
               /* --- 4) 展开：父任务在今天视图可见、子任务无日期也需展开显示 --- */
               const parent = await window.api.tasks.create({ title: '带子任务的父', planStart: today, planEnd: today });
-              await window.api.tasks.create({ title: '无日期子任务', parentId: parent.id });
+              const child = await window.api.tasks.create({ title: '无日期子任务', parentId: parent.id });
               document.querySelector('.nav-item[data-view="today"]').click();
               await wait(500);
               const pLi = document.querySelector('.task-item[data-id="' + parent.id + '"]');
@@ -588,10 +981,12 @@ app.whenReady().then(() => {
               if (arrow) {
                 if (arrow.textContent === '▾') { arrow.click(); await wait(400); }
                 const a2 = document.querySelector('.task-item[data-id="' + parent.id + '"] [data-act="toggle-expand"]');
-                out.collapsedChildHidden = !document.querySelector('.task-item.is-subtask');
+                // 子任务行嵌在父行 <li> 内，所以不能只看 .is-subtask 存不存在——
+                // 必须看"哪一行被渲染出来了"，否则父行自身会把 is-subtask 一直带在 DOM 里。
+                out.collapsedChildHidden = !document.querySelector('.task-item[data-id="' + child.id + '"]');
                 a2.click();
                 await wait(500);
-                out.expandedChildVisible = !!document.querySelector('.task-item.is-subtask');
+                out.expandedChildVisible = !!document.querySelector('.task-item[data-id="' + child.id + '"]');
                 out.arrowAfter = document.querySelector('.task-item[data-id="' + parent.id + '"] [data-act="toggle-expand"]').textContent;
               }
               return out;
@@ -1338,6 +1733,603 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 检索历史 = 列表=${r11.searchHistoryBox ? '存在' : '缺失'}；检索后 ${r11.searchRows} 条（新增=${r11.searchHistoryGrew ? '是' : '否'}）；回看=${r11.searchRestored ? '是' : '否'}`);
           console.log(`[SMOKE] 持久化（主进程）= reports ${r11main.reports} 条 / ai_searches ${r11main.searches} 条；正文可读=${r11main.reportHasContent ? '是' : '否'}；关键词可读=${r11main.searchHasKeyword ? '是' : '否'}；导出含两表=${r11main.exportHasTables ? '是' : '否'}`);
 
+          /* ============ 第 13 轮：提示层级 / 分组折叠 / 今天默认值 / 详情描述回填 / 工具栏清理 ============ */
+          const r13 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wait = (ms) => new Promise(r => setTimeout(r, ms));
+              const p2 = (n) => String(n).padStart(2, '0');
+              const dd = new Date();
+              const today = dd.getFullYear() + '-' + p2(dd.getMonth() + 1) + '-' + p2(dd.getDate());
+
+              /* 1) Toast 必须在弹窗之上：z-index 高于遮罩，且挂在 body 直下 */
+              const toastEl = document.getElementById('toast');
+              out.toastInBody = !!toastEl && toastEl.parentElement === document.body;
+              const zToast = Number(getComputedStyle(toastEl).zIndex) || 0;
+              const mask = document.createElement('div');
+              mask.className = 'modal-mask';
+              document.body.appendChild(mask);
+              out.zMask = Number(getComputedStyle(mask).zIndex) || 0;
+              out.toastAboveMask = zToast > out.zMask;
+              out.toastNoPointer = getComputedStyle(toastEl).pointerEvents === 'none';
+              mask.remove();
+
+              /* 2) 任务列表分组独立折叠 + 记忆 */
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await wait(600);
+              const heads = [...document.querySelectorAll('.task-group-head')];
+              out.groupHeads = heads.length;
+              if (heads.length) {
+                const first = heads[0];
+                out.headIsButton = first.tagName === 'BUTTON';
+                const key = first.dataset.group;
+                const rowsBefore = document.querySelectorAll('.task-item').length;
+                first.click();
+                await wait(500);
+                const headAfter = document.querySelector('.task-group-head[data-group="' + key + '"]');
+                out.headCollapsed = !!headAfter && headAfter.classList.contains('is-collapsed')
+                  && headAfter.getAttribute('aria-expanded') === 'false';
+                out.rowsShrunk = document.querySelectorAll('.task-item').length < rowsBefore;
+                // 折叠状态写进 settings：重开应用也能保持（这里验证 IPC 往返）
+                out.collapsedSaved = await window.api.ui.getCollapsedGroups();
+                headAfter.click();
+                await wait(500);
+                out.expandedAgain = document.querySelectorAll('.task-item').length === rowsBefore;
+                out.collapsedCleared = (await window.api.ui.getCollapsedGroups()).length === 0;
+              }
+
+              /* 2.5) 展开/收起箭头：图标字号与点击热区都要够大 */
+              const ga = document.querySelector('#group-list .group-arrow');
+              out.arrowWidth = ga ? Math.round(ga.getBoundingClientRect().width) : 0;
+              out.arrowFont = ga ? parseFloat(getComputedStyle(ga).fontSize) || 0 : 0;
+
+              /* 3) 今天视图新建：计划日期默认填今天 */
+              document.querySelector('.nav-item[data-view="today"]').click();
+              await wait(500);
+              const addBtn = document.querySelector('[data-act="start-add"]');
+              if (addBtn) { addBtn.click(); await wait(400); }
+              const edNew = document.querySelector('.task-editor[data-editor="new"]');
+              out.todayEditor = !!edNew;
+              if (edNew) {
+                out.todayStart = edNew.querySelector('.dr-start-input').value;
+                out.todayEnd = edNew.querySelector('.dr-end-input').value;
+                out.todayFilled = out.todayStart === today && out.todayEnd === today;
+                edNew.querySelector('[data-act="editor-cancel"]').click();
+                await wait(300);
+              }
+
+              /* 4) 详情描述：必须回填，且改其它字段不能把描述清空 */
+              const t13 = await window.api.tasks.create({
+                title: 'R13描述任务', notes: '<p>原始描述内容</p>', planStart: today, planEnd: today,
+              });
+              document.querySelector('.nav-item[data-view="all"]').click();
+              await wait(600);
+              document.querySelector('.task-item[data-id="' + t13.id + '"]').click();
+              await wait(700);
+              const editor = document.querySelector('.detail-notes-editor');
+              out.notesFilled = !!editor && editor.textContent.indexOf('原始描述内容') > -1;
+              const dTitle13 = document.querySelector('.detail-title');
+              dTitle13.value = 'R13改过标题';
+              dTitle13.dispatchEvent(new Event('input', { bubbles: true }));
+              await wait(1500);
+              out.saveStateText = document.querySelector('.detail-save-state').textContent;
+              out.saveStateClass = document.querySelector('.detail-save-state').className;
+              const after = await window.api.tasks.get(t13.id);
+              out.titleSaved = after.title === 'R13改过标题';
+              out.notesKept = (after.notes || '').indexOf('原始描述内容') > -1;
+              out.polishBtn = !!document.querySelector('[data-act="polish"]');
+              document.querySelector('.detail-close').click();
+              await wait(300);
+
+              /* 5) 顶部工具栏不再有「⌨ 快捷键」「⚙ 启动」入口（快捷键功能已移除、自启动已并入 File 菜单） */
+              out.staleToolbarBtns = ['btn-shortcuts', 'btn-startup']
+                .filter((id) => document.getElementById(id));
+
+              /* 6) 历史类弹窗必须放大：报告历史 ≥900px 且完整落在视口内，会议纪要要有历史入口 */
+              document.querySelector('.nav-item[data-view="reports"]').click();
+              await wait(800);
+              const hisBtn = document.getElementById('rp-history');
+              out.rpHisBtn = !!hisBtn;
+              if (hisBtn) {
+                hisBtn.click();
+                await wait(700);
+                const m = document.querySelector('.modal-mask .modal');
+                out.rpHisOpened = !!m;
+                if (m) {
+                  const r = m.getBoundingClientRect();
+                  out.rpHisWidth = Math.round(r.width);
+                  out.rpHisInViewport = r.left >= 0 && r.right <= window.innerWidth + 1
+                    && r.top >= 0 && r.bottom <= window.innerHeight + 1;
+                }
+                const okBtn2 = document.querySelector('.modal-mask [data-modal="ok"]');
+                if (okBtn2) { okBtn2.click(); await wait(400); }
+              }
+              document.querySelector('.nav-item[data-view="meetings"]').click();
+              await wait(700);
+              out.mthBtn = !!document.querySelector('[data-mt="history"]');
+              return out;
+            })()
+          `);
+          // 主进程侧断言：File 菜单结构（存储位置无省略号 + 开机自启动已并入 + 顶层不再单独出现）
+          const fileMenu = (Menu.getApplicationMenu() || []).items.find((it) => it.label === 'File');
+          const fileItems = fileMenu ? fileMenu.submenu.items.map((it) => (it.type === 'separator' ? '—' : it.label)) : [];
+          const topItems = (Menu.getApplicationMenu() || []).items.map((it) => it.label);
+          const r13main = {
+            fileItems,
+            storageNoEllipsis: fileItems.includes('存储位置') && !fileItems.some((l) => l !== '存储位置' && l.startsWith('存储位置')),
+            autoStartInFile: fileItems.includes('开机自启动'),
+            autoStartNotTop: !topItems.includes('开机自启动'),
+          };
+          console.log(`[SMOKE] Toast 层级 = z:${r13.zMask ? `(遮罩 ${r13.zMask})` : '?'} 挂 body=${r13.toastInBody ? '是' : '否'}；高于遮罩=${r13.toastAboveMask ? '是' : '否'}；不拦点击=${r13.toastNoPointer ? '是' : '否'}`);
+          console.log(`[SMOKE] 分组折叠 = 表头 ${r13.groupHeads} 个（按钮语义=${r13.headIsButton ? '是' : '否'}）；折叠=${r13.headCollapsed ? '是' : '否'}；任务行减少=${r13.rowsShrunk ? '是' : '否'}；记忆=${JSON.stringify(r13.collapsedSaved)}；再展开=${r13.expandedAgain ? '是' : '否'}；清除=${r13.collapsedCleared ? '是' : '否'}`);
+          console.log(`[SMOKE] 箭头尺寸 = 宽 ${r13.arrowWidth}px / 字号 ${r13.arrowFont}px（热区≥20、字号≥14：${r13.arrowWidth >= 20 && r13.arrowFont >= 14 ? '达标' : '未达标'}）`);
+          console.log(`[SMOKE] 今天默认值 = ${r13.todayStart || '-'} ~ ${r13.todayEnd || '-'}（填今天=${r13.todayFilled ? '是' : '否'}）`);
+          console.log(`[SMOKE] 详情描述 = 回填=${r13.notesFilled ? '是' : '否'}；状态「${r13.saveStateText}」（${r13.saveStateClass}）；标题落库=${r13.titleSaved ? '是' : '否'}；描述未被清空=${r13.notesKept ? '是' : '否'}；润色入口=${r13.polishBtn ? '有' : '无'}`);
+          console.log(`[SMOKE] 工具栏清理 = 残留控件${r13.staleToolbarBtns && r13.staleToolbarBtns.length ? JSON.stringify(r13.staleToolbarBtns) : '无'}`);
+          console.log(`[SMOKE] File 菜单 = ${JSON.stringify(r13main.fileItems)}；存储位置无省略号=${r13main.storageNoEllipsis ? '是' : '否'}；开机自启动在 File 内=${r13main.autoStartInFile ? '是' : '否'}；顶层无自启动=${r13main.autoStartNotTop ? '是' : '否'}`);
+          console.log(`[SMOKE] 历史弹窗尺寸 = 报告历史 ${r13.rpHisWidth}px（≥900=${r13.rpHisWidth >= 900 ? '是' : '否'}；完整在视口内=${r13.rpHisInViewport ? '是' : '否'}）；会议纪要历史入口=${r13.mthBtn ? '有' : '无'}`);
+
+          /* ============ 第 14 轮：多任务详情编辑互不串改 ============ */
+          const r14 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const out = {};
+              nav('all'); await wait(700);
+
+              // 两个互相独立的任务（新建后要切一次视图把列表重绘出来）
+              const a = await window.api.tasks.create({ title: '串改用例A', notes: 'A的备注', priority: 1 });
+              const b = await window.api.tasks.create({ title: '串改用例B', notes: 'B的备注', priority: 2 });
+              out.aId = a.id; out.bId = b.id; out.idsDistinct = a.id !== b.id;
+              nav('upcoming'); await wait(500);
+              nav('all'); await wait(800);
+
+              const rowOf = (title) => [...document.querySelectorAll('#view .task-item')]
+                .find((el) => (el.querySelector('.task-title-text') || {}).textContent === title);
+
+              /* ---- 1) 打开 A → 改标题 → 不等防抖立刻切到 B（旧保存器的计时器还在跑）---- */
+              out.aRowFound = !!rowOf('串改用例A');
+              out.bRowFound = !!rowOf('串改用例B');
+              if (rowOf('串改用例A')) rowOf('串改用例A').click();
+              await wait(900);
+              let drawer = document.getElementById('detail-drawer');
+              out.aOpened = !drawer.hidden
+                && (drawer.querySelector('.detail-title') || {}).value === '串改用例A';
+              const ti = drawer.querySelector('.detail-title');
+              ti.value = '串改用例A已改';
+              ti.dispatchEvent(new Event('input', { bubbles: true }));
+              await wait(80); // 远小于 700ms 防抖窗口
+              if (rowOf('串改用例B')) rowOf('串改用例B').click(); // 立刻切换任务
+              await wait(2500);           // 跨过旧防抖窗口并等落库
+
+              const a2 = await window.api.tasks.get(a.id);
+              const b2 = await window.api.tasks.get(b.id);
+              out.aTitleAfter = a2 && a2.title;
+              out.bTitleAfter = b2 && b2.title;
+              out.bUntouched = out.bTitleAfter === '串改用例B';       // B 绝不能被写成 A 的内容
+              out.aNotClonedFromB = out.aTitleAfter !== '串改用例B';   // A 也绝不能被写成 B 的内容
+              out.titlesDistinct = !!a2 && !!b2 && a2.title !== b2.title;
+              out.aKeptEdit = out.aTitleAfter === '串改用例A已改';     // 切走前补写：A 的改动不该丢
+              out.bNotesKept = !!b2 && b2.notes === 'B的备注';
+
+              /* ---- 2) 在 B 的详情页改标题并保存 → 只有 B 变，A 必须原样 ---- */
+              drawer = document.getElementById('detail-drawer');
+              out.bOpened = !drawer.hidden
+                && (drawer.querySelector('.detail-title') || {}).value === '串改用例B';
+              const tb = drawer.querySelector('.detail-title');
+              if (tb) {
+                tb.value = '串改用例B已改';
+                tb.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+              const saveBtn = drawer.querySelector('[data-act="save"]');
+              if (saveBtn) saveBtn.click();
+              await wait(1500);
+              const a3 = await window.api.tasks.get(a.id);
+              const b3 = await window.api.tasks.get(b.id);
+              out.aStable = !!a3 && a3.title === out.aTitleAfter;
+              out.bSaved = !!b3 && b3.title === '串改用例B已改';
+              out.stillDistinct = !!a3 && !!b3 && a3.title !== b3.title;
+
+              // 清理
+              const closeBtn = document.querySelector('.detail-close');
+              if (closeBtn) { closeBtn.click(); await wait(400); }
+              try { await window.api.tasks.remove(a.id); } catch (e) {}
+              try { await window.api.tasks.remove(b.id); } catch (e) {}
+              return out;
+            })()
+          `);
+          console.log(`[SMOKE] 多任务隔离 = A(${r14.aTitleAfter || '-'}) / B(${r14.bTitleAfter || '-'})；B未被串改=${r14.bUntouched ? '是' : '否'}；A未被串改=${r14.aNotClonedFromB ? '是' : '否'}；A改动保留=${r14.aKeptEdit ? '是' : '否'}；保存只影响自己=${r14.aStable && r14.bSaved ? '是' : '否'}`);
+
+          /* ============ 第 15 轮：创建时间 / 趋势范围切换 / AI 润色反馈 ============ */
+          // 一个「连得上但永不响应」的本地服务：这样"加载中"是稳态可观测的，
+          // 而不是像 127.0.0.1:1 那样瞬间失败、根本抓不到加载态。
+          const http = require('http');
+          const slowServer = http.createServer(() => { /* 故意不响应 */ });
+          await new Promise((res) => slowServer.listen(0, '127.0.0.1', res));
+          const slowPort = slowServer.address().port;
+
+          const r15 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const out = {};
+
+              /* 1) 创建时间：列表行与详情都要能看到 */
+              nav('all'); await wait(800);
+              const row = document.querySelector('#view .task-item');
+              out.rowFound = !!row;
+              const ca = row ? row.querySelector('.meta-item.created-at') : null;
+              out.listCreated = !!ca;
+              out.listCreatedText = ca ? ca.textContent.trim() : '';
+              if (row) { row.click(); await wait(900); }
+              const dcEl = document.querySelector('.detail-created');
+              out.detailCreated = !!dcEl && /创建于/.test(dcEl.textContent || '');
+              out.detailCreatedText = dcEl ? dcEl.textContent.trim() : '';
+              const cBtn0 = document.querySelector('.detail-close');
+              if (cBtn0) { cBtn0.click(); await wait(400); }
+
+              /* 2) 趋势范围切换：标题文案、柱子数、选中态都要跟着变 */
+              const tk = await window.api.tasks.create({ title: '趋势用例R15' });
+              await window.api.tasks.toggle(tk.id); // 造一条今天的完成记录，避免落到"无数据"分支
+              nav('stats'); await wait(1000);
+              out.trendChips = document.querySelectorAll('#trend-range [data-trend]').length;
+              const readTrend = () => {
+                const act = document.querySelector('#trend-range .chip.active');
+                return {
+                  title: (document.getElementById('trend-title') || {}).textContent || '',
+                  cols: document.querySelectorAll('#trend-body .trend-col').length,
+                  active: act ? act.dataset.trend : '',
+                };
+              };
+              const pick = async (k) => {
+                document.querySelector('#trend-range [data-trend="' + k + '"]').click();
+                await wait(900);
+                return readTrend();
+              };
+              out.t7 = readTrend();
+              out.t1m = await pick('1m');
+              out.t6m = await pick('6m');
+              out.t1y = await pick('1y');
+              out.trendSummary = !!document.querySelector('.trend-summary');
+              out.trendTitlesOk = /近 7 天/.test(out.t7.title) && /近一个月/.test(out.t1m.title)
+                && /近半年/.test(out.t6m.title) && /近一年/.test(out.t1y.title);
+              out.trendColsOk = out.t7.cols === 7 && out.t1m.cols === 30 && out.t6m.cols === 26 && out.t1y.cols === 12;
+              out.trendActiveOk = out.t7.active === '7d' && out.t1y.active === '1y';
+
+              /* 3) AI 润色：点击必须有反馈（弹窗 + 加载态），失败要有原因与重试入口 */
+              const prevCfg = await window.api.ai.getConfig();
+              nav('all'); await wait(700);
+              const p15 = await window.api.tasks.create({ title: '润色用例R15', notes: '<p>这是一段需要润色的描述文本</p>' });
+              nav('upcoming'); await wait(400); nav('all'); await wait(800);
+              const prow = [...document.querySelectorAll('#view .task-item')].find((el) => el.dataset.id === String(p15.id));
+              out.pRowFound = !!prow;
+              if (prow) { prow.click(); await wait(900); }
+              const pBtn = document.querySelector('[data-act="polish"]');
+              out.polishBtn = !!pBtn;
+              // 只认"润色弹窗"：按主体内容定位，避免被页面上可能残留的其它弹窗干扰
+              const allMasks = () => [...document.querySelectorAll('.modal-mask')];
+              const polishMasks = () => allMasks().filter((m) => m.querySelector('.np-loading, .np-error, .np-compare'));
+              out.masksBefore = allMasks().length;
+              out.strayTitles = allMasks().map((m) => ((m.querySelector('.modal-head') || {}).textContent || '?').trim());
+
+              if (pBtn) {
+                // 3a) 加载态 + 防重复触发：请求一直挂着，观察"进行中"的表现
+                await window.api.ai.saveConfig({ baseUrl: 'http://127.0.0.1:${slowPort}/v1', model: 'smoke-model', apiKey: 'sk-smoke' });
+                pBtn.click();
+                await wait(400);
+                const m1 = polishMasks()[0];
+                out.masks1 = polishMasks().length;
+                out.loadingShown = !!m1 && !!m1.querySelector('.np-loading');
+                out.btnDisabled = pBtn.disabled;
+                out.btnText = pBtn.textContent;
+                pBtn.click(); // 连点第二次：不应再冒出第二个弹窗
+                await wait(400);
+                out.masks2 = polishMasks().length;
+                const okA = m1 ? m1.querySelector('[data-modal="ok"]') : null;
+                if (okA) { okA.click(); await wait(400); }
+                out.modalClosed = polishMasks().length === 0;
+                out.btnRestored = !pBtn.disabled;
+
+                // 3b) 接口异常：连不上的地址 → 明确的失败原因 + 重试入口
+                await window.api.ai.saveConfig({ baseUrl: 'http://127.0.0.1:1/v1', model: 'smoke-model', apiKey: 'sk-smoke' });
+                pBtn.click();
+                await wait(3000);
+                const m2 = polishMasks()[0];
+                out.errShown = !!m2 && !!m2.querySelector('.np-error');
+                out.retryBtn = !!m2 && !!m2.querySelector('[data-np="retry"]');
+                const okB = m2 ? m2.querySelector('[data-modal="ok"]') : null;
+                if (okB) { okB.click(); await wait(400); }
+                out.modalClosedB = polishMasks().length === 0;
+              }
+              const cBtn1 = document.querySelector('.detail-close');
+              if (cBtn1) { cBtn1.click(); await wait(300); }
+
+              // 还原 AI 配置（Key 无法读回明文，原本没有 Key 就清掉）
+              await window.api.ai.saveConfig({ baseUrl: prevCfg.baseUrl, model: prevCfg.model });
+              if (!prevCfg.hasKey) await window.api.ai.clearKey();
+              try { await window.api.tasks.remove(tk.id); } catch (e) {}
+              try { await window.api.tasks.remove(p15.id); } catch (e) {}
+              return out;
+            })()
+          `);
+          console.log(`[SMOKE] 创建时间 = 列表「${r15.listCreatedText || '-'}」；详情「${r15.detailCreatedText || '-'}」；列表展示=${r15.listCreated ? '是' : '否'}；详情展示=${r15.detailCreated ? '是' : '否'}`);
+          console.log(`[SMOKE] 趋势范围 = 档位 ${r15.trendChips} 个；柱子数 ${JSON.stringify([r15.t7 && r15.t7.cols, r15.t1m && r15.t1m.cols, r15.t6m && r15.t6m.cols, r15.t1y && r15.t1y.cols])}；标题随范围更新=${r15.trendTitlesOk ? '是' : '否'}；粒度正确=${r15.trendColsOk ? '是' : '否'}；选中态=${r15.trendActiveOk ? '正确' : '错误'}`);
+          console.log(`[SMOKE] AI 润色反馈 = 弹窗=${r15.masks1 === 1 ? '打开' : '未打开(' + r15.masks1 + ')'}；连点后弹窗数=${r15.masks2}（防重复=${r15.masks2 === 1 ? '是' : '否'}）；加载态=${r15.loadingShown ? '有' : '无'}；按钮禁用=${r15.btnDisabled ? '是' : '否'}（${r15.btnText || '-'}）；失败提示=${r15.errShown ? '有' : '无'}；重试入口=${r15.retryBtn ? '有' : '无'}；关闭后复位=${r15.btnRestored ? '是' : '否'}`);
+          if (r15.masksBefore) console.log(`[SMOKE] 提示：润色前页面上已有 ${r15.masksBefore} 个弹窗遮罩 ${JSON.stringify(r15.strayTitles)}`);
+          slowServer.close();
+
+          /* ============ 第 16 轮：标题层级 / 子任务计数 / 行内改名自适应 / 图片放大 / 侧栏调宽 / 统计口径 ============ */
+          const r16 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const out = {};
+              try {
+              nav('all'); await wait(800);
+
+              /* ---- 1) 标题字号层级 + 子任务计数紧邻标题 ---- */
+              const t16 = await window.api.tasks.create({ title: '标题层级用例' });
+              const s1 = await window.api.tasks.create({ title: '子任务甲', parentId: t16.id });
+              const s2 = await window.api.tasks.create({ title: '子任务乙', parentId: t16.id });
+              await window.api.tasks.toggle(s1.id);
+              nav('upcoming'); await wait(400); nav('all'); await wait(800);
+              const item16 = document.querySelector('#view .task-item[data-id="' + t16.id + '"]');
+              out.rowFound = !!item16;
+              if (item16) {
+                const titleEl = item16.querySelector('.task-title');
+                const textEl = item16.querySelector('.task-title-text');
+                // 量真正的正文文本节点（.task-meta 容器本身只继承 body 字号，量它没意义）
+                const metaEl = item16.querySelector('.task-meta .meta-item') || item16.querySelector('.task-meta');
+                const titleFs = parseFloat(getComputedStyle(titleEl).fontSize);
+                const metaFs = parseFloat(getComputedStyle(metaEl).fontSize);
+                out.titleFs = titleFs;
+                out.metaFs = metaFs;
+                out.titleBigger = titleFs >= metaFs + 3;      // 与正文拉开层级
+                out.titleSizeOk = titleFs >= 15.5 && titleFs <= 17;
+                const badge = item16.querySelector('.task-subtask-badge');
+                out.badgeExists = !!badge;
+                out.badgeInTitle = !!badge && badge.parentElement === titleEl;
+                out.badgeNextToName = !!badge && textEl.nextElementSibling === badge;
+                out.badgeNotInMeta = !item16.querySelector('.task-meta .subtask-progress');
+                out.badgeText = badge ? badge.textContent.trim() : '';
+              }
+
+              /* ---- 2) 行内改名：输入框宽度随输入自适应、不换行 ---- */
+              if (item16) {
+                item16.querySelector('.task-title-text').click();
+                await wait(250);
+                const input = item16.querySelector('.task-title-input');
+                out.inputFound = !!input;
+                if (input) {
+                  const w0 = input.getBoundingClientRect().width;
+                  input.value = '这是一段明显更长的任务标题用于验证宽度自适应';
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  await wait(150);
+                  const w1 = input.getBoundingClientRect().width;
+                  out.widthGrew = w1 > w0 + 20;
+                  out.noWrap = input.scrollHeight <= input.clientHeight + 2;
+                  const rowW = item16.querySelector('.task-title').getBoundingClientRect().width;
+                  out.withinRow = w1 <= rowW + 1;
+                  // 不该压到右侧操作区
+                  const bodyR = item16.querySelector('.task-body').getBoundingClientRect().right;
+                  out.noOverlap = input.getBoundingClientRect().right <= bodyR + 1;
+                  input.value = '标题层级用例';
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                  await wait(300);
+                }
+              }
+
+              /* ---- 3) 图片双击放大预览 ---- */
+              const c = document.createElement('canvas');
+              c.width = 120; c.height = 60;
+              const cx = c.getContext('2d');
+              cx.fillStyle = '#4f7cff'; cx.fillRect(0, 0, 120, 60);
+              const dataUrl = c.toDataURL('image/png');
+              const imgTask = await window.api.tasks.create({ title: '图片用例', notes: '![测试图](' + dataUrl + ')' });
+              nav('upcoming'); await wait(400); nav('all'); await wait(800);
+              const imgRow = document.querySelector('#view .task-item[data-id="' + imgTask.id + '"]');
+              if (imgRow) { imgRow.click(); await wait(900); }
+              const mdImg = document.querySelector('.detail-notes-editor img, .markdown-body img');
+              out.mdImgFound = !!mdImg;
+              if (mdImg) {
+                mdImg.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                await wait(300);
+                const mask = document.querySelector('.img-zoom-mask');
+                out.zoomOpened = !!mask;
+                if (mask) {
+                  const big = mask.querySelector('.img-zoom-img');
+                  const r = big.getBoundingClientRect();
+                  const nat = big.naturalWidth / big.naturalHeight;
+                  const shown = r.width / r.height;
+                  out.ratioKept = Math.abs(nat - shown) < 0.05 && r.width <= window.innerWidth && r.height <= window.innerHeight;
+                  out.zoomSize = Math.round(r.width) + 'x' + Math.round(r.height);
+                  // 关闭方式 1：Esc
+                  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                  await wait(250);
+                  out.closedByEsc = !document.querySelector('.img-zoom-mask');
+                }
+                if (!document.querySelector('.img-zoom-mask')) {
+                  mdImg.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                  await wait(300);
+                  // 关闭方式 2：点遮罩
+                  const m2 = document.querySelector('.img-zoom-mask');
+                  if (m2) { m2.dispatchEvent(new MouseEvent('click', { bubbles: true })); await wait(250); }
+                  out.closedByMask = !document.querySelector('.img-zoom-mask');
+                }
+                if (!document.querySelector('.img-zoom-mask')) {
+                  mdImg.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                  await wait(300);
+                  // 关闭方式 3：再次双击图片
+                  const b3 = document.querySelector('.img-zoom-img');
+                  if (b3) { b3.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })); await wait(250); }
+                  out.closedByDbl = !document.querySelector('.img-zoom-mask');
+                }
+              }
+              const cBtn = document.querySelector('.detail-close');
+              if (cBtn) { cBtn.click(); await wait(400); }
+
+              /* ---- 4) 侧边栏拖拽调宽 ---- */
+              const handle = document.getElementById('sidebar-resizer');
+              const bar = document.querySelector('.sidebar');
+              out.handleFound = !!handle && !!bar;
+              if (handle && bar) {
+                const before = bar.getBoundingClientRect().width;
+                const rect = handle.getBoundingClientRect();
+                const startX = rect.left + rect.width / 2;
+                const pd = new PointerEvent('pointerdown', { bubbles: true, clientX: startX, clientY: 300, button: 0, pointerId: 1 });
+                handle.dispatchEvent(pd);
+                await wait(80);
+                out.selectDisabled = document.body.style.userSelect === 'none' && document.documentElement.classList.contains('is-resizing');
+                window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: startX + 90, clientY: 300, pointerId: 1 }));
+                await wait(150);
+                const mid = bar.getBoundingClientRect().width;
+                window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: startX + 90, clientY: 300, pointerId: 1 }));
+                await wait(200);
+                const after = bar.getBoundingClientRect().width;
+                out.dragged = after > before + 40;
+                out.widths = [Math.round(before), Math.round(mid), Math.round(after)];
+                out.selectRestored = document.body.style.userSelect === '' && !document.documentElement.classList.contains('is-resizing');
+                // 拖到极小值也要被夹住
+                handle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: startX, clientY: 300, button: 0, pointerId: 2 }));
+                window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 5, clientY: 300, pointerId: 2 }));
+                await wait(120);
+                window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 5, clientY: 300, pointerId: 2 }));
+                await wait(200);
+                const minW = bar.getBoundingClientRect().width;
+                out.minClamped = minW >= 179 && minW <= 181;
+                // 布局不错位：侧栏右边界 == 主区左边界，且主区仍有可用宽度
+                const mainEl = document.querySelector('.main');
+                const barR = bar.getBoundingClientRect().right;
+                const mainL = mainEl.getBoundingClientRect().left;
+                out.layoutAligned = Math.abs(barR - mainL) <= 9; // 把手占 8px
+                out.mainUsable = mainEl.getBoundingClientRect().width >= 400;
+                out.noHOverflow = document.documentElement.scrollWidth <= window.innerWidth;
+                await wait(500);
+                out.persisted = await window.api.ui.getSidebarWidth();
+              }
+
+              /* ---- 5) 统计口径：仅主任务 / 含子任务 ---- */
+              nav('stats'); await wait(900);
+              const scopeBox = document.querySelector('#stats-scope');
+              out.scopeFound = !!scopeBox;
+              if (scopeBox) {
+                const readTotal = () => {
+                  const card = document.querySelector('.stat-card[data-stat="total"] .num');
+                  return card ? Number(card.textContent.trim()) : -1;
+                };
+                const topBtn = scopeBox.querySelector('[data-scope="top"]');
+                const allBtn = scopeBox.querySelector('[data-scope="all"]');
+                topBtn.click(); await wait(900);
+                const nTop = readTotal();
+                out.scopeTopActive = scopeBox.querySelector('[data-scope="top"]').classList.contains('active');
+                allBtn.click(); await wait(1000);
+                const nAll = readTotal();
+                out.scopeAllActive = !!scopeBox.querySelector('[data-scope="all"]')
+                  && scopeBox.querySelector('[data-scope="all"]').classList.contains('active');
+                out.scopeCounts = [nTop, nAll];
+                out.scopeGrew = nAll > nTop;   // 有子任务时切到「含子任务」总数必须变大
+                // 趋势也跟着换口径
+                const summary = document.querySelector('.trend-summary');
+                out.trendRefreshed = !!summary;
+                topBtn.click(); await wait(900);
+                const nBack = readTotal();
+                out.scopeSwitchedBack = nBack === nTop;
+              }
+
+              // 清理
+              try { await window.api.tasks.remove(t16.id); } catch (e) {}
+              try { await window.api.tasks.remove(imgTask.id); } catch (e) {}
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
+              return out;
+            })()
+          `);
+          if (r16.__fatal) console.log('[SMOKE][r16 fatal]', r16.__fatal);
+          console.log(`[SMOKE] 标题层级 = 标题 ${r16.titleFs || '-'}px / 正文 ${r16.metaFs || '-'}px（层级分明=${r16.titleBigger ? '是' : '否'}）；子任务计数在标题行内=${r16.badgeInTitle ? '是' : '否'}；紧邻名称=${r16.badgeNextToName ? '是' : '否'}（${r16.badgeText || '-'}）`);
+          console.log(`[SMOKE] 行内改名自适应 = 宽度随输入增长=${r16.widthGrew ? '是' : '否'}；不换行=${r16.noWrap ? '是' : '否'}；不越界=${r16.withinRow && r16.noOverlap ? '是' : '否'}`);
+          console.log(`[SMOKE] 图片放大 = 打开=${r16.zoomOpened ? '是' : '否'}；原比例=${r16.ratioKept ? '保持' : '变形'}（${r16.zoomSize || '-'}）；Esc关=${r16.closedByEsc ? '是' : '否'}；点遮罩关=${r16.closedByMask ? '是' : '否'}；双击关=${r16.closedByDbl ? '是' : '否'}`);
+          console.log(`[SMOKE] 侧栏调宽 = ${JSON.stringify(r16.widths)}；拖拽生效=${r16.dragged ? '是' : '否'}；下限夹住=${r16.minClamped ? '是' : '否'}；拖时禁选中=${r16.selectDisabled ? '是' : '否'}；松手恢复=${r16.selectRestored ? '是' : '否'}；布局对齐=${r16.layoutAligned ? '是' : '否'}；主区可用=${r16.mainUsable ? '是' : '否'}；落库=${r16.persisted || '-'}px`);
+          console.log(`[SMOKE] 统计口径 = 仅主任务 ${(r16.scopeCounts || [])[0]} / 含子任务 ${(r16.scopeCounts || [])[1]}；切换生效=${r16.scopeGrew ? '是' : '否'}；切回一致=${r16.scopeSwitchedBack ? '是' : '否'}`);
+
+          /* ============ 第 17 轮：AI 检索联想（精确优先 / 联想候选 / 确实无关联 三态） ============ */
+          // 清掉 Key：本轮只验证本地联想引擎（不依赖外网），否则不可达的 AI 地址会拖慢整轮
+          await mainWindow.webContents.executeJavaScript(`window.api.ai.clearKey()`);
+          const r17 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wait = (ms) => new Promise(r => setTimeout(r, ms));
+              try {
+              // 造数据：一条可精确命中、一条只能靠"缩写/同义"联想、一批用来验证 Top5 截断
+              const a = await window.api.tasks.create({ title: '联想用例-报销差旅费', notes: '<p>发票已寄出</p>' });
+              const b = await window.api.tasks.create({ title: '联想用例-登录界面改版', notes: '' });
+              await window.api.tasks.create({ title: '联想用例-接口性能优化', notes: '' });
+              const many = [];
+              for (let i = 1; i <= 8; i += 1) many.push(await window.api.tasks.create({ title: '联想用例-缺陷单' + i, notes: '' }));
+              const ids = [a.id, b.id, ...many.map((m) => m.id)];
+              out.seeded = ids.length;
+
+              // 1) 精确命中：应优先返回，且判定为唯一匹配
+              const r1 = await window.api.search.ai('报销差旅费');
+              out.exactType = r1.type;
+              out.exactHit = !!r1.exactHit;
+              out.exactTop = (r1.tasks[0] || {}).title;
+              out.exactReason = ((r1.tasks[0] || {}).match || {}).reasons || [];
+
+              // 2) 缩写联想：库里没有 "ui" 三个字母，但应通过 ui→界面 找到「登录界面改版」
+              const r2 = await window.api.search.ai('ui 改版');
+              out.assocType = r2.type;
+              out.assocCount = r2.tasks.length;
+              out.assocTop = (r2.tasks[0] || {}).title;
+              out.assocReasons = ((r2.tasks[0] || {}).match || {}).reasons || [];
+              out.assocIsAbbrev = out.assocReasons.some((s) => /缩写还原|同义词/.test(s));
+
+              // 3) 确实无关联：明确提示 + 说明已尝试的联想方向
+              const r3 = await window.api.search.ai('zzzqqqxyz无关词');
+              out.noneType = r3.type;
+              out.noneCount = r3.tasks.length;
+              out.noneTried = (r3.tried || []).length;
+
+              // 4) Top5 截断：8 条同义任务只能回来 5 条以内
+              const r4 = await window.api.search.ai('缺陷');
+              out.topCount = r4.tasks.length;
+              out.topCapped = r4.tasks.length <= 5 && r4.tasks.length > 0;
+              out.topHasScore = r4.tasks.every((t) => t.match && typeof t.match.score === 'number');
+
+              // 5) 界面渲染：走真实点击，检查三态各自的 DOM 与"命中依据"是否可见
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const searchIn = () => document.getElementById('ai-search-input');
+              nav('all'); await wait(300); nav('search'); await wait(500);
+              const runUi = async (kw) => {
+                searchIn().value = kw;
+                document.getElementById('ai-search-btn').click();
+                await wait(900);
+                const res = document.getElementById('ai-search-results');
+                return {
+                  items: res.querySelectorAll('.search-result-item').length,
+                  reasons: [...res.querySelectorAll('.sr-reasons')].map((e) => e.textContent),
+                  bannerUnique: !!res.querySelector('.sr-banner-unique'),
+                  bannerMulti: !!res.querySelector('.sr-banner-multi'),
+                  empty: !!res.querySelector('.sr-empty'),
+                  tried: res.querySelectorAll('.sr-tried li').length,
+                };
+              };
+              out.uiExact = await runUi('报销差旅费');
+              out.uiAssoc = await runUi('ui 改版');
+              out.uiNone = await runUi('zzzqqqxyz无关词');
+
+              // 清理
+              for (const id of ids) { try { await window.api.tasks.remove(id); } catch (e) {} }
+              } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
+              return out;
+            })()
+          `);
+          if (r17.__fatal) console.log('[SMOKE][r17 fatal]', r17.__fatal);
+          console.log(`[SMOKE] 检索联想（精确）= 类型 ${r17.exactType}；精确命中=${r17.exactHit ? '是' : '否'}；首位「${r17.exactTop || '-'}」；依据 ${JSON.stringify(r17.exactReason)}`);
+          console.log(`[SMOKE] 检索联想（缩写 ui）= 类型 ${r17.assocType}；候选 ${r17.assocCount} 条；首位「${r17.assocTop || '-'}」；依据含联想标记=${r17.assocIsAbbrev ? '是' : '否'} ${JSON.stringify(r17.assocReasons)}`);
+          console.log(`[SMOKE] 检索联想（无关联）= 类型 ${r17.noneType}；候选 ${r17.noneCount} 条；已尝试方向 ${r17.noneTried} 条`);
+          console.log(`[SMOKE] 检索联想（Top5）= ${r17.topCount} 条（≤5=${r17.topCapped ? '是' : '否'}；均带分值=${r17.topHasScore ? '是' : '否'}）`);
+          console.log(`[SMOKE] 检索联想（界面）= 精确 ${JSON.stringify(r17.uiExact)}；联想 ${JSON.stringify(r17.uiAssoc)}；无关联 ${JSON.stringify(r17.uiNone)}`);
+
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
@@ -1348,10 +2340,13 @@ app.whenReady().then(() => {
             && dom.tagModalOpened && dom.tagAdded
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
-            && dom.aiToolbarBtn && dom.aiModalOpened && dom.aiModalCount === 1
+            && dom.aiToolbarBtnGone && dom.aiMenuItem && dom.aiModalOpened && dom.aiModalCount === 1
             && dom.aiCols === 2 && dom.aiSections === 2 && dom.aiFieldCount === 8
             && dom.aiInViewport && dom.aiFootReachable && dom.aiBodyScrolls && dom.aiNoHOverflow
             && dom.aiSavedUrl === 'https://smoke.example.com' && dom.aiSavedModel === 'smoke-model'
+            && dom.tbStatsHidden && dom.tbReportsHidden && dom.tbSearchHidden && dom.tbMeetingsHidden && dom.tbTaskShown
+            && dom.gcModalOpened && dom.gcPicker && dom.gcAuto && dom.gcCustom && dom.gcAbbrev
+            && dom.gcInvalidKept && dom.gcPreset && dom.gcCreated && dom.gcDot && dom.gcPersisted && dom.gcEditEcho
             && detail.panelOpen && detail.hasResizer && detail.widthAfter > detail.widthBefore
             && detail.resizingClassCleared && !!detail.persisted
             && Math.abs(detail.widthReopened - detail.widthAfter) <= 2
@@ -1415,7 +2410,51 @@ app.whenReady().then(() => {
             && r11.rpHistoryShrunk
             && r11.searchHistoryBox && r11.searchHistoryGrew && r11.searchRestored
             && r11main.reports >= 1 && r11main.searches >= 1 && r11main.reportHasContent
-            && r11main.searchHasKeyword && r11main.exportHasTables;
+            && r11main.searchHasKeyword && r11main.exportHasTables
+            // 第 13 轮
+            && r13.toastInBody && r13.toastAboveMask && r13.toastNoPointer
+            && r13.groupHeads >= 1 && r13.headIsButton && r13.headCollapsed && r13.rowsShrunk
+            && r13.arrowWidth >= 20 && r13.arrowFont >= 14
+            && r13.expandedAgain && r13.collapsedCleared
+            && r13.todayEditor && r13.todayFilled
+            && r13.notesFilled && r13.titleSaved && r13.notesKept && r13.polishBtn
+            && /已保存/.test(r13.saveStateText) && /s-saved/.test(r13.saveStateClass)
+            && (!r13.staleToolbarBtns || r13.staleToolbarBtns.length === 0)
+            && r13.rpHisBtn && r13.rpHisOpened && r13.rpHisWidth >= 900 && r13.rpHisInViewport
+            && r13.mthBtn
+            && r13main.storageNoEllipsis && r13main.autoStartInFile && r13main.autoStartNotTop
+            // 第 14 轮：多任务详情编辑互不串改
+            && r14.idsDistinct && r14.aRowFound && r14.bRowFound
+            && r14.aOpened && r14.bUntouched && r14.aNotClonedFromB
+            && r14.titlesDistinct && r14.aKeptEdit && r14.bNotesKept
+            && r14.bOpened && r14.aStable && r14.bSaved && r14.stillDistinct
+            // 第 15 轮：创建时间 / 趋势范围切换 / AI 润色反馈
+            && r15.rowFound && r15.listCreated && /^\d{4}-\d{2}-\d{2}$/.test(r15.listCreatedText.replace('🕒', '').trim())
+            && r15.detailCreated && /创建于 \d{4}-\d{2}-\d{2} /.test(r15.detailCreatedText)
+            && r15.trendChips === 4 && r15.trendTitlesOk && r15.trendColsOk && r15.trendActiveOk && r15.trendSummary
+            && r15.pRowFound && r15.polishBtn
+            && r15.masks1 === 1 && r15.loadingShown && r15.btnDisabled && /改写中/.test(r15.btnText)
+            && r15.masks2 === 1 && r15.modalClosed && r15.btnRestored
+            && r15.errShown && r15.retryBtn && r15.modalClosedB
+            // 第 16 轮：标题层级 / 子任务计数 / 行内改名自适应 / 图片放大 / 侧栏调宽 / 统计口径
+            && r16.rowFound && r16.titleSizeOk && r16.titleBigger
+            && r16.badgeExists && r16.badgeInTitle && r16.badgeNextToName && r16.badgeNotInMeta
+            && /1\/2/.test(r16.badgeText || '')
+            && r16.inputFound && r16.widthGrew && r16.noWrap && r16.withinRow && r16.noOverlap
+            && r16.mdImgFound && r16.zoomOpened && r16.ratioKept
+            && r16.closedByEsc && r16.closedByMask && r16.closedByDbl
+            && r16.handleFound && r16.dragged && r16.minClamped && r16.selectDisabled
+            && r16.selectRestored && r16.layoutAligned && r16.mainUsable && r16.noHOverflow
+            && r16.persisted >= 180 && r16.scopeFound && r16.scopeGrew
+            && r16.scopeTopActive && r16.scopeAllActive && r16.scopeSwitchedBack && r16.trendRefreshed
+            // 第 17 轮：AI 检索联想（精确优先 / 联想候选 / 确实无关联）
+            && r17.exactType === 'unique' && r17.exactHit && /报销差旅费/.test(r17.exactTop || '')
+            && r17.assocType !== 'none' && r17.assocCount >= 1 && r17.assocIsAbbrev
+            && r17.noneType === 'none' && r17.noneCount === 0 && r17.noneTried >= 1
+            && r17.topCapped && r17.topHasScore
+            && r17.uiExact.items >= 1 && r17.uiExact.bannerUnique && !r17.uiExact.empty
+            && r17.uiAssoc.items >= 1 && (r17.uiAssoc.reasons || []).some((s) => /缩写还原|同义词|关键词/.test(s))
+            && r17.uiNone.empty && r17.uiNone.items === 0 && r17.uiNone.tried >= 1;
           if (!allOk) {
             // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
             // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
@@ -1425,12 +2464,15 @@ app.whenReady().then(() => {
               'r4:popClipped',             // 期望「没有被裁剪容器包住」
               'r9:tagBeforeActive',        // 期望「点击前未选中」
               'r10:tfNativeDates',         // 期望「原生 date 输入框 0 个」
+              'r15:masksBefore',           // 提示用：期望润色前没有残留遮罩 = 0
             ]);
+            let printed = 0;
             const dumpFalsy = (label, obj) => {
               const bad = Object.entries(obj || {})
                 .filter(([k, v]) => (v === false || v === null || v === undefined || v === 0 || v === '')
                   && !EXPECT_FALSY.has(`${label}:${k}`));
               if (bad.length) {
+                printed += 1;
                 console.log(`[SMOKE] 未通过项 · ${label}：${bad.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('；')}`);
               }
             };
@@ -1444,12 +2486,23 @@ app.whenReady().then(() => {
             dumpFalsy('r10', r10);
             dumpFalsy('r11', r11);
             dumpFalsy('r11main', r11main);
+            dumpFalsy('r13', r13);
+            dumpFalsy('r13main', r13main);
+            dumpFalsy('r14', r14);
+            dumpFalsy('r15', r15);
+            dumpFalsy('r16', r16);
+            dumpFalsy('r17', r17);
+            // 假值列表抓不到「值非假但不匹配」的条件（如 xx === '旧文案'），补一行提示免得对着 && 死磕。
+            if (!printed) {
+              console.log('[SMOKE] 未通过项：无假值 → 问题在字符串/数值比对上（比对值或界面文案已过时）');
+            }
           }
           console.log(allOk ? '[SMOKE] SMOKE_OK' : '[SMOKE] SMOKE_FAIL');
           isQuitting = true;
           app.quit();
         } catch (e) {
           console.error('[SMOKE] 检测失败:', e.message);
+          console.error('[SMOKE] 堆栈:', e && e.stack ? String(e.stack).split('\n').slice(0, 6).join(' | ') : '');
           isQuitting = true;
           app.quit();
         }
@@ -1461,7 +2514,6 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   isQuitting = true;
   stopReminderScheduler();
-  unregisterShortcuts();
   destroyTray();
 });
 

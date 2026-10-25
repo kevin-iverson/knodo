@@ -120,19 +120,43 @@ export function openPromptModal(opts) {
  * @param {string} [opts.className] 附加到 .modal 的类名（用于定制宽度/内边距）
  * @param {(root:HTMLElement, close:()=>void)=>void} [opts.onMount]
  * @param {string} [opts.okText] 底部关闭按钮文案
+ * @param {Array<{label:string,handler:(root:HTMLElement)=>Promise<string|void>}>} [opts.extraButtons]
+ *        底部左侧的附加操作（如「恢复默认」）；handler 返回字符串表示失败原因
+ * @param {(root:HTMLElement) => Promise<string|void>} [opts.onSubmit]
+ *        提供时底部按钮变为“确认”语义：返回字符串 = 校验失败并就地展示，否则关闭。
+ *        不提供时保持原有的“关闭”语义（历史调用不受影响）。
+ * @param {() => void} [opts.onClose]
+ *        关闭钩子：Esc / 点遮罩 / 点按钮都会走这里。带自动保存的弹窗（如笔记编辑器）
+ *        用它做最后一次 flush —— 否则用户改完直接按 Esc 会丢最后一次输入。
+ * @param {boolean} [opts.showClose] 头部右侧显示 ✕ 关闭按钮（大弹窗建议开）
+ * @param {string} [opts.headHtml] 头部右侧的额外按钮（调用方自备的可信 HTML）
+ * @param {boolean} [opts.resizable] 右下角显示缩放手柄，可拖动改大小（双击手柄恢复默认）
+ * @param {string} [opts.resizeKey] 尺寸记忆键：同一键的弹窗下次打开沿用上次大小
+ * @param {number} [opts.minWidth] 缩放最小宽度（默认 520）
+ * @param {number} [opts.minHeight] 缩放最小高度（默认 380）
  * @returns {Promise<boolean>} 是否以“确认”关闭
  */
 export function openPanelModal({
   title, html = '', className = '', onMount, okText = '关闭',
+  extraButtons = [], onSubmit, onClose, showClose = false, headHtml = '',
+  resizable = false, resizeKey = '', minWidth = 520, minHeight = 380,
 }) {
   return new Promise((resolve) => {
     const mask = document.createElement('div');
     mask.className = 'modal-mask';
     mask.innerHTML = `
       <div class="modal modal-panel${className ? ` ${esc(className)}` : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
-        <div class="modal-head">${esc(title)}</div>
+        <div class="modal-head">
+          <span class="modal-head-text">${esc(title)}</span>
+          ${headHtml}
+          ${showClose ? '<button type="button" class="modal-icon-btn" data-modal="close" title="关闭（Esc）" aria-label="关闭">✕</button>' : ''}
+        </div>
         <div class="modal-body">${html}</div>
+        <div class="modal-error" hidden></div>
         <div class="modal-foot">
+          ${extraButtons.length
+    ? `<div class="foot-extra">${extraButtons.map((b) => `<button type="button" class="ghost-btn" data-extra="${esc(b.label)}">${esc(b.label)}</button>`).join('')}</div>`
+    : ''}
           <div class="foot-main">
             <button type="button" class="primary-btn" data-modal="ok">${esc(okText)}</button>
           </div>
@@ -140,8 +164,22 @@ export function openPanelModal({
       </div>`;
     document.body.appendChild(mask);
 
+    const errEl = mask.querySelector('.modal-error');
+    const showError = (msg) => {
+      errEl.textContent = msg || '';
+      errEl.hidden = !msg;
+      mask.querySelector('.modal').classList.toggle('has-error', !!msg);
+    };
+    let disposeResize = null;
     const close = (ok) => {
       document.removeEventListener('keydown', onKey, true);
+      if (typeof disposeResize === 'function') {
+        try { disposeResize(); } catch (e) { /* 清理失败不拦住关闭 */ }
+        disposeResize = null;
+      }
+      if (typeof onClose === 'function') {
+        try { onClose(); } catch (e) { /* 关闭钩子失败不能拦住关闭 */ }
+      }
       mask.remove();
       resolve(ok);
     };
@@ -149,11 +187,217 @@ export function openPanelModal({
       if (e.key === 'Escape') { e.stopPropagation(); close(false); }
     };
     document.addEventListener('keydown', onKey, true);
-    mask.querySelector('[data-modal="ok"]').addEventListener('click', () => close(true));
+    mask.querySelector('[data-modal="ok"]').addEventListener('click', async () => {
+      if (typeof onSubmit !== 'function') { close(true); return; }
+      showError('');
+      try {
+        const msg = await onSubmit(mask);
+        if (msg) { showError(msg); return; }
+        close(true);
+      } catch (e) {
+        showError((e && e.message) || '操作失败，请重试');
+      }
+    });
     mask.addEventListener('click', (e) => { if (e.target === mask) close(false); });
+    mask.querySelector('[data-modal="close"]')?.addEventListener('click', () => close(false));
+    if (resizable) {
+      disposeResize = mountResize(mask.querySelector('.modal'), { key: resizeKey, minWidth, minHeight });
+    }
+
+    extraButtons.forEach((b) => {
+      const el = mask.querySelector(`[data-extra="${b.label}"]`);
+      if (!el) return;
+      el.addEventListener('click', async () => {
+        showError('');
+        try {
+          // 第二个参数给 handler 一个「关掉自己」的口子：比如笔记编辑器里的「删除」，
+          // 删完就该连窗口一起关，否则会停在一篇已不存在的笔记上。
+          const msg = await b.handler(mask, () => close(false));
+          if (msg) showError(msg);
+        } catch (e) {
+          showError((e && e.message) || '操作失败，请重试');
+        }
+      });
+    });
 
     if (typeof onMount === 'function') onMount(mask, () => close(false));
   });
+}
+
+/**
+ * 给面板弹窗装一个右下角缩放手柄。
+ *
+ * 为什么不用 CSS 的 `resize: both`：它要求元素 overflow 非 visible（会和 `.modal` 的
+ * `overflow: hidden` + 内部滚动打架），而且手柄样式不可控、拖拽时不会触发子元素重排回调。
+ * 这里用 pointer 事件自己算尺寸，同时：
+ *  - 尺寸按 key 存 localStorage，下次打开沿用（用户把笔记窗口拉大一次就够了）；
+ *  - 双击手柄清除记忆、回到 CSS 默认尺寸；
+ *  - 窗口变小时自动收缩，避免弹窗被顶出可视区。
+ * @returns {() => void} 清理函数（关闭弹窗时调用）
+ */
+function mountResize(modal, { key = '', minWidth = 520, minHeight = 380 } = {}) {
+  if (!modal) return null;
+  const storeKey = `modal-size:${key || 'default'}`;
+  const defaultStyle = { width: modal.style.width, height: modal.style.height };
+  let maximized = false;
+
+  const clamp = (w, h) => {
+    const maxW = Math.max(minWidth, window.innerWidth - 32);
+    const maxH = Math.max(minHeight, window.innerHeight - 32);
+    return {
+      w: Math.max(minWidth, Math.min(Math.round(w), maxW)),
+      h: Math.max(minHeight, Math.min(Math.round(h), maxH)),
+    };
+  };
+  const apply = (w, h) => {
+    const { w: W, h: H } = clamp(w, h);
+    modal.style.maxWidth = `${window.innerWidth - 32}px`;
+    modal.style.maxHeight = `${window.innerHeight - 32}px`;
+    modal.style.width = `${W}px`;
+    modal.style.height = `${H}px`;
+    return { W, H };
+  };
+  const remember = () => {
+    try {
+      const r = modal.getBoundingClientRect();
+      localStorage.setItem(storeKey, JSON.stringify({ w: Math.round(r.width), h: Math.round(r.height) }));
+    } catch (e) { /* 隐私模式 / 存储配额不可用时静默降级为「只本次有效」 */ }
+  };
+  const restore = () => {
+    try {
+      const raw = localStorage.getItem(storeKey);
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (s && s.w > 0 && s.h > 0) apply(s.w, s.h);
+    } catch (e) { /* 记忆值损坏就按默认尺寸打开 */ }
+  };
+  const notifyResize = () => modal.dispatchEvent(new CustomEvent('modal:resize'));
+
+  restore();
+
+  const grip = document.createElement('div');
+  grip.className = 'modal-resize';
+  grip.title = '拖动调整窗口大小（双击恢复默认）';
+  grip.setAttribute('role', 'separator');
+  grip.setAttribute('aria-label', '调整弹窗大小');
+  modal.appendChild(grip);
+
+  const onGripDown = (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const r = modal.getBoundingClientRect();
+    const start = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
+    maximized = false;
+    modal.classList.add('is-resizing');
+    grip.setPointerCapture(e.pointerId);
+    const onMove = (ev) => {
+      apply(start.w + (ev.clientX - start.x), start.h + (ev.clientY - start.y));
+      notifyResize();
+    };
+    const onUp = () => {
+      grip.removeEventListener('pointermove', onMove);
+      grip.removeEventListener('pointerup', onUp);
+      grip.removeEventListener('pointercancel', onUp);
+      modal.classList.remove('is-resizing');
+      remember();
+      notifyResize();
+    };
+    grip.addEventListener('pointermove', onMove);
+    grip.addEventListener('pointerup', onUp);
+    grip.addEventListener('pointercancel', onUp);
+  };
+  grip.addEventListener('pointerdown', onGripDown);
+  grip.addEventListener('dblclick', () => {
+    try { localStorage.removeItem(storeKey); } catch (e) { /* 忽略 */ }
+    modal.style.width = defaultStyle.width;
+    modal.style.height = defaultStyle.height;
+    maximized = false;
+    notifyResize();
+  });
+
+  // 最大化 / 还原：由头部按钮触发（弹窗管理器把口子挂在元素上，调用方不必持有内部变量）
+  let savedSize = null;
+  modal.__toggleMax = () => {
+    if (maximized) {
+      maximized = false;
+      if (savedSize) apply(savedSize.w, savedSize.h);
+      else { modal.style.width = defaultStyle.width; modal.style.height = defaultStyle.height; }
+    } else {
+      const r = modal.getBoundingClientRect();
+      savedSize = { w: r.width, h: r.height };
+      maximized = true;
+      apply(window.innerWidth - 32, window.innerHeight - 32);
+    }
+    notifyResize();
+    return maximized;
+  };
+
+  const onWinResize = () => {
+    const r = modal.getBoundingClientRect();
+    apply(r.width, r.height);
+    notifyResize();
+  };
+  window.addEventListener('resize', onWinResize);
+
+  return () => {
+    window.removeEventListener('resize', onWinResize);
+    try { delete modal.__toggleMax; } catch (e) { /* 忽略 */ }
+  };
+}
+
+/** 归一化颜色值：#abc → #aabbcc，非法值返回 '' */
+function normalizeHex(v) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(v || '').trim());
+  if (!m) return '';
+  const h = m[1].toLowerCase();
+  return `#${h.length === 3 ? h.split('').map((c) => c + c).join('') : h}`;
+}
+
+/**
+ * 绑定取色字段：预设色 / 系统取色器 / 十六进制输入框三向同步。
+ * 选中「自动」时值为 'auto'（由业务侧自行分配），取色器仍显示上次的实色便于微调。
+ */
+function bindColorField(root, f) {
+  const wrap = root.querySelector(`.color-picker[data-color-field="${f.name}"]`);
+  if (!wrap) return;
+  const hidden = wrap.querySelector('[data-field]');
+  const native = wrap.querySelector('.color-native');
+  const hex = wrap.querySelector('.color-hex');
+  const preview = wrap.querySelector('.color-preview');
+  const swatches = [...wrap.querySelectorAll('.color-swatch')];
+
+  let mode = hidden.value === 'auto' ? 'auto' : 'hex';
+  let cur = normalizeHex(hidden.value) || normalizeHex(native.value) || '#4f7cff';
+
+  const paint = () => {
+    hidden.value = mode === 'auto' ? 'auto' : cur;
+    if (native.value !== cur) native.value = cur;
+    if (document.activeElement !== hex) hex.value = cur;
+    preview.style.background = cur;
+    swatches.forEach((s) => {
+      const on = s.dataset.val === 'auto' ? mode === 'auto' : (mode === 'hex' && normalizeHex(s.dataset.val) === cur);
+      s.classList.toggle('active', on);
+      s.setAttribute('aria-pressed', String(on));
+    });
+  };
+
+  swatches.forEach((s) => s.addEventListener('click', () => {
+    if (s.dataset.val === 'auto') { mode = 'auto'; } else { mode = 'hex'; cur = normalizeHex(s.dataset.val) || cur; }
+    paint();
+  }));
+  native.addEventListener('input', () => {
+    const v = normalizeHex(native.value);
+    if (!v) return;
+    mode = 'hex'; cur = v; paint();
+  });
+  hex.addEventListener('input', () => {
+    const v = normalizeHex(hex.value);
+    if (!v) return; // 输入到一半（如 "#4f7"）先不动值，失焦时再回退
+    mode = 'hex'; cur = v; paint();
+  });
+  hex.addEventListener('blur', paint); // 非法输入 → 还原为上一个有效色
+
+  paint();
 }
 
 /** 字段类型 → HTML 片段 */
@@ -177,6 +421,32 @@ function fieldHtml(f) {
           <span class="choice-dot"></span><span>${esc(o.label)}</span>
         </label>`).join('');
       return `${label}<div class="choice-row">${rows}</div>`;
+    }
+    case 'color': {
+      // 预设色只是快捷入口：真正的取色靠原生 <input type="color">（系统取色器，支持任意颜色
+      // 与屏幕吸管）+ 十六进制输入框，两者与预设色三向同步，最终值写进隐藏 input 供 readFields 读取
+      const raw = String(f.value ?? '');
+      const init = normalizeHex(raw) || normalizeHex(f.fallback) || '#4f7cff';
+      const isAuto = raw === 'auto' || (!raw && (f.options || []).some((o) => o.value === 'auto'));
+      const swatches = (f.options || []).map((o) => {
+        const auto = o.value === 'auto';
+        const on = auto ? isAuto : (!isAuto && normalizeHex(o.value) === init.toLowerCase());
+        return auto
+          ? `<button type="button" class="color-swatch is-auto${on ? ' active' : ''}" data-val="auto" title="由系统自动分配颜色">自动</button>`
+          : `<button type="button" class="color-swatch${on ? ' active' : ''}" data-val="${esc(o.value)}"
+               style="--c:${esc(o.color || o.value)}" title="${esc(o.label || o.value)}" aria-pressed="${on}"><span></span></button>`;
+      }).join('');
+      return `${label}
+        <div class="color-picker" data-color-field="${esc(f.name)}">
+          <div class="color-swatches">${swatches}</div>
+          <div class="color-custom">
+            <input type="color" class="color-native" value="${esc(init)}" title="打开系统取色器自由取色" aria-label="自由取色" />
+            <input type="text" class="color-hex" maxlength="7" spellcheck="false"
+                   placeholder="#4f7cff" value="${esc(init)}" aria-label="十六进制颜色值" />
+            <span class="color-preview" style="background:${esc(init)}"></span>
+          </div>
+          <input type="hidden" data-field="${esc(f.name)}" value="${isAuto ? 'auto' : esc(init)}" />
+        </div>`;
     }
     default:
       return `${label}<input ${attr} type="text" value="${esc(f.value || '')}" placeholder="${esc(f.placeholder || '')}" />`;
@@ -250,9 +520,10 @@ function readFields(root, fields) {
  * 多字段表单弹窗（分组编辑 / AI 设置等需要一次填多个值的场景）。
  * @param {object} opts
  * @param {string} opts.title
- * @param {Array<{name:string,label:string,type?:'text'|'password'|'select'|'choices',
- *                value?:any,placeholder?:string,hint?:string,span?:1|2,section?:string,
+ * @param {Array<{name:string,label:string,type?:'text'|'password'|'select'|'choices'|'color',
+ *                value?:any,placeholder?:string,hint?:string,span?:1|2,section?:string,fallback?:string,
  *                options?:Array<{value:string,label:string,color?:string}>}>} opts.fields
+ *        type='color'：预设色 + 原生取色器 + 十六进制输入，值为 '#rrggbb' 或 'auto'
  *        span=2 占满整行；section 相同则收进同一张分组卡片
  * @param {boolean} [opts.grid=true] 是否使用两栏栅格（单字段小表单可传 false）
  * @param {string} [opts.okText]
@@ -291,6 +562,7 @@ export function openFormModal(opts) {
 
     // 字段联动（如选预设后自动填接口地址/模型）：value 变化后回调，回调内部自行改写其它字段
     fields.forEach((f) => {
+      if (f.type === 'color') { bindColorField(mask, f); return; }
       if (typeof f.onChange !== 'function') return;
       const el = mask.querySelector(`[data-field="${f.name}"]`);
       if (el) el.addEventListener('change', () => f.onChange(el.value, mask));

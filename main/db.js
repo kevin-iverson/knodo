@@ -11,6 +11,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const nodeCrypto = require('crypto');
 
 let db = null;
 
@@ -163,16 +164,214 @@ const MIGRATIONS = [
     )`);
     d.exec('CREATE INDEX IF NOT EXISTS idx_searches_created ON ai_searches(created_at DESC, id DESC)');
   },
+  // v8：任务创建时间（created_at）兜底
+  // 建表语句里本来就有这一列，但早期版本 / 手工改过的库可能缺失或留空。这里统一补列 + 回填，
+  // 保证「创建时间」永远有值（回填优先级：updated_at → 当前时间），并加索引便于按创建时间筛选。
+  (d) => {
+    const cols = d.prepare('PRAGMA table_info(tasks)').all().map((c) => c.name);
+    if (!cols.includes('created_at')) {
+      d.exec('ALTER TABLE tasks ADD COLUMN created_at TEXT');
+    }
+    const t = nowIso();
+    d.prepare(
+      `UPDATE tasks SET created_at = COALESCE(NULLIF(updated_at, ''), ?)
+        WHERE created_at IS NULL OR TRIM(created_at) = ''`
+    ).run(t);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at)');
+  },
+  // v9：笔记模块（目录 / 笔记 / 笔记标签 / 任务 ↔ 笔记多对多 + 全文索引）
+  // 设计要点：
+  // - 目录与分组同构（自引用 parent_id），但**不加数据库唯一索引**：与 groups 一致，
+  //   旧备份导入可能带同级重名，加索引会让导入直接失败；重名校验放在 assertFolderName()。
+  // - notes.deleted_at 非空 = 已进入回收站（软删除）。软删除保留 task_notes 关联，
+  //   这样「恢复笔记」后任务引用自动复原；只有彻底删除才会真的摘掉关联行。
+  // - 全文检索用 FTS5 external content + trigram：中文无需外部分词器即可命中子串。
+  //   trigram 要求查询词 ≥ 3 字符，不足时由 searchNotes() 回退到 LIKE。
+  (d) => {
+    d.exec(`CREATE TABLE IF NOT EXISTS note_folders (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      name       TEXT    NOT NULL,
+      parent_id  INTEGER,
+      color      TEXT    NOT NULL DEFAULT '#4f7cff',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT    NOT NULL,
+      updated_at TEXT    NOT NULL,
+      FOREIGN KEY (parent_id) REFERENCES note_folders(id) ON DELETE SET NULL
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_note_folders_parent ON note_folders(parent_id)');
+
+    d.exec(`CREATE TABLE IF NOT EXISTS notes (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      folder_id    INTEGER,
+      title        TEXT    NOT NULL DEFAULT '',
+      content_md   TEXT    NOT NULL DEFAULT '',
+      excerpt      TEXT    NOT NULL DEFAULT '',
+      pinned       INTEGER NOT NULL DEFAULT 0,
+      archived     INTEGER NOT NULL DEFAULT 0,
+      deleted_at   TEXT,
+      word_count   INTEGER NOT NULL DEFAULT 0,
+      content_hash TEXT    NOT NULL DEFAULT '',
+      source       TEXT    NOT NULL DEFAULT 'manual',  -- manual | meeting | ai | import
+      source_ref   TEXT    NOT NULL DEFAULT '',
+      sort_order   INTEGER NOT NULL DEFAULT 0,
+      created_at   TEXT    NOT NULL,
+      updated_at   TEXT    NOT NULL,
+      FOREIGN KEY (folder_id) REFERENCES note_folders(id) ON DELETE SET NULL
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(folder_id)');
+    d.exec('CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC)');
+    d.exec('CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at)');
+    d.exec('CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes(archived)');
+
+    d.exec(`CREATE TABLE IF NOT EXISTS note_tags (
+      id    INTEGER PRIMARY KEY AUTOINCREMENT,
+      name  TEXT    NOT NULL UNIQUE,
+      color TEXT    NOT NULL DEFAULT '#8896ab'
+    )`);
+    d.exec(`CREATE TABLE IF NOT EXISTS note_tag_map (
+      note_id INTEGER NOT NULL,
+      tag_id  INTEGER NOT NULL,
+      PRIMARY KEY (note_id, tag_id),
+      FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+      FOREIGN KEY (tag_id)  REFERENCES note_tags(id) ON DELETE CASCADE
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_note_tag_map_tag ON note_tag_map(tag_id)');
+
+    d.exec(`CREATE TABLE IF NOT EXISTS task_notes (
+      task_id    INTEGER NOT NULL,
+      note_id    INTEGER NOT NULL,
+      created_at TEXT    NOT NULL,
+      PRIMARY KEY (task_id, note_id),
+      FOREIGN KEY (task_id) REFERENCES tasks(id)  ON DELETE CASCADE,
+      FOREIGN KEY (note_id) REFERENCES notes(id)  ON DELETE CASCADE
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_task_notes_note ON task_notes(note_id)');
+
+    // 全文索引（external content：正文只存一份，靠触发器同步）
+    d.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+      title, content, content='notes', content_rowid='id', tokenize='trigram'
+    )`);
+    d.exec(`CREATE TRIGGER IF NOT EXISTS notes_fts_ai AFTER INSERT ON notes BEGIN
+      INSERT INTO notes_fts(rowid, title, content) VALUES (new.id, new.title, new.content_md);
+    END`);
+    d.exec(`CREATE TRIGGER IF NOT EXISTS notes_fts_ad AFTER DELETE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content_md);
+    END`);
+    d.exec(`CREATE TRIGGER IF NOT EXISTS notes_fts_au AFTER UPDATE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content_md);
+      INSERT INTO notes_fts(rowid, title, content) VALUES (new.id, new.title, new.content_md);
+    END`);
+  },
+  // v10：知识库沉淀（笔记作为内置知识库，供 AI 提问检索）
+  // 表结构与 docs/AI知识库问答与任务引用集成方案.md §3 的 v10 对齐（同一套表名与字段），
+  // 这里先落地「内置笔记库」所需的四张表；folder/upload/api 等外部数据源后续按同一结构扩展。
+  // 分块/向量属于派生数据，导入导出不携带（可重建）。
+  (d) => {
+    d.exec(`CREATE TABLE IF NOT EXISTS knowledge_bases (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      name        TEXT    NOT NULL,
+      type        TEXT    NOT NULL DEFAULT 'notes',  -- notes | folder | upload | api
+      icon        TEXT    NOT NULL DEFAULT '📚',
+      color       TEXT    NOT NULL DEFAULT '#4f7cff',
+      source_json TEXT    NOT NULL DEFAULT '{}',
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      status      TEXT    NOT NULL DEFAULT 'idle',   -- idle|indexing|ready|error|empty
+      last_error  TEXT    NOT NULL DEFAULT '',
+      doc_count   INTEGER NOT NULL DEFAULT 0,
+      chunk_count INTEGER NOT NULL DEFAULT 0,
+      embed_model TEXT    NOT NULL DEFAULT '',
+      embed_dim   INTEGER NOT NULL DEFAULT 0,
+      sort_order  INTEGER NOT NULL DEFAULT 0,
+      last_sync_at TEXT,
+      created_at  TEXT    NOT NULL,
+      updated_at  TEXT    NOT NULL
+    )`);
+
+    d.exec(`CREATE TABLE IF NOT EXISTS kb_documents (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      kb_id        INTEGER NOT NULL,
+      source_key   TEXT    NOT NULL,   -- 笔记库：'note:<id>'
+      title        TEXT    NOT NULL DEFAULT '',
+      kind         TEXT    NOT NULL DEFAULT 'md',
+      size         INTEGER NOT NULL DEFAULT 0,
+      fingerprint  TEXT    NOT NULL DEFAULT '',
+      content_hash TEXT    NOT NULL DEFAULT '',
+      status       TEXT    NOT NULL DEFAULT 'pending',  -- pending|indexed|failed|missing
+      error        TEXT    NOT NULL DEFAULT '',
+      created_at   TEXT    NOT NULL,
+      updated_at   TEXT    NOT NULL,
+      FOREIGN KEY (kb_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
+    )`);
+    d.exec('CREATE UNIQUE INDEX IF NOT EXISTS uk_kb_doc ON kb_documents(kb_id, source_key)');
+    d.exec('CREATE INDEX IF NOT EXISTS idx_kb_doc_status ON kb_documents(kb_id, status)');
+
+    d.exec(`CREATE TABLE IF NOT EXISTS kb_chunks (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      kb_id        INTEGER NOT NULL,
+      doc_id       INTEGER NOT NULL,
+      ord          INTEGER NOT NULL DEFAULT 0,
+      kind         TEXT    NOT NULL DEFAULT 'body',  -- heading|body|table|code
+      heading_path TEXT    NOT NULL DEFAULT '',
+      content      TEXT    NOT NULL,
+      content_hash TEXT    NOT NULL DEFAULT '',
+      token_est    INTEGER NOT NULL DEFAULT 0,
+      created_at   TEXT    NOT NULL,
+      FOREIGN KEY (kb_id)  REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+      FOREIGN KEY (doc_id) REFERENCES kb_documents(id)    ON DELETE CASCADE
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc ON kb_chunks(doc_id)');
+    d.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
+      content, content='kb_chunks', content_rowid='id', tokenize='trigram'
+    )`);
+    d.exec(`CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ai AFTER INSERT ON kb_chunks BEGIN
+      INSERT INTO kb_chunks_fts(rowid, content) VALUES (new.id, new.content);
+    END`);
+    d.exec(`CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ad AFTER DELETE ON kb_chunks BEGIN
+      INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    END`);
+    // 分块内容变了必须同步索引：先删旧行再插新行
+    d.exec(`CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_au AFTER UPDATE ON kb_chunks BEGIN
+      INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      INSERT INTO kb_chunks_fts(rowid, content) VALUES (new.id, new.content);
+    END`);
+
+    // 向量表预留（一期只做关键词检索，不写入；列结构先对齐方案文档）
+    d.exec(`CREATE TABLE IF NOT EXISTS kb_vectors (
+      chunk_id INTEGER PRIMARY KEY,
+      dim      INTEGER NOT NULL,
+      model    TEXT    NOT NULL,
+      vec      BLOB    NOT NULL,
+      FOREIGN KEY (chunk_id) REFERENCES kb_chunks(id) ON DELETE CASCADE
+    )`);
+
+    // 内置「笔记知识库」：固定 id=1，唯一入口，后续接入外部数据源时按 sort_order 排队
+    const t = nowIso();
+    d.prepare(
+      `INSERT OR IGNORE INTO knowledge_bases (id, name, type, icon, color, source_json, enabled, status, created_at, updated_at)
+       VALUES (1, '笔记知识库', 'notes', '📝', '#4f7cff', '{}', 1, 'ready', ?, ?)`
+    ).run(t, t);
+  },
+  // v11：笔记图片 / 附件（复用任务附件同一套落盘规则，目录改为 note-<id>）
+  // - notes.attachments 只存元数据 JSON（含**相对**路径），文件本体在
+  //   `<数据目录>/attachments/note-<id>/<附件id>_<文件名>`；与 tasks.attachments 同构，
+  //   因此备份/搬家后仍可解析。正文里引用图片用 `todo-media://` 协议（主进程注册），
+  //   不落 base64，避免笔记正文被几 MB 的 DataURL 撑爆。
+  (d) => {
+    d.exec("ALTER TABLE notes ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
 let initError = '';
+// 当前数据库文件绝对路径（数据目录可配置后，界面/迁移逻辑需要知道真实落点）
+let currentDbPath = '';
 
 function init(dbDir, dbFileName = 'todo.db') {
   try {
     fs.mkdirSync(dbDir, { recursive: true });
     const dbPath = path.join(dbDir, dbFileName);
     db = new Database(dbPath);
+    currentDbPath = dbPath;
     // 立刻做一次写探测：数据库文件只读（权限 / 同步盘占位 / 被占用）时提前暴露，
     // 否则要等第一次写操作才报 "attempt to write a readonly database"，用户只看到"点了没反应"
     db.pragma('journal_mode = WAL');
@@ -211,6 +410,22 @@ function getDb() {
   return db;
 }
 
+/** 当前数据库文件绝对路径（未初始化时为空串） */
+function getDbPath() {
+  return currentDbPath;
+}
+
+/**
+ * 生成一份一致性快照到目标文件（数据目录迁移用）。
+ * WAL 模式下直接 copy .db 文件可能拿到「旧主库 + 未 checkpoint 的 WAL」，所以走 SQLite 的
+ * 在线备份接口；调用期间数据库可以继续读写，不需要先断开。
+ */
+async function backupTo(destPath) {
+  if (!db) throw new Error('数据库尚未初始化');
+  await db.backup(destPath);
+  return destPath;
+}
+
 /** 关闭数据库连接 */
 function close() {
   if (db) {
@@ -247,6 +462,8 @@ function normalizeTask(row) {
   t.tag_names = t.tag_names ? t.tag_names.split(',') : [];
   t.subtask_count = Number(t.subtask_count || 0);
   t.subtask_done = Number(t.subtask_done || 0);
+  // 创建时间兜底：v8 迁移已回填过一遍，这里再兜一层，避免 UI 出现空白
+  t.created_at = t.created_at || t.updated_at || '';
   try { t.attachments = JSON.parse(t.attachments || '[]'); } catch (e) { t.attachments = []; }
   return t;
 }
@@ -344,16 +561,56 @@ function listGroups(includeEmpty = true) {
   }));
 }
 
+/**
+ * 分组颜色归一化：'#abc' → '#aabbcc'；非法值回退默认蓝。
+ * 颜色现在支持自由取色，渲染层一律当合法 hex 用，这里兜底避免出现 '#' 开头的半截样式值。
+ */
+function normalizeColor(color, fallback = '#4f7cff') {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(color == null ? '' : color).trim());
+  if (!m) return fallback;
+  const h = m[1].toLowerCase();
+  return `#${h.length === 3 ? h.split('').map((c) => c + c).join('') : h}`;
+}
+
+/**
+ * 同一「上级」下是否已有同名分组。
+ * 名称唯一性的作用域是**父级**，不是全集：不同层级下允许重名（如「工作 / 11」与「生活 / 11」），
+ * 顶级分组（parent_id 为 NULL）自成一级。比较时去空格并忽略大小写，避免「Work / work」这种伪重名。
+ * @param {string} name 待校验名称
+ * @param {number|null} parentId 目标上级分组 id
+ * @param {number|null} exceptId 排除自身（重命名 / 原地保存时用）
+ */
+function groupNameTaken(name, parentId, exceptId = null) {
+  const key = String(name == null ? '' : name).trim().toLowerCase();
+  if (!key) return false;
+  const pid = parentId == null ? null : Number(parentId);
+  const rows = db.prepare('SELECT id, name FROM groups WHERE parent_id IS ?').all(pid);
+  return rows.some((r) => Number(r.id) !== Number(exceptId)
+    && String(r.name || '').trim().toLowerCase() === key);
+}
+
+/** 校验并返回规范化后的分组名（空名 / 同级重名直接抛可读错误） */
+function assertGroupName(name, parentId, exceptId = null) {
+  const clean = String(name == null ? '' : name).trim();
+  if (!clean) throw new Error('分组名称不能为空');
+  if (groupNameTaken(clean, parentId, exceptId)) {
+    const where = parentId == null ? '顶级分组' : `上级分组「${(getGroup(parentId) || {}).name || '已删除'}」下`;
+    throw new Error(`${where}已存在同名分组「${clean}」，请换一个名称`);
+  }
+  return clean;
+}
+
 function createGroup({ name, color = '#4f7cff', parentId = null } = {}) {
   const t = nowIso();
   if (parentId != null && !getGroup(parentId)) throw new Error('上级分组不存在');
+  const clean = assertGroupName(name, parentId);
   // sort_order 只在同级内部递增，保证新分组排在同层末尾
   const max = parentId == null
     ? db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM groups WHERE parent_id IS NULL').get().m
     : db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM groups WHERE parent_id = ?').get(parentId).m;
   const info = db
     .prepare('INSERT INTO groups (name, color, parent_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(name, color, parentId, max + 1, t, t);
+    .run(clean, normalizeColor(color), parentId, max + 1, t, t);
   return getGroup(info.lastInsertRowid);
 }
 
@@ -379,8 +636,17 @@ function updateGroup(id, { name, color, parentId } = {}) {
       }
     }
   }
+  // 名称 + 上级：重命名、或「移动到别的父级」时，都要按**目标父级**重新校验同级重名
+  // （移动 = 换了一个父级作用域，可能与该父级下已有的同名分组撞车）。
+  // 只改颜色等其它字段时不校验，避免历史脏数据（例如旧备份导入的同级重名）把无关操作卡死。
+  const sameParent = (nextParent == null ? null : Number(nextParent))
+    === (cur.parent_id == null ? null : Number(cur.parent_id));
+  const sameName = name == null || String(name).trim() === String(cur.name).trim();
+  const nextName = (sameParent && sameName)
+    ? cur.name
+    : assertGroupName(name ?? cur.name, nextParent, id);
   db.prepare('UPDATE groups SET name = ?, color = ?, parent_id = ?, updated_at = ? WHERE id = ?')
-    .run(name ?? cur.name, color ?? cur.color, nextParent, nowIso(), id);
+    .run(nextName, color == null ? cur.color : normalizeColor(color, normalizeColor(cur.color)), nextParent, nowIso(), id);
   return getGroup(id);
 }
 
@@ -503,7 +769,8 @@ function listTasks(f = {}) {
     order = 't.sort_order ASC, t.completed ASC, (t.plan_end IS NULL) ASC, t.plan_end ASC, t.priority DESC, t.id ASC';
   }
 
-  const sql = `${TASK_SELECT} WHERE ${where.join(' AND ')} ORDER BY ${order}`;
+  // 没有任何筛选条件时（status:'any' 且不带其它过滤）不能拼出空 WHERE，否则 SQL 语法错误
+  const sql = `${TASK_SELECT}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY ${order}`;
   return db.prepare(sql).all(...params).map(normalizeTask);
 }
 
@@ -523,10 +790,13 @@ function createTask({
   reminderAt = null,
   completedAt = null,
   tagIds = [],
+  createdAt = null, // 留空 = 取当前时间；导入历史数据时可指定以保留原始创建时间
   dueAt = null, // 兼容旧字段
 }) {
   const t = nowIso();
   const pe = planEnd ?? dueAt ?? null;
+  // 创建时间：不传则为当前时刻；updated_at 始终是「现在」
+  const created = createdAt || t;
   const create = db.transaction(() => {
     const max = db
       .prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM tasks WHERE group_id IS ? AND parent_id IS ?')
@@ -537,7 +807,7 @@ function createTask({
            completed_at, sort_order, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(groupId, parentId, title, notes, JSON.stringify(attachments || []), priority, planStart, pe, reminderAt, completedAt, max + 1, t, t);
+      .run(groupId, parentId, title, notes, JSON.stringify(attachments || []), priority, planStart, pe, reminderAt, completedAt, max + 1, created, t);
     const taskId = info.lastInsertRowid;
     setTaskTags(taskId, tagIds);
     return taskId;
@@ -594,6 +864,33 @@ function deleteTask(id) {
   });
   run();
   return true;
+}
+
+/** 任务自身 + 所有后代任务 id（删除任务前收集，用于连带清理附件文件） */
+function subtreeTaskIds(id) {
+  const ids = [];
+  const stack = [Number(id)];
+  while (stack.length) {
+    const pid = stack.pop();
+    if (!ids.includes(pid)) ids.push(pid);
+    const children = db.prepare('SELECT id FROM tasks WHERE parent_id = ?').all(pid);
+    for (const c of children) stack.push(c.id);
+  }
+  return ids;
+}
+
+/**
+ * 只更新附件元数据。
+ * 文件本体由 main/attachments.js 落盘，这里只负责把元数据数组写回 tasks.attachments（JSON）。
+ * 与 updateTask 分开是为了避免「附件列表」被编辑器的自动保存（notes/title）用旧值覆盖回去。
+ */
+function setAttachments(taskId, list) {
+  const cur = getTask(taskId);
+  if (!cur) return null;
+  const arr = Array.isArray(list) ? list : [];
+  db.prepare('UPDATE tasks SET attachments = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(arr), nowIso(), Number(taskId));
+  return getTask(taskId);
 }
 
 /**
@@ -754,26 +1051,38 @@ function markReminderFired(id) {
 
 /* ------------------------------ 统计 ------------------------------ */
 
-function overview() {
-  const total = db.prepare('SELECT COUNT(*) AS c FROM tasks WHERE parent_id IS NULL').get().c;
+/**
+ * 概览统计。
+ * @param {{includeSubtasks?:boolean}} [opts] 默认只统计主任务（parent_id IS NULL）；
+ *        includeSubtasks=true 时把子任务一并算进来。
+ */
+function overview(opts = {}) {
+  // 统计口径写进 SQL 条件里，不做"先全表捞出再应用层过滤"
+  const top = opts && opts.includeSubtasks ? '' : 'AND parent_id IS NULL';
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE 1 = 1 ${top}`).get().c;
   const active = db
-    .prepare('SELECT COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 AND parent_id IS NULL').get().c;
+    .prepare(`SELECT COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 ${top}`).get().c;
   const completed = db
-    .prepare('SELECT COUNT(*) AS c FROM tasks WHERE completed = 1 AND archived = 0 AND parent_id IS NULL').get().c;
-  const archived = db.prepare('SELECT COUNT(*) AS c FROM tasks WHERE archived = 1 AND parent_id IS NULL').get().c;
+    .prepare(`SELECT COUNT(*) AS c FROM tasks WHERE completed = 1 AND archived = 0 ${top}`).get().c;
+  const archived = db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE archived = 1 ${top}`).get().c;
   const today = new Date().toISOString().slice(0, 10);
   const overdue = db
     .prepare(
-      'SELECT COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 AND parent_id IS NULL AND plan_end IS NOT NULL AND plan_end < ?'
+      `SELECT COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 ${top}
+        AND plan_end IS NOT NULL AND plan_end < ?`
     )
     .get(today).c;
 
+  // 分组统计：LEFT JOIN 的条件必须带口径，否则 JOIN 完再过滤会把"没有主任务"的分组整行丢掉
+  const joinTop = opts && opts.includeSubtasks ? '' : 'AND t.parent_id IS NULL';
   const byGroup = db
     .prepare(
-      `SELECT g.id, g.name, g.color,
+      `SELECT g.id, g.name, g.color, g.parent_id,
+         pg.name AS parent_name, pg.color AS parent_color,
          SUM(CASE WHEN t.completed = 0 AND t.archived = 0 THEN 1 ELSE 0 END) AS active,
          SUM(CASE WHEN t.completed = 1 THEN 1 ELSE 0 END) AS done
-       FROM groups g LEFT JOIN tasks t ON t.group_id = g.id AND t.parent_id IS NULL
+       FROM groups g LEFT JOIN tasks t ON t.group_id = g.id ${joinTop}
+       LEFT JOIN groups pg ON pg.id = g.parent_id
        GROUP BY g.id ORDER BY g.sort_order`
     )
     .all()
@@ -781,37 +1090,136 @@ function overview() {
       id: r.id,
       name: r.name,
       color: r.color,
+      // 同名子分组在不同父分组下看不出归属，把父分组名一并带上给界面拼 "父 / 子"
+      parent_id: r.parent_id ?? null,
+      parent_name: r.parent_name || '',
+      parent_color: r.parent_color || '',
       active: r.active || 0,
       done: r.done || 0,
     }));
 
   const byPriority = db
     .prepare(
-      `SELECT priority, COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 AND parent_id IS NULL GROUP BY priority`
+      `SELECT priority, COUNT(*) AS c FROM tasks WHERE completed = 0 AND archived = 0 ${top} GROUP BY priority`
     )
     .all()
     .map((r) => ({ priority: r.priority, count: r.c }));
 
   const rate = completed + active > 0 ? Math.round((completed / (completed + active)) * 100) : 0;
 
-  return { total, active, completed, archived, overdue, byGroup, byPriority, rate };
+  return {
+    total,
+    active,
+    completed,
+    archived,
+    overdue,
+    byGroup,
+    byPriority,
+    rate,
+    includeSubtasks: !!(opts && opts.includeSubtasks),
+  };
 }
 
-/** 最近 n 天的每日完成数量趋势 */
-function dailyTrend(days = 7) {
-  const rows = [];
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() - i);
-    const start = d.toISOString();
-    const end = new Date(d.getTime() + 24 * 3600 * 1000).toISOString();
-    const c = db
-      .prepare('SELECT COUNT(*) AS c FROM tasks WHERE completed = 1 AND parent_id IS NULL AND completed_at >= ? AND completed_at < ?')
-      .get(start, end).c;
-    rows.push({ date: start.slice(0, 10), count: c });
+/**
+ * 完成趋势的可选时间范围。
+ * 粒度随跨度变粗（天 → 周 → 月）：一年 365 根柱子既排不下也没法读，按月聚合才有意义。
+ */
+const TREND_RANGES = {
+  '7d': { key: '7d', label: '近 7 天', granularity: 'day', buckets: 7 },
+  '1m': { key: '1m', label: '近一个月', granularity: 'day', buckets: 30 },
+  '6m': { key: '6m', label: '近半年', granularity: 'week', buckets: 26 },
+  '1y': { key: '1y', label: '近一年', granularity: 'month', buckets: 12 },
+};
+const DEFAULT_TREND_RANGE = '7d';
+
+/**
+ * 归一化趋势入参。
+ * 支持三种写法：{ range: '1m' }（推荐，渲染层统一用它）、'1m'、以及旧调用的数字天数。
+ */
+function normalizeTrendRange(arg) {
+  const raw = arg && typeof arg === 'object' ? arg.range : arg;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    const n = Math.round(raw);
+    return { key: `${n}d`, label: `近 ${n} 天`, granularity: 'day', buckets: n };
   }
-  return rows;
+  return TREND_RANGES[String(raw || DEFAULT_TREND_RANGE)] || TREND_RANGES[DEFAULT_TREND_RANGE];
+}
+
+/**
+ * 完成趋势（支持近 7 天 / 一个月 / 半年 / 一年）。
+ *
+ * 只查一次库（按完成时间范围取全部记录），再在内存里分桶：桶数最多 30 个，
+ * 无论哪个范围都是一趟 SQL，不会像逐日查询那样放大成几十次往返。
+ *
+ * @param {string|number|{range:string, includeSubtasks?:boolean}} [arg] 范围；缺省 = 近 7 天。
+ *        arg 为对象时可用 includeSubtasks=true 把子任务的完成记录也算进来。
+ * @returns {{range:string, label:string, granularity:'day'|'week'|'month',
+ *            start:string, end:string, total:number,
+ *            points:Array<{key:string,label:string,count:number,start:string,end:string}>}}
+ */
+function dailyTrend(arg) {
+  const cfg = normalizeTrendRange(arg);
+  const top = arg && typeof arg === 'object' && arg.includeSubtasks ? '' : 'AND parent_id IS NULL';
+  const buckets = [];
+
+  if (cfg.granularity === 'month') {
+    // 末桶 = 当月（1 号 ~ 次月 1 号），往前逐月递推
+    const anchor = new Date();
+    anchor.setDate(1);
+    anchor.setHours(0, 0, 0, 0);
+    for (let i = cfg.buckets - 1; i >= 0; i--) {
+      const s = new Date(anchor.getFullYear(), anchor.getMonth() - i, 1);
+      const e = new Date(anchor.getFullYear(), anchor.getMonth() - i + 1, 1);
+      buckets.push({ start: s, end: e, label: `${s.getFullYear()}-${String(s.getMonth() + 1).padStart(2, '0')}` });
+    }
+  } else {
+    // 天 / 周：末桶右边界对齐到「明天 0 点」，往前按 1 天或 7 天递推
+    const perDay = cfg.granularity === 'week' ? 7 : 1;
+    const lastEnd = new Date();
+    lastEnd.setHours(24, 0, 0, 0);
+    for (let i = cfg.buckets - 1; i >= 0; i--) {
+      const e = new Date(lastEnd.getTime() - i * perDay * 86400000);
+      const s = new Date(e.getTime() - perDay * 86400000);
+      const p = (n) => String(n).padStart(2, '0');
+      buckets.push({ start: s, end: e, label: `${p(s.getMonth() + 1)}-${p(s.getDate())}` });
+    }
+  }
+
+  const startIso = buckets[0].start.toISOString();
+  const endIso = buckets[buckets.length - 1].end.toISOString();
+  const rows = db
+    .prepare(
+      `SELECT completed_at FROM tasks
+        WHERE completed = 1 ${top} AND completed_at >= ? AND completed_at < ?`
+    )
+    .all(startIso, endIso);
+
+  const counts = new Array(buckets.length).fill(0);
+  for (const r of rows) {
+    const ts = Date.parse(r.completed_at);
+    if (!Number.isFinite(ts)) continue; // 脏数据（非法时间字符串）直接跳过
+    for (let i = buckets.length - 1; i >= 0; i--) {
+      if (ts >= buckets[i].start.getTime() && ts < buckets[i].end.getTime()) { counts[i]++; break; }
+    }
+  }
+
+  const points = buckets.map((b, i) => ({
+    key: b.start.toISOString().slice(0, 10),
+    label: b.label,
+    count: counts[i],
+    start: b.start.toISOString(),
+    end: b.end.toISOString(),
+  }));
+
+  return {
+    range: cfg.key,
+    label: cfg.label,
+    granularity: cfg.granularity,
+    start: startIso,
+    end: endIso,
+    total: counts.reduce((a, b) => a + b, 0),
+    points,
+  };
 }
 
 /**
@@ -1074,6 +1482,891 @@ function deleteSearch(id) {
   return db.prepare('DELETE FROM ai_searches WHERE id = ?').run(id).changes;
 }
 
+/* ------------------------------ 笔记模块 ------------------------------ */
+
+/** sha1 文本摘要：判定笔记内容是否变化（增量索引用） */
+function hashText(s) {
+  return nodeCrypto.createHash('sha1').update(String(s || '')).digest('hex');
+}
+
+/**
+ * 去掉「字体颜色 / 背景高亮」标记：`==文字=={c:#e5484d;bg:#fff3a3}` → `文字`。
+ * 标记只是给渲染层看的，摘要 / 字数 / 检索 / 知识库分块都按纯文本处理，
+ * 否则用户搜「灰度」会因为正文里写着 `{c:#...}` 之类的字符而命中错位。
+ * @param {string} md
+ */
+function stripStyleMarks(md) {
+  return String(md || '').replace(/==([^=\n]+)==(?:\{[^{}\n]*\})?/g, '$1');
+}
+
+/**
+ * Markdown → 纯文本（摘要 / 字数 / 检索都用它）。
+ * @param {string} md
+ * @param {boolean} [keepStyle=false] 保留颜色 / 高亮标记。
+ *   摘要要保留（列表卡片要按原色渲染），字数与检索不要（标记不该被当成正文去匹配）。
+ */
+function plainTextOf(md, keepStyle = false) {
+  return (keepStyle ? String(md || '') : stripStyleMarks(md))
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s{0,3}[-*+]\s+/gm, '')
+    .replace(/^\s{0,3}\d+[.)]\s+/gm, '')
+    .replace(/[*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** 中英混排字数：英文按词、中文按字 */
+function wordCountOf(md) {
+  const plain = plainTextOf(md);
+  const en = (plain.match(/[A-Za-z0-9]+/g) || []).length;
+  const zh = (plain.match(/[\u4e00-\u9fff]/g) || []).length;
+  return en + zh;
+}
+
+/**
+ * 摘要：保留颜色 / 高亮标记（列表卡片要按原色渲染），
+ * 字数 / 检索仍走 plainTextOf 的剥离版本。
+ */
+function excerptOf(md, len = 120) {
+  const plain = plainTextOf(md, true);
+  return plain.length > len ? `${plain.slice(0, len)}…` : plain;
+}
+
+/**
+ * 命中片段（搜索结果高亮用）。
+ * 不用 FTS 的 snippet()：external content 表上调用它会直接报 "SQL logic error"，
+ * 因此在应用层按关键词定位截取——反正列表里本来就有纯文本摘要，开销可忽略。
+ * @returns {{text:string, start:number, hit:boolean}} start 是片段在纯文本里的起始下标
+ */
+function snippetOf(text, keyword, len = 90) {
+  const plain = plainTextOf(text);
+  const kw = String(keyword || '');
+  const i = kw ? plain.toLowerCase().indexOf(kw.toLowerCase()) : -1;
+  if (i < 0) {
+    return { text: plain.length > len ? `${plain.slice(0, len)}…` : plain, start: 0, hit: false };
+  }
+  const start = Math.max(0, i - Math.floor(len / 3));
+  const seg = plain.slice(start, start + len);
+  return {
+    text: `${start > 0 ? '…' : ''}${seg}${start + len < plain.length ? '…' : ''}`,
+    start,
+    hit: true,
+  };
+}
+
+/** 兼容旧调用：只要片段文本 */
+function highlightOf(text, keyword, len = 90) {
+  return snippetOf(text, keyword, len).text;
+}
+
+/** 关键词在文本里出现的次数（不重叠、大小写不敏感） */
+function countMatches(text, keyword) {
+  const kw = String(keyword || '').toLowerCase();
+  if (!kw) return 0;
+  const s = String(text || '').toLowerCase();
+  let n = 0;
+  let i = s.indexOf(kw);
+  while (i >= 0) { n += 1; i = s.indexOf(kw, i + kw.length); }
+  return n;
+}
+
+/* ---------------- 笔记目录 ---------------- */
+
+/** 目录名唯一性作用域 = 同一 parent_id（与分组同名规则一致，不加数据库唯一索引） */
+function folderNameTaken(name, parentId, exceptId = null) {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return false;
+  const row = db
+    .prepare(
+      `SELECT id FROM note_folders
+        WHERE TRIM(LOWER(name)) = ? AND parent_id IS ${parentId == null ? 'NULL' : '?'}
+          AND id IS NOT ${exceptId == null ? 'NULL' : '?'} LIMIT 1`
+    )
+    .get(...[n, parentId, exceptId].filter((v) => v != null));
+  return !!row;
+}
+
+function assertFolderName(name, parentId, exceptId = null) {
+  const n = String(name || '').trim();
+  if (!n) throw new Error('目录名不能为空');
+  if (n.length > 60) throw new Error('目录名不能超过 60 个字符');
+  if (folderNameTaken(n, parentId, exceptId)) throw new Error('同一层级下已存在同名目录');
+  return n;
+}
+
+/** 目录自身 + 所有后代目录 id */
+function descendantFolderIds(id) {
+  const out = [];
+  const stack = [Number(id)];
+  const seen = new Set();
+  while (stack.length) {
+    const cur = stack.pop();
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    out.push(cur);
+    for (const c of db.prepare('SELECT id FROM note_folders WHERE parent_id = ?').all(cur)) stack.push(c.id);
+  }
+  return out;
+}
+
+function listNoteFolders() {
+  return db.prepare('SELECT * FROM note_folders ORDER BY sort_order ASC, id ASC').all();
+}
+
+function getNoteFolder(id) {
+  return db.prepare('SELECT * FROM note_folders WHERE id = ?').get(id) || null;
+}
+
+function createNoteFolder({ name, parentId = null, color = '#4f7cff' } = {}) {
+  assertFolderName(name, parentId, null);
+  if (parentId != null && !getNoteFolder(parentId)) throw new Error('父目录不存在');
+  const now = nowIso();
+  const max = db
+    .prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM note_folders WHERE parent_id IS ?')
+    .get(parentId).m;
+  const info = db
+    .prepare(
+      `INSERT INTO note_folders (name, parent_id, color, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(String(name).trim(), parentId ?? null, normalizeColor(color, '#4f7cff'), max + 1, now, now);
+  return getNoteFolder(info.lastInsertRowid);
+}
+
+function updateNoteFolder(id, { name, color, parentId } = {}) {
+  const cur = getNoteFolder(id);
+  if (!cur) return null;
+  const nextParent = parentId !== undefined ? parentId : cur.parent_id;
+  // 不允许挂到自己或自己的子孙下（否则目录树成环）
+  if (nextParent != null) {
+    if (Number(nextParent) === Number(id)) throw new Error('目录不能挂在自己下面');
+    if (descendantFolderIds(id).includes(Number(nextParent))) throw new Error('目录不能挂到自己的子目录下');
+  }
+  const nextName = name !== undefined ? assertFolderName(name, nextParent, id) : cur.name;
+  db.prepare('UPDATE note_folders SET name = ?, color = ?, parent_id = ?, updated_at = ? WHERE id = ?')
+    .run(nextName, normalizeColor(color !== undefined ? color : cur.color, cur.color), nextParent, nowIso(), id);
+  return getNoteFolder(id);
+}
+
+/**
+ * 删除目录：子目录提升到父级，目录内笔记移到父级（顶级目录内则落到「未分类」）。
+ * 笔记本身不删除——删目录是整理结构，不该顺手删内容。
+ */
+function deleteNoteFolder(id) {
+  const cur = getNoteFolder(id);
+  if (!cur) return false;
+  const run = db.transaction(() => {
+    const parent = cur.parent_id ?? null;
+    db.prepare('UPDATE note_folders SET parent_id = ?, updated_at = ? WHERE parent_id = ?')
+      .run(parent, nowIso(), id);
+    db.prepare('UPDATE notes SET folder_id = ?, updated_at = ? WHERE folder_id = ?')
+      .run(parent, nowIso(), id);
+    db.prepare('DELETE FROM note_folders WHERE id = ?').run(id);
+  });
+  run();
+  return true;
+}
+
+/* ---------------- 笔记 ---------------- */
+
+/** 可写字段白名单（防 SQL 拼接注入） */
+const NOTE_FIELDS = ['folder_id', 'title', 'content_md', 'pinned', 'archived', 'sort_order', 'source', 'source_ref'];
+
+/** 列表不回传正文：列表页只需要摘要，正文由 getNote() 单独取 */
+const NOTE_LIST_COLUMNS = `n.id, n.folder_id, n.title, n.excerpt, n.pinned, n.archived, n.deleted_at,
+  n.word_count, n.content_hash, n.source, n.source_ref, n.sort_order, n.created_at, n.updated_at,
+  n.attachments,
+  (SELECT COUNT(*) FROM task_notes tn WHERE tn.note_id = n.id) AS ref_count`;
+
+/** 给一批笔记挂上 tags 数组与 ref_count（整数化） */
+function attachNoteTags(rows) {
+  if (!rows.length) return rows;
+  const ids = rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
+  const placeholders = ids.map(() => '?').join(',');
+  const tagRows = db
+    .prepare(
+      `SELECT m.note_id, t.id, t.name, t.color
+         FROM note_tag_map m JOIN note_tags t ON t.id = m.tag_id
+        WHERE m.note_id IN (${placeholders}) ORDER BY t.name`
+    )
+    .all(...ids);
+  const map = new Map();
+  for (const r of tagRows) {
+    if (!map.has(r.note_id)) map.set(r.note_id, []);
+    map.get(r.note_id).push({ id: r.id, name: r.name, color: r.color });
+  }
+  // attachments 是 JSON 字符串字段：列表页要用它显示「几张图」，这里统一解析一次
+  return rows.map((r) => ({
+    ...r,
+    tags: map.get(r.id) || [],
+    ref_count: Number(r.ref_count) || 0,
+    attachments: (() => {
+      const v = parseJsonField(r.attachments, []);
+      return Array.isArray(v) ? v : [];
+    })(),
+  }));
+}
+
+/**
+ * 笔记列表。
+ * @param {object} f { folderId, includeSubfolders, archived:'exclude'|'only'|'include',
+ *                     tagId, keyword, deleted:'exclude'|'only'|'include', limit, sort }
+ */
+function listNotes(f = {}) {
+  const folderId = f.folderId === undefined || f.folderId === null ? undefined : Number(f.folderId);
+  const deleted = f.deleted || 'exclude';
+  const archived = f.archived || 'exclude';
+  const where = [];
+  const params = [];
+
+  if (deleted === 'exclude') where.push('n.deleted_at IS NULL');
+  else if (deleted === 'only') where.push('n.deleted_at IS NOT NULL');
+  if (archived === 'exclude') where.push('n.archived = 0');
+  else if (archived === 'only') where.push('n.archived = 1');
+
+  // folderId = 0 表示「未分类」（folder_id IS NULL），与分组筛选里 '__none' 的语义一致
+  if (folderId !== undefined && !Number.isNaN(folderId)) {
+    if (folderId === 0) {
+      where.push('n.folder_id IS NULL');
+    } else if (f.includeSubfolders) {
+      const ids = descendantFolderIds(folderId);
+      where.push(`n.folder_id IN (${ids.map(() => '?').join(',')})`);
+      params.push(...ids);
+    } else {
+      where.push('n.folder_id = ?');
+      params.push(folderId);
+    }
+  }
+  if (f.tagId != null) {
+    where.push('EXISTS (SELECT 1 FROM note_tag_map m WHERE m.note_id = n.id AND m.tag_id = ?)');
+    params.push(Number(f.tagId));
+  }
+  if (f.keyword) {
+    where.push('(n.title LIKE ? OR n.content_md LIKE ?)');
+    params.push(`%${f.keyword}%`, `%${f.keyword}%`);
+  }
+
+  const orderBy =
+    f.sort === 'title' ? 'n.title ASC'
+      : f.sort === 'created' ? 'n.created_at DESC'
+        : 'n.pinned DESC, n.updated_at DESC';
+  const limit = Number(f.limit) > 0 ? Number(f.limit) : 500;
+  const sql = `SELECT ${NOTE_LIST_COLUMNS} FROM notes n
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    ORDER BY ${orderBy} LIMIT ?`;
+  const rows = db.prepare(sql).all(...params, limit);
+  return attachNoteTags(rows);
+}
+
+function getNote(id) {
+  const row = db
+    .prepare(
+      `SELECT n.*, (SELECT COUNT(*) FROM task_notes tn WHERE tn.note_id = n.id) AS ref_count
+         FROM notes n WHERE n.id = ?`
+    )
+    .get(id);
+  return attachNoteTags(row ? [row] : [])[0] || null;
+}
+
+function createNote({ title = '', contentMd = '', folderId = null, tagIds = [], source = 'manual', sourceRef = '' } = {}) {
+  const now = nowIso();
+  const content = String(contentMd || '');
+  const create = db.transaction(() => {
+    const max = db
+      .prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM notes WHERE folder_id IS ?')
+      .get(folderId ?? null).m;
+    const info = db
+      .prepare(
+        `INSERT INTO notes (folder_id, title, content_md, excerpt, word_count, content_hash, source, source_ref, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        folderId ?? null,
+        String(title || '未命名笔记'),
+        content,
+        excerptOf(content),
+        wordCountOf(content),
+        hashText(content),
+        source || 'manual',
+        sourceRef || '',
+        max + 1,
+        now,
+        now
+      );
+    const noteId = info.lastInsertRowid;
+    setNoteTags(noteId, tagIds);
+    return noteId;
+  });
+  return getNote(create());
+}
+
+/** 局部更新笔记：改正文时同步重算摘要 / 字数 / 哈希（增量索引靠哈希判断是否要重建分块） */
+function updateNote(id, patch = {}) {
+  const cur = getNote(id);
+  if (!cur) return null;
+  const keys = Object.keys(patch).filter((k) => NOTE_FIELDS.includes(k));
+  if (keys.length === 0 && !patch.tagIds) return cur;
+
+  const run = db.transaction(() => {
+    if (keys.length) {
+      const sets = keys.map((k) => `${k} = ?`);
+      const values = keys.map((k) => {
+        const v = patch[k];
+        if (k === 'pinned' || k === 'archived') return v ? 1 : 0;
+        if (k === 'folder_id') return v === null || v === undefined || v === 0 ? null : Number(v);
+        if (k === 'sort_order') return Number(v) || 0;
+        return v == null ? '' : String(v);
+      });
+      // 正文变了才重算派生列；只改标题/目录时不动 content_hash，避免无谓重建索引
+      if (patch.content_md !== undefined) {
+        const content = String(patch.content_md || '');
+        sets.push('excerpt = ?', 'word_count = ?', 'content_hash = ?');
+        values.push(excerptOf(content), wordCountOf(content), hashText(content));
+      }
+      db.prepare(`UPDATE notes SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`)
+        .run(...values, nowIso(), id);
+    }
+    if (patch.tagIds) setNoteTags(id, patch.tagIds);
+  });
+  run();
+  return getNote(id);
+}
+
+/** 归档 / 取消归档（归档只是折叠出主列表，内容仍可被检索与引用） */
+function setNoteArchived(id, archived = true) {
+  db.prepare('UPDATE notes SET archived = ?, updated_at = ? WHERE id = ?')
+    .run(archived ? 1 : 0, nowIso(), id);
+  return getNote(id);
+}
+
+/** 置顶 / 取消置顶 */
+function setNotePinned(id, pinned = true) {
+  db.prepare('UPDATE notes SET pinned = ?, updated_at = ? WHERE id = ?')
+    .run(pinned ? 1 : 0, nowIso(), id);
+  return getNote(id);
+}
+
+/**
+ * 软删除（进回收站）：内容与任务关联都保留，恢复后引用自动复原；
+ * 同时从知识库索引里摘掉（回收站里的笔记不该被 AI 检索命中）。
+ */
+function trashNote(id) {
+  const cur = getNote(id);
+  if (!cur) return null;
+  const run = db.transaction(() => {
+    db.prepare('UPDATE notes SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowIso(), nowIso(), id);
+    deleteKbDocBySourceKey(`note:${id}`);
+  });
+  run();
+  return getNote(id);
+}
+
+/** 恢复回收站笔记（知识库索引由上层调用 knowledge.indexNote() 重建） */
+function restoreNote(id) {
+  db.prepare('UPDATE notes SET deleted_at = NULL, updated_at = ? WHERE id = ?').run(nowIso(), id);
+  return getNote(id);
+}
+
+/**
+ * 彻底删除：先摘掉所有任务引用，再删笔记（分块随 kb_documents 级联清除）。
+ * @returns {{noteId:number, unlinkedTasks:number[]}} 被解除引用的任务 id（提示用户用）
+ */
+function purgeNote(id) {
+  const cur = getNote(id);
+  if (!cur) return { noteId: Number(id), unlinkedTasks: [] };
+  const run = db.transaction(() => {
+    const tasks = db.prepare('SELECT task_id FROM task_notes WHERE note_id = ?').all(id).map((r) => r.task_id);
+    db.prepare('DELETE FROM task_notes WHERE note_id = ?').run(id);
+    deleteKbDocBySourceKey(`note:${id}`);
+    db.prepare('DELETE FROM notes WHERE id = ?').run(id);
+    return tasks;
+  });
+  return { noteId: Number(id), unlinkedTasks: run() };
+}
+
+/**
+ * 笔记附件（图片）元数据。
+ * 与 tasks.attachments 同一套约定：库里只存 {id,name,size,mime,path,added_at}，
+ * path 是相对 `attachments/` 的相对路径，文件本体由 main/attachments.js 落盘。
+ */
+function getNoteAttachments(noteId) {
+  const row = db.prepare('SELECT attachments FROM notes WHERE id = ?').get(noteId);
+  const list = parseJsonField(row ? row.attachments : '[]', []);
+  return Array.isArray(list) ? list : [];
+}
+
+/** 覆盖式写回附件列表，返回最新列表 */
+function setNoteAttachments(noteId, list = []) {
+  const arr = Array.isArray(list) ? list : [];
+  db.prepare('UPDATE notes SET attachments = ?, updated_at = ? WHERE id = ?')
+    .run(JSON.stringify(arr), nowIso(), noteId);
+  return arr;
+}
+
+/** 回收站列表（按删除时间倒序） */
+function listTrash() {
+  const rows = db
+    .prepare(
+      `SELECT ${NOTE_LIST_COLUMNS} FROM notes n WHERE n.deleted_at IS NOT NULL
+        ORDER BY n.deleted_at DESC LIMIT 200`
+    )
+    .all();
+  return attachNoteTags(rows);
+}
+
+/** 清空回收站（返回被彻底删除的笔记数） */
+function emptyTrash() {
+  const ids = db.prepare('SELECT id FROM notes WHERE deleted_at IS NOT NULL').all().map((r) => r.id);
+  const run = db.transaction(() => {
+    for (const id of ids) purgeNote(id);
+  });
+  run();
+  return ids.length;
+}
+
+/** 检索列：比列表多取正文——命中片段与匹配次数都要基于正文算（返回前会把正文摘掉） */
+const NOTE_SEARCH_COLUMNS = `${NOTE_LIST_COLUMNS}, n.content_md`;
+
+/**
+ * 全文检索（FTS5 trigram；关键词 < 3 字符时回退 LIKE——trigram 不支持更短的查询）。
+ *
+ * 除了 bm25，这里再补三个界面真正需要的量：
+ * - matchCount：关键词在「标题 + 正文」里的总命中次数（展示「N 处匹配」）；
+ * - titleHit：是否命中标题（找「那篇叫 X 的笔记」时标题命中应优先）；
+ * - snippet / snippetStart：围绕首次命中的原文片段，供界面高亮与溯源；
+ * 最终按「FTS 名次 + 命中次数 + 标题命中」的融合分排序——只用 bm25 时，
+ * 标题完全命中但正文短的笔记会排在正文里关键词刷了一堆的长文后面。
+ *
+ * @returns 笔记列表（含 score / matchCount / titleHit / snippet / snippetStart）
+ */
+function searchNotes(keyword, opts = {}) {
+  const kw = String(keyword || '').trim();
+  if (!kw) return [];
+  const limit = Number(opts.limit) || 50;
+  const deleted = opts.deleted || 'exclude';
+  const archived = opts.archived || 'include';
+
+  const where = [];
+  if (deleted === 'exclude') where.push('n.deleted_at IS NULL');
+  else if (deleted === 'only') where.push('n.deleted_at IS NOT NULL');
+  if (archived === 'exclude') where.push('n.archived = 0');
+  const w = where.length ? ` AND ${where.join(' AND ')}` : '';
+
+  // trigram 查询词至少 3 字符，且要做短语化处理（转义双引号后整体加引号）
+  let rows = null;
+  if (kw.length >= 3) {
+    const phrase = `"${kw.replace(/"/g, '""')}"`;
+    try {
+      rows = db
+        .prepare(
+          `SELECT ${NOTE_SEARCH_COLUMNS}, bm25(notes_fts) AS score
+             FROM notes_fts f JOIN notes n ON n.id = f.rowid
+            WHERE notes_fts MATCH ?${w}
+            ORDER BY score ASC LIMIT ?`
+        )
+        .all(phrase, limit);
+    } catch (e) {
+      // FTS 语句被判为非法（特殊字符等）时静默降级到 LIKE，不让搜索直接崩掉
+      console.warn('[db] 笔记全文检索降级为 LIKE：', e && e.message);
+      rows = null;
+    }
+  }
+  if (!rows || !rows.length) {
+    // trigram 只认连续片段：「灰度 方案」这种带空格 / 换序的输入会直接零命中。
+    // 先退 LIKE（整串），再退模糊词元 —— 保证「实时搜索框里打到一半」也有东西可看。
+    rows = db
+      .prepare(
+        `SELECT ${NOTE_SEARCH_COLUMNS}, 0 AS score FROM notes n
+          WHERE (n.title LIKE ? OR n.content_md LIKE ?)${w}
+          ORDER BY n.pinned DESC, n.updated_at DESC LIMIT ?`
+      )
+      .all(`%${kw}%`, `%${kw}%`, limit);
+  }
+  if (!rows.length) {
+    // 模糊兜底要卡一道覆盖率：只留「至少命中一半词元」的笔记。
+    // 不设门槛的话搜「灰度发布」会把只含「发布」的《发布事故》也捞出来，反而像搜错了。
+    rows = fuzzyNoteRows(kw, { limit, deleted, archived })
+      .filter((r) => (Number(r.fuzzy_hits) || 0) / Math.max(1, Number(r.fuzzy_total) || 1) >= 0.5);
+  }
+
+  const total = rows.length || 1;
+  return attachNoteTags(rows)
+    .map((r, idx) => {
+      const titleHit = countMatches(r.title, kw) > 0;
+      const matchCount = countMatches(r.title, kw) + countMatches(r.content_md, kw);
+      const seg = snippetOf(r.content_md, kw, 110);
+      // 正文没命中（只在标题里）时退化成摘要，避免片段和标题重复
+      const snippet = seg.hit ? seg.text : snippetOf(r.excerpt || r.content_md, '', 110).text;
+      const { content_md: _omit, ...rest } = r;
+      void _omit;
+      return {
+        ...rest,
+        score: ((total - idx) / total) * 0.6
+          + (Math.min(matchCount, 20) / 20) * 0.25
+          + (titleHit ? 0.15 : 0),
+        matchCount,
+        titleHit,
+        snippet,
+        snippetStart: seg.hit ? seg.start : 0,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * 查询 → 模糊检索词元：中文切二元组（没有空格分词，二元组是最划算的字面特征），
+ * 英文 / 数字按词切，整体去重并截断（SQL 里每个词元要占两组 LIKE 参数）。
+ */
+function fuzzyTokens(keyword, max = 8) {
+  const s = String(keyword || '').toLowerCase();
+  const out = [];
+  for (const w of s.match(/[a-z0-9]{2,}/g) || []) out.push(w);
+  // 中文不能用 \W 清洗（\W 在 JS 里匹配所有非 [A-Za-z0-9_] 的字符，汉字也会被当成标点删掉），
+  // 这里只取 CJK 字符做二元组
+  const cjk = (s.match(/[㐀-鿿぀-ヿ]/g) || []).join('');
+  if (cjk.length === 1) out.push(cjk);
+  else for (let i = 0; i < cjk.length - 1; i += 1) out.push(cjk.slice(i, i + 2));
+  return [...new Set(out.filter((x) => x))].slice(0, max);
+}
+
+/**
+ * 模糊检索底层查询：把查询切成词元后逐元 LIKE，按「命中不同词元的个数」打分。
+ * 补 FTS trigram 只认连续片段的盲区 —— 用户搜「灰度 发布策略」，
+ * 库里写的是「灰度发布」，FTS 直接扑空，但词元「灰度 / 发布」能命中。
+ *
+ * @returns 原始行（含 content_md 与 fuzzy_hits / fuzzy_total，供 searchNotes 继续算指标）
+ */
+function fuzzyNoteRows(kw, { limit = 20, deleted = 'exclude', archived = 'include' } = {}) {
+  const tokens = fuzzyTokens(kw);
+  if (!tokens.length) return [];
+  const where = [];
+  if (deleted === 'exclude') where.push('n.deleted_at IS NULL');
+  else if (deleted === 'only') where.push('n.deleted_at IS NOT NULL');
+  if (archived === 'exclude') where.push('n.archived = 0');
+
+  // 每个词元两组参数：WHERE 里一组（命中任一即入选），SELECT 里一组（累加覆盖率）
+  const likePair = '(n.title LIKE ? OR n.content_md LIKE ?)';
+  const conds = tokens.map(() => likePair);
+  const scoreExpr = tokens.map(() => `(CASE WHEN ${likePair} THEN 1 ELSE 0 END)`).join(' + ');
+  const params = [];
+  tokens.forEach((t) => params.push(`%${t}%`, `%${t}%`));
+
+  return db
+    .prepare(
+      `SELECT ${NOTE_SEARCH_COLUMNS}, (${scoreExpr}) AS fuzzy_hits, ${tokens.length} AS fuzzy_total
+         FROM notes n
+        WHERE (${conds.join(' OR ')})${where.length ? ` AND ${where.join(' AND ')}` : ''}
+        ORDER BY fuzzy_hits DESC, n.updated_at DESC LIMIT ?`
+    )
+    .all(...params, ...params, limit);
+}
+
+/**
+ * 模糊检索（对外）。
+ * @returns 笔记列表（含 fuzzyScore：0~1 的词元覆盖率）
+ */
+function fuzzySearchNotes(keyword, opts = {}) {
+  const kw = String(keyword || '').trim();
+  if (!kw) return [];
+  const rows = fuzzyNoteRows(kw, {
+    limit: Number(opts.limit) || 20,
+    deleted: opts.deleted || 'exclude',
+    archived: opts.archived || 'include',
+  });
+  return attachNoteTags(rows).map((r) => {
+    const { content_md: _omit, ...rest } = r;
+    void _omit;
+    return { ...rest, fuzzyScore: (Number(r.fuzzy_hits) || 0) / Math.max(1, Number(r.fuzzy_total) || 1) };
+  });
+}
+
+/* ---------------- 笔记标签 ---------------- */
+
+function listNoteTags() {
+  return db
+    .prepare(
+      `SELECT t.*, (SELECT COUNT(*) FROM note_tag_map m WHERE m.tag_id = t.id) AS note_count
+         FROM note_tags t ORDER BY t.name`
+    )
+    .all();
+}
+
+function createNoteTag(name, color = '#8896ab') {
+  const n = String(name || '').trim();
+  if (!n) throw new Error('标签名不能为空');
+  const exist = db.prepare('SELECT * FROM note_tags WHERE name = ?').get(n);
+  if (exist) return exist; // 与任务标签一致：同名即复用
+  const info = db
+    .prepare('INSERT INTO note_tags (name, color) VALUES (?, ?)')
+    .run(n, normalizeColor(color, '#8896ab'));
+  return db.prepare('SELECT * FROM note_tags WHERE id = ?').get(info.lastInsertRowid);
+}
+
+function deleteNoteTag(id) {
+  return db.prepare('DELETE FROM note_tags WHERE id = ?').run(id).changes;
+}
+
+function setNoteTags(noteId, tagIds) {
+  const ids = Array.isArray(tagIds) ? tagIds.map(Number).filter((n) => Number.isFinite(n)) : [];
+  const run = db.transaction(() => {
+    db.prepare('DELETE FROM note_tag_map WHERE note_id = ?').run(noteId);
+    const ins = db.prepare('INSERT OR IGNORE INTO note_tag_map (note_id, tag_id) VALUES (?, ?)');
+    for (const tid of ids) ins.run(noteId, tid);
+  });
+  run();
+}
+
+/** 按名字批量解析标签 id（不存在的自动创建），与任务标签的 resolveTagIds 行为一致 */
+function resolveNoteTagIds(names) {
+  const list = Array.isArray(names) ? names : String(names || '').split(/[,，\s]+/);
+  const ids = [];
+  for (const raw of list) {
+    const n = String(raw || '').trim();
+    if (!n) continue;
+    ids.push(createNoteTag(n).id);
+  }
+  return ids;
+}
+
+/* ---------------- 任务 ↔ 笔记（多对多） ---------------- */
+
+function listTaskNotes(taskId) {
+  const rows = db
+    .prepare(
+      `SELECT ${NOTE_LIST_COLUMNS} FROM notes n
+         JOIN task_notes tn ON tn.note_id = n.id
+        WHERE tn.task_id = ?
+        ORDER BY tn.created_at ASC, n.id ASC`
+    )
+    .all(taskId);
+  return attachNoteTags(rows);
+}
+
+/** 引用了某篇笔记的任务（删除前给用户看影响面） */
+function listNoteTasks(noteId) {
+  return db
+    .prepare(
+      `SELECT t.id, t.title, t.completed, t.archived, t.group_id
+         FROM task_notes tn JOIN tasks t ON t.id = tn.task_id
+        WHERE tn.note_id = ? ORDER BY t.completed ASC, t.id DESC`
+    )
+    .all(noteId);
+}
+
+function linkTaskNote(taskId, noteId) {
+  if (!db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId)) throw new Error('任务不存在');
+  const note = getNote(noteId);
+  if (!note) throw new Error('笔记不存在');
+  if (note.deleted_at) throw new Error('笔记在回收站里，请先恢复再引用');
+  db.prepare('INSERT OR IGNORE INTO task_notes (task_id, note_id, created_at) VALUES (?, ?, ?)')
+    .run(Number(taskId), Number(noteId), nowIso());
+  return listTaskNotes(taskId);
+}
+
+function unlinkTaskNote(taskId, noteId) {
+  db.prepare('DELETE FROM task_notes WHERE task_id = ? AND note_id = ?').run(Number(taskId), Number(noteId));
+  return listTaskNotes(taskId);
+}
+
+/** 全量覆盖式设置某任务引用的笔记（详情面板勾选后一次提交） */
+function setTaskNotes(taskId, noteIds) {
+  const ids = (Array.isArray(noteIds) ? noteIds : []).map(Number).filter((n) => Number.isFinite(n));
+  const run = db.transaction(() => {
+    db.prepare('DELETE FROM task_notes WHERE task_id = ?').run(Number(taskId));
+    const ins = db.prepare('INSERT OR IGNORE INTO task_notes (task_id, note_id, created_at) VALUES (?, ?, ?)');
+    const exists = db.prepare('SELECT id FROM notes WHERE id = ? AND deleted_at IS NULL');
+    for (const nid of ids) {
+      if (exists.get(nid)) ins.run(Number(taskId), nid, nowIso());
+    }
+  });
+  run();
+  return listTaskNotes(taskId);
+}
+
+/** 一批任务的笔记引用数量（列表页徽标用，避免 N 次查询） */
+function noteCountsForTasks(taskIds) {
+  const ids = (Array.isArray(taskIds) ? taskIds : []).map(Number).filter((n) => Number.isFinite(n));
+  const out = {};
+  if (!ids.length) return out;
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `SELECT tn.task_id, COUNT(*) AS c FROM task_notes tn
+         JOIN notes n ON n.id = tn.note_id AND n.deleted_at IS NULL
+        WHERE tn.task_id IN (${placeholders}) GROUP BY tn.task_id`
+    )
+    .all(...ids);
+  for (const r of rows) out[r.task_id] = Number(r.c) || 0;
+  return out;
+}
+
+/* ---------------- 知识库沉淀（笔记 → 文档 → 分块） ---------------- */
+
+function listKnowledgeBases() {
+  return db.prepare('SELECT * FROM knowledge_bases ORDER BY sort_order ASC, id ASC').all();
+}
+
+function getKnowledgeBase(id) {
+  return db.prepare('SELECT * FROM knowledge_bases WHERE id = ?').get(id) || null;
+}
+
+/** 内置笔记库（固定 id=1）；库缺失时（例如手工改库）自动补回 */
+function ensureNotesKb() {
+  const kb = getKnowledgeBase(1);
+  if (kb) return kb;
+  const now = nowIso();
+  db.prepare(
+    `INSERT OR IGNORE INTO knowledge_bases (id, name, type, icon, color, source_json, enabled, status, created_at, updated_at)
+     VALUES (1, '笔记知识库', 'notes', '📝', '#4f7cff', '{}', 1, 'ready', ?, ?)`
+  ).run(now, now);
+  return getKnowledgeBase(1);
+}
+
+/**
+ * 写入 / 更新一篇文档（笔记 → 知识库文档的映射入口）。
+ * @returns 文档行
+ */
+function upsertKbDocument({ kbId = 1, sourceKey, title = '', kind = 'md', size = 0, contentHash = '', status = 'indexed' } = {}) {
+  if (!sourceKey) throw new Error('sourceKey 不能为空');
+  const now = nowIso();
+  db.prepare(
+    `INSERT INTO kb_documents (kb_id, source_key, title, kind, size, fingerprint, content_hash, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(kb_id, source_key) DO UPDATE SET
+       title = excluded.title, kind = excluded.kind, size = excluded.size,
+       fingerprint = excluded.fingerprint, content_hash = excluded.content_hash,
+       status = excluded.status, error = '', updated_at = excluded.updated_at`
+  ).run(kbId, String(sourceKey), title || '未命名', kind, Number(size) || 0, contentHash, contentHash, status, now, now);
+  return db.prepare('SELECT * FROM kb_documents WHERE kb_id = ? AND source_key = ?').get(kbId, String(sourceKey));
+}
+
+/**
+ * 全量替换某文档的分块（先删后插，FTS 由触发器同步）。
+ * @param {number} docId
+ * @param {Array<{ord:number,kind:string,headingPath:string,content:string}>} chunks
+ */
+function replaceKbChunks(docId, chunks = []) {
+  const kbId = db.prepare('SELECT kb_id FROM kb_documents WHERE id = ?').get(docId)?.kb_id || 1;
+  const run = db.transaction(() => {
+    db.prepare('DELETE FROM kb_chunks WHERE doc_id = ?').run(docId);
+    const ins = db.prepare(
+      `INSERT INTO kb_chunks (kb_id, doc_id, ord, kind, heading_path, content, content_hash, token_est, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const now = nowIso();
+    chunks.forEach((c, i) => {
+      const content = String(c.content || '').trim();
+      if (!content) return;
+      ins.run(
+        kbId, docId, Number.isFinite(c.ord) ? c.ord : i,
+        c.kind || 'body', c.headingPath || '', content,
+        hashText(content), Math.ceil(content.length / 2), now
+      );
+    });
+  });
+  run();
+  syncKbCounts(kbId);
+  return db.prepare('SELECT COUNT(*) c FROM kb_chunks WHERE doc_id = ?').get(docId).c;
+}
+
+/** 删除文档（分块随外键级联；笔记进回收站 / 彻底删除时调用） */
+function deleteKbDocBySourceKey(sourceKey) {
+  const row = db.prepare('SELECT id, kb_id FROM kb_documents WHERE source_key = ?').get(String(sourceKey));
+  if (!row) return false;
+  db.prepare('DELETE FROM kb_documents WHERE id = ?').run(row.id);
+  syncKbCounts(row.kb_id);
+  return true;
+}
+
+/** 回写知识库文档数 / 分块数（管理面板展示用） */
+function syncKbCounts(kbId) {
+  const doc = db.prepare('SELECT COUNT(*) c FROM kb_documents WHERE kb_id = ?').get(kbId).c;
+  const chunk = db.prepare(
+    `SELECT COUNT(*) c FROM kb_chunks WHERE kb_id = ?`
+  ).get(kbId).c;
+  db.prepare('UPDATE knowledge_bases SET doc_count = ?, chunk_count = ?, updated_at = ? WHERE id = ?')
+    .run(doc, chunk, nowIso(), kbId);
+  return { doc_count: doc, chunk_count: chunk };
+}
+
+/**
+ * 知识库检索（AI 提问的召回入口）。
+ * @param {{query:string, kbId?:number, topK?:number}} opts
+ * @returns {Array<{chunkId:number, docId:number, kbId:number, sourceKey:string, noteId:number|null,
+ *                  title:string, headingPath:string, content:string, snippet:string, score:number}>}
+ */
+function searchKbChunks({ query, kbId = 1, topK = 8 } = {}) {
+  const kw = String(query || '').trim();
+  if (!kw) return [];
+  const k = Number(topK) > 0 ? Number(topK) : 8;
+  if (kw.length >= 3) {
+    try {
+      return db
+        .prepare(
+          // 注意：external content 表上不能用 snippet()（会报 SQL logic error），摘要在应用层截取
+          `SELECT c.id AS chunkId, c.doc_id AS docId, c.kb_id AS kbId, c.ord, c.heading_path AS headingPath,
+                  c.content, d.source_key AS sourceKey, d.title,
+                  bm25(kb_chunks_fts) AS score, '' AS snippet
+             FROM kb_chunks_fts f
+             JOIN kb_chunks c ON c.id = f.rowid
+             JOIN kb_documents d ON d.id = c.doc_id
+            WHERE kb_chunks_fts MATCH ? AND c.kb_id = ?
+            ORDER BY score ASC LIMIT ?`
+        )
+        .all(`"${kw.replace(/"/g, '""')}"`, kbId, k);
+    } catch (e) {
+      console.warn('[db] 知识库检索降级为 LIKE：', e && e.message);
+    }
+  }
+  return db
+    .prepare(
+      `SELECT c.id AS chunkId, c.doc_id AS docId, c.kb_id AS kbId, c.ord, c.heading_path AS headingPath,
+              c.content, d.source_key AS sourceKey, d.title, 0 AS score, '' AS snippet
+         FROM kb_chunks c JOIN kb_documents d ON d.id = c.doc_id
+        WHERE c.kb_id = ? AND c.content LIKE ?
+        ORDER BY c.id DESC LIMIT ?`
+    )
+    .all(kbId, `%${kw}%`, k);
+}
+
+/**
+ * 取某篇笔记（source_key='note:<id>'）的分块，供「笔记级命中 → 取它的块」这条召回路线用。
+ * @param {string} sourceKey
+ * @param {number} limit 每篇最多取几个块
+ */
+function listKbChunksBySourceKey(sourceKey, limit = 3) {
+  const k = Number(limit) > 0 ? Number(limit) : 3;
+  return db
+    .prepare(
+      `SELECT c.id AS chunkId, c.doc_id AS docId, c.kb_id AS kbId, c.ord, c.heading_path AS headingPath,
+              c.content, d.source_key AS sourceKey, d.title, 0 AS score, '' AS snippet
+         FROM kb_chunks c JOIN kb_documents d ON d.id = c.doc_id
+        WHERE d.source_key = ?
+        ORDER BY c.ord ASC LIMIT ?`
+    )
+    .all(String(sourceKey || ''), k);
+}
+
+/** 知识库统计（管理面板 / 设置页展示） */
+function kbStats(kbId = 1) {
+  const kb = getKnowledgeBase(kbId);
+  if (!kb) return null;
+  const notes = db.prepare('SELECT COUNT(*) c FROM notes WHERE deleted_at IS NULL').get().c;
+  const indexed = db.prepare('SELECT COUNT(*) c FROM kb_documents WHERE kb_id = ? AND status = ?').get(kbId, 'indexed')?.c || 0;
+  return {
+    ...kb,
+    doc_count: Number(kb.doc_count) || 0,
+    chunk_count: Number(kb.chunk_count) || 0,
+    note_count: Number(notes) || 0,
+    indexed_note_count: Number(indexed) || 0,
+  };
+}
+
 /* ------------------------------ 数据导入导出 ------------------------------ */
 
 /**
@@ -1083,7 +2376,7 @@ function deleteSearch(id) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 7,
+    schemaVersion: 11,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
@@ -1092,6 +2385,14 @@ function exportData() {
     meetings: db.prepare('SELECT * FROM meetings ORDER BY id').all(),
     reports: db.prepare('SELECT * FROM reports ORDER BY id').all(),
     ai_searches: db.prepare('SELECT * FROM ai_searches ORDER BY id').all(),
+    // 笔记模块：正文随备份走；知识库分块（kb_documents / kb_chunks / kb_vectors）是派生数据，
+    // 可由 notes 重建，因此不导出——与「备份不含 API Key」同一思路，避免备份体积翻倍。
+    note_folders: db.prepare('SELECT * FROM note_folders ORDER BY id').all(),
+    notes: db.prepare('SELECT * FROM notes ORDER BY id').all(),
+    note_tags: db.prepare('SELECT * FROM note_tags ORDER BY id').all(),
+    note_tag_map: db.prepare('SELECT * FROM note_tag_map ORDER BY note_id').all(),
+    task_notes: db.prepare('SELECT * FROM task_notes ORDER BY task_id').all(),
+    knowledge_bases: db.prepare('SELECT * FROM knowledge_bases ORDER BY id').all(),
     settings: db
       .prepare('SELECT * FROM settings WHERE key NOT LIKE ?')
       .all('ai.apiKey%'),
@@ -1117,6 +2418,13 @@ function importData(data) {
     db.prepare('DELETE FROM meetings').run();
     db.prepare('DELETE FROM reports').run();
     db.prepare('DELETE FROM ai_searches').run();
+    db.prepare('DELETE FROM task_notes').run();
+    db.prepare('DELETE FROM note_tag_map').run();
+    db.prepare('DELETE FROM notes').run();
+    db.prepare('DELETE FROM note_tags').run();
+    db.prepare('DELETE FROM note_folders').run();
+    db.prepare('DELETE FROM kb_documents').run(); // 分块随外键级联清除，导入后由上层重建索引
+    db.prepare('DELETE FROM knowledge_bases').run();
 
     const t0 = nowIso();
     // 分两步写分组：先不带 parent_id（外键约束下，父分组未必已先插入），再回填层级
@@ -1198,20 +2506,87 @@ function importData(data) {
         jsonOf(s.tasks), s.degraded ? 1 : 0, s.created_at || t0
       );
     }
+
+    // 笔记目录：与分组同样的两步写法（先不带 parent_id，再回填），避免外键顺序问题
+    const insFolder = db.prepare(
+      'INSERT INTO note_folders (id, name, parent_id, color, sort_order, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, ?, ?)'
+    );
+    const folderParents = [];
+    for (const f of data.note_folders || []) {
+      insFolder.run(f.id, f.name, f.color || '#4f7cff', f.sort_order ?? 0, f.created_at || t0, f.updated_at || t0);
+      if (f.parent_id != null) folderParents.push([f.parent_id, f.id]);
+    }
+    const setFolderParent = db.prepare('UPDATE note_folders SET parent_id = ? WHERE id = ?');
+    for (const [pid, fid] of folderParents) {
+      setFolderParent.run(getNoteFolder(pid) ? pid : null, fid); // 父目录缺失 → 降级为顶层
+    }
+
+    const insNoteTag = db.prepare('INSERT INTO note_tags (id, name, color) VALUES (?, ?, ?)');
+    for (const t of data.note_tags || []) {
+      insNoteTag.run(t.id, t.name, t.color || '#8896ab');
+    }
+
+    const insNote = db.prepare(
+      `INSERT INTO notes (id, folder_id, title, content_md, excerpt, pinned, archived, deleted_at,
+         word_count, content_hash, source, source_ref, sort_order, attachments, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const n of data.notes || []) {
+      const content = n.content_md || '';
+      insNote.run(
+        n.id, n.folder_id ?? null, n.title || '未命名笔记', content,
+        n.excerpt || excerptOf(content), n.pinned ? 1 : 0, n.archived ? 1 : 0, n.deleted_at ?? null,
+        Number(n.word_count) || wordCountOf(content), n.content_hash || hashText(content),
+        n.source || 'manual', n.source_ref || '', n.sort_order ?? 0,
+        n.attachments || '[]',
+        n.created_at || t0, n.updated_at || t0
+      );
+    }
+
+    const insNoteTagMap = db.prepare('INSERT OR IGNORE INTO note_tag_map (note_id, tag_id) VALUES (?, ?)');
+    for (const m of data.note_tag_map || []) insNoteTagMap.run(m.note_id, m.tag_id);
+
+    // 任务 ↔ 笔记：只写入两端都存在的关联（笔记/任务缺失时静默丢弃，不让整份备份导入失败）
+    const insTaskNote = db.prepare('INSERT OR IGNORE INTO task_notes (task_id, note_id, created_at) VALUES (?, ?, ?)');
+    const noteExists = db.prepare('SELECT id FROM notes WHERE id = ?');
+    const taskExists = db.prepare('SELECT id FROM tasks WHERE id = ?');
+    for (const tn of data.task_notes || []) {
+      if (noteExists.get(tn.note_id) && taskExists.get(tn.task_id)) {
+        insTaskNote.run(tn.task_id, tn.note_id, tn.created_at || t0);
+      }
+    }
+
+    const insKb = db.prepare(
+      `INSERT INTO knowledge_bases (id, name, type, icon, color, source_json, enabled, status, last_error,
+         doc_count, chunk_count, embed_model, embed_dim, sort_order, last_sync_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const k of data.knowledge_bases || []) {
+      insKb.run(
+        k.id, k.name || '知识库', k.type || 'notes', k.icon || '📚', k.color || '#4f7cff',
+        k.source_json || '{}', k.enabled == null ? 1 : (k.enabled ? 1 : 0), k.status || 'idle',
+        k.last_error || '', k.embed_model || '', Number(k.embed_dim) || 0,
+        Number(k.sort_order) || 0, k.last_sync_at ?? null, k.created_at || t0, k.updated_at || t0
+      );
+    }
   });
   run();
   seedDefaults(); // 若文件不含分组，补默认分组
+  ensureNotesKb(); // 备份里没有知识库记录时补回内置「笔记知识库」
 
   return {
     groups: db.prepare('SELECT COUNT(*) c FROM groups').get().c,
     tags: db.prepare('SELECT COUNT(*) c FROM tags').get().c,
     tasks: db.prepare('SELECT COUNT(*) c FROM tasks').get().c,
+    notes: db.prepare('SELECT COUNT(*) c FROM notes').get().c,
   };
 }
 
 module.exports = {
   init,
   getDb,
+  getDbPath,
+  backupTo,
   isReady,
   getInitError,
   close,
@@ -1231,6 +2606,8 @@ module.exports = {
   createTask,
   updateTask,
   deleteTask,
+  subtreeTaskIds,
+  setAttachments,
   toggleTask,
   listSubtasks,
   searchTasks,
@@ -1248,6 +2625,9 @@ module.exports = {
   // stats
   overview,
   dailyTrend,
+  TREND_RANGES,
+  DEFAULT_TREND_RANGE,
+  normalizeTrendRange,
   rangeStats,
   // settings
   getSetting,
@@ -1269,6 +2649,60 @@ module.exports = {
   listSearches,
   getSearch,
   deleteSearch,
+  // 笔记模块
+  listNoteFolders,
+  getNoteFolder,
+  createNoteFolder,
+  updateNoteFolder,
+  deleteNoteFolder,
+  descendantFolderIds,
+  listNotes,
+  getNote,
+  createNote,
+  updateNote,
+  setNoteArchived,
+  setNotePinned,
+  trashNote,
+  restoreNote,
+  purgeNote,
+  getNoteAttachments,
+  setNoteAttachments,
+  listTrash,
+  emptyTrash,
+  searchNotes,
+  fuzzySearchNotes,
+  fuzzyTokens,
+  snippetOf,
+  stripStyleMarks,
+  countMatches,
+  listNoteTags,
+  createNoteTag,
+  deleteNoteTag,
+  setNoteTags,
+  resolveNoteTagIds,
+  // 任务 ↔ 笔记
+  listTaskNotes,
+  listNoteTasks,
+  linkTaskNote,
+  unlinkTaskNote,
+  setTaskNotes,
+  noteCountsForTasks,
+  // 知识库沉淀
+  listKnowledgeBases,
+  getKnowledgeBase,
+  ensureNotesKb,
+  upsertKbDocument,
+  replaceKbChunks,
+  deleteKbDocBySourceKey,
+  syncKbCounts,
+  searchKbChunks,
+  listKbChunksBySourceKey,
+  kbStats,
+  // 文本工具（分块 / 摘要复用）
+  plainTextOf,
+  wordCountOf,
+  excerptOf,
+  hashText,
   // import / export
   exportData,
   importData,

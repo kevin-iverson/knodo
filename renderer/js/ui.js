@@ -6,16 +6,24 @@
  * 原地展开编辑器；“计划开始日期 / 计划完成日期”直接放在新增行主表单中填写。
  */
 import { api, localToIso, isoToLocal, fmtDateTime, PRIORITY_TEXT, PRIORITY_COLOR } from './api.js';
-import { state, loadGroups, loadTags, loadTasks, refreshAll, todayStr, noteCompletionChange, clearRecentlyDone, initRecentlyDone } from './store.js';
+import {
+  state, loadGroups, loadTags, loadTasks, refreshAll, todayStr,
+  noteCompletionChange, clearRecentlyDone, initRecentlyDone,
+  taskGroupKey, initCollapsedTaskGroups, toggleTaskGroup,
+} from './store.js';
 import { renderReports } from './reports.js';
 import { openDetail, setDetailHandlers } from './detail.js';
 import { renderSearch, setSearchHandlers } from './search.js';
 import { openPromptModal, openFormModal, openPanelModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOptionsHtml } from './group-tree.js';
-import { bindAiSettingsButton, setAiSettingsHandlers } from './ai-settings.js';
+import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
+import { renderNotes, setNotesHandlers, createNote, disposeNotes } from './notes.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
+import { openSalaryModal, setSalaryHandlers } from './salary.js';
+import { bindImageZoom } from './image-zoom.js';
+import { initSidebarResize } from './sidebar-resize.js';
 
 /** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
 const AUTO_SAVE_DELAY = 700;
@@ -48,6 +56,7 @@ const VIEW_META = {
   reports: { title: 'AI 报告', desc: '基于本地数据自动生成日报 / 周报 / 月报' },
   search: { title: 'AI 检索', desc: '输入关键词检索任务，由 AI 生成总结' },
   meetings: { title: '会议纪要', desc: '录制 / 导入会议音频 → 语音转写 → AI 纪要 → 待办入库' },
+  notes: { title: '笔记', desc: 'Markdown 笔记 → 按目录 / 标签沉淀为知识库，可关联到任务并供 AI 检索' },
 };
 
 /** 会展示任务列表、因而消费分组/标签筛选的视图 */
@@ -74,6 +83,19 @@ export async function init() {
   setSearchHandlers({ openDetail, toast });
   // 会议录制 / 纪要：录制归档后自动跳到会议视图查看
   setMeetingsHandlers({ toast, refresh: () => { renderSidebar(); renderTasks(); } });
+  // 笔记视图：切走时销毁编辑器自动保存器（否则拿着已销毁的 DOM 继续写库）
+  setNotesHandlers({
+    toast,
+    // 走 render() 而不是 renderTasks()：#view 是共享容器，直接渲染任务列表会把笔记视图整块冲掉
+    refresh: () => { renderSidebar(); render(); },
+    switchView: async () => { state.view = 'notes'; renderSidebar(); await render(); },
+  });
+  api.on('ui:new-note', async () => {
+    state.view = 'notes';
+    renderSidebar();
+    await render();
+    await createNote();
+  });
   setRecorderHandlers({
     toast,
     onMeetingSaved: async (m) => {
@@ -88,11 +110,17 @@ export async function init() {
     },
   });
   bindStaticEvents();
+  // 图片双击放大：事件委托挂在 document 上，动态重绘出来的图片自动生效
+  bindImageZoom();
+  // 侧边栏宽度：读取上次保存值并绑定拖拽（不阻塞首屏渲染）
+  initSidebarResize().catch((e) => console.warn('[ui] 侧边栏宽度初始化失败', e && e.message));
   await initTheme();
   // 恢复上次退出时的标签筛选（重启后仍保持选中态）
   state.currentTag = await api.ui.getTagFilter();
   // 恢复「今日已完成」：切走再回来、或重启应用，今天完成的那些任务仍然留在今天列表里
   await initRecentlyDone();
+  // 恢复任务列表里被折叠的分组
+  await initCollapsedTaskGroups();
   await renderSidebar();
   await render();
 }
@@ -114,9 +142,14 @@ function bindStaticEvents() {
   // 分组 / 标签新增
   document.getElementById('btn-add-group').addEventListener('click', () => promptAddGroup());
   document.getElementById('btn-add-tag').addEventListener('click', promptAddTag);
-  // AI 配置（原在「AI 报告」页内的配置面板，提到工具栏统一管理）
+  // AI 配置（原在「AI 报告」页内的配置面板；现统一从顶部菜单栏「AI 设置」打开）
   setAiSettingsHandlers({ toast, onChanged: () => { renderSidebarList(); } });
-  bindAiSettingsButton();
+  listenAiSettingsMenu();
+  // 实用工具 → 实时薪资（顶部菜单栏入口）
+  setSalaryHandlers({ toast });
+  api.on('ui:salary', () => {
+    openSalaryModal().catch((e) => toast(`打开实时薪资失败：${(e && e.message) || e}`));
+  });
   // 会议录制（工具栏按钮）
   bindRecordButton();
 
@@ -177,7 +210,7 @@ function bindStaticEvents() {
   // 主题
   document.getElementById('btn-theme').addEventListener('click', toggleTheme);
 
-  // 主进程事件：托盘/快捷键“快速添加” → 展开底部编辑器
+  // 主进程事件：托盘菜单“快速添加” → 展开底部编辑器
   api.on('ui:quick-add', () => {
     ensureTaskView();
     startAdd();
@@ -258,15 +291,29 @@ function ensureTaskView() {
 
 /* ---------------- 渲染入口 ---------------- */
 
+let lastView = null;
+/** 任务 id → 关联笔记数（renderTasks 批量拉取，列表徽标用） */
+let noteCounts = {};
+
 async function render() {
+  // 离开笔记视图时销毁编辑器：整页 innerHTML 重建后，旧的自动保存器会继续写库
+  if (lastView === 'notes' && state.view !== 'notes') disposeNotes();
+  lastView = state.view;
   const meta = VIEW_META[state.view] || VIEW_META.all;
   document.getElementById('view-title').textContent = meta.title;
   document.getElementById('view-desc').textContent = meta.desc;
+  // 统计 / AI 报告 / AI 检索 / 会议纪要不是任务列表：搜索框、工具按钮与筛选栏都用不上，
+  // 整排隐藏（[hidden] 已有 display:none !important），把纵向空间还给内容区
+  const isTaskView = TASK_VIEWS.includes(state.view);
+  document.querySelector('.topbar-right').hidden = !isTaskView;
+  document.getElementById('filter-bar').hidden = !isTaskView;
+  if (!isTaskView) document.getElementById('time-filter').hidden = true;
   renderTagFilterChip();
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
   if (state.view === 'search') { renderSearch(); return; }
   if (state.view === 'meetings') { await renderMeetings(); return; }
+  if (state.view === 'notes') { await renderNotes(); return; }
   await renderTasks();
 }
 
@@ -331,13 +378,15 @@ function renderSidebarList() {
       <span class="group-name">${esc(g.name)}</span>
       <span class="group-count" title="含子分组的任务数">${g.total_count ?? g.active_count ?? 0}</span>
       <span class="group-actions">
-        <button class="g-add" title="新增子分组" data-act="add-sub">＋</button>
+        <button class="g-task-add" title="在此分组下新增任务" data-act="add-task">＋</button>
+        <button class="g-add" title="新增子分组" data-act="add-sub">⊞</button>
         <button class="g-edit" title="编辑" data-act="edit">✎</button>
         <button class="g-del" title="删除" data-act="del">×</button>
       </span>`;
     // 有子分组且未展开 → 折叠时子项不渲染（由 flattenGroupTree 的可见性过滤保证）
     li.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'add-task') { e.stopPropagation(); return addTaskToGroup(g.id); }
       if (act === 'add-sub') { e.stopPropagation(); return promptAddGroup(g.id); }
       if (act === 'edit') { e.stopPropagation(); return editGroup(g); }
       if (act === 'del') { e.stopPropagation(); return deleteGroup(g); }
@@ -433,6 +482,8 @@ async function renderTasks() {
   // 展开的子节点可能被当前视图 / 筛选条件过滤掉（例如「今天」视图要求 plan_end <= 今天，
   // 而子任务往往没有日期）。为保证"点得开、看得见"，显式补拉已展开任务的子任务。
   await withExpandedChildren(tasks);
+  // 关联笔记数量：一次批量查询（避免每行一次 IPC）
+  noteCounts = await api.taskNotes.counts(tasks.map((t) => t.id)).catch(() => ({}));
   const viewEl = document.getElementById('view');
   const isArchived = state.view === 'archived';
   const hasFilters = state.currentGroup !== 'all' || !!state.search || state.priorityFilter !== 'all' || hasTimeFilter();
@@ -469,8 +520,18 @@ async function renderTasks() {
       const g = state.groups.find((x) => x.id === gid);
       const gName = g ? g.name : '未分组';
       const gColor = g ? g.color : '#c3cad6';
-      html += `<div class="task-group-head"><span class="g-dot" style="background:${esc(gColor)}"></span>${esc(gName)}</div>`;
-      html += buildTaskList(flattenTree(items));
+      const key = taskGroupKey(gid);
+      const collapsed = state.collapsedTaskGroups.has(key);
+      // 分组头本身就是折叠开关：点一下展开 / 收起，状态按分组独立记忆
+      html += `<button type="button" class="task-group-head${collapsed ? ' is-collapsed' : ''}" data-act="toggle-task-group"
+        data-group="${esc(key)}" aria-expanded="${!collapsed}"
+        title="${collapsed ? '展开' : '收起'}「${esc(gName)}」的 ${items.length} 个任务">
+        <span class="group-toggle">${collapsed ? '▸' : '▾'}</span>
+        <span class="g-dot" style="background:${esc(gColor)}"></span>
+        <span class="tg-name">${esc(gName)}</span>
+        <span class="tg-count">${items.length}</span>
+      </button>`;
+      if (!collapsed) html += buildTaskList(flattenTree(items));
     }
   }
 
@@ -478,6 +539,10 @@ async function renderTasks() {
   if (!isArchived) {
     html += state.addingTask ? newEditorHtml() : addRowHtml();
   }
+
+  // 编辑器被整块替换前先回收它的自动保存器：换 innerHTML 不会取消已排队的防抖计时器，
+  // 旧保存器会拿着已销毁的 DOM 继续写库（可能把别的任务刚改过的值覆盖回去）。
+  disposeEditorSavers(viewEl);
 
   viewEl.innerHTML = html;
   const hideDoneBtn = viewEl.querySelector('[data-act="hide-done"]');
@@ -490,6 +555,22 @@ async function renderTasks() {
   bindTaskListEvents(viewEl);
   bindEditorEvents(viewEl);
   if (state.addingTask || state.editingTaskId != null) focusEditor();
+}
+
+/**
+ * 回收视图内就地编辑器的自动保存器（先 flush 落库，再 dispose 取消计时器）。
+ * 与详情抽屉同一套规则：只换 innerHTML 不等于保存器消失。
+ */
+function disposeEditorSavers(root) {
+  root.querySelectorAll('.task-editor').forEach((ed) => {
+    const saver = ed && ed.__autoSave;
+    if (!saver) return;
+    try {
+      const p = saver.flush();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (_e) { /* 回收阶段不抛错 */ }
+    try { saver.dispose(); } catch (_e) { /* 同上 */ }
+  });
 }
 
 function groupBy(arr, keyFn) {
@@ -552,7 +633,11 @@ function compareTasks(a, b) {
   return a.id - b.id;
 }
 
-/** 将任务数组组织为树并按“父任务→子任务（缩进）”展平 */
+/**
+ * 将任务数组组织为树并按“父任务→子任务（缩进）”展平。
+ * 注意：父任务被筛选掉时子任务仍会作为一个 roots 渲染（只是缩进 0、没有父行），
+ * 所以节点上额外带一个 parentVisible 标记，供行内决定父任务提示是"纯标识"还是"可点链接"。
+ */
 function flattenTree(tasks) {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const children = new Map();
@@ -566,20 +651,23 @@ function flattenTree(tasks) {
     }
   }
   const result = [];
-  const walk = (t, depth) => {
-    result.push({ task: t, depth });
+  const walk = (t, depth, parentVisible) => {
+    result.push({ task: t, depth, parentVisible });
     // 默认收缩：仅在展开时递归渲染子任务
     if (!state.expandedTasks.has(t.id)) return;
     const kids = (children.get(t.id) || []).sort(compareTasks);
-    for (const k of kids) walk(k, depth + 1);
+    for (const k of kids) walk(k, depth + 1, true);
   };
-  for (const r of roots) walk(r, 0);
+  // 没有父任务（或父任务不在本列表里）的节点：parentVisible 只对"有父 id 但父行缺失"的节点有意义
+  for (const r of roots) walk(r, 0, !r.parent_id);
   return result;
 }
 
 function buildTaskList(nodes) {
   const items = nodes
-    .map(({ task: t, depth }) => (state.editingTaskId === t.id ? editEditorHtml(t) : taskItemHtml(t, depth)))
+    .map(({ task: t, depth, parentVisible }) => (state.editingTaskId === t.id
+      ? editEditorHtml(t)
+      : taskItemHtml(t, depth, parentVisible)))
     .join('');
   return `<ul class="task-list">${items}</ul>`;
 }
@@ -590,19 +678,39 @@ function groupPathAt(id) {
   return g ? groupPath(g, state.groups) : '';
 }
 
-function taskItemHtml(t, depth = 0) {
+function taskItemHtml(t, depth = 0, parentVisible = true) {
   const done = t.completed ? ' done' : '';
-  const isSub = depth > 0;
+  // 注意：判断"是不是子任务"必须看 t.parent_id，不能看 depth。
+  // 父任务被筛选掉时，子任务会作为 roots 渲染、depth = 0，但它依然是子任务。
+  const isSub = t.parent_id != null;
   const isOverdue = !t.completed && t.plan_end && t.plan_end < todayStr();
   const meta = [];
-  if (isSub && t.parent_title) meta.push(`<span class="meta-item parent-tag">↳ ${esc(t.parent_title)}</span>`);
+  // 父任务提示：
+  //  - 父任务就在上面（parentVisible）→ 缩进已说明层级，这里只给纯标识；
+  //  - 父任务不在当前列表（被视图 / 筛选过滤掉了）→ 做成链接，标注"父任务："并可直接点开，
+  //    否则只看到一个"↳ 某标题"，既点不动也不知道它在哪儿。
+  if (isSub && t.parent_title) {
+    meta.push(parentVisible
+      ? `<span class="meta-item parent-tag" title="父任务：${esc(t.parent_title)}">↳ ${esc(t.parent_title)}</span>`
+      : `<span class="meta-item parent-tag parent-link" role="link" tabindex="0"
+           data-act="goto-parent" data-parent="${t.parent_id}"
+           title="父任务不在当前列表，点击打开：${esc(t.parent_title)}">↳ 父任务：${esc(t.parent_title)}</span>`);
+  }
   meta.push(`<span class="pri-badge pri-${t.priority}">${PRIORITY_TEXT[t.priority]}</span>`);
   if (t.plan_start) meta.push(`<span class="meta-item">🗓 ${esc(t.plan_start)}</span>`);
   if (t.plan_end) meta.push(`<span class="meta-item due ${isOverdue ? 'overdue' : ''}">📅 ${esc(t.plan_end)}</span>`);
-  if (t.subtask_count > 0) meta.push(`<span class="meta-item subtask-progress">☑ ${t.subtask_done}/${t.subtask_count}</span>`);
+  // 子任务进度不放 meta 行了：跟标题同一行、紧挨着标题右侧，扫一眼就知道这个任务拆了几条
   if (t.completed && t.completed_at) meta.push(`<span class="meta-item done-at">✅ 完成于 ${fmtDateTime(t.completed_at)}</span>`);
   if (t.reminder_at) meta.push(`<span class="meta-item">🔔 ${fmtDateTime(t.reminder_at)}</span>`);
+  // 创建时间：行内只放日期（完整时间走 title），避免把 meta 行撑得太长
+  if (t.created_at) meta.push(`<span class="meta-item created-at" title="创建于 ${esc(fmtDateTime(t.created_at))}">🕒 ${esc(t.created_at.slice(0, 10))}</span>`);
   for (const n of t.tag_names) meta.push(`<span class="tag-chip">${esc(n)}</span>`);
+  // 附件角标：列表里就能看出这条任务带了文件，不用点进详情
+  const attCount = Array.isArray(t.attachments) ? t.attachments.length : 0;
+  if (attCount) meta.push(`<span class="meta-item att-badge" title="附件 ${attCount} 个">📎 ${attCount}</span>`);
+  // 关联笔记角标：列表里就能看出这条任务引用了几篇笔记（数量由 renderTasks 一次批量拉取）
+  const noteCount = Number(noteCounts[t.id]) || 0;
+  if (noteCount) meta.push(`<span class="meta-item note-badge" title="关联笔记 ${noteCount} 篇">📝 ${noteCount}</span>`);
   // 分组标签显示完整路径（"工作 / 前端"），否则同名子分组看不出归属
   const groupLabel = t.group_name
     ? `<span class="meta-item group-tag" style="color:${esc(t.group_color)}" title="${esc(groupPathAt(t.group_id))}">● ${esc(groupPathAt(t.group_id))}</span>`
@@ -610,12 +718,20 @@ function taskItemHtml(t, depth = 0) {
 
   return `
   <li class="task-item${done}${isSub ? ' is-subtask' : ''}" draggable="false" data-id="${t.id}" style="margin-left:${depth * 20}px">
-    ${isSub ? '' : '<span class="drag-handle" data-act="drag" title="按住拖拽调整顺序">⠿</span>'}
-    <button class="task-check" data-act="toggle" title="完成/取消">${t.completed ? '✓' : ''}</button>
+    <span class="task-gutter">${isSub ? '' : '<span class="drag-handle" data-act="drag" title="按住拖拽调整顺序">⠿</span>'}</span>
+    <!-- 展开箭头固定在完成按钮左侧，两者成组、间距固定；无子任务时槽位仍占同宽，
+         这样每一行的完成按钮都落在同一条竖线上 -->
+    <span class="task-leading">
+      <span class="task-expand-slot">${t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" aria-expanded="${state.expandedTasks.has(t.id)}" title="${state.expandedTasks.has(t.id) ? '收起子任务' : '展开子任务'}">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}</span>
+      <button class="task-check" data-act="toggle" title="完成/取消">${t.completed ? '✓' : ''}</button>
+    </span>
     <div class="task-body">
       <div class="task-title">
-        ${t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" aria-expanded="${state.expandedTasks.has(t.id)}" title="${state.expandedTasks.has(t.id) ? '收起子任务' : '展开子任务'}">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}
         <span class="task-title-text" data-act="rename" title="点击直接修改标题">${esc(t.title)}</span>
+        ${t.subtask_count > 0
+    ? `<span class="task-subtask-badge" title="子任务进度：已完成 ${t.subtask_done} / 共 ${t.subtask_count}"
+         aria-label="子任务 ${t.subtask_done}/${t.subtask_count}">☑ ${t.subtask_done}/${t.subtask_count}</span>`
+    : ''}
       </div>
       <div class="task-meta">${groupLabel}${meta.join('')}</div>
     </div>
@@ -629,11 +745,32 @@ function taskItemHtml(t, depth = 0) {
   </li>`;
 }
 
+/**
+ * 打开父任务。
+ * 列表里的父任务链接（.parent-link）用的是 span[role=link]：既能点，也能聚焦后回车/空格触发，
+ * 键盘用户不至于"看得见点不动"。这里统一收口一次键盘处理。
+ */
+function openParentTask(parentId) {
+  if (!Number.isFinite(parentId) || parentId <= 0) return;
+  openDetail(parentId);
+}
+
 function bindTaskListEvents(container) {
   container.querySelectorAll('.task-item:not(.editing)').forEach((item) => {
+    item.addEventListener('keydown', (e) => {
+      const link = e.target.closest && e.target.closest('[data-act="goto-parent"]');
+      if (!link) return;
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      openParentTask(Number(link.dataset.parent));
+    });
     item.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-act]');
-      const id = Number(item.dataset.id);
+      // 子任务行嵌在父行 <li> 内部，点击会冒泡到父行；按「事件所属的那一行」取 id，
+      // 否则在子任务的按钮上点击会作用到父任务（例如把父任务的展开态翻回去）。
+      const owner = (btn && btn.closest('.task-item[data-id]')) || item;
+      const id = Number(owner.dataset.id);
       if (!btn) { openDetail(id); return; }
       const act = btn.dataset.act;
       if (act === 'drag') return; // 拖拽手柄：不触发打开详情
@@ -644,6 +781,7 @@ function bindTaskListEvents(container) {
         renderTasks();
       }
       else if (act === 'rename') startInlineRename(btn, id);
+      else if (act === 'goto-parent') openParentTask(Number(btn.dataset.parent));
       else if (act === 'edit') startEdit(id);
       else if (act === 'del') deleteTaskConfirm(id);
       else if (act === 'archive') archiveTask(id);
@@ -655,6 +793,14 @@ function bindTaskListEvents(container) {
   // 底部“添加任务”入口
   const addBtn = container.querySelector('[data-act="start-add"]');
   if (addBtn) addBtn.addEventListener('click', startAdd);
+
+  // 分组头：各自独立展开 / 收起（状态写回 settings，重启后保持）
+  container.querySelectorAll('[data-act="toggle-task-group"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      toggleTaskGroup(btn.dataset.group);
+      renderTasks();
+    });
+  });
 }
 
 /* ---------------- 行内改标题 ---------------- */
@@ -679,11 +825,36 @@ function startInlineRename(span, id) {
   input.focus();
   input.select();
 
+  /**
+   * 宽度跟着内容走：短标题不留一大片空白，长标题横向撑开。
+   * 上限取「标题行剩余空间」（扣掉展开箭头与子任务计数），保证既不换行也不压到别的元素。
+   */
+  const row = span.parentElement;
+  const measure = document.createElement('canvas').getContext('2d');
+  const autoSize = () => {
+    const cs = getComputedStyle(input);
+    measure.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const textW = measure.measureText(input.value || ' ').width;
+    const chrome = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight)
+      + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+    let max = 520;
+    if (row) {
+      const siblings = [...row.children]
+        .filter((el) => el !== span)
+        .reduce((a, el) => a + el.getBoundingClientRect().width, 0);
+      max = Math.max(80, row.getBoundingClientRect().width - siblings - 12);
+    }
+    input.style.width = `${Math.min(max, Math.max(80, Math.ceil(textW + chrome + 2)))}px`;
+  };
+  autoSize();
+  input.addEventListener('input', autoSize);
+
   let settled = false;
   /** 收尾：commit=false 表示放弃 */
   const finish = async (commit) => {
     if (settled) return;
     settled = true;
+    input.removeEventListener('input', autoSize);
     input.removeEventListener('blur', onBlur);
     span.classList.remove('is-renaming');
     const next = input.value.trim();
@@ -692,8 +863,10 @@ function startInlineRename(span, id) {
     put(next); // 先落地到界面，保存失败再回滚
     try {
       await api.tasks.update(id, { title: next });
-      const t = state.tasks.find((x) => x.id === id);
-      if (t) t.title = next;
+      // 按 id 精确替换（不可变更新），不直接改 state 里的对象：
+      // 列表数据与任何编辑态都不共用引用，改一个任务不可能带动另一个。
+      const i = state.tasks.findIndex((x) => x.id === id);
+      if (i > -1) state.tasks[i] = { ...state.tasks[i], title: next };
       toast('标题已保存');
     } catch (e) {
       put(original);
@@ -724,9 +897,11 @@ function taskEditorHtml(task) {
   const detailsHidden = isEdit ? '' : ' hidden';
   const showCompletedAt = isEdit && t.completed;
   const defaultGroup = isEdit ? t.group_id : (state.currentGroup !== 'all' ? state.currentGroup : null);
-  // 计划日期：开始 / 完成合并为单一范围控件，新建任务的默认值由 NEW_TASK_RANGE_MODE 决定
+  // 计划日期：开始 / 完成合并为单一范围控件；新建任务的默认值由 NEW_TASK_RANGE_MODE 决定，
+  // 但「今天」视图下默认填今天（否则新建的任务 plan_end 为空，根本不会出现在今天列表里）
   const rangeOpts = { required: PLAN_DATE_REQUIRED, placeholder: '计划开始 ~ 完成' };
-  const range = isEdit ? { start: t.plan_start, end: t.plan_end } : defaultDateRange(NEW_TASK_RANGE_MODE);
+  const newRangeMode = state.view === 'today' ? 'today' : NEW_TASK_RANGE_MODE;
+  const range = isEdit ? { start: t.plan_start, end: t.plan_end } : defaultDateRange(newRangeMode);
   return `
   <div class="task-editor" data-editor="${isEdit ? t.id : 'new'}">
     <div class="editor-row">
@@ -800,6 +975,31 @@ function startAdd() {
   renderTasks();
 }
 
+/**
+ * 在指定分组下新增任务（侧边栏分组行的 ＋）。
+ * 做法：把当前分组切到它、打开底部新增编辑器 —— 编辑器的默认分组取 state.currentGroup，
+ * 于是新任务直接落在点「＋」的那个分组里，添加后也能立刻在当前列表看到。
+ * @param {number} groupId 目标分组 id
+ */
+async function addTaskToGroup(groupId) {
+  const group = state.groups.find((x) => x.id === groupId);
+  if (!group) return;
+  // 归档视图没有新增入口，非任务视图（统计 / 报告 / 检索 / 会议）也没有列表，统一落到「全部任务」
+  if (!TASK_VIEWS.includes(state.view) || state.view === 'archived') state.view = 'all';
+  state.currentGroup = groupId;
+  // 目标分组可能藏在折叠的父分组里：逐级展开，保证侧边栏里看得见它的选中态
+  let cur = group;
+  for (let i = 0; i < 20 && cur && cur.parent_id != null; i++) {
+    state.expandedGroups.add(cur.parent_id);
+    cur = state.groups.find((x) => x.id === cur.parent_id);
+  }
+  document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
+  renderSidebarList();
+  state.addingTask = true;
+  state.editingTaskId = null;
+  await render(); // renderTasks 内部会 focusEditor()，光标直接落在标题输入框
+}
+
 function startEdit(id) {
   state.editingTaskId = id;
   state.addingTask = false;
@@ -808,8 +1008,10 @@ function startEdit(id) {
 
 function cancelEditor() {
   // 取消只丢弃"尚未写入"的改动；已经自动保存的内容按即时持久化的语义保留
+  // 必须 dispose 而不只是 cancel：cancel 只清计时器，renderTasks 回收时会 flush 一次，
+  // 结果把用户刚取消的内容又写回库里。dispose 之后 flush 直接空转。
   const ed = document.querySelector('.task-editor');
-  if (ed && ed.__autoSave) ed.__autoSave.cancel();
+  if (ed && ed.__autoSave) { ed.__autoSave.cancel(); ed.__autoSave.dispose(); }
   state.addingTask = false;
   state.editingTaskId = null;
   renderTasks();
@@ -1082,8 +1284,8 @@ async function dropReorder(item, fromIdStr) {
 
 async function toggleTask(id) {
   const t = await api.tasks.toggle(id);
-  // 「今天」视图：勾选完成后不要立刻消失 —— 记下来，随后重绘时补拉回来
-  noteCompletionChange(id, !!(t && t.completed));
+  // 今天完成的任务保留在「今天」列表里：任何视图里勾的都要记（这里是列表勾选入口）
+  noteCompletionChange(id, !!(t && t.completed), t && t.parent_id);
   await refreshAll();
   renderSidebarList();
   renderTasks();
@@ -1186,8 +1388,10 @@ async function promptGroupForm(g = null, presetParentId = null) {
       {
         name: 'color',
         label: '颜色',
-        type: 'choices',
+        type: 'color',
         value: g ? g.color : 'auto',
+        fallback: '#4f7cff',
+        hint: '点色块选预设，或点取色器自由取色（也可直接填 #RRGGBB）',
         options: GROUP_COLORS,
       },
       {
@@ -1209,10 +1413,24 @@ async function promptGroupForm(g = null, presetParentId = null) {
     onSubmit: async (v) => {
       const name = v.name.trim();
       if (!name) return '请输入分组名称';
-      const dup = state.groups.find((x) => x.name === name && x.id !== (g ? g.id : -1));
-      if (dup) return `分组「${name}」已存在，请换一个名称`;
-      const color = v.color === 'auto' ? pickColor() : v.color;
+      // 重名校验的作用域是「同一个上级」：不同层级可以同名，顶级分组自成一级。
+      // 这里先按表单里选的上级比较，给出即时反馈；落库时 db 层还会再校验一次（移动分组同理）。
       const pid = v.parentId === '' ? null : Number(v.parentId);
+      const sameLevel = (x) => (x.parent_id == null ? null : Number(x.parent_id)) === pid;
+      const dup = state.groups.find((x) => x.id !== (g ? g.id : -1)
+        && sameLevel(x)
+        && x.name.trim().toLowerCase() === name.toLowerCase());
+      if (dup) {
+        const where = pid == null
+          ? '顶级分组'
+          : `「${state.groups.find((x) => x.id === pid)?.name || '该分组'}」下`;
+        return `${where}已存在同名分组「${name}」，请换一个名称`;
+      }
+      const picked = String(v.color || '').trim();
+      if (picked !== 'auto' && !/^#[0-9a-f]{6}$/i.test(picked)) {
+        return '颜色格式不正确，请用取色器选择或填写 #RRGGBB';
+      }
+      const color = picked === 'auto' ? pickColor() : picked.toLowerCase();
       if (isEdit) {
         const updated = await api.groups.update(g.id, { name, color, parentId: pid });
         await afterGroupSaved(updated, true);
@@ -1315,32 +1533,39 @@ async function deleteTag(t) {
 
 /* ---------------- 统计 ---------------- */
 
+/**
+ * 完成趋势的可选范围（key 与 main/db.js 的 TREND_RANGES 一一对应）。
+ * 跨度越大粒度越粗（天 → 周 → 月），坐标轴标签与标题文案随选择一起变。
+ */
+const TREND_RANGES = [
+  { key: '7d', label: '近 7 天' },
+  { key: '1m', label: '近一个月' },
+  { key: '6m', label: '近半年' },
+  { key: '1y', label: '近一年' },
+];
+/** 当前趋势范围：切换视图再回到统计页时保留用户上次的选择 */
+let trendRange = '7d';
+/** 统计口径：false = 只算主任务（默认，与历史行为一致），true = 主任务 + 全部子任务 */
+let statsIncludeSubtasks = false;
+
 async function renderStats() {
   const viewEl = document.getElementById('view');
   viewEl.innerHTML = '<div class="empty">加载中…</div>';
-  const [ov, trend] = await Promise.all([api.stats.overview(), api.stats.trend(7)]);
+  const ov = await api.stats.overview({ includeSubtasks: statsIncludeSubtasks });
 
   const maxGroup = Math.max(1, ...ov.byGroup.map((g) => g.active + g.done));
+  // 分组名带上级路径（"工作 / 前端"）：顶层分组只有自己的名字，子分组把父分组名一起显示出来，
+  // 否则不同父分组下的同名子分组在统计里完全无法区分。
+  const groupLabelOf = (g) => (g.parent_name ? `${g.parent_name} / ${g.name}` : g.name);
   const groupBars = ov.byGroup
     .map((g) => {
       const total = g.active + g.done;
       const pct = Math.round((total / maxGroup) * 100);
-      return `<div class="bar-row">
-        <span class="bar-label">${esc(g.name)}</span>
+      const label = groupLabelOf(g);
+      return `<div class="bar-row" title="${esc(label)}（进行中 ${g.active} · 已完成 ${g.done}）">
+        <span class="bar-label">${esc(label)}</span>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${esc(g.color)}"></div></div>
         <span class="bar-val">${total}</span>
-      </div>`;
-    })
-    .join('');
-
-  const maxTrend = Math.max(1, ...trend.map((d) => d.count));
-  const trendCols = trend
-    .map((d) => {
-      const h = Math.max(3, Math.round((d.count / maxTrend) * 100));
-      return `<div class="trend-col">
-        <span class="trend-count">${d.count}</span>
-        <div class="trend-bar" style="height:${h}px"></div>
-        <span class="trend-date">${d.date.slice(5)}</span>
       </div>`;
     })
     .join('');
@@ -1361,6 +1586,14 @@ async function renderStats() {
     .join('');
 
   viewEl.innerHTML = `
+    <div class="stats-scope" id="stats-scope" role="group" aria-label="统计范围">
+      <span class="stats-scope-label">统计范围</span>
+      <button type="button" class="chip scope-chip${statsIncludeSubtasks ? '' : ' active'}"
+        data-scope="top" aria-pressed="${!statsIncludeSubtasks}">仅主任务</button>
+      <button type="button" class="chip scope-chip${statsIncludeSubtasks ? ' active' : ''}"
+        data-scope="all" aria-pressed="${statsIncludeSubtasks}">含子任务</button>
+      <span class="stats-scope-hint">${statsIncludeSubtasks ? '主任务 + 全部子任务' : '不含子任务'}</span>
+    </div>
     <div class="stats-grid">
       ${statCardHtml('total', ov.total, '总任务', '')}
       ${statCardHtml('active', ov.active, '进行中', 'primary')}
@@ -1370,13 +1603,111 @@ async function renderStats() {
       ${statCardHtml('archived', ov.archived, '已归档', '')}
     </div>
     <div class="stats-tip">${statsTipHtml()}</div>
-    <div class="panel"><h3>近 7 天完成趋势</h3><div class="trend-chart">${trendCols}</div></div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3 id="trend-title">完成趋势</h3>
+        <div class="trend-range" id="trend-range" role="group" aria-label="完成趋势时间范围">
+          ${TREND_RANGES.map((r) => `<button type="button" class="chip trend-chip${r.key === trendRange ? ' active' : ''}"
+            data-trend="${esc(r.key)}" aria-pressed="${r.key === trendRange}">${esc(r.label)}</button>`).join('')}
+        </div>
+      </div>
+      <div class="trend-body" id="trend-body"><div class="trend-loading">加载中…</div></div>
+    </div>
     <div class="panel"><h3>分组任务量</h3>${groupBars || '<span class="meta-item">暂无分组</span>'}</div>
     <div class="panel"><h3>优先级分布（进行中）</h3>${priBars}</div>`;
 
   viewEl.querySelectorAll('.stat-card[data-stat]').forEach((card) => {
     card.addEventListener('click', () => openStatDrilldown(card.dataset.stat, card));
   });
+  bindStatsScope(viewEl);
+  bindTrendRange(viewEl);
+  await renderTrend();
+}
+
+/** 统计口径切换：卡片、分组、优先级、趋势全部按新口径重取，实时刷新 */
+function bindStatsScope(viewEl) {
+  const box = viewEl.querySelector('#stats-scope');
+  if (!box) return;
+  box.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-scope]');
+    if (!btn) return;
+    const next = btn.dataset.scope === 'all';
+    if (next === statsIncludeSubtasks) return;
+    statsIncludeSubtasks = next;
+    box.querySelectorAll('[data-scope]').forEach((b) => {
+      const on = (b.dataset.scope === 'all') === statsIncludeSubtasks;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
+    const hint = box.querySelector('.stats-scope-hint');
+    if (hint) hint.textContent = statsIncludeSubtasks ? '主任务 + 全部子任务' : '不含子任务';
+    await renderStats(); // 整页重取：卡片数字、分组、优先级、趋势都跟着变
+  });
+}
+
+/** 范围切换：只重绘趋势这一块，概述数据不必重新拉取 */
+function bindTrendRange(viewEl) {
+  const box = viewEl.querySelector('#trend-range');
+  if (!box) return;
+  box.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-trend]');
+    if (!btn || btn.dataset.trend === trendRange) return;
+    trendRange = btn.dataset.trend;
+    box.querySelectorAll('[data-trend]').forEach((b) => {
+      const on = b.dataset.trend === trendRange;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
+    await renderTrend();
+  });
+}
+
+/**
+ * 拉取并绘制趋势。三种状态都要有明确呈现：
+ * 加载中、无数据（给出范围文案而不是空图）、加载失败（显示原因）。
+ */
+async function renderTrend() {
+  const body = document.getElementById('trend-body');
+  if (!body) return;
+  const titleEl = document.getElementById('trend-title');
+  body.innerHTML = '<div class="trend-loading">加载中…</div>';
+
+  let t;
+  try {
+    t = await api.stats.trend({ range: trendRange, includeSubtasks: statsIncludeSubtasks });
+  } catch (e) {
+    body.innerHTML = `<div class="trend-empty">趋势加载失败：${esc((e && e.message) || '未知错误')}</div>`;
+    return;
+  }
+  const label = (t && t.label) || '';
+  if (titleEl) titleEl.textContent = `${label}完成趋势`;
+
+  const pts = (t && t.points) || [];
+  // 无数据：直接给一句人话，而不是画一排高度 0 的柱子
+  if (!pts.length || !t.total) {
+    body.innerHTML = `<div class="trend-empty">${esc(label || '所选范围')}内还没有已完成的任务</div>`;
+    return;
+  }
+
+  const maxCount = Math.max(1, ...pts.map((p) => p.count));
+  // 坐标轴文案随粒度变：天 = 当天，周 = 该周起始日，月 = 年月
+  const unitText = t.granularity === 'week' ? ' 起一周' : t.granularity === 'month' ? '（整月）' : '';
+  // 柱子多时每隔 N 个才显示一个坐标标签，否则标签会挤成一团
+  const step = Math.ceil(pts.length / 15);
+  const cols = pts
+    .map((p, i) => {
+      const h = Math.max(3, Math.round((p.count / maxCount) * 100));
+      const showLabel = i === pts.length - 1 || i % step === 0;
+      return `<div class="trend-col" title="${esc(`${p.label}${unitText}：${p.count} 个`)}">
+        <span class="trend-count">${p.count ? p.count : ''}</span>
+        <div class="trend-bar" style="height:${h}px"></div>
+        <span class="trend-date"${showLabel ? '' : ' style="visibility:hidden"'}">${esc(p.label)}</span>
+      </div>`;
+    })
+    .join('');
+
+  body.innerHTML = `<div class="trend-chart">${cols}</div>
+    <div class="trend-summary">${esc(label)}共完成 ${t.total} 个任务</div>`;
 }
 
 /**
@@ -1401,7 +1732,8 @@ function statCardHtml(key, num, label, tone) {
 /** 各统计项 → 任务查询条件（与 overview 的 SQL 口径一一对应） */
 function statFilterOf(key) {
   const today = todayStr();
-  const base = { topLevel: true };
+  // 下钻明细跟随统计页当前的口径：切到「含子任务」后点卡片，看到的就该是同一批任务
+  const base = { topLevel: !statsIncludeSubtasks };
   switch (key) {
     case 'total': return { ...base, status: 'any' };
     case 'active': return { ...base, status: 'active' };
@@ -1575,6 +1907,9 @@ function pickColor() {
 let toastTimer;
 function toast(msg) {
   const el = document.getElementById('toast');
+  if (!el) return;
+  // 提示恒挂在 body 最外层：既不受任何父容器 overflow 裁切，也保证 z-index 生效在顶层栈里
+  if (el.parentElement !== document.body) document.body.appendChild(el);
   el.textContent = msg;
   el.hidden = false;
   clearTimeout(toastTimer);

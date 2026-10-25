@@ -1,6 +1,25 @@
-# TODO 待办 — Windows 桌面端个人待办应用
+<div align="center">
 
-基于 **Electron + better-sqlite3** 的桌面端 TODO 应用。界面简洁、操作高效、**数据全部本地存储**（SQLite 文件位于用户数据目录，不联网、不上传）。
+<img src="assets/knodo.svg" width="120" alt="Knodo"/>
+
+# Knodo
+
+**Knowledge + Todo** — 把「待办清单」和「知识沉淀」放进同一个应用。
+
+基于 **Electron + better-sqlite3** 的 Windows 桌面应用，界面简洁、操作高效，**数据全部本地存储**（SQLite，不联网、不上传）。
+
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
+![Runtime](https://img.shields.io/badge/Electron-32-47848F)
+![License](https://img.shields.io/badge/license-private-lightgrey)
+
+</div>
+
+---
+
+> **品牌与内部标识的区别（改名前必读）**
+> 对外名称统一为 **Knodo**，取自打包配置 `build.productName`；`package.json` 的 `name`（`todo-desktop`）与 `build.appId` 是**内部标识**，刻意保持不变 ——
+> Electron 用 `name` 决定用户数据目录（`%APPDATA%\todo-desktop`），改了会让老用户升级后看到空数据；
+> `appId` 则决定安装目录与卸载项。改品牌名时只动 `productName` / `shortcutName` / 界面文案 / 图标即可。
 
 ## 功能一览
 
@@ -19,19 +38,24 @@
 - 已完成任务归档与统计
 - **「今天」列表就地保留已完成任务**：勾选完成后不消失，直接打勾 / 置灰 / 删除线，并显示「今日已完成 N 个」提示条；**切换标签页再回来、甚至重启应用，今天做过的任务依然在列表里**（标记连同自然日存进 settings，跨天自动作废）；可点「隐藏已完成」立即移除（不改变视图本身的查询口径）
 - **点击任务标题即可行内改名**：不用再打开详情页，点一下标题就地变输入框，失焦或回车保存、Esc 放弃；只替换这一行节点，不整表重绘
-- 系统托盘 + 全局快捷键
+- 系统托盘常驻，可一键呼出 / 快速添加
 - 深色模式
 - 窗口关闭后最小化到托盘
 
 **进阶功能**
+- 任务标题 16px、正文 12px，层级分明；**子任务进度（☑ 已完/总数）紧邻标题右侧**；点击标题行内改名，输入框宽度随输入实时自适应（不换行、不遮挡右侧元素）
+- **描述里的图片双击可放大预览**：保持原始宽高比，再次双击图片 / 点击遮罩 / 按 Esc 关闭
+- **侧边栏可拖拽调宽**（180 ~ 420px，双击把手恢复默认）：拖动时禁用文本选中，宽度写入 `ui.sidebarWidth` 持久化，主区自动跟随不错位
+- **统计支持切换口径**：「仅主任务」/「含子任务」，卡片、分组、优先级、完成趋势与下钻明细实时按新口径刷新
 - 任务详情页：点击任务查看/编辑，描述支持**所见即所得编辑**（Markdown 快捷键，图片直接插入光标处）
 - 详情侧边栏可**拖拽左侧边缘调整宽度**（360 ~ 860px，双击手柄恢复默认），宽度自动记忆、下次打开复用；拖拽过程无闪烁：拖拽期间禁止重建面板（重绘推迟到松手）、内容区预留滚动条槽位（`scrollbar-gutter: stable`）、`contain: layout` 隔离重排、重绘不再重播入场动画、松手时按指针位置同步收尾（不依赖可能被节流的 rAF 最后一帧）
 - **编辑即时持久化**：列表行内编辑与详情抽屉中修改任意字段，停止输入约 0.7s 后自动写入，无需点"保存"；失败时保留输入并可点击状态重试，任务已被删除等冲突会提示并回滚
-- 分组 / 标签通过弹窗新增，支持重名校验与失败原因提示（如数据库只读），新增后列表即时可见并高亮
+- 分组 / 标签通过弹窗新增，支持重名校验与失败原因提示（如数据库只读），新增后列表即时可见并高亮；**分组支持自定义颜色**：预设色 + 系统取色器自由取色（也可直接填 `#RRGGBB`），颜色持久化并统一用于侧栏色点、列表分组头、任务行分组标签与统计图表
 - 子任务与主任务同级：具备**优先级、计划开始 / 完成日期**，可就地编辑（自动保存），参与列表排序与筛选；列表默认收缩、可展开（筛选视图下也能正常展开），显示所属父任务；详情页树形层级；所有子任务完成时父任务自动完成；支持拖拽排序（行首 ⠿ 手柄）；添加/勾选时仅局部刷新，不闪烁
 - AI 检索：输入关键词检索所有任务并生成总结，结果可点击跳转详情；**每次检索自动入库**，页面下方「检索历史」可回看（关键词回填 + 总结 + 命中任务）或单条删除
+- **检索支持联想查询**：关键词没精确命中时不会直接返回"未找到"，而是走多层联想召回（详见「AI 检索的联想逻辑」一节）
 - 集成 AI，基于本地任务与完成记录自动生成**日报 / 周报 / 月报**
-- **AI 配置集中在顶部工具栏「⚙ AI 设置」**（接口预设 / Base URL / 模型 / API Key / 测试连接 / 清除 Key），AI 报告页只负责生成与导出
+- **AI 配置集中在顶部菜单栏「AI 设置」**（接口预设 / Base URL / 模型 / API Key / 测试连接 / 清除 Key），AI 报告页只负责生成与导出
 - 报告结果按 **Word 文档版式**呈现（标题层级 / 段落 / 列表 / 表格），**默认始终可编辑**，停止输入约 0.7s 自动保存（状态条显示「未保存 → 已保存 HH:MM」），**不再有「编辑 / 保存修改」按钮**；导出 **Word（.docx）** 与 **Markdown**
 - **报告持久化 + 历史记录**：每份报告生成时即写入 `reports` 表，结果框右上角「🕘 历史记录」按钮弹出列表（时间 / 类型 / 范围 / 分组 / 是否含自定义要求），可查看、删除；生成新报告只会新增记录，不会覆盖或清空旧记录
 - 分组筛选改用第三方 **Tom Select**（可搜索、已选 chips 带 ×、一键清除、按层级缩进），已随项目落地到 `renderer/vendor/tom-select/`；面板挂到 body，不会被可滚动容器裁掉
@@ -47,6 +71,16 @@
 - **AI 纪要**：输出「会议主题 / 关键议题与结论 / 决议事项 / 待办事项 / 风险与遗留问题」结构化 Markdown；长会议走分段提炼再合并，避免上下文溢出
 - **待办入库**：从纪要里提取行动项（负责人 / 截止日期 / 优先级），**勾选后批量写入任务列表**，可选各自独立或挂在同一个父任务下；纪要可导出 Word / Markdown
 - 配置项独立：语音接口与对话模型分开填（DeepSeek 等纯文本服务不提供语音接口），详见《AI 接口配置》
+
+**笔记（Markdown 编辑 → 知识库沉淀 → 任务关联）**
+- **列表 + 弹窗编辑**：列表页负责浏览 / 组织 / 搜索（两栏：目录标签 + 笔记列表），**点任意笔记即弹出编辑窗口**，关掉回到原处，列表的筛选与滚动位置不会丢
+- **Markdown 编辑器**：EasyMDE 工具栏（标题 / 列表 / 代码块 / 链接 / 图片 / 表格）+ **markdown-it 实时预览**，支持「编辑 / 分栏 / 预览」三种模式；标题、目录、标签、正文改完约 0.7s 自动落库（状态条：未保存 / 保存中 / 已保存），Esc / 点遮罩关闭前也会补存一次
+- **图片直接粘贴**：截图粘贴 / 拖拽 / 工具栏选文件都能插入图片，落盘到 `attachments/note-<id>/`（复用任务附件同一套规则），正文只留 `todo-media://` 链接（不塞 base64）；编辑器下方有图片条，可打开 / 复制引用 / 删除
+- **目录与标签组织**：目录支持无限层级（同级不允许重名，与分组同一套规则），标签逗号分隔、不存在的自动创建；支持置顶与**归档**（归档后折叠出主列表，但仍可被检索与引用）
+- **搜索与回收站**：全文检索走 FTS5（中文 trigram，无需外部分词器），关键词不足 3 字自动回退模糊匹配；删除分「移入回收站（可恢复）」与「彻底删除」，回收站页可逐篇恢复 / 彻底删除 / 清空
+- **知识库沉淀（智能检索）**：笔记保存即自动切块入索引（按 Markdown 标题切分，块内带标题路径）。「🧠 知识库问答」的检索链路为：**AI 查询改写 → 多路召回（分块 FTS + 笔记级 + 模糊）→ RRF 融合 → AI 语义重排 → 带 `[n]` 出处作答**，可点击跳回原笔记；未配置 AI 时整条链路自动降级为纯关键词召回，功能不中断
+- **任务 ↔ 笔记（多对多）**：任务详情可一次关联多篇笔记（搜索 + 多选 + 顺手新建），列表项支持跳转查看与取消关联；任务列表行显示 `📝 N` 徽标；笔记侧也能看到被哪些任务引用
+- 详细设计见《[笔记模块设计与AI知识库接入](docs/笔记模块设计与AI知识库接入.md)》
 
 ## 快速开始
 
@@ -95,18 +129,20 @@ todo-app/
 ├── package.json            # 依赖与脚本
 ├── assets/                 # 应用图标 / 托盘图标（由 scripts/gen-icon.js 生成）
 ├── main/                   # 主进程
-│   ├── main.js             # 入口：窗口生命周期、单实例、托盘/快捷键/提醒装配
+│   ├── main.js             # 入口：窗口生命周期、单实例、托盘/提醒装配、应用菜单
 │   ├── db.js               # SQLite 数据访问层（建表、迁移、CRUD、统计）
 │   ├── ipc.js              # IPC 处理器注册（渲染进程 ↔ 主进程）
 │   ├── tray.js             # 系统托盘（显示/隐藏、快速添加、退出）
-│   ├── shortcuts.js        # 全局快捷键
+│   ├── autostart.js        # 开机自启动（系统启动项读写）
 │   ├── reminders.js        # 提醒调度器
 │   ├── crypto.js           # API Key 本地加密（safeStorage，降级 Base64）
 │   ├── ai.js               # AI 接口调用（OpenAI 兼容 /chat/completions）
 │   ├── asr.js              # 语音转写（OpenAI 兼容 /audio/transcriptions，multipart 直传）
 │   ├── meeting.js          # 会议纪要生成 + 待办结构化提取（含长会分段提炼）
+│   ├── knowledge.js        # 知识库：笔记 → 文档 → 分块 → 智能检索（查询改写 / 多路召回 / RRF / AI 重排）→ 问答
 │   ├── recording.js        # 录制文件管理（会话目录 / 分片落盘 / 导入外部音频）
 │   ├── report.js           # 日报/周报/月报 生成（LLM + 本地降级）
+│   ├── search-assist.js    # 检索联想引擎（同义词/缩写/近似拼写/状态与时间语义召回 + 打分）
 │   └── docx.js             # 零依赖 OOXML Word 导出
 ├── preload/
 │   └── preload.js          # contextBridge 暴露安全 API 面
@@ -122,17 +158,22 @@ todo-app/
 │       ├── group-tree.js   # 分组树工具（层序展开 / 路径 / 下拉选项 / 子孙 id）
 │       ├── recorder.js     # 录制内核（源选择 / 混音 / 分片 / 浮动控制条）
 │       ├── meetings.js     # 会议纪要视图（转写 / 生成 / 待办勾选入库 / 导出）
+│       ├── notes.js        # 笔记视图（目录 / 列表 / 点笔记弹出 EasyMDE 编辑窗口 / 图片粘贴 / 回收站 / 知识库问答）
+│       ├── note-picker.js  # 笔记选择器（任务详情「关联笔记」多选面板）
+│       ├── markdown-lib.js # markdown-it 渲染封装（安全选项 + 降级回退）
 │       ├── ai-settings.js  # AI 设置弹窗（挂载在顶部工具栏，含语音接口配置）
 │       ├── markdown.js     # Markdown 渲染
 │       ├── autosave.js     # 编辑即时持久化（防抖 + 冲突回滚）
-│       ├── search.js       # AI 检索视图（检索 + 历史记录回看）
+│       ├── search.js       # AI 检索视图（三态渲染 + 历史记录回看）
 │       ├── controls.js     # flatpickr 日期范围控件封装
 │       ├── detail.js       # 任务详情抽屉
 │       ├── modal.js        # 轻量模态框（表单弹窗 / 自定义内容面板弹窗）
 │       ├── app.js          # 入口
 │   └── vendor/             # 前端第三方库（离线内置）
 │       ├── flatpickr/      # flatpickr 4.6 + 官方 CSS + 中文语言包
-│       └── tom-select/     # Tom Select 2.4（分组多选：搜索 / chips / 清除）+ 官方基础 CSS
+│       ├── tom-select/     # Tom Select 2.4（分组多选：搜索 / chips / 清除）+ 官方基础 CSS
+│       ├── markdown-it/    # markdown-it 14（Markdown → HTML，表格 / 代码块 / 链接 / 图片）
+│       └── easymde/        # EasyMDE 2（Markdown 编辑器：工具栏 / 快捷键 / 分栏预览）
 ├── scripts/
     ├── gen-icon.js         # 图标生成
     └── smoke-db.js         # 数据层冒烟测试
@@ -160,7 +201,7 @@ todo-app/
 | parent_id | INTEGER | 父任务 id（子任务，可空，删除父任务时级联删除） |
 | title | TEXT | 标题 |
 | notes | TEXT | 描述（Markdown） |
-| attachments | TEXT | 图片附件（JSON 数组，base64，缩略图展示） |
+| attachments | TEXT | 附件元数据（JSON 数组；文件本体在 `<数据目录>/attachments/task-<id>/`，库里只存相对路径） |
 | priority | INTEGER | 优先级 0 低 / 1 中 / 2 高 / 3 紧急 |
 | plan_start | TEXT | 计划开始日期（YYYY-MM-DD，可空） |
 | plan_end | TEXT | 计划完成日期（YYYY-MM-DD，可空） |
@@ -229,6 +270,68 @@ todo-app/
 | todos | TEXT | 提取出的待办 JSON 数组（title / assignee / due / priority / detail） |
 | status | TEXT | `recorded` 已录制 → `transcribed` 已转写 → `summarized` 已出纪要 |
 
+### note_folders / notes / note_tags / note_tag_map — 笔记（迁移 v9）
+
+| 表 | 关键字段 | 说明 |
+|---|---|---|
+| note_folders | `parent_id`（自引用）、`color`、`sort_order` | 笔记目录，与分组同构，支持无限层级 |
+| notes | `folder_id`、`title`、`content_md`、`excerpt`、`pinned`、`archived`、`deleted_at`、`word_count`、`content_hash`、`source`、**`attachments`**（迁移 v11） | 正文为唯一权威来源，摘要 / 字数 / 哈希派生；`deleted_at` 非空 = 回收站；`attachments` 存图片元数据（相对路径） |
+| note_tags / note_tag_map | `name` UNIQUE / 多对多 | 与任务 `tags` 分开，避免互相污染筛选 |
+| notes_fts | FTS5 external content（trigram） | 全文检索，正文不重复存储 |
+
+### task_notes — 任务 ↔ 笔记（迁移 v9）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| task_id | INTEGER FK | 任务（`ON DELETE CASCADE`：删任务即摘引用） |
+| note_id | INTEGER FK | 笔记（`ON DELETE CASCADE`） |
+| created_at | TEXT | 关联时间 |
+
+### knowledge_bases / kb_documents / kb_chunks — 知识库（迁移 v10）
+
+| 表 | 说明 |
+|---|---|
+| knowledge_bases | 知识库注册表；内置「笔记知识库」固定 `id = 1`、`type = 'notes'` |
+| kb_documents | 文档；笔记对应 `source_key = 'note:<笔记id>'`，含 `content_hash` 用于增量判定 |
+| kb_chunks | 分块（按 Markdown 标题切分，带 `heading_path`），配 `kb_chunks_fts` 供检索召回 |
+| kb_vectors | 向量预留（一期不写入：智能检索走「查询改写 + 多路召回 + RRF + AI 重排」） |
+
+### 迁移 v11：笔记附件（图片）
+
+笔记图片与任务附件共用 `main/attachments.js`，只是宿主目录换成 `note-<id>`：
+
+- 文件：`<数据目录>/attachments/note-<笔记id>/<附件id>_<文件名>`
+- 库里：`notes.attachments` 只存元数据 JSON（含**相对**路径），与 `tasks.attachments` 同构
+- 正文引用：`![](todo-media:///note-<id>/<附件id>_<文件名>)`，由主进程注册的自定义协议映射回本地文件
+  （只解析 attachments 目录内的路径，越界拒绝）
+
+> 分块属派生数据，**不进导入导出**（可由笔记正文重建）；备份 `schemaVersion` 已升到 **11**，
+> 新增导出 `note_folders / notes / note_tags / note_tag_map / task_notes / knowledge_bases`
+> （附件元数据随 `notes` 一起走），导入后自动全量重建索引。
+
+## AI 检索的联想逻辑
+
+关键词没精确命中时，检索不再直接返回"未找到"，而是分层召回并按相关度排序：
+
+| 层级 | 做法 | 说明 |
+|---|---|---|
+| 精确层 | SQL LIKE 匹配标题 / 描述 / 标签 | 改造前的原有能力，**命中即优先返回**，不走联想 |
+| 字面层 | 关键词分词后逐词比对标题、标签、描述、分组名 | 长词优先并"占掉"已匹配片段，避免 bigram 重复计分 |
+| 联想层 | 同义词扩展、缩写还原、近似拼写（Damerau 编辑距离）、状态语义、时间语义 | 例如 `bug→缺陷/修复`、`ui→界面`、`wrok≈work`、`待办→未完成`、`本周→本周区间` |
+| 语义层 | 配了 AI Key 时由模型在候选池内重排并给出理由 | **只重排不新增**，杜绝编造；本地零召回时用它做纯语义兜底 |
+
+**三种结果**（界面顶部提示条会明确区分）：
+
+- **唯一匹配** —— 强命中（精确 / 完整包含）且明显领先第二名，或只召回 1 条且分数足够，可直接打开；
+- **多个候选** —— 有候选但拉不开差距，按相关度排序请用户确认，**最多 5 条**；
+- **确实无关联** —— 明确提示未找到，并列出**已尝试的联想方向**（只列这次真的做过的，不虚报）。
+
+每条候选都展示**命中依据**（由哪个关键词、经哪条联想推导而来）与相关度条，例如
+「`ui` 缩写还原为 `界面` 命中标题」。
+
+相关代码：`main/search-assist.js`（本地召回打分）、`main/ipc.js` 的 `search:ai`（分层编排）、
+`main/ai.js` 的 `rankSearchCandidates`（可选的语义重排）、`renderer/js/search.js`（三态渲染）。
+
 ## AI 接口配置
 
 采用 **OpenAI 兼容 `/chat/completions` 协议**，可无缝切换以下服务：
@@ -241,7 +344,7 @@ todo-app/
 | Moonshot Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
 | Ollama（本地） | `http://localhost:11434/v1` | `qwen2.5` |
 
-**配置方式**：顶部工具栏「⚙ AI 设置」→ 填写 Base URL / 模型 / API Key → 保存。Key 通过 `safeStorage`（Windows 基于 DPAPI）加密后存入 `settings` 表，不以明文落盘，也**不下发到渲染进程**。
+**配置方式**：顶部菜单栏「AI 设置」→ 填写 Base URL / 模型 / API Key → 保存。Key 通过 `safeStorage`（Windows 基于 DPAPI）加密后存入 `settings` 表，不以明文落盘，也**不下发到渲染进程**。
 
 **无 Key 降级**：未配置 Key 或调用失败时，自动基于本地数据生成结构化模板报告（完成情况 / 进行中 / 逾期 / 小结），并在界面给出明确提示。
 
@@ -276,12 +379,11 @@ todo-app/
 - **文件格式**：JSON，包含 `groups` / `tags` / `tasks` / `task_tags` / `meetings` / `reports` / `ai_searches` / `settings` 数组（`schemaVersion` 现为 7），字段与数据模型一致；导入时兼容旧版 `due_at` 字段（自动映射为计划完成日期）。导入为覆盖式，历史报告与检索记录也会一并覆盖。
 - 备份**不含** AI / 语音 Key；会议目录里的音频文件不随 JSON 导出，需要单独保留 `recordings/` 目录。
 
-## 全局快捷键
+## 开机自启动
 
-| 快捷键 | 功能 |
-|---|---|
-| `Ctrl/Cmd + Shift + T` | 显示 / 隐藏主窗口 |
-| `Ctrl/Cmd + Shift + N` | 快速添加任务 |
+菜单 **File → 开机自启动**（勾选项）可开启 / 关闭；登录系统后自动在后台启动，只驻留托盘、不弹主窗口。
+勾选状态以系统实际登记的启动项为准（在「任务管理器 → 启动」里关闭也会同步反映）。
+便携版与开发调试模式下不可用（无法登记稳定的启动路径），菜单项会置灰。
 
 ## 说明
 
@@ -304,8 +406,8 @@ npm run dist:portable   # 只产出便携版（免安装）
 
 | 文件 | 说明 |
 |---|---|
-| `TODO待办-<版本>-安装版.exe` | NSIS 安装程序，可选安装目录、自动建桌面/开始菜单快捷方式，安装界面为中文 |
-| `TODO待办-<版本>-便携版.exe` | 单文件绿色版，双击即用；数据写在 exe 同级的 `data/` 目录，整个文件夹拷走即可换机 |
+| `Knodo-<版本>-安装版.exe` | NSIS 安装程序，可选安装目录、自动建桌面/开始菜单快捷方式，安装界面为中文 |
+| `Knodo-<版本>-便携版.exe` | 单文件绿色版，双击即用；数据写在 exe 同级的 `data/` 目录，整个文件夹拷走即可换机 |
 | `dist/win-unpacked/` | 未压缩的可直接运行副本（调试用） |
 
 要点：
@@ -313,10 +415,13 @@ npm run dist:portable   # 只产出便携版（免安装）
 - 打包配置写在 `package.json` 的 `build` 字段；`scripts/build-win.js` 负责注入国内镜像（electron / NSIS / winCodeSign 资源从 npmmirror 下载，避免 GitHub 超时）。
 - `better-sqlite3` 使用官方预编译二进制（`prebuilds/`），**不需要** VS 生成工具，因此打包配置里 `npmRebuild: false`；其 `.node` 文件会通过 `asarUnpack` 解包到 `app.asar.unpacked` 才能被加载。
 - 安装版数据存 `%APPDATA%\todo-desktop\`；便携版数据存 exe 同级 `data\`（由 `PORTABLE_EXECUTABLE_DIR` 判定）。
+- **数据目录可配置**：菜单「File → 存储位置」可选任意目录（例如换到 D 盘），配置写在 `<用户数据目录>/config.json` 的 `dataDir` 字段，
+  下次启动生效；可勾选把现有数据（`todo.db` + `attachments`）复制到新目录。配置目录不可用（盘未插入 / 被删 / 无写权限）时会自动回退默认目录并弹窗提示。
+  录音文件（`recordings/`）仍留在用户数据目录：会议记录里存的是绝对路径，迁移会造成两份数据。
 - 首次打包需下载约 100MB 的 Electron 与 NSIS 资源，之后有缓存，单个 exe 产物约 116MB（Electron 运行时体积，非本项目代码大小；本项目代码仅约 6MB）。
 - 版本升级改 `package.json` 里的 `version` 即可，文件名与卸载条目会随之变化。
 
-打包后自检（可选）：带调试端口启动 `dist\win-unpacked\TODO待办.exe --remote-debugging-port=9333`，再执行 `node scripts/check-packaged.js 9333`，会输出标题、DOM 渲染结果与渲染层异常。
+打包后自检（可选）：带调试端口启动 `dist\win-unpacked\Knodo.exe --remote-debugging-port=9333`，再执行 `node scripts/check-packaged.js 9333`，会输出标题、DOM 渲染结果与渲染层异常。
 
 ## 发布 Gitee 发行版（供他人直接下载）
 
@@ -330,7 +435,7 @@ npm run dist
 #    - 只保留 zh-CN / zh-TW / en-US 语言包
 #    - 移除 dxcompiler.dll（WebGPU 编译器，本应用未用到）
 #    - 7z -mx=9 极限压缩（7za 位于 electron-builder 缓存目录）
-# 产物放入 dist/release/TODO待办-<版本>-win64.7z
+# 产物放入 dist/release/Knodo-<版本>-win64.7z
 ```
 
 ```bash

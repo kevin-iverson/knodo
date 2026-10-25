@@ -215,7 +215,7 @@ async function generateReport(params, aiConfig) {
     if (extraPrompt) {
       // 本地模板是规则生成，无法理解自由文本要求 —— 明确说明，避免用户以为已生效
       markdown += `\n> 说明：本次为本地模板报告，未能应用自定义要求「${extraPrompt}」。`
-        + '在「⚙ AI 设置」中配置 API Key 后，该要求会随请求一起发送给 AI。\n';
+        + '在顶部菜单栏「AI 设置」中配置 API Key 后，该要求会随请求一起发送给 AI。\n';
     }
     return {
       markdown,
