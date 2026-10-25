@@ -21,6 +21,7 @@ import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
 import { renderNotes, setNotesHandlers, createNote, disposeNotes } from './notes.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
+import { openSalaryModal, setSalaryHandlers } from './salary.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
 
@@ -144,6 +145,11 @@ function bindStaticEvents() {
   // AI 配置（原在「AI 报告」页内的配置面板；现统一从顶部菜单栏「AI 设置」打开）
   setAiSettingsHandlers({ toast, onChanged: () => { renderSidebarList(); } });
   listenAiSettingsMenu();
+  // 实用工具 → 实时薪资（顶部菜单栏入口）
+  setSalaryHandlers({ toast });
+  api.on('ui:salary', () => {
+    openSalaryModal().catch((e) => toast(`打开实时薪资失败：${(e && e.message) || e}`));
+  });
   // 会议录制（工具栏按钮）
   bindRecordButton();
 

@@ -132,8 +132,11 @@ function applyTheme() {
 
 /**
  * 应用菜单：保留系统默认的 File / Edit / View / Window（role 复用默认行为），
- * 末尾追加「AI 设置」——原来在顶部工具栏，挪到菜单栏后非任务视图才能整排隐藏工具区。
+ * 末尾追加「AI 设置」与「实用工具」——原来在顶部工具栏，挪到菜单栏后非任务视图才能整排隐藏工具区。
  * 与"应用级设置"同类的项（存储位置、开机自启动）统一收进 File 菜单，其余菜单保持系统默认分组。
+ *
+ * 注：笔记不再是独立菜单项（入口统一到左侧导航，避免两处入口不一致）。
+ * 全局快捷键 CmdOrCtrl+Shift+N（新建笔记）继续保留 —— 它是窗口级快捷键，不属于某个菜单的功能入口。
  */
 function buildAppMenu() {
   const auto = autostart.getState();
@@ -176,15 +179,15 @@ function buildAppMenu() {
       },
     },
     {
-      // 笔记模块入口：菜单里保留一个全局快捷键，笔记视图内也有「新建」按钮
-      label: '笔记',
+      // 实用工具：都是「弹窗形态的小工具」，不占视图，随时可用
+      label: '实用工具',
       submenu: [
         {
-          label: '新建笔记',
-          accelerator: 'CmdOrCtrl+Shift+N',
+          label: '实时薪资',
+          accelerator: 'CmdOrCtrl+Shift+S',
           click: () => {
             showWindow();
-            if (mainWindow) mainWindow.webContents.send('ui:new-note');
+            if (mainWindow) mainWindow.webContents.send('ui:salary');
           },
         },
       ],

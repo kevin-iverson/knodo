@@ -1009,6 +1009,32 @@ function registerIpc() {
     db.setSetting('ui.collapsedGroups', list.length ? JSON.stringify(list) : '');
     return true;
   });
+  // 实用工具「实时薪资」的配置：月薪（元）+ 上班 / 下班时间（HH:MM）。
+  // 只做「读得到 / 写回去了」的搬运，计算与校验都在渲染层（要按当前时间实时刷新，没必要过主进程）。
+  ipcMain.handle('ui:getSalary', () => {
+    const raw = db.getSetting('tool.salary', '');
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      if (!v || typeof v !== 'object') return null;
+      return {
+        monthly: Number(v.monthly) || 0,
+        start: String(v.start || ''),
+        end: String(v.end || ''),
+      };
+    } catch (e) {
+      return null;
+    }
+  });
+  ipcMain.handle('ui:setSalary', (_e, p = {}) => {
+    const cfg = {
+      monthly: Math.max(0, Number(p.monthly) || 0),
+      start: String(p.start || ''),
+      end: String(p.end || ''),
+    };
+    db.setSetting('tool.salary', JSON.stringify(cfg));
+    return cfg;
+  });
   ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(url));
   ipcMain.handle('app:getVersion', () => app.getVersion());
 }

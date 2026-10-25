@@ -77,9 +77,19 @@
   dispose 旧的**；`detailPane()` 等查询要优先命中 `modalRoot`（弹窗挂 body，#view 的事件委托
   够不到它，弹窗要自己绑一份委托）。底部操作条不能被 max-height 裁：滚动区用 `.nt-dp-scroll`
   包住正文/附件/引用，foot 放外面。色板色块只能用 `background:` 预览（空元素设 `color:` 看不见）。
-- **CDP 临时脚本的两个坑**：① WebSocket 开着会吊住 node 事件循环，结尾必须 `process.exit(0)`，
+- **CDP 临时脚本的三个坑**：① WebSocket 开着会吊住 node 事件循环，结尾必须 `process.exit(0)`，
   否则看着像「卡住」；② `document.querySelector('.nt-empty')` 会命中**侧栏标签列表**的
-  「暂无标签」，断言必须限定作用域（`.nt-col .nt-list .nt-empty`）。
+  「暂无标签」，断言必须限定作用域（`.nt-col .nt-list .nt-empty`）；
+  ③ **`Runtime.evaluate` 带 `awaitPromise: true` 去求值动态 `import()` 会永久挂住**（表现为脚本
+  「Runtime.evaluate 超时」，且之后同一连接上的求值也可能被拖死）。异步操作一律写成
+  `(async () => { try { … } catch (e) { window.__err = e.message } })(); 1` 这种发后不管的形式，
+  只求同步返回值，再用轮询读结果变量。
+- **CDP 合成的按键进不了 Electron 的原生加速键链路**：`Input.dispatchKeyEvent` 打不出菜单快捷键
+  （`document.hasFocus()` 为 true、`Page.bringToFront`、鼠标点击激活、`Emulation.setFocusEmulationEnabled`
+  全都无效；同一个按键在页内被 DOM 收到、`Escape` 也能关弹窗，但 `Ctrl+Shift+X` 不会触发主进程菜单项）。
+  **菜单 / 加速键只能在主进程侧验证**：写一个外层探针包装 `Menu.setApplicationMenu` 后 `require`
+  真实 `main.js`，把 `Menu.getApplicationMenu()` 的运行时结构 dump 成 JSON 再断言
+  （临时文件放项目外，不改源码）。
 - **`renderer/js/note-find.js`：笔记正文查找 / 替换（Ctrl+F / Ctrl+H）**。
   匹配复用 EasyMDE dist 里已打包的 `cm.getSearchCursor(q, {line:0,ch:0}, {caseFold, multiline:true})`
   （dist 只带了 searchcursor，没有 addon/search 的面板），浮条 UI 自己画。三个要点：
@@ -87,8 +97,19 @@
   ② 快捷键要在**捕获阶段**拦 —— CodeMirror pcDefault 里已绑 `"Ctrl-F": "find"`；
   ③ Esc 要在宿主层（`handleFindShortcut`）兜住，因为焦点常常还在正文里、浮条自身收不到。
 
-## 「今天 / 今日已完成」的口径
-- `state.recentlyDone`（`renderer/js/store.js`）是「今天完成的任务就地保留」标记，存 settings 带自然日，
+## 实用工具：实时薪资（`renderer/js/salary.js`）
+- 入口：顶层菜单「实用工具 → 实时薪资」（`main/main.js` 的 `buildAppMenu`，`CmdOrCtrl+Shift+S`），
+  click 发 `ui:salary` → 渲染层 `openSalaryModal()`。弹窗不占视图，重复点只把已有窗口抢焦点。
+- 配置存 settings `tool.salary`（`{monthly,start,end}`），`ui:getSalary` / `ui:setSalary` 只做 JSON 搬运；
+  **计算与校验都在渲染层**（要按当前时间实时刷新）。
+- 口径（模块头注释里也有，改动前先确认业务含义）：只算周一~周五、只算上下班区间内时长；
+  **时薪 = 月薪 ÷ 当月工作日数 ÷ 每日工时**（不用固定 21.75），保证「整月全勤 = 正好一个月薪」。
+  今日 = 区间内已过分钟 × 时薪；本月 = 1 号至今逐日累加（今天只算已过部分）。
+- 只展示「今日已获得 / 本月累计」，**不展示总月薪**（隐私，弹窗可能被旁人看到）。
+- 计算逻辑可脱离 UI 单独复核：从模块里抽「时间工具」到「弹窗」两段注释之间的代码，
+  写进临时 `.mjs` 直接 import（依赖 `api.js` / `modal.js` 的只有弹窗段，纯计算段无副作用）。
+
+## 「今天 / 今日已完成」的口径- `state.recentlyDone`（`renderer/js/store.js`）是「今天完成的任务就地保留」标记，存 settings 带自然日，
   跨天自动作废、点「隐藏已完成」清空。**记录不分视图、只有「今天」列表负责展示**：
   `noteCompletionChange(id, completed, parentId)` 在任何视图的勾选入口都要调。
 - 子任务全部勾完时 `db.toggleTask` 会递归把父任务标记完成，这类「连带完成」的祖先由
