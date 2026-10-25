@@ -1035,6 +1035,29 @@ function registerIpc() {
     db.setSetting('tool.salary', JSON.stringify(cfg));
     return cfg;
   });
+  // 实用工具（代码格式化 / 文本对比）的选项：语言 / 缩进 / 对比模式等。
+  // 同样是纯搬运——格式化与对比都在渲染层做（要按需加载第三方库、实时响应输入，没必要过主进程）。
+  // key 白名单：避免渲染层拿它当任意键值存储使用。
+  const TOOL_PREF_KEYS = ['formatter', 'diff'];
+  ipcMain.handle('ui:getToolPref', (_e, key) => {
+    const k = TOOL_PREF_KEYS.includes(String(key || '')) ? String(key) : '';
+    if (!k) return null;
+    const raw = db.getSetting(`tool.${k}`, '');
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      return v && typeof v === 'object' ? v : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  ipcMain.handle('ui:setToolPref', (_e, key, p) => {
+    const k = TOOL_PREF_KEYS.includes(String(key || '')) ? String(key) : '';
+    if (!k) return false;
+    const v = p && typeof p === 'object' && !Array.isArray(p) ? p : {};
+    db.setSetting(`tool.${k}`, JSON.stringify(v));
+    return true;
+  });
   ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(url));
   ipcMain.handle('app:getVersion', () => app.getVersion());
 }

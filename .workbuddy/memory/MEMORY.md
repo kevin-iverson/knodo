@@ -119,6 +119,16 @@
   ② 快捷键要在**捕获阶段**拦 —— CodeMirror pcDefault 里已绑 `"Ctrl-F": "find"`；
   ③ Esc 要在宿主层（`handleFindShortcut`）兜住，因为焦点常常还在正文里、浮条自身收不到。
 
+## 实用工具浮窗（`renderer/js/tool-window.js`）与第三方库 vendor
+- 菜单「实用工具」下的工具（实时薪资、代码格式化、文本对比）统一用**非模态浮窗**：无遮罩、不抢焦点，
+  主界面照常操作；`openToolWindow({key, title, html, onMount, ...})` 同 key 单实例（重复调用置顶）。
+  z-index 210~248，刻意低于 `.modal-mask`(300)。几何 / 最小化最大化状态记 `localStorage['tool-win:'+key]`。
+- **浏览器端三方库一律走 esbuild 打包**：入口放 `scripts/vendor/*.mjs`，`npm run build:tools` 产出
+  `renderer/vendor/tools/*.mjs`（ESM + minify + 内联 NODE_ENV），渲染层动态 `import('../vendor/tools/x.mjs')` 懒加载。
+  打包产物不带 node_modules，vendor 必须随仓库提交；大的（如 prettier 的 java 插件）单独成包按需拉。
+- 配置存 settings `tool.<key>`，走 `api.ui.getToolPref/setToolPref`（`main/ipc.js` 有键白名单），
+  新增工具要把 key 加进白名单 + preload 的 `api.on` 事件白名单。
+
 ## 实用工具：实时薪资（`renderer/js/salary.js`）
 - 入口：顶层菜单「实用工具 → 实时薪资」（`main/main.js` 的 `buildAppMenu`，`CmdOrCtrl+Shift+S`），
   click 发 `ui:salary` → 渲染层 `openSalaryModal()`。弹窗不占视图，重复点只把已有窗口抢焦点。
@@ -142,6 +152,16 @@
 - UI：`npm run smoke`；若在无桌面环境里卡住，可用
   `electron . --user-data-dir=<临时目录> --remote-debugging-port=9335` + CDP（参考 `scripts/check-packaged.js`）
   直接驱动 DOM 验证，注意**不要**指向真实用户数据目录。
+- **跑 `npm run smoke` 的三个环境坑**（整套现在约 2分50秒，比默认 2 分钟超时还长）：
+  ① 每条 PowerShell 命令都是新会话，`Remove-Item Env:\ELECTRON_RUN_AS_NODE` 必须写在同一条命令里，
+     否则 electron 退化成 node（报 `Cannot read properties of undefined (reading 'setPath')`）；
+  ② 同条命令里加 `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`，否则中文日志变 GBK 乱码；
+  ③ 调用工具要显式给 `timeout: 600000`，不然跑到一半被掐断（日志停在某一轮且没有 SMOKE_OK / SMOKE_FAIL）。
+  `--smoke-test` 自己会把 userData 切到 `os.tmpdir()/todo-smoke-profile` 并清空，**不要再传 `--user-data-dir`**。
+- **CDP 长脚本会被后台节流**：窗口不可见时渲染进程的 `setTimeout` 被限速，脚本表现为「卡住不返回」
+  （实际已执行完）。启动调试实例时加 `--disable-background-timer-throttling --disable-renderer-backgrounding
+  --disable-backgrounding-occluded-windows`；验证结果时把中间状态挂到 `window.__out` 再轮询，
+  别用 `awaitPromise` 一次性等（求值动态 `import()` 会永久挂住）。
 - **本机启动 electron 必须先清掉环境变量**：`env -u ELECTRON_RUN_AS_NODE ./node_modules/electron/dist/electron.exe .`
   （该变量会让 electron.exe 退化成 node 直接跑 main.js，报 `app.requestSingleInstanceLock is not a function`）。
   临时目录要每次新建，`rm -rf` 会撞上宿主的批量删除守卫。

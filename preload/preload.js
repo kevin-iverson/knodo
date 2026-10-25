@@ -201,6 +201,9 @@ contextBridge.exposeInMainWorld('api', {
     // 实用工具「实时薪资」：月薪 + 上下班时间的配置（存 settings，下次打开直接回填）
     getSalary: () => call('ui:getSalary'),
     setSalary: (p) => call('ui:setSalary', p),
+    // 实用工具（代码格式化 / 文本对比）的选项：存 settings，下次打开直接回填
+    getToolPref: (key) => call('ui:getToolPref', key),
+    setToolPref: (key, p) => call('ui:setToolPref', key, p),
     getCollapsedGroups: () => call('ui:getCollapsedGroups'),
     setCollapsedGroups: (keys) => call('ui:setCollapsedGroups', keys),
   },
@@ -224,7 +227,10 @@ contextBridge.exposeInMainWorld('api', {
   },
   // 主进程事件
   on: (channel, cb) => {
-    const allowed = ['ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary'];
+    const allowed = [
+      'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary',
+      'ui:code-format', 'ui:text-diff',
+    ];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));
     }

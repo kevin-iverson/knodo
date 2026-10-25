@@ -9,22 +9,29 @@
     "start": "electron .",
     "smoke": "electron . --smoke-test",
     "gen-icon": "node scripts/gen-icon.js",
+    "build:tools": "node scripts/build-tools.js",
     "test:db": "node scripts/smoke-db.js",
-    "dist": "node scripts/gen-icon.js && node scripts/build-win.js",
+    "dist": "node scripts/gen-icon.js && node scripts/build-tools.js && node scripts/build-win.js",
     "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --target portable",
     "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis",
     "release": "node scripts/release-gitee.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "diff": "^8.0.4",
     "easymde": "^2.21.0",
     "flatpickr": "^4.6.13",
     "markdown-it": "^14.3.3",
-    "tom-select": "^2.4.3"
+    "prettier": "^3.9.10",
+    "prettier-plugin-java": "2.6.6",
+    "sql-formatter": "^15.9.0",
+    "tom-select": "^2.4.3",
+    "xml-formatter": "^3.7.0"
   },
   "devDependencies": {
     "electron": "^44.8.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.12"
   },
   "build": {
     "appId": "com.workbuddy.todo-desktop",

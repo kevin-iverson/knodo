@@ -2085,3 +2085,144 @@ html.is-resizing .detail-foot { pointer-events: none; }
   display: inline-block; margin-top: 8px; padding: 1px 8px; border-radius: 999px;
   font-size: 11px; color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
+
+/* ---------------- 实用工具浮窗（非模态，见 js/tool-window.js） ----------------
+   与 .modal 的区别：没有遮罩、不接管键盘，开着它照样能点主界面；
+   z-index 由 JS 控制在 210~248，刻意低于 .modal-mask(300)，保证模态对话框永远盖在上面。 */
+.tool-win {
+  position: fixed; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.tool-win.is-dragging, .tool-win.is-resizing { user-select: none; }
+.tool-win.is-min .tool-win-body, .tool-win.is-min .tool-win-grip { display: none; }
+.tool-win-head {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px 7px 14px; border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar); cursor: move;
+}
+.tool-win.is-min .tool-win-head { border-bottom: none; }
+.tool-win-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.tool-win-btns { margin-left: auto; display: flex; gap: 2px; }
+.tool-win-btn {
+  border: none; background: none; cursor: pointer; color: var(--text-3);
+  width: 26px; height: 24px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1;
+}
+.tool-win-btn:hover { background: var(--bg-hover); color: var(--text); }
+.tool-win-btn[data-act="close"]:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.tool-win-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.tool-win-grip { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; }
+.tool-win-grip::after {
+  content: ''; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
+  border-right: 2px solid var(--text-3); border-bottom: 2px solid var(--text-3); opacity: 0.55;
+}
+.tool-win-grip:hover::after { opacity: 1; }
+
+/* ---------------- 实用工具：公共小控件 ---------------- */
+.fmt-wrap, .df-wrap {
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px 12px; overflow: hidden;
+}
+.fmt-bar, .df-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fmt-field, .df-field { display: flex; align-items: center; gap: 4px; }
+.fmt-label, .df-label { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.fmt-ctl, .df-ctl {
+  padding: 4px 8px; font: inherit; font-size: 12.5px; outline: none; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-panel); color: var(--text);
+}
+.fmt-ctl:focus, .df-ctl:focus { border-color: var(--primary); }
+.fmt-check, .df-check {
+  display: flex; align-items: center; gap: 4px; font-size: 12.5px;
+  color: var(--text-2); cursor: pointer; user-select: none;
+}
+.fmt-check input, .df-check input { cursor: pointer; accent-color: var(--primary); }
+.fmt-spacer, .df-spacer { flex: 1 1 auto; min-width: 0; }
+.fmt-hint { font-size: 11.5px; color: var(--text-3); }
+.fmt-panes, .df-panes {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; min-height: 0;
+}
+.fmt-pane, .df-pane {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg); overflow: hidden;
+}
+.fmt-pane-head, .df-pane-head {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar);
+}
+.fmt-pane-title, .df-pane-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.fmt-count, .df-count {
+  margin-left: auto; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums;
+}
+.fmt-area, .df-area {
+  flex: 1 1 auto; min-height: 0; width: 100%; resize: none; border: none; outline: none;
+  padding: 8px 10px; background: transparent; color: var(--text);
+  font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
+  font-size: 12.5px; line-height: 1.65; tab-size: 2;
+}
+.fmt-area:focus, .df-area:focus { background: color-mix(in srgb, var(--primary) 4%, transparent); }
+
+/* ---------------- 实用工具：代码格式化 ---------------- */
+.fmt-panes { flex: 1 1 auto; }
+.fmt-status {
+  flex: 0 0 auto; padding: 5px 9px; border-radius: var(--radius-sm);
+  font-size: 12px; line-height: 1.5; color: var(--text-2); background: var(--bg);
+  max-height: 92px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+}
+.fmt-status[data-state="ok"] { color: var(--green); background: color-mix(in srgb, var(--green) 10%, var(--bg)); }
+.fmt-status[data-state="err"] { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--bg)); }
+.fmt-foot { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+.fmt-foot .fmt-spacer { flex: 1 1 auto; }
+
+/* ---------------- 实用工具：文本对比 ---------------- */
+.df-panes { flex: 0 0 34%; min-height: 120px; }
+.df-sep { flex: 0 0 auto; width: 1px; height: 18px; background: var(--border); }
+.df-seg {
+  flex: 0 0 auto; display: inline-flex; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.df-seg .df-mode {
+  border: none; background: none; cursor: pointer; padding: 4px 10px;
+  font: inherit; font-size: 12.5px; color: var(--text-2);
+}
+.df-seg .df-mode + .df-mode { border-left: 1px solid var(--border); }
+.df-seg .df-mode.active { background: var(--bg-active); color: var(--primary); font-weight: 600; }
+.df-result {
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); overflow: hidden;
+}
+.df-result-head {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar);
+}
+.df-stat { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.df-n-add { color: var(--green); }
+.df-n-del { color: var(--danger); }
+.df-n-same { color: var(--text-3); font-weight: 400; }
+.df-view {
+  flex: 1 1 auto; min-height: 0; overflow: auto;
+  font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
+  font-size: 12.5px; line-height: 1.7;
+}
+.df-empty { padding: 22px 16px; text-align: center; font-size: 13px; color: var(--text-3); }
+.df-empty.err { color: var(--danger); }
+/* 并排：行号 | 内容 | 行号 | 内容；内联：左行号 | 右行号 | +/- | 内容 */
+.df-row { display: grid; grid-template-columns: 46px minmax(0, 1fr) 46px minmax(0, 1fr); }
+.df-row.inline { grid-template-columns: 46px 46px 18px minmax(0, 1fr); }
+.df-ln {
+  padding-right: 8px; text-align: right; color: var(--text-3);
+  font-variant-numeric: tabular-nums; user-select: none; background: var(--bg-sidebar);
+}
+.df-cell { padding: 0 8px; white-space: pre-wrap; word-break: break-word; }
+.df-ln.del, .df-cell.del { background: color-mix(in srgb, var(--danger) 14%, var(--bg-sidebar)); }
+.df-ln.add, .df-cell.add { background: color-mix(in srgb, var(--green) 14%, var(--bg-sidebar)); }
+.df-cell.pad { background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--border) 60%, transparent) 6px 8px); }
+.df-sign { text-align: center; color: var(--text-3); user-select: none; }
+.df-sign.del { color: var(--danger); }
+.df-sign.add { color: var(--green); }
+.df-w.del { background: color-mix(in srgb, var(--danger) 30%, transparent); border-radius: 2px; }
+.df-w.add { background: color-mix(in srgb, var(--green) 30%, transparent); border-radius: 2px; }
+@media (max-width: 720px) {
+  .fmt-panes, .df-panes { grid-template-columns: minmax(0, 1fr); }
+}

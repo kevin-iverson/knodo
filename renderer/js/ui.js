@@ -22,6 +22,8 @@ import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meeti
 import { renderNotes, setNotesHandlers, createNote, disposeNotes } from './notes.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
 import { openSalaryModal, setSalaryHandlers } from './salary.js';
+import { openFormatterWindow, setFormatterHandlers } from './code-format.js';
+import { openDiffWindow, setDiffHandlers } from './text-diff.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
 
@@ -149,6 +151,15 @@ function bindStaticEvents() {
   setSalaryHandlers({ toast });
   api.on('ui:salary', () => {
     openSalaryModal().catch((e) => toast(`打开实时薪资失败：${(e && e.message) || e}`));
+  });
+  // 实用工具 → 代码格式化 / 文本对比（非模态浮窗，开着也能继续操作主界面）
+  setFormatterHandlers({ toast });
+  api.on('ui:code-format', () => {
+    openFormatterWindow().catch((e) => toast(`打开代码格式化失败：${(e && e.message) || e}`));
+  });
+  setDiffHandlers({ toast });
+  api.on('ui:text-diff', () => {
+    openDiffWindow().catch((e) => toast(`打开文本对比失败：${(e && e.message) || e}`));
   });
   // 会议录制（工具栏按钮）
   bindRecordButton();

@@ -189,6 +189,23 @@ function buildAppMenu() {
       label: '实用工具',
       submenu: [
         {
+          // 代码格式化 / 文本对比：非模态浮窗（不挡主界面），库按需加载
+          label: '代码格式化',
+          accelerator: 'CmdOrCtrl+Shift+F',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:code-format');
+          },
+        },
+        {
+          label: '文本对比',
+          accelerator: 'CmdOrCtrl+Shift+D',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:text-diff');
+          },
+        },
+        {
           label: '实时薪资',
           accelerator: 'CmdOrCtrl+Shift+S',
           click: () => {
@@ -2330,6 +2347,147 @@ app.whenReady().then(() => {
           console.log(`[SMOKE] 检索联想（Top5）= ${r17.topCount} 条（≤5=${r17.topCapped ? '是' : '否'}；均带分值=${r17.topHasScore ? '是' : '否'}）`);
           console.log(`[SMOKE] 检索联想（界面）= 精确 ${JSON.stringify(r17.uiExact)}；联想 ${JSON.stringify(r17.uiAssoc)}；无关联 ${JSON.stringify(r17.uiNone)}`);
 
+          /* ============ 第 18 轮：实用工具（代码格式化 / 文本对比 浮窗） ============ */
+          // 菜单快捷键走不了 CDP，这里直接调渲染层的入口（与菜单 ipc 触发的是同一条路径）：
+          // 1) 各语言格式化是否真出结果   2) 浮窗是否非模态（无遮罩、开着还能操作主界面）
+          // 3) 最小化 / 最大化   4) 对比的增删行、内联视图、忽略大小写   5) 对比里复用格式化
+          const r18 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const q = (s) => document.querySelector(s);
+              try {
+                const fmt = await import('./js/code-format.js');
+                const dfm = await import('./js/text-diff.js');
+                out.modulesLoaded = !!fmt && !!dfm;
+
+                /* ---- 1) 代码格式化 ---- */
+                await fmt.openFormatterWindow();
+                await wait(400);
+                const win = q('.tool-win[data-tool="code-format"]');
+                out.fmtOpened = !!win;
+                out.noMask = document.querySelectorAll('.modal-mask').length === 0;
+                out.winBtns = win ? win.querySelectorAll('.tool-win-btn').length : 0;
+                const inEl = win.querySelector('.fmt-in');
+                const outEl = win.querySelector('.fmt-out');
+                const status = win.querySelector('.fmt-status');
+                const run = async (text, lang) => {
+                  const sel = win.querySelector('.fmt-lang');
+                  sel.value = lang;
+                  sel.dispatchEvent(new Event('change', { bubbles: true }));
+                  inEl.value = text;
+                  inEl.dispatchEvent(new Event('input', { bubbles: true }));
+                  win.querySelector('.fmt-run').click();
+                  await wait(1200);
+                  return outEl.value;
+                };
+                const j = await run('{"b":2,"a":[1,2,{"c":3}]}', 'json');
+                out.jsonOk = /\\n/.test(j) && /"b": 2/.test(j) && /\\[/.test(j);
+                const x = await run('<root><a x="1">hi</a></root>', 'xml');
+                out.xmlOk = /\\n/.test(x) && /<a /.test(x);
+                const s = await run('select a,b from t where a=1', 'sql');
+                out.sqlOk = /from/.test(s) && /\\n/.test(s);
+                const jv = await run('public class A{public static void main(String[] a){System.out.println(1);}}', 'java');
+                out.javaOk = /public class A/.test(jv) && /\\n/.test(jv);
+                const au = await run('<r><i>1</i></r>', 'auto');
+                out.autoOk = /\\n/.test(au);
+                // 其余 prettier 语言也要「真出结果」：曾经把 out 初始化成原文，
+                // 导致这些语言的格式化静默失效（界面还显示已格式化），这里逐个守住
+                out.multi = {};
+                out.multiOk = true;
+                const multi = [
+                  ['javascript', 'function f(a){return a+1}'],
+                  ['typescript', 'interface A{x:number}const a:A={x:1}'],
+                  ['html', '<div   class="a"><p>hi</p><p>yo</p></div>'],
+                  ['css', '.a{color:red;margin:0}.b{padding:1px}'],
+                  ['scss', '.a{&>b{color:red}}'],
+                  ['markdown', '# t\\n\\n*  a\\n*  b'],
+                  ['yaml', 'a:   1\\nb:\\n  - x'],
+                ];
+                for (const [lg, code] of multi) {
+                  const got = await run(code, lg);
+                  const ok = String(got).trim() !== code.trim();
+                  out.multi[lg] = ok;
+                  if (!ok) out.multiOk = false;
+                }
+                await run('{"a":}', 'json'); // 语法错误：必须报错，不能静默
+                out.errShown = status.dataset.state === 'err';
+                out.statusText = status.textContent.slice(0, 50);
+
+                /* ---- 2) 最小化 / 最大化 / 还原 ---- */
+                win.querySelector('[data-act="min"]').click(); await wait(200);
+                out.minApplied = win.classList.contains('is-min')
+                  && getComputedStyle(win.querySelector('.tool-win-body')).display === 'none';
+                win.querySelector('[data-act="min"]').click(); await wait(200);
+                out.minRestored = !win.classList.contains('is-min');
+                win.querySelector('[data-act="max"]').click(); await wait(300);
+                out.maxApplied = win.classList.contains('is-max')
+                  && win.getBoundingClientRect().width >= window.innerWidth - 40;
+                win.querySelector('[data-act="max"]').click(); await wait(300);
+                out.maxRestored = !win.classList.contains('is-max');
+
+                /* ---- 3) 非模态：开着工具窗照样能操作主界面 ---- */
+                document.querySelector('.nav-item[data-view="all"]').click();
+                await wait(500);
+                out.mainUsable = (q('#view-title') || {}).textContent === '全部任务' && !!win.isConnected;
+
+                /* ---- 4) 文本对比 ---- */
+                await dfm.openDiffWindow();
+                await wait(400);
+                const dwin = q('.tool-win[data-tool="text-diff"]');
+                out.diffOpened = !!dwin;
+                out.bothOpen = document.querySelectorAll('.tool-win').length === 2;
+                const aEl = dwin.querySelector('.df-a');
+                const bEl = dwin.querySelector('.df-b');
+                const view = dwin.querySelector('.df-view');
+                const feed = async (a, b) => {
+                  aEl.value = a; aEl.dispatchEvent(new Event('input', { bubbles: true }));
+                  bEl.value = b; bEl.dispatchEvent(new Event('input', { bubbles: true }));
+                  await wait(800);
+                };
+                await feed('line1\\nline2\\nline3', 'line1\\nline two\\nline3');
+                out.diffRows = view.querySelectorAll('.df-row').length;
+                out.diffAdd = view.querySelectorAll('.df-cell.add').length;
+                out.diffDel = view.querySelectorAll('.df-cell.del').length;
+                out.diffStat = (dwin.querySelector('.df-stat') || {}).textContent || '';
+                dwin.querySelector('.df-mode[data-mode="inline"]').click(); await wait(700);
+                out.inlineRows = view.querySelectorAll('.df-row.inline').length;
+                out.inlineSigns = view.querySelectorAll('.df-sign.del').length + view.querySelectorAll('.df-sign.add').length;
+                dwin.querySelector('.df-mode[data-mode="split"]').click(); await wait(700);
+                out.splitBack = view.querySelectorAll('.df-row').length >= 3 && view.querySelectorAll('.df-row.inline').length === 0;
+                // 忽略大小写：Hello / hello 判为一致
+                await feed('Hello', 'hello');
+                out.caseDiff = view.querySelectorAll('.df-cell.del').length;
+                const cb = dwin.querySelector('.df-case');
+                cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true }));
+                await wait(700);
+                out.caseIgnored = /一致/.test(view.textContent);
+                cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true }));
+                await wait(600);
+
+                /* ---- 5) 对比里复用格式化：同一段 JSON 排版不同 → 格式化后应当无差异 ---- */
+                await feed('{"a":1,"b":2}', '{\\n  "a": 1,\\n  "b": 2\\n}');
+                out.beforeFormat = view.querySelectorAll('.df-cell.del').length;
+                dwin.querySelector('.df-format').click();
+                await wait(1600);
+                out.afterFormat = view.querySelectorAll('.df-cell.del').length;
+                out.formatConverged = /一致/.test(view.textContent);
+                out.formattedA = (dwin.querySelector('.df-a') || {}).value || '';
+
+                /* ---- 6) 关闭后不留残留 ---- */
+                dwin.querySelector('[data-act="close"]').click(); await wait(250);
+                win.querySelector('[data-act="close"]').click(); await wait(250);
+                out.closed = document.querySelectorAll('.tool-win').length === 0;
+              } catch (e) {
+                out.err = String((e && e.message) || e);
+              }
+              return out;
+            })()
+          `);
+          console.log(`[SMOKE] 实用工具·格式化 = 开窗=${r18.fmtOpened ? '是' : '否'}（无遮罩=${r18.noMask ? '是' : '否'}）JSON=${r18.jsonOk ? '✓' : '✗'} XML=${r18.xmlOk ? '✓' : '✗'} SQL=${r18.sqlOk ? '✓' : '✗'} Java=${r18.javaOk ? '✓' : '✗'} 自动识别=${r18.autoOk ? '✓' : '✗'}；其它语言全通过=${r18.multiOk ? '✓' : '✗'}${r18.multiOk ? '' : '（' + JSON.stringify(r18.multi) + '）'}；语法错误提示=${r18.errShown ? '有' : '无'}（${r18.statusText || '-'}）`);
+          console.log(`[SMOKE] 实用工具·浮窗 = 最小化=${r18.minApplied ? '✓' : '✗'} 还原=${r18.minRestored ? '✓' : '✗'}；最大化=${r18.maxApplied ? '✓' : '✗'} 还原=${r18.maxRestored ? '✓' : '✗'}；开着仍能操作主界面=${r18.mainUsable ? '是' : '否'}；两窗共存=${r18.bothOpen ? '是' : '否'}`);
+          console.log(`[SMOKE] 实用工具·对比 = 行 ${r18.diffRows}（增 ${r18.diffAdd} / 删 ${r18.diffDel}）统计「${r18.diffStat || '-'}」；内联=${r18.inlineRows} 行 / ${r18.inlineSigns} 个符号；忽略大小写生效=${r18.caseIgnored ? '是' : '否'}；格式化后收敛=${r18.formatConverged ? '是' : '否'}（前 ${r18.beforeFormat} → 后 ${r18.afterFormat}）；关闭=${r18.closed ? '✓' : '✗'}${r18.err ? '；异常=' + r18.err : ''}`);
+
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
@@ -2454,7 +2612,15 @@ app.whenReady().then(() => {
             && r17.topCapped && r17.topHasScore
             && r17.uiExact.items >= 1 && r17.uiExact.bannerUnique && !r17.uiExact.empty
             && r17.uiAssoc.items >= 1 && (r17.uiAssoc.reasons || []).some((s) => /缩写还原|同义词|关键词/.test(s))
-            && r17.uiNone.empty && r17.uiNone.items === 0 && r17.uiNone.tried >= 1;
+            && r17.uiNone.empty && r17.uiNone.items === 0 && r17.uiNone.tried >= 1
+            // 第 18 轮：实用工具（代码格式化 / 文本对比 浮窗）
+            && r18.fmtOpened && r18.noMask && r18.winBtns >= 3
+            && r18.jsonOk && r18.xmlOk && r18.sqlOk && r18.javaOk && r18.autoOk && r18.multiOk && r18.errShown
+            && r18.minApplied && r18.minRestored && r18.maxApplied && r18.maxRestored && r18.mainUsable
+            && r18.diffOpened && r18.bothOpen && r18.diffRows >= 3 && r18.diffAdd >= 1 && r18.diffDel >= 1
+            && r18.inlineRows >= 3 && r18.inlineSigns >= 2 && r18.splitBack
+            && r18.caseDiff >= 1 && r18.caseIgnored
+            && r18.beforeFormat >= 1 && r18.formatConverged && r18.closed && !r18.err;
           if (!allOk) {
             // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
             // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
@@ -2492,6 +2658,7 @@ app.whenReady().then(() => {
             dumpFalsy('r15', r15);
             dumpFalsy('r16', r16);
             dumpFalsy('r17', r17);
+            dumpFalsy('r18', r18);
             // 假值列表抓不到「值非假但不匹配」的条件（如 xx === '旧文案'），补一行提示免得对着 && 死磕。
             if (!printed) {
               console.log('[SMOKE] 未通过项：无假值 → 问题在字符串/数值比对上（比对值或界面文案已过时）');
