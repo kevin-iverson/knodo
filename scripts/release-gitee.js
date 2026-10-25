@@ -34,6 +34,8 @@ if (!token) {
 }
 const tagIdx = process.argv.indexOf('--tag');
 const pkg = require(path.join(REPO_ROOT, 'package.json'));
+/** 对外品牌名：以打包配置里的 productName 为唯一来源（package.json 的 name 是内部标识，不面向用户） */
+const BRAND = (pkg.build && pkg.build.productName) || pkg.name;
 const tag = (tagIdx > -1 && process.argv[tagIdx + 1]) || `v${pkg.version}`;
 
 // ---- 从 git remote 解析 owner/repo（兼容 https 与 ssh 地址）----
@@ -66,21 +68,27 @@ async function main() {
 
   // 2. 创建 Release（同名已存在则复用其 id）
   const desc = [
-    `## ${pkg.name} ${tag}`,
+    `## ${BRAND} ${tag}`,
     '',
     '### 下载',
-    '- **TODO待办-*.7z**：免安装版，解压后运行其中的 `TODO待办.exe`（需 7-Zip / WinRAR / Win11 自带解压）。',
+    `- **${BRAND}-*.7z**：免安装版，解压后运行其中的 \`${BRAND}.exe\`（需 7-Zip / WinRAR / Win11 自带解压）。`,
     '  数据保存在 exe 同级的 `data/` 目录，整个文件夹拷走即可换机。',
     '',
     '### 安装说明',
     '1. 下载 .7z 文件并解压到任意目录；',
-    '2. 双击 `TODO待办.exe` 运行；首次运行如被 SmartScreen 拦截，点「更多信息 → 仍要运行」（未购买代码签名证书）。', '',
+    `2. 双击 \`${BRAND}.exe\` 运行；首次运行如被 SmartScreen 拦截，点「更多信息 → 仍要运行」（未购买代码签名证书）。`, '',
     '### 本版功能',
     '- 任务管理（分组/标签/子任务/优先级/计划日期/提醒/归档/统计下钻）',
     '- AI 报告与 AI 检索（联想检索 + 自定义提示词，历史记录本地持久化）',
     '- 会议录制 → 语音转写 → AI 纪要（支持国内 ASR 预设）',
     '',
-    '### v1.5.0 更新',
+    '### v1.6.0 更新',
+    '- 品牌重塑：应用更名 Knodo（Knowledge + Todo），全新 Logo（K 竖条 × O 知识圆环）与应用图标',
+    '- 新增实用工具「实时薪资」：按月薪与上下班时间实时累计今日 / 本月已获得薪资（不展示总月薪）',
+    '- 侧栏导航调整：笔记入口移至归档下方，精简顶部菜单',
+    '- 笔记正文查找替换（Ctrl+F / Ctrl+H），支持全部替换与大小写开关',
+    '- 修复：其他视图勾选完成的任务也计入「今天」列表；修复顶部搜索框失联',
+    '',    '### v1.5.0 更新',
     '- 笔记模块：新增 Markdown 笔记（目录 / 标签组织、搜索、置顶、归档、回收站），并作为内置知识库供 AI 检索',
     '- 笔记交互改为「列表 + 弹窗编辑」：点任意笔记弹出编辑器，列表的筛选与滚动位置不再被打断',
     '- 笔记编辑弹窗重做：默认约 88% 窗口大小（不再整屏覆盖），右下角可拖拽缩放并记住尺寸，抬头支持一键最大化；分栏 / 预览都在弹窗内完成，正文与预览各自滚动',
@@ -141,7 +149,7 @@ async function main() {
       body: JSON.stringify({
         access_token: token,
         tag_name: tag,
-        name: `${pkg.name} ${tag}`,
+        name: `${BRAND} ${tag}`,
         body: desc,
         target_commitish: sha,
         prerelease: false,

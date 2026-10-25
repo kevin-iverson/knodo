@@ -1,7 +1,7 @@
 {
   "name": "todo-desktop",
-  "version": "1.5.0",
-  "description": "Windows 桌面端个人 TODO 待办应用（Electron + SQLite，本地存储 + AI 报告）",
+  "version": "1.6.0",
+  "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": "WorkBuddy",
   "license": "MIT",
@@ -28,7 +28,7 @@
   },
   "build": {
     "appId": "com.workbuddy.todo-desktop",
-    "productName": "TODO待办",
+    "productName": "Knodo",
     "copyright": "Copyright © 2026 WorkBuddy",
     "directories": {
       "output": "dist",
@@ -66,7 +66,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "TODO 待办",
+      "shortcutName": "Knodo",
       "language": "2052",
       "installerLanguages": [
         "zh_CN"
