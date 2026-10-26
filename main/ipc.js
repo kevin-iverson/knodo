@@ -870,14 +870,31 @@ function registerIpc() {
   ipcMain.handle('kb:stats', withDb((id) => db.kbStats(id || knowledge.NOTES_KB_ID)));
   ipcMain.handle('kb:reindex', withDb(() => knowledge.indexAll()));
   ipcMain.handle('kb:indexNote', withDb((id) => knowledge.indexNote(id)));
-  /** AI 提问：召回笔记片段 → 交给对话模型作答（无 AI 配置时降级为纯召回） */
+  /** AI 提问：召回笔记片段 → 交给对话模型作答（无 AI 配置时降级为纯召回）。
+   *  每次提问都落库（含降级 / 无命中），供问答弹窗回看与删除。 */
   ipcMain.handle('kb:ask', guard(async (_e, { question, topK, noteIds } = {}) => {
     if (!db.isReady()) throw new Error('数据库未就绪');
-    return knowledge.answer({ question, cfg: chatConfig(), topK, noteIds });
+    const res = await knowledge.answer({ question, cfg: chatConfig(), topK, noteIds });
+    try {
+      const rec = db.createKbQa({
+        question,
+        answer: res.answer,
+        hits: res.hits,
+        degraded: res.degraded,
+        reason: res.reason || '',
+      });
+      return { ...res, qaId: rec ? rec.id : null };
+    } catch (e) {
+      return res; // 历史落库失败不影响本次问答
+    }
   }));
   /** 只做召回不调模型（界面「检索笔记」按钮用） */
   ipcMain.handle('kb:retrieve', withDb(({ query, topK, noteIds } = {}) =>
     knowledge.retrieve({ query, topK, noteIds })));
+  /** 问答历史 */
+  ipcMain.handle('kb:qaList', withDb((limit) => db.listKbQa(Number(limit) || 50)));
+  ipcMain.handle('kb:qaGet', withDb((id) => db.getKbQa(id)));
+  ipcMain.handle('kb:qaRemove', withDb((id) => ({ ok: !!db.deleteKbQa(id) })));
 
   /* ---------- 对外同步（导出给腾讯文档 / ima 等第三方） ---------- */
   // 任务 → Markdown 表格 / CSV（CSV 可直接导入腾讯文档表格）

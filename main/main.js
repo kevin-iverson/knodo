@@ -2522,7 +2522,7 @@ app.whenReady().then(() => {
                 // 语法高亮：差异行里应出现 highlight.js 的 token 节点
                 await feed('{"a":1}', '{"a":2}');
                 out.diffHl = view.querySelectorAll('.df-cell .hljs-attr').length;
-                const hlBox = dwin.querySelector('.df-hl');
+                const hlBox = dwin.querySelector('.df-hl-toggle');
                 out.diffHlToggle = !!hlBox;
                 if (hlBox) {
                   hlBox.checked = false; hlBox.dispatchEvent(new Event('change', { bubbles: true }));

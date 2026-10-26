@@ -147,6 +147,9 @@ contextBridge.exposeInMainWorld('api', {
     indexNote: (id) => call('kb:indexNote', id),
     ask: (p) => call('kb:ask', p),
     retrieve: (p) => call('kb:retrieve', p),
+    qaList: (limit) => call('kb:qaList', limit),
+    qaGet: (id) => call('kb:qaGet', id),
+    qaRemove: (id) => call('kb:qaRemove', id),
   },
   // 会议录制
   rec: {

@@ -396,13 +396,38 @@ function bindReportEvents() {
   const aiBtn = document.getElementById('rp-open-ai-settings');
   if (aiBtn) aiBtn.addEventListener('click', () => openAiSettingsModal().then(renderReports));
 
-  // 初始化日期范围（默认本周）
+  // 初始化日期范围（默认本周），并建立日期联动
   const now = new Date();
   const monday = new Date(now);
   monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
   const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  document.getElementById('rp-start').value = fmt(monday);
-  document.getElementById('rp-end').value = fmt(now);
+  const startEl = document.getElementById('rp-start');
+  const endEl = document.getElementById('rp-end');
+  startEl.value = fmt(monday);
+  endEl.value = fmt(now);
+  endEl.min = startEl.value;
+
+  /**
+   * 报告类型 → 预置日期区间（与主进程 resolveRange 的口径一致）：
+   * 日报=今天、周报=本周一至今、月报=本月 1 日至今。切换类型即回填，
+   * 回填后仍可手动微调（自定义范围则不动日期）。
+   */
+  const applyTypePreset = (type) => {
+    if (type === 'custom') return;
+    const base = new Date();
+    const startDate = new Date(base);
+    if (type === 'week') startDate.setDate(base.getDate() - ((base.getDay() + 6) % 7));
+    else if (type === 'month') startDate.setDate(1);
+    startEl.value = fmt(startDate);
+    endEl.value = fmt(base);
+    endEl.min = startEl.value;
+  };
+  document.getElementById('rp-type').addEventListener('change', (e) => applyTypePreset(e.target.value));
+  // 结束日期不能早于开始日期：改开始时把下限带上，已填的结束早于开始就吸附
+  startEl.addEventListener('change', () => {
+    endEl.min = startEl.value;
+    if (endEl.value && endEl.value < startEl.value) endEl.value = startEl.value;
+  });
 
   // 生成报告
   document.getElementById('rp-generate').addEventListener('click', async () => {

@@ -359,6 +359,21 @@ const MIGRATIONS = [
   (d) => {
     d.exec("ALTER TABLE notes ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'");
   },
+  // v12：知识库问答历史。kb:ask 的每次提问都落库（含降级 / 无命中），
+  // 供问答弹窗回看与删除；引用片段快照里 content 截断，避免历史表被大片段撑爆。
+  (d) => {
+    d.exec(`CREATE TABLE IF NOT EXISTS kb_qa (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      question   TEXT    NOT NULL,
+      answer     TEXT    NOT NULL DEFAULT '',
+      hits       TEXT    NOT NULL DEFAULT '[]',
+      hit_count  INTEGER NOT NULL DEFAULT 0,
+      degraded   INTEGER NOT NULL DEFAULT 0,
+      reason     TEXT    NOT NULL DEFAULT '',
+      created_at TEXT    NOT NULL
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_kb_qa_created ON kb_qa(created_at DESC, id DESC)');
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -1224,6 +1239,7 @@ function dailyTrend(arg) {
 
 /**
  * 自定义范围内的统计数据（供日报/周报/月报使用）。
+ * 含子任务：不再按 parent_id 过滤，报告层自行把子任务挂到父任务下并汇总数量。
  * @param {number|number[]|null} groupId 单个分组 id、分组 id 数组（多选），null = 全部分组
  */
 function rangeStats(startIso, endIso, groupId = null) {
@@ -1242,23 +1258,38 @@ function rangeStats(startIso, endIso, groupId = null) {
     gParams.push(...ids);
   }
 
+  // 分组兜底：子任务一般继承父任务的分组，但历史数据 / 手动改过父分组时可能带 NULL，
+  // 这类子任务跟在父任务身边（父任务命中即带上），不能因为 group_id 不在筛选里就丢掉。
+  const inScope = (t) => {
+    if (!ids.length) return true;
+    if (t.group_id != null && ids.includes(t.group_id)) return true;
+    if (t.parent_id != null) {
+      const parent = getTask(t.parent_id);
+      if (parent) return inScope(parent);
+    }
+    return false;
+  };
+
   const completedTasks = db
     .prepare(
-      `SELECT * FROM tasks WHERE completed = 1 AND parent_id IS NULL AND completed_at >= ? AND completed_at < ? ${gCond} ORDER BY completed_at ASC`
+      `SELECT * FROM tasks WHERE completed = 1 AND completed_at >= ? AND completed_at < ? ${gCond} ORDER BY completed_at ASC`
     )
-    .all(startIso, endIso, ...gParams);
+    .all(startIso, endIso, ...gParams)
+    .filter(inScope);
 
   const createdTasks = db
     .prepare(
-      `SELECT * FROM tasks WHERE parent_id IS NULL AND created_at >= ? AND created_at < ? ${gCond} ORDER BY created_at ASC`
+      `SELECT * FROM tasks WHERE created_at >= ? AND created_at < ? ${gCond} ORDER BY created_at ASC`
     )
-    .all(startIso, endIso, ...gParams);
+    .all(startIso, endIso, ...gParams)
+    .filter(inScope);
 
   const activeNow = db
     .prepare(
-      `SELECT * FROM tasks WHERE completed = 0 AND archived = 0 AND parent_id IS NULL ${gCond} ORDER BY priority DESC, (plan_end IS NULL), plan_end`
+      `SELECT * FROM tasks WHERE completed = 0 AND archived = 0 ${gCond} ORDER BY priority DESC, (plan_end IS NULL), plan_end`
     )
-    .all(...gParams);
+    .all(...gParams)
+    .filter(inScope);
 
   const endDay = endIso.slice(0, 10);
   const overdue = activeNow.filter((t) => t.plan_end && t.plan_end < endDay);
@@ -1480,6 +1511,61 @@ function getSearch(id) {
 
 function deleteSearch(id) {
   return db.prepare('DELETE FROM ai_searches WHERE id = ?').run(id).changes;
+}
+
+/* ------------------------------ 知识库问答历史 ------------------------------ */
+
+function rowToKbQa(row) {
+  if (!row) return null;
+  return { ...row, hits: parseJsonField(row.hits, []), degraded: !!row.degraded };
+}
+
+/**
+ * 保存一次知识库提问（问题 + 回答 + 引用片段快照）。
+ * hits 只留溯源所需字段且 content 截断 —— 历史是回看用的，不必存整段原文。
+ */
+function createKbQa(p = {}) {
+  const slimHits = (Array.isArray(p.hits) ? p.hits : []).map((h) => ({
+    noteId: h.noteId ?? null,
+    title: h.title || '',
+    headingPath: h.headingPath || '',
+    matchTerm: h.matchTerm || '',
+    snippet: String(h.snippet || h.content || '').slice(0, 200),
+    relevance: Number(h.relevance) || 0,
+  }));
+  const info = db.prepare(
+    `INSERT INTO kb_qa (question, answer, hits, hit_count, degraded, reason, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    String(p.question || ''),
+    p.answer || '',
+    JSON.stringify(slimHits),
+    slimHits.length,
+    p.degraded ? 1 : 0,
+    p.reason || '',
+    nowIso(),
+  );
+  return getKbQa(info.lastInsertRowid);
+}
+
+/** 问答历史（倒序；answer 只回传摘要，点开时再取完整内容） */
+function listKbQa(limit = 50) {
+  return db
+    .prepare(
+      `SELECT id, question, hit_count, degraded, reason, created_at,
+              substr(answer, 1, 80) AS answer_excerpt
+         FROM kb_qa ORDER BY created_at DESC, id DESC LIMIT ?`
+    )
+    .all(limit)
+    .map((r) => ({ ...r, degraded: !!r.degraded }));
+}
+
+function getKbQa(id) {
+  return rowToKbQa(db.prepare('SELECT * FROM kb_qa WHERE id = ?').get(id));
+}
+
+function deleteKbQa(id) {
+  return db.prepare('DELETE FROM kb_qa WHERE id = ?').run(id).changes;
 }
 
 /* ------------------------------ 笔记模块 ------------------------------ */
@@ -2376,7 +2462,7 @@ function kbStats(kbId = 1) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 11,
+    schemaVersion: 12,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
@@ -2385,6 +2471,7 @@ function exportData() {
     meetings: db.prepare('SELECT * FROM meetings ORDER BY id').all(),
     reports: db.prepare('SELECT * FROM reports ORDER BY id').all(),
     ai_searches: db.prepare('SELECT * FROM ai_searches ORDER BY id').all(),
+    kb_qa: db.prepare('SELECT * FROM kb_qa ORDER BY id').all(),
     // 笔记模块：正文随备份走；知识库分块（kb_documents / kb_chunks / kb_vectors）是派生数据，
     // 可由 notes 重建，因此不导出——与「备份不含 API Key」同一思路，避免备份体积翻倍。
     note_folders: db.prepare('SELECT * FROM note_folders ORDER BY id').all(),
@@ -2418,6 +2505,7 @@ function importData(data) {
     db.prepare('DELETE FROM meetings').run();
     db.prepare('DELETE FROM reports').run();
     db.prepare('DELETE FROM ai_searches').run();
+    db.prepare('DELETE FROM kb_qa').run();
     db.prepare('DELETE FROM task_notes').run();
     db.prepare('DELETE FROM note_tag_map').run();
     db.prepare('DELETE FROM notes').run();
@@ -2504,6 +2592,17 @@ function importData(data) {
       insSearch.run(
         s.id, s.keyword || '', s.summary || '', Number(s.task_count) || 0,
         jsonOf(s.tasks), s.degraded ? 1 : 0, s.created_at || t0
+      );
+    }
+
+    const insKbQa = db.prepare(
+      `INSERT INTO kb_qa (id, question, answer, hits, hit_count, degraded, reason, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const q of data.kb_qa || []) {
+      insKbQa.run(
+        q.id, q.question || '', q.answer || '', jsonOf(q.hits),
+        Number(q.hit_count) || 0, q.degraded ? 1 : 0, q.reason || '', q.created_at || t0
       );
     }
 
@@ -2649,6 +2748,11 @@ module.exports = {
   listSearches,
   getSearch,
   deleteSearch,
+  // 知识库问答历史
+  createKbQa,
+  listKbQa,
+  getKbQa,
+  deleteKbQa,
   // 笔记模块
   listNoteFolders,
   getNoteFolder,

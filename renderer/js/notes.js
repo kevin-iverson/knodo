@@ -1600,6 +1600,18 @@ async function purgeNote(id) {
 
 /* ---------------- 知识库问答（智能检索） ---------------- */
 
+/** 历史条目的时间标签：今天显示时分，其余显示月-日 时分 */
+function fmtHistTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  const now = new Date();
+  return d.toDateString() === now.toDateString()
+    ? `今天 ${hm}`
+    : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`;
+}
+
 /** 以笔记库为检索来源向 AI 提问；无 AI 配置时降级为「只展示召回片段」 */
 async function openKbModal() {
   await openPanelModal({
@@ -1611,13 +1623,22 @@ async function openKbModal() {
         <button class="primary-btn" data-kb="ask">提问</button>
       </div>
       <div class="kb-stat" data-kb="stat">加载中…</div>
-      <div class="kb-result" data-kb="result"></div>`,
+      <div class="kb-result" data-kb="result"></div>
+      <div class="kb-history" data-kb="history">
+        <div class="kb-hist-head">
+          <span>提问历史</span>
+          <span class="kb-hist-count" data-kb="hist-count"></span>
+        </div>
+        <ul class="kb-hist-list" data-kb="hist-list"></ul>
+      </div>`,
     okText: '关闭',
     onMount: async (mask) => {
       const statEl = mask.querySelector('[data-kb="stat"]');
       const resultEl = mask.querySelector('[data-kb="result"]');
       const qEl = mask.querySelector('[data-kb="q"]');
       const askBtn = mask.querySelector('[data-kb="ask"]');
+      const histList = mask.querySelector('[data-kb="hist-list"]');
+      const histCount = mask.querySelector('[data-kb="hist-count"]');
 
       const paintStat = async () => {
         const s = await api.kb.stats(1).catch(() => null);
@@ -1625,6 +1646,51 @@ async function openKbModal() {
         statEl.innerHTML = `已沉淀 <b>${s.note_count}</b> 篇笔记，索引 <b>${s.indexed_note_count}</b> 篇 / <b>${s.chunk_count}</b> 个分块`;
       };
       await paintStat();
+
+      // 历史记录：每次提问都落库（含降级 / 无命中），点条目回看，🗑 删除
+      const loadHistory = async () => {
+        const list = await api.kb.qaList(30).catch(() => []);
+        if (histCount) histCount.textContent = list.length ? `${list.length} 条` : '';
+        if (!histList) return;
+        if (!list.length) {
+          histList.innerHTML = '<li class="kb-hist-empty">还没有提问记录</li>';
+          return;
+        }
+        histList.innerHTML = list.map((h) => `
+          <li class="kb-hist-item" data-id="${h.id}">
+            <div class="kb-hist-main">
+              <div class="kb-hist-q">${esc(h.question)}</div>
+              <div class="kb-hist-sub">${esc(fmtHistTime(h.created_at))} · ${h.hit_count} 条引用${h.degraded ? ' · 未生成回答' : ''}</div>
+            </div>
+            <button type="button" class="kb-hist-del" data-act="del" title="删除这条记录">🗑</button>
+          </li>`).join('');
+      };
+
+      histList.addEventListener('click', async (e) => {
+        const item = e.target.closest('.kb-hist-item');
+        if (!item) return;
+        const id = Number(item.dataset.id);
+        if (e.target.closest('[data-act="del"]')) {
+          await api.kb.qaRemove(id).catch(() => {});
+          loadHistory();
+          return;
+        }
+        const rec = await api.kb.qaGet(id).catch(() => null);
+        if (!rec) { notify('读取这条记录失败'); return; }
+        resultEl.innerHTML = kbResultHtml(rec.question, {
+          answer: rec.answer,
+          hits: rec.hits,
+          degraded: rec.degraded,
+          reason: rec.reason,
+        });
+        resultEl.querySelectorAll('[data-kb-act="open"]').forEach((b) => {
+          b.addEventListener('click', async () => {
+            mask.querySelector('[data-modal="ok"]')?.click();
+            await openNote(Number(b.dataset.id), { focusTerm: b.dataset.term || rec.question });
+          });
+        });
+        qEl.value = rec.question;
+      });
 
       const ask = async () => {
         const q = (qEl.value || '').trim();
@@ -1641,9 +1707,11 @@ async function openKbModal() {
             await openNote(Number(b.dataset.id), { focusTerm: b.dataset.term || q });
           });
         });
+        loadHistory(); // 本次提问已落库，刷新历史
       };
       askBtn.addEventListener('click', ask);
       qEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
+      loadHistory();
     },
   });
 }

@@ -312,8 +312,10 @@ function formatterHtml(cfg) {
           <select class="fmt-ctl fmt-kw">${opt(KEYWORD_CASE, cfg.keywordCase)}</select>
         </label>
         <span class="fmt-spacer"></span>
+        <!-- 类名必须是 fmt-hl-toggle：.fmt-hl 是高亮层 <pre> 的样式（absolute + inset:0），
+             复选框复用它会被拉伸成整个浮窗大小的巨型原生 checkbox（蓝底白勾"巨大图标"） -->
         <label class="fmt-check" title="按当前语言给两侧代码上色（highlight.js）">
-          <input type="checkbox" class="fmt-ctl fmt-hl"${cfg.highlight !== false ? ' checked' : ''} /><span>语法高亮</span>
+          <input type="checkbox" class="fmt-ctl fmt-hl-toggle"${cfg.highlight !== false ? ' checked' : ''} /><span>语法高亮</span>
         </label>
         <button type="button" class="primary-btn fmt-run">格式化</button>
       </div>
@@ -415,7 +417,7 @@ function bindFormatter(root, win, cfg, initialText) {
     printWidth: Number($('.fmt-width').value) || 100,
     sqlDialect: $('.fmt-dialect').value,
     keywordCase: $('.fmt-kw').value,
-    highlight: $('.fmt-hl').checked,
+    highlight: $('.fmt-hl-toggle').checked,
   });
   const persist = () => {
     Object.assign(state, readOpts());
@@ -479,7 +481,7 @@ function bindFormatter(root, win, cfg, initialText) {
 
   root.addEventListener('change', (e) => {
     if (!e.target.classList.contains('fmt-ctl') && !e.target.classList.contains('fmt-tabs')) return;
-    if (e.target.classList.contains('fmt-hl')) {
+    if (e.target.classList.contains('fmt-hl-toggle')) {
       state.highlight = e.target.checked;
       paintBoth();
       persist();

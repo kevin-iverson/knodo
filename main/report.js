@@ -25,10 +25,22 @@ function fmtDateShort(iso) {
 /**
  * 依据报告类型解析时间范围。
  * @param {'day'|'week'|'month'|'custom'} type
- * @param {string} customStart 自定义开始（ISO，type=custom 时必填）
- * @param {string} customEnd   自定义结束（ISO，type=custom 时必填）
+ * @param {string} customStart 自定义开始（ISO）
+ * @param {string} customEnd   自定义结束（ISO）
+ *
+ * 界面日期优先：只要开始/结束都有效就按传入区间算（报告类型只是预置方案，
+ * 真正的口径以界面上显示并允许修改的日期为准）；缺省时才按类型回退预置。
  */
 function resolveRange(type, customStart, customEnd) {
+  const valid = (v) => v && !Number.isNaN(Date.parse(v));
+  if (valid(customStart) && valid(customEnd)) {
+    let start = new Date(customStart);
+    let end = new Date(customEnd);
+    if (start > end) [start, end] = [end, start]; // 容错：反了就交换
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  }
+
   const now = new Date();
   let start;
   let end = new Date(now);
@@ -43,8 +55,7 @@ function resolveRange(type, customStart, customEnd) {
   } else if (type === 'month') {
     start = new Date(now.getFullYear(), now.getMonth(), 1);
   } else {
-    start = new Date(customStart);
-    end = new Date(customEnd);
+    start = new Date(now); start.setHours(0, 0, 0, 0);
   }
   end.setHours(23, 59, 59, 999);
   return { start, end };
@@ -78,7 +89,10 @@ function buildLocalReport(type, start, end, groupIds) {
 
   const totalDone = completedTasks.length;
   const totalCreated = createdTasks.length;
-  const rate = totalCreated > 0 ? Math.round((totalDone / totalCreated) * 100) : 100;
+  const subDone = completedTasks.filter((t) => t.parent_id != null).length;
+  const subCreated = createdTasks.filter((t) => t.parent_id != null).length;
+  // 子任务可能来自更早的周期（父任务早已创建），比例只作参考，封顶 100%
+  const rate = totalCreated > 0 ? Math.min(100, Math.round((totalDone / totalCreated) * 100)) : 100;
 
   // 按分组汇总完成情况
   const byGroup = {};
@@ -92,8 +106,8 @@ function buildLocalReport(type, start, end, groupIds) {
   lines.push('');
   lines.push(range);
   lines.push(`- 分组：${groupName}`);
-  lines.push(`- 本周期完成任务：**${totalDone}** 项`);
-  lines.push(`- 本周期新建任务：**${totalCreated}** 项`);
+  lines.push(`- 本周期完成任务：**${totalDone}** 项（含子任务 ${subDone} 项）`);
+  lines.push(`- 本周期新建任务：**${totalCreated}** 项（含子任务 ${subCreated} 项）`);
   lines.push(`- 完成率：**${rate}%**`);
   lines.push('');
 
@@ -106,20 +120,40 @@ function buildLocalReport(type, start, end, groupIds) {
     }
     lines.push('');
     lines.push('### 已完成清单');
+    // 主任务 + 其子任务嵌套列出；父任务不在本周期清单里的子任务，标注归属单独列
+    const printed = new Set();
     for (const t of completedTasks) {
+      if (t.parent_id != null) continue;
+      printed.add(t.id);
       const tag = t.priority >= 2 ? `【${PRIORITY_LABEL[t.priority]}优先】` : '';
       lines.push(`- [x] ${tag}${t.title}${t.completed_at ? `（${fmtDate(t.completed_at)}）` : ''}`);
+      for (const c of completedTasks) {
+        if (c.parent_id !== t.id) continue;
+        printed.add(c.id);
+        lines.push(`  - [x] ${c.title}${c.completed_at ? `（${fmtDate(c.completed_at)}）` : ''}`);
+      }
+    }
+    for (const t of completedTasks) {
+      if (printed.has(t.id)) continue;
+      const pt = parentTitleOf(t);
+      lines.push(`- [x] ${t.title}${pt ? `（属父任务：${pt}）` : ''}${t.completed_at ? `（${fmtDate(t.completed_at)}）` : ''}`);
     }
   }
   lines.push('');
 
   lines.push('## 二、进行中 / 未完成');
-  if (activeNow.length === 0) {
+  const activeTop = activeNow.filter((t) => t.parent_id == null);
+  if (activeTop.length === 0) {
     lines.push('当前没有进行中的任务。');
   } else {
-    for (const t of activeNow) {
+    for (const t of activeTop) {
       const due = t.plan_end ? ` 截止 ${t.plan_end}` : '';
       lines.push(`- [ ] ${t.title}（${PRIORITY_LABEL[t.priority]}）${due}`);
+      for (const c of activeNow) {
+        if (c.parent_id !== t.id) continue;
+        const cdue = c.plan_end ? ` 截止 ${c.plan_end}` : '';
+        lines.push(`  - [ ] ${c.title}${cdue}`);
+      }
     }
   }
   lines.push('');
@@ -129,7 +163,8 @@ function buildLocalReport(type, start, end, groupIds) {
     lines.push('暂无逾期任务。');
   } else {
     for (const t of overdue) {
-      lines.push(`- ⚠ ${t.title}（应于 ${t.plan_end} 前完成）`);
+      const pt = parentTitleOf(t);
+      lines.push(`- ⚠ ${t.title}${pt ? `（属父任务：${pt}）` : ''}（应于 ${t.plan_end} 前完成）`);
     }
   }
   lines.push('');
@@ -146,26 +181,72 @@ function buildLocalReport(type, start, end, groupIds) {
   return lines.join('\n');
 }
 
+/** 父任务标题（子任务归属说明用）；无父任务 / 父任务已删时返回空 */
+function parentTitleOf(t) {
+  if (t.parent_id == null) return '';
+  const p = db.getTask(t.parent_id);
+  return p ? p.title : '';
+}
+
 function buildPrompt({ type, start, end, groupIds, data, extraPrompt }) {
   const { completedTasks, createdTasks, activeNow, overdue } = data;
-  const completedTitles = completedTasks.map((t) => ({
+
+  // 子任务挂到父任务下：清单带层级，模型才能数对条目、写出真实的工作明细
+  const childrenOf = (list, parentId) => list.filter((t) => t.parent_id === parentId);
+
+  const completedTitles = [];
+  for (const t of completedTasks) {
+    if (t.parent_id != null) continue; // 子任务跟随父任务输出，孤儿在下面兜底
+    completedTitles.push({
+      title: t.title,
+      priority: PRIORITY_LABEL[t.priority],
+      completedAt: fmtDate(t.completed_at),
+      // 计划完成时间一并给出：用户常要求「按计划完成时间推演下月计划」
+      planStart: t.plan_start || '',
+      planEnd: t.plan_end || '',
+      subtasks: childrenOf(completedTasks, t.id).map((c) => ({
+        title: c.title,
+        completedAt: fmtDate(c.completed_at),
+      })),
+    });
+  }
+  // 孤儿子任务：父任务不在本周期完成清单里（更早完成），单独带上归属说明，数量才对得上
+  for (const c of completedTasks) {
+    if (c.parent_id == null) continue;
+    if (completedTasks.some((p) => p.id === c.parent_id)) continue;
+    completedTitles.push({
+      title: c.title,
+      priority: PRIORITY_LABEL[c.priority],
+      completedAt: fmtDate(c.completed_at),
+      planStart: '',
+      planEnd: '',
+      subtasks: [],
+      parentTitle: parentTitleOf(c),
+    });
+  }
+
+  const activeTitles = activeNow
+    .filter((t) => t.parent_id == null)
+    .map((t) => ({
+      title: t.title,
+      priority: PRIORITY_LABEL[t.priority],
+      planStart: t.plan_start || '',
+      due: t.plan_end || '',
+      subtasks: childrenOf(activeNow, t.id).map((c) => ({
+        title: c.title,
+        due: c.plan_end || '',
+      })),
+    }));
+
+  const overdueTitles = overdue.map((t) => ({
     title: t.title,
-    priority: PRIORITY_LABEL[t.priority],
-    completedAt: fmtDate(t.completed_at),
-    // 计划完成时间一并给出：用户常要求「按计划完成时间推演下月计划」
-    planStart: t.plan_start || '',
-    planEnd: t.plan_end || '',
+    due: t.plan_end,
+    parentTitle: parentTitleOf(t),
   }));
-  const activeTitles = activeNow.map((t) => ({
-    title: t.title,
-    priority: PRIORITY_LABEL[t.priority],
-    planStart: t.plan_start || '',
-    due: t.plan_end || '',
-  }));
-  const overdueTitles = overdue.map((t) => ({ title: t.title, due: t.plan_end }));
 
   // 用户自定义要求（原样追加，不做改写，避免曲解）
   const extra = String(extraPrompt || '').trim().slice(0, 600);
+  const createdSubs = createdTasks.filter((t) => t.parent_id != null).length;
 
   const userMsg = [
     `请基于以下本地待办数据生成一份中文${TYPE_TEXT[type] || '工作报告'}。`,
@@ -173,11 +254,12 @@ function buildPrompt({ type, start, end, groupIds, data, extraPrompt }) {
     `分组：${groupNamesText(groupIds)}`,
     '',
     `【本周期已完成任务】${JSON.stringify(completedTitles)}`,
-    `【本周期新建任务数量】${createdTasks.length}`,
+    `【本周期新建任务数量】${createdTasks.length}${createdSubs ? `（其中子任务 ${createdSubs} 个）` : ''}`,
     `【当前进行中任务】${JSON.stringify(activeTitles)}`,
     `【逾期任务】${JSON.stringify(overdueTitles)}`,
     '',
     '要求：使用 Markdown 格式；包含「完成情况」「进行中」「问题与风险」「下一步计划」四部分；',
+    '条目数量必须与数据一致：已完成条目按主任务 + 其 subtasks 逐条列出，不要合并或省略；',
     '语言简洁专业，基于真实数据，不要编造不存在的内容；结尾给出 2-3 条可执行的下一步建议。',
   ];
 

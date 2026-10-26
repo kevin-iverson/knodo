@@ -79,8 +79,9 @@ function jsonViewHtml(cfg) {
             ${EXPANDS.map((e) => `<option value="${esc(e.id)}"${String(cfg.expand) === String(e.id) ? ' selected' : ''}>${esc(e.label)}</option>`).join('')}
           </select>
         </label>
+        <!-- 类名必须是 jv-hl-toggle：.jv-hl 是高亮层 <pre> 的样式，复用会把复选框拉成全窗巨大图标 -->
         <label class="jv-check" title="给输入框与查询结果上色">
-          <input type="checkbox" class="jv-ctl jv-hl"${cfg.highlight !== false ? ' checked' : ''} /><span>语法高亮</span>
+          <input type="checkbox" class="jv-ctl jv-hl-toggle"${cfg.highlight !== false ? ' checked' : ''} /><span>语法高亮</span>
         </label>
         <span class="jv-spacer"></span>
         <button type="button" class="ghost-btn jv-sample">示例</button>
@@ -319,7 +320,7 @@ function bindJsonView(root, win, cfg, initialText) {
     api.ui.setToolPref('json', {
       indent: Number($('.jv-indent').value) || 2,
       expand: $('.jv-expand').value,
-      highlight: $('.jv-hl').checked,
+      highlight: $('.jv-hl-toggle').checked,
     }).catch(() => {});
   };
 
@@ -356,7 +357,7 @@ function bindJsonView(root, win, cfg, initialText) {
 
   root.addEventListener('change', (e) => {
     if (!e.target.classList.contains('jv-ctl')) return;
-    if (e.target.classList.contains('jv-hl')) {
+    if (e.target.classList.contains('jv-hl-toggle')) {
       state.highlight = e.target.checked;
       paintHl();
     } else if (e.target.classList.contains('jv-expand')) {

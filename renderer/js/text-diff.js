@@ -224,7 +224,7 @@ function diffHtml(cfg) {
         <label class="df-check" title="比较前跳过空行"><input type="checkbox" class="df-ctl df-blank"${cfg.ignoreBlank ? ' checked' : ''} /><span>忽略空行</span></label>
         <label class="df-check" title="比较前统一转小写"><input type="checkbox" class="df-ctl df-case"${cfg.ignoreCase ? ' checked' : ''} /><span>忽略大小写</span></label>
         <span class="df-sep"></span>
-        <label class="df-check" title="差异行按上面的语言上色"><input type="checkbox" class="df-ctl df-hl"${cfg.highlight !== false ? ' checked' : ''} /><span>语法高亮</span></label>
+        <label class="df-check" title="差异行按上面的语言上色"><input type="checkbox" class="df-ctl df-hl-toggle"${cfg.highlight !== false ? ' checked' : ''} /><span>语法高亮</span></label>
         <span class="df-spacer"></span>
         <span class="df-seg">
           <button type="button" class="df-mode${cfg.mode === 'split' ? ' active' : ''}" data-mode="split">并排</button>
@@ -272,7 +272,7 @@ function bindDiff(root, win, cfg, initialA, initialB) {
     ignoreBlank: $('.df-blank').checked,
     ignoreCase: $('.df-case').checked,
     mode: state.mode,
-    highlight: $('.df-hl').checked,
+    highlight: $('.df-hl-toggle').checked,
   });
 
   const persist = () => {

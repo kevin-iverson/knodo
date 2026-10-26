@@ -272,9 +272,10 @@ check('列表按创建时间倒序', list[0].title === '评审会' && list.some(
 check('数量正确', list.length === 3); // 含上面那个「未命名会议」
 
 const exportSnap = db.exportData();
-check('导出含 meetings 且 schema 升级到 11',
-  exportSnap.schemaVersion === 11 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
+check('导出含 meetings 且 schema 升级到 12',
+  exportSnap.schemaVersion === 12 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
   && Array.isArray(exportSnap.reports) && Array.isArray(exportSnap.ai_searches)
+  && Array.isArray(exportSnap.kb_qa)
   && Array.isArray(exportSnap.notes) && Array.isArray(exportSnap.note_folders)
   && Array.isArray(exportSnap.task_notes) && Array.isArray(exportSnap.knowledge_bases));
 check('导出保留 todos 与 media_paths', (() => {
@@ -532,6 +533,41 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
 
   check('删除报告生效', db.deleteReport(rpt1.id) === 1 && db.getReport(rpt1.id) === null);
   check('删除检索记录生效', db.deleteSearch(s1.id) === 1 && db.getSearch(s1.id) === null);
+
+  console.log('\n[12b] 知识库问答历史（kb_qa）');
+  const qa1 = db.createKbQa({
+    question: '灰度发布的回滚方案是什么？',
+    answer: '回滚分三步 [1]。',
+    hits: [{ noteId: 1, title: '发布手册', headingPath: '发布 › 回滚', matchTerm: '回滚', snippet: '回滚步骤…', relevance: 88 }],
+    degraded: false,
+  });
+  check('问答记录创建成功', !!qa1 && qa1.id > 0 && qa1.question.includes('灰度'));
+  check('引用片段反序列化为数组', Array.isArray(qa1.hits) && qa1.hits.length === 1 && qa1.hits[0].title === '发布手册');
+  check('降级问答也能落库', !!db.createKbQa({ question: '没有命中的问题', answer: '', hits: [], degraded: true, reason: 'no-hit' }));
+  const qaList = db.listKbQa(10);
+  check('问答历史列表（倒序 + 摘要）', qaList.length === 2 && qaList[0].question.includes('没有命中') && qaList[0].answer === undefined);
+  check('完整问答可回看', db.getKbQa(qa1.id).answer.includes('回滚'));
+  const qaSnap = db.exportData();
+  check('导出含 kb_qa', Array.isArray(qaSnap.kb_qa) && qaSnap.kb_qa.length === 2);
+  check('删除问答记录生效', db.deleteKbQa(qa1.id) === 1 && db.getKbQa(qa1.id) === null);
+
+  console.log('\n[12c] 报告统计含子任务（rangeStats）');
+  const pg = db.createTask({ title: 'RPT父任务', groupId: null });
+  db.createTask({ title: 'RPT子任务A', parentId: pg.id });
+  const ps = db.createTask({ title: 'RPT子任务B', parentId: pg.id });
+  db.toggleTask(ps.id); // 子任务B标记完成
+  const rs = db.rangeStats(new Date(Date.now() - 3600e3).toISOString(), new Date(Date.now() + 3600e3).toISOString(), []);
+  check('子任务进入完成清单', rs.completedTasks.some((t) => t.title === 'RPT子任务B'));
+  check('进行中统计含未完成子任务', rs.activeNow.some((t) => t.title === 'RPT子任务A'));
+  const localMd = report.buildLocalReport('day', new Date(Date.now() - 3600e3), new Date(Date.now() + 3600e3), []);
+  check('本地模板列出子任务', localMd.includes('RPT子任务B'));
+  check('数量标注含子任务口径', localMd.includes('含子任务'));
+  const promptData = db.rangeStats(new Date(Date.now() - 3600e3).toISOString(), new Date(Date.now() + 3600e3).toISOString(), []);
+  const promptMsg = report.buildPrompt({
+    type: 'day', start: new Date(Date.now() - 3600e3), end: new Date(Date.now() + 3600e3),
+    groupIds: [], data: promptData,
+  })[1].content;
+  check('提示词携带子任务明细', promptMsg.includes('"subtasks"') && promptMsg.includes('RPT子任务B'));
 
   console.log('\n[13] 任务创建时间（created_at）');
   const ct = db.createTask({ title: '创建时间用例' });

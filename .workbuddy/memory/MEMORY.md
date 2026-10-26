@@ -8,11 +8,14 @@
 - 启动项改名要迁移：`main/autostart.js` 的 `LOGIN_ITEM_NAME` 改时把旧名加进 `LEGACY_LOGIN_ITEM_NAMES`。
 
 ## 数据模型
+- AI 报告：`main/report.js` 的 `resolveRange` **界面日期优先**（类型只作预置方案）；
+  `db.rangeStats` 含子任务，报告层按父任务挂子任务（孤儿标 `parentTitle`），数量口径含子任务。
 - 分组名唯一性作用域 = 同一 parent_id；校验在 `db.assertGroupName()`，create/update 都必须走。**不要加 DB 唯一索引**（旧备份导入可能带同级重名）。
 - 附件：`<数据目录>/attachments/<kind>-<宿主id>/<附件id>_<文件名>`，kind = task|note。库里只存元数据 JSON（**相对**路径，硬约束）。删任务走 `db.subtreeTaskIds()` + `removeTaskDir()`；彻底删笔记 `removeOwnerDir('note',id)`。
 - 本地图片写 `todo-media:///<相对路径>`（main.js 注册 file protocol，只认 attachments 内，越界 -6）；不用 `file://`。CSP `img-src` 已含 todo-media:。
 - 笔记颜色/高亮：内联 `==文字=={c:#hex;bg:#hex}` 写进 content_md（不占新列）。`word_count/content_hash/notes_fts/kb_chunks` 必须先过 `stripStyleMarks()`；`excerpt` 保留标记。渲染靠 `renderer/js/markdown-lib.js` 的 `styledTextPlugin`。
 - 数据目录：`<userData>/config.json` 的 dataDir；`main/storage.js` 解析/探测/迁移；配置目录不可用必须回退默认目录并提示，绝不导致启动失败。录音路径是绝对路径，不随数据目录迁移。
+- 迁移 v12 = `kb_qa`（知识库问答历史）。`kb:ask` 落库每次提问，界面在笔记问答弹窗；kb_qa 进备份。
 
 ## SQLite / FTS
 - FTS5 统一 **external content + `tokenize='trigram'`**，靠触发器同步。
@@ -20,6 +23,9 @@
 - 派生数据（分块/向量）不进导入导出，导入后由正文重建。
 
 ## Electron / 渲染层
+- **工具类 CSS 类名禁止复用**：`.fmt-hl/.jv-hl` 是高亮层 `<pre>` 的样式（absolute+inset:0），
+  控件复用会被拉成全窗巨大原生控件——「语法高亮」复选框已改名 `*-hl-toggle`（2026-10-26）。
+  排查这类幽灵元素：`elementsFromPoint` 不带 pointer-events:none 的层，要按几何扫描。
 - 对话框父窗口不能传 `undefined` → 统一走 `msgBox()` / `dirDialog()`。
 - 拖拽取绝对路径用 preload 的 `api.pathForFile(file)`。
 - 局部刷新优先只换局部 DOM；整页 innerHTML 重建会丢焦点/滚动，且旧自动保存器拿着已销毁 DOM 写库（保存前 flush + dispose）。
