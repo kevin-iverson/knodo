@@ -74,6 +74,10 @@ let editorObserver = null;
 let discardSave = false;
 /** 打开笔记时要高亮 / 滚动到的词（搜索结果、知识库溯源） */
 let focusTerm = '';
+/** 大纲（目录）面板可见性：仿语雀的右侧大纲，可隐藏 / 展示，选择记 localStorage */
+let tocVisible = (() => {
+  try { return localStorage.getItem('nt-toc-visible') !== '0'; } catch (e) { return true; }
+})();
 
 /* ---------------- 弹窗形态的编辑器（任务详情 → 关联笔记） ---------------- */
 /** 弹窗容器：detailPane / 状态位 / 保存按钮都要优先命中它（右栏可能根本没开） */
@@ -215,6 +219,10 @@ async function loadSide(root) {
             <span class="nt-dot" style="background:${esc(t.color || '#8896ab')}"></span>
             <span class="nt-tag-name">${esc(t.name)}</span>
             <span class="nt-tag-count">${Number(t.note_count) || 0}</span>
+            <span class="nt-tag-ops">
+              <button class="mini-btn" data-nt-act="tag-edit" data-id="${t.id}" title="重命名 / 改色">✎</button>
+              <button class="mini-btn" data-nt-act="tag-del" data-id="${t.id}" title="删除标签">✕</button>
+            </span>
           </li>`).join('')
       : '<li class="nt-empty">暂无标签</li>';
   }
@@ -374,6 +382,14 @@ function detailHtml(note) {
         <div class="nt-seg" role="group" aria-label="显示模式">
           ${segBtn('preview', '预览')}${segBtn('split', '分栏')}${segBtn('edit', '编辑')}
         </div>
+        <button type="button" class="nt-dp-toc${tocVisible ? ' active' : ''}" data-nt-act="toc-toggle"
+                title="显示 / 隐藏大纲（按标题生成，点击可跳转）">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <path d="M2.5 4h11" /><path d="M2.5 8h8" /><path d="M2.5 12h11" />
+            </g>
+          </svg>大纲
+        </button>
         <button class="nt-dp-close" data-nt-act="dp-close" title="关闭（有未保存改动会先提示）">×</button>
       </div>
       <div class="nt-dp-meta">
@@ -389,11 +405,14 @@ function detailHtml(note) {
         <span class="nt-meta-info" id="nt-meta-info"></span>
       </div>
       <div class="nt-dp-scroll">
-        <div class="nt-dp-body">
-          <div class="nt-pane">
-            <textarea id="nt-md"></textarea>
+        <div class="nt-dp-mid">
+          <div class="nt-dp-body">
+            <div class="nt-pane">
+              <textarea id="nt-md"></textarea>
+            </div>
+            <div class="nt-preview markdown-body" id="nt-preview"></div>
           </div>
-          <div class="nt-preview markdown-body" id="nt-preview"></div>
+          <aside class="nt-toc" id="nt-toc" aria-label="大纲"></aside>
         </div>
         <div class="nt-att" id="nt-att"></div>
         <div class="nt-refs" id="nt-refs"></div>
@@ -844,6 +863,54 @@ function refreshPreview() {
     const first = box.querySelector('.kw-hit');
     if (first && typeof first.scrollIntoView === 'function') first.scrollIntoView({ block: 'center' });
   }
+  renderToc(pane);
+}
+
+/* ---------------- 大纲（目录，仿语雀） ---------------- */
+
+/**
+ * 从预览 DOM 抽取 h1~h4 生成大纲；点击条目滚动到对应标题。
+ * 直接读渲染结果而不是解析源码：标题语义（几级、去样式标记后文本）由渲染器统一保证，
+ * 与预览所见完全一致。正文没有标题时整个面板隐藏，不留空壳。
+ */
+function renderToc(pane) {
+  const toc = pane && pane.querySelector ? pane.querySelector('#nt-toc') : null;
+  if (!toc) return;
+  const preview = pane.querySelector('#nt-preview');
+  const heads = preview ? [...preview.querySelectorAll('h1, h2, h3, h4')] : [];
+  if (!tocVisible || !heads.length) { toc.hidden = true; toc.innerHTML = ''; return; }
+  toc.hidden = false;
+  heads.forEach((h, i) => { h.dataset.tocIdx = String(i); });
+  toc.innerHTML = `
+    <div class="nt-toc-head">大纲</div>
+    <ul class="nt-toc-list">${heads.map((h, i) => {
+      const level = Number(h.tagName.slice(1)) || 1;
+      const text = (h.textContent || '').trim() || `标题 ${i + 1}`;
+      return `<li>
+        <button type="button" class="nt-toc-item lv-${level}" data-toc-idx="${i}" title="${esc(text)}">${esc(text)}</button>
+      </li>`;
+    }).join('')}</ul>`;
+  // onclick 赋值幂等（重渲不会叠加监听）；滚动容器是 .nt-dp-scroll，scrollIntoView 只会滚它
+  toc.onclick = (e) => {
+    const btn = e.target.closest('[data-toc-idx]');
+    if (!btn) return;
+    const idx = Number(btn.dataset.tocIdx);
+    const target = preview && preview.querySelector(`[data-toc-idx="${idx}"]`);
+    if (target && typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+  };
+}
+
+/** 大纲显隐切换（记忆到 localStorage，下次打开沿用） */
+function toggleToc() {
+  tocVisible = !tocVisible;
+  try { localStorage.setItem('nt-toc-visible', tocVisible ? '1' : '0'); } catch (e) { /* 忽略 */ }
+  const pane = detailPane();
+  if (!pane) return;
+  const btn = pane.querySelector('[data-nt-act="toc-toggle"]');
+  if (btn) btn.classList.toggle('active', tocVisible);
+  renderToc(pane);
 }
 
 /** 当前表单值（自动保存与「保存」按钮共用，保证两条路径写入一致） */
@@ -1067,6 +1134,7 @@ function bindModalEvents(mask) {
     if (!el) return;
     const act = el.dataset.ntAct;
     if (act === 'mode') switchMode(el.dataset.mode);
+    else if (act === 'toc-toggle') toggleToc();
     else if (act === 'dp-close') { if (modalClose) modalClose(); }
     else if (act === 'dp-save') { await flushNow(); notify('已保存'); }
     else if (act === 'dp-cancel') await cancelEdit();
@@ -1110,6 +1178,8 @@ function bindEvents(root) {
     else if (act === 'folder-edit') { e.stopPropagation(); await editFolder(id); }
     else if (act === 'folder-del') { e.stopPropagation(); await removeFolder(id); }
     else if (act === 'tag') { tagId = tagId === id ? null : id; await refresh(root); }
+    else if (act === 'tag-edit') { e.stopPropagation(); await editTag(id); }
+    else if (act === 'tag-del') { e.stopPropagation(); await removeTag(id); }
     else if (act === 'open') { await openNote(id); }
     else if (act === 'restore') { await api.notes.restore(id); notify('笔记已恢复'); await refresh(root); }
     else if (act === 'purge') { await purgeNote(id); }
@@ -1117,6 +1187,7 @@ function bindEvents(root) {
     else if (act === 'delete') { await confirmDeleteById(id); }
     // ---- 右栏 ----
     else if (act === 'mode') { switchMode(el.dataset.mode); }
+    else if (act === 'toc-toggle') { toggleToc(); }
     else if (act === 'dp-close') { await closeDetailPane(); }
     else if (act === 'dp-save') { await flushNow(); notify('已保存'); }
     else if (act === 'dp-cancel') { await cancelEdit(); }
@@ -1349,7 +1420,7 @@ async function removeFolder(id) {
 }
 
 async function createTag() {
-  await openPromptModal({
+  const ok = await openPromptModal({
     title: '新增笔记标签',
     label: '标签名',
     placeholder: '如：方案 / 复盘 / 规范',
@@ -1360,6 +1431,78 @@ async function createTag() {
       return undefined;
     },
   });
+  if (ok) notify('标签已创建');
+}
+
+/** 编辑标签（重命名 / 改色）；改名后右栏与详情里的标签显示要同步刷新 */
+async function editTag(id) {
+  const t = tagList.find((x) => Number(x.id) === Number(id));
+  if (!t) return;
+  const ok = await openFormModal({
+    title: '编辑标签',
+    width: 420,
+    grid: false,
+    fields: [
+      { name: 'name', label: '标签名', value: t.name, placeholder: '标签名' },
+      { name: 'color', label: '颜色', type: 'color', value: t.color || '#8896ab' },
+    ],
+    onSubmit: async (v) => {
+      if (!String(v.name || '').trim()) return '标签名不能为空';
+      await api.noteTags.update(id, { name: String(v.name).trim(), color: v.color });
+      await refresh(boundRoot);
+      return undefined;
+    },
+  });
+  if (!ok) return;
+  await syncOpenNoteTags();
+  notify('标签已更新');
+}
+
+/**
+ * 删除标签：引用关系由库级联清理（笔记本身保留），删除后即时刷新并持久化。
+ * 若右栏正开着笔记，把它的标签显示与 baseline 一并同步——否则「取消」会把
+ * 已删除的标签 id 写回保存，界面看起来像「删了又回来了」。
+ */
+async function removeTag(id) {
+  const t = tagList.find((x) => Number(x.id) === Number(id));
+  if (!t) return;
+  const count = Number(t.note_count) || 0;
+  const ok = await new Promise((resolve) => {
+    openPanelModal({
+      title: `删除标签「${t.name}」`,
+      className: 'modal-note-delete',
+      html: `<div class="nt-del-hint">该标签被 ${count} 篇笔记使用。删除后笔记本身保留，仅移除这个标签（引用关系立即清理，不可恢复）。</div>
+        <div class="nt-del-ops">
+          <button class="ghost-btn chip-danger" data-del="yes">删除标签</button>
+        </div>`,
+      okText: '取消',
+      onMount: (mask, close) => {
+        mask.querySelector('[data-del="yes"]')?.addEventListener('click', () => { resolve(true); close(false); });
+      },
+      onClose: () => resolve(false),
+    });
+  });
+  if (!ok) return;
+  await api.noteTags.remove(id);
+  if (tagId === id || Number(tagId) === Number(id)) tagId = null;
+  await refresh(boundRoot);
+  await syncOpenNoteTags();
+  onChanged();
+  notify('标签已删除');
+}
+
+/** 标签增删改后，同步右栏正在编辑的笔记：标签输入框显示、currentTagIds 与保存基线 */
+async function syncOpenNoteTags() {
+  if (!activeNoteId || !currentNote) return;
+  const fresh = await api.notes.get(currentNote.id).catch(() => null);
+  if (!fresh) return;
+  currentNote = { ...currentNote, tags: fresh.tags };
+  currentTagIds = (fresh.tags || []).map((x) => x.id);
+  const input = detailPane()?.querySelector('.nt-tag-input');
+  if (input) input.value = (fresh.tags || []).map((x) => x.name).join('，');
+  if (baseline && Number(baseline.id) === Number(currentNote.id)) {
+    baseline = { ...baseline, tagIds: [...currentTagIds] };
+  }
 }
 
 /** 标签输入（逗号分隔）→ 标签 id；不存在的标签自动创建（与任务标签行为一致） */
@@ -1617,7 +1760,14 @@ async function openKbModal() {
   await openPanelModal({
     title: '知识库问答（检索来源：笔记）',
     className: 'modal-kb',
+    // 关闭只认 ✕ / 底部按钮 / Esc：提问结果一关就没，误点遮罩丢结果太伤（问题 3）
+    showClose: true,
+    closeOnMask: false,
     html: `
+      <div class="kb-scope">
+        <span class="kb-scope-label">检索范围</span>
+        <div class="kb-scope-opts" data-kb="scope"></div>
+      </div>
       <div class="kb-form">
         <input class="modal-input" data-kb="q" placeholder="例如：上次讨论的灰度发布方案是什么？" />
         <button class="primary-btn" data-kb="ask">提问</button>
@@ -1639,6 +1789,33 @@ async function openKbModal() {
       const askBtn = mask.querySelector('[data-kb="ask"]');
       const histList = mask.querySelector('[data-kb="hist-list"]');
       const histCount = mask.querySelector('[data-kb="hist-count"]');
+      const scopeBox = mask.querySelector('[data-kb="scope"]');
+
+      /* ---- 检索范围（分类多选）：不选任何分类 = 全部笔记；目录含子目录 ---- */
+      let scopeIds = [];
+      const folders = await api.noteFolders.list().catch(() => []);
+      const paintScope = () => {
+        if (!scopeBox) return;
+        const chips = [{ id: 0, name: '全部' }, ...folders.map((f) => ({ id: f.id, name: f.name }))];
+        scopeBox.innerHTML = chips.map((c) => {
+          const active = c.id === 0 ? !scopeIds.length : scopeIds.includes(Number(c.id));
+          return `<button type="button" class="kb-scope-chip${active ? ' active' : ''}" data-scope="${c.id}">${esc(c.name)}</button>`;
+        }).join('');
+      };
+      if (scopeBox) {
+        scopeBox.addEventListener('click', (e) => {
+          const chip = e.target.closest('[data-scope]');
+          if (!chip) return;
+          const fid = Number(chip.dataset.scope);
+          if (fid === 0) scopeIds = []; // 「全部」一键清空
+          else {
+            const i = scopeIds.indexOf(fid);
+            if (i >= 0) scopeIds.splice(i, 1); else scopeIds.push(fid);
+          }
+          paintScope();
+        });
+      }
+      paintScope();
 
       const paintStat = async () => {
         const s = await api.kb.stats(1).catch(() => null);
@@ -1660,7 +1837,7 @@ async function openKbModal() {
           <li class="kb-hist-item" data-id="${h.id}">
             <div class="kb-hist-main">
               <div class="kb-hist-q">${esc(h.question)}</div>
-              <div class="kb-hist-sub">${esc(fmtHistTime(h.created_at))} · ${h.hit_count} 条引用${h.degraded ? ' · 未生成回答' : ''}</div>
+              <div class="kb-hist-sub">${esc(fmtHistTime(h.created_at))} · ${h.hit_count} 条引用${h.degraded ? ' · 未生成回答' : ''}${h.scope && h.scope !== '全部笔记' ? ` · ${esc(h.scope)}` : ''}</div>
             </div>
             <button type="button" class="kb-hist-del" data-act="del" title="删除这条记录">🗑</button>
           </li>`).join('');
@@ -1697,7 +1874,8 @@ async function openKbModal() {
         if (!q) return;
         askBtn.disabled = true;
         resultEl.innerHTML = '<div class="kb-loading">检索中（改写查询 → 多路召回：全文 / 笔记级 / 模糊 → AI 重排）…</div>';
-        const res = await api.kb.ask({ question: q, topK: 8 }).catch((e) => ({ __err: e.message }));
+        // folderIds：把检索与回答限定在所选分类（含子目录）内；空数组 = 全部笔记
+        const res = await api.kb.ask({ question: q, topK: 8, folderIds: scopeIds.slice() }).catch((e) => ({ __err: e.message }));
         askBtn.disabled = false;
         resultEl.innerHTML = kbResultHtml(q, res);
         resultEl.querySelectorAll('[data-kb-act="open"]').forEach((b) => {

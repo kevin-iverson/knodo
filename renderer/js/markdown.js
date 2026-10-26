@@ -83,7 +83,8 @@ function renderMarkdown(text) {
 
   const flushPara = () => {
     if (para.length) {
-      html += `<p>${inline(para.join('\n'))}</p>`;
+      // 段内单个换行渲染成 <br>（与 markdown-it breaks:true 对齐：按一次回车预览即换行）
+      html += `<p>${inline(para.join('\n')).replace(/\n/g, '<br>')}</p>`;
       para = [];
     }
   };

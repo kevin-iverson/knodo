@@ -49,6 +49,19 @@ function chatConfig(cfg = getAiConfig()) {
   return { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model };
 }
 
+/** 问答历史的「检索范围」标签：目录 id → 目录名（0 = 未分类），空 = 全部笔记 */
+function kbScopeLabel(folderIds) {
+  const ids = Array.isArray(folderIds)
+    ? folderIds.map(Number).filter((n) => Number.isFinite(n))
+    : [];
+  if (!ids.length) return '全部笔记';
+  return ids.map((id) => {
+    if (id === 0) return '未分类';
+    const f = db.getNoteFolder(id);
+    return f ? f.name : `目录${id}`;
+  }).join('、');
+}
+
 /**
  * 润色配置：上次使用的提示词（ai.polishInstruction）与用户自建预设（ai.polishPresets）。
  * 内置预设由 ai.POLISH_PRESETS 下发，两者在界面上合并成一个下拉，但只持久化用户自己的那份。
@@ -853,6 +866,7 @@ function registerIpc() {
 
   ipcMain.handle('noteTags:list', withDb(() => db.listNoteTags()));
   ipcMain.handle('noteTags:create', withDb((name, color) => db.createNoteTag(name, color)));
+  ipcMain.handle('noteTags:update', withDb((id, p) => db.updateNoteTag(id, p || {})));
   ipcMain.handle('noteTags:delete', withDb((id) => ({ ok: !!db.deleteNoteTag(id) })));
 
   /* ---------- 任务 ↔ 笔记（多对多） ---------- */
@@ -871,10 +885,11 @@ function registerIpc() {
   ipcMain.handle('kb:reindex', withDb(() => knowledge.indexAll()));
   ipcMain.handle('kb:indexNote', withDb((id) => knowledge.indexNote(id)));
   /** AI 提问：召回笔记片段 → 交给对话模型作答（无 AI 配置时降级为纯召回）。
-   *  每次提问都落库（含降级 / 无命中），供问答弹窗回看与删除。 */
-  ipcMain.handle('kb:ask', guard(async (_e, { question, topK, noteIds } = {}) => {
+   *  每次提问都落库（含降级 / 无命中），供问答弹窗回看与删除。
+   *  folderIds：限定检索范围的笔记目录（分类），可多选，空/缺省 = 全部笔记。 */
+  ipcMain.handle('kb:ask', guard(async (_e, { question, topK, noteIds, folderIds } = {}) => {
     if (!db.isReady()) throw new Error('数据库未就绪');
-    const res = await knowledge.answer({ question, cfg: chatConfig(), topK, noteIds });
+    const res = await knowledge.answer({ question, cfg: chatConfig(), topK, noteIds, folderIds });
     try {
       const rec = db.createKbQa({
         question,
@@ -882,6 +897,7 @@ function registerIpc() {
         hits: res.hits,
         degraded: res.degraded,
         reason: res.reason || '',
+        scope: kbScopeLabel(folderIds),
       });
       return { ...res, qaId: rec ? rec.id : null };
     } catch (e) {
@@ -889,8 +905,8 @@ function registerIpc() {
     }
   }));
   /** 只做召回不调模型（界面「检索笔记」按钮用） */
-  ipcMain.handle('kb:retrieve', withDb(({ query, topK, noteIds } = {}) =>
-    knowledge.retrieve({ query, topK, noteIds })));
+  ipcMain.handle('kb:retrieve', withDb(({ query, topK, noteIds, folderIds } = {}) =>
+    knowledge.retrieve({ query, topK, noteIds, folderIds })));
   /** 问答历史 */
   ipcMain.handle('kb:qaList', withDb((limit) => db.listKbQa(Number(limit) || 50)));
   ipcMain.handle('kb:qaGet', withDb((id) => db.getKbQa(id)));

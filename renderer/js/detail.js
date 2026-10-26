@@ -1480,6 +1480,9 @@ function collectDetailPayload(drawer, { quiet = false } = {}) {
     planEnd,
     reminderAt: computeReminder(drawer, planEnd),
     notes,
+    // 标签必须参与基线比对：否则只改标签时 autosave 会判定「无变化」直接跳过写库，
+    // 标签永远保存不上。这里存原始输入串（tagIds 在 save() 里异步解析）。
+    tags: drawer.querySelector('.detail-tags').value,
   };
 }
 
@@ -1550,6 +1553,8 @@ function bindDetailAutoSave(drawer, task, notesHtml) {
     planEnd: task.plan_end,
     reminderAt: task.reminder_at,
     notes: baselineNotes,
+    // 与 collectDetailPayload 的 tags 字段同构：初始渲染用的就是 join(', ')
+    tags: (task.tag_names || []).join(', '),
   });
 
   const signal = renderAbort ? renderAbort.signal : undefined;

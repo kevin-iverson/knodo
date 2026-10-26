@@ -374,6 +374,14 @@ const MIGRATIONS = [
     )`);
     d.exec('CREATE INDEX IF NOT EXISTS idx_kb_qa_created ON kb_qa(created_at DESC, id DESC)');
   },
+  // v13：问答历史补充「检索范围」列。提问时可以限定笔记目录（分类），回看历史时
+  // 要能知道当时限定了哪些范围；旧库补列，默认空串 = 「全部笔记」。
+  (d) => {
+    const cols = d.prepare('PRAGMA table_info(kb_qa)').all().map((c) => c.name);
+    if (!cols.includes('scope')) {
+      d.exec("ALTER TABLE kb_qa ADD COLUMN scope TEXT NOT NULL DEFAULT ''");
+    }
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -1534,8 +1542,8 @@ function createKbQa(p = {}) {
     relevance: Number(h.relevance) || 0,
   }));
   const info = db.prepare(
-    `INSERT INTO kb_qa (question, answer, hits, hit_count, degraded, reason, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO kb_qa (question, answer, hits, hit_count, degraded, reason, scope, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     String(p.question || ''),
     p.answer || '',
@@ -1543,6 +1551,7 @@ function createKbQa(p = {}) {
     slimHits.length,
     p.degraded ? 1 : 0,
     p.reason || '',
+    String(p.scope || ''),
     nowIso(),
   );
   return getKbQa(info.lastInsertRowid);
@@ -1552,7 +1561,7 @@ function createKbQa(p = {}) {
 function listKbQa(limit = 50) {
   return db
     .prepare(
-      `SELECT id, question, hit_count, degraded, reason, created_at,
+      `SELECT id, question, hit_count, degraded, reason, scope, created_at,
               substr(answer, 1, 80) AS answer_excerpt
          FROM kb_qa ORDER BY created_at DESC, id DESC LIMIT ?`
     )
@@ -2194,7 +2203,27 @@ function createNoteTag(name, color = '#8896ab') {
 }
 
 function deleteNoteTag(id) {
+  // note_tag_map 对 tag_id 有 ON DELETE CASCADE（init 里 foreign_keys = ON），
+  // 删标签时引用关系一并清掉，笔记正文不受影响
   return db.prepare('DELETE FROM note_tags WHERE id = ?').run(id).changes;
+}
+
+/**
+ * 重命名 / 改色（标签此前只能建不能改）。同名冲突时报可读错误，
+ * 因为 note_tags.name 有 UNIQUE 约束，直接撞库会抛出晦涩的 SQLITE_CONSTRAINT。
+ */
+function updateNoteTag(id, { name, color } = {}) {
+  const cur = db.prepare('SELECT * FROM note_tags WHERE id = ?').get(id);
+  if (!cur) return null;
+  const nextName = name !== undefined ? String(name || '').trim() : cur.name;
+  if (!nextName) throw new Error('标签名不能为空');
+  if (nextName !== cur.name) {
+    const dup = db.prepare('SELECT id FROM note_tags WHERE name = ? AND id != ?').get(nextName, id);
+    if (dup) throw new Error(`标签「${nextName}」已存在`);
+  }
+  db.prepare('UPDATE note_tags SET name = ?, color = ? WHERE id = ?')
+    .run(nextName, normalizeColor(color !== undefined ? color : cur.color, cur.color), id);
+  return db.prepare('SELECT * FROM note_tags WHERE id = ?').get(id);
 }
 
 function setNoteTags(noteId, tagIds) {
@@ -2596,13 +2625,13 @@ function importData(data) {
     }
 
     const insKbQa = db.prepare(
-      `INSERT INTO kb_qa (id, question, answer, hits, hit_count, degraded, reason, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO kb_qa (id, question, answer, hits, hit_count, degraded, reason, scope, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const q of data.kb_qa || []) {
       insKbQa.run(
         q.id, q.question || '', q.answer || '', jsonOf(q.hits),
-        Number(q.hit_count) || 0, q.degraded ? 1 : 0, q.reason || '', q.created_at || t0
+        Number(q.hit_count) || 0, q.degraded ? 1 : 0, q.reason || '', q.scope || '', q.created_at || t0
       );
     }
 
@@ -2781,6 +2810,7 @@ module.exports = {
   countMatches,
   listNoteTags,
   createNoteTag,
+  updateNoteTag,
   deleteNoteTag,
   setNoteTags,
   resolveNoteTagIds,

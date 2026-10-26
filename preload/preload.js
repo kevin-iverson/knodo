@@ -128,6 +128,7 @@ contextBridge.exposeInMainWorld('api', {
   noteTags: {
     list: () => call('noteTags:list'),
     create: (name, color) => call('noteTags:create', name, color),
+    update: (id, p) => call('noteTags:update', id, p),
     remove: (id) => call('noteTags:delete', id),
   },
   // 任务 ↔ 笔记（多对多）

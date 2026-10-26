@@ -181,7 +181,10 @@ function getRenderer() {
   mdIt = window.markdownit({
     html: false,      // 关键：不渲染原始 HTML，避免笔记内容注入脚本
     linkify: true,    // 裸 URL 自动成链接
-    breaks: false,
+    // breaks:true：单个换行符也渲染成 <br>（CommonMark 标准里单换行只是软换行，
+    // 预览会把它折叠成空格 —— 用户「按一次回车预览没换行、要按两次才生效」就是这个原因）。
+    // 编辑器里输入几个换行预览就显示几个换行，与保存后重新打开的渲染完全一致。
+    breaks: true,
     typographer: false,
   });
   const origin = mdIt.renderer.rules.link_open

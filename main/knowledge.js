@@ -298,12 +298,12 @@ function toHit(r) {
  * @param {object} opts { query, topK, kbId, noteIds, cfg }
  * @returns {Promise<Array>} hits（含 score / relevance / matchedBy / coverage / snippet 便于界面展示命中原因与溯源）
  */
-async function retrieve({ query, topK = DEFAULT_TOP_K, kbId = NOTES_KB_ID, noteIds = null, cfg = {} } = {}) {
+async function retrieve({ query, topK = DEFAULT_TOP_K, kbId = NOTES_KB_ID, noteIds = null, folderIds = null, cfg = {} } = {}) {
   const k = Number(topK) > 0 ? Number(topK) : DEFAULT_TOP_K;
   const q = String(query || '').trim();
   if (!q) return [];
   const variants = await expandQuery(q, cfg);
-  const allowed = Array.isArray(noteIds) && noteIds.length ? new Set(noteIds.map(Number)) : null;
+  const allowed = allowedNoteIds(noteIds, folderIds);
 
   const pool = new Map(); // chunkId → { hit, rrf, routes:Set }
   const pushRoute = (rows, name, weight) => {
@@ -434,6 +434,49 @@ function parseNoteId(sourceKey) {
 }
 
 /**
+ * 把「目录（分类）id 列表」解析成允许的笔记 id 集合。
+ * 含子目录（与笔记列表的 includeSubfolders 口径一致）；0 表示「未分类」。
+ * @param {number[]} folderIds
+ * @returns {number[]|null} null = 未限定（全部笔记）
+ */
+function noteIdsForFolders(folderIds) {
+  const ids = Array.isArray(folderIds)
+    ? folderIds.map(Number).filter((n) => Number.isFinite(n))
+    : [];
+  if (!ids.length) return null;
+  const out = new Set();
+  for (const fid of ids) {
+    const list = db.listNotes({
+      folderId: fid,
+      includeSubfolders: true,
+      archived: 'include',
+      deleted: 'exclude',
+      limit: 100000,
+    });
+    for (const n of list) out.add(Number(n.id));
+  }
+  return [...out];
+}
+
+/**
+ * 合并两路白名单（指定笔记 id 与指定目录），两者都给时取交集语义。
+ * @returns {Set<number>|null}
+ */
+function allowedNoteIds(noteIds, folderIds) {
+  const byId = Array.isArray(noteIds) && noteIds.length
+    ? new Set(noteIds.map(Number))
+    : null;
+  const byFolder = noteIdsForFolders(folderIds);
+  const byFolderSet = byFolder ? new Set(byFolder) : null;
+  if (!byId && !byFolderSet) return null;
+  if (!byId) return byFolderSet;
+  if (!byFolderSet) return byId;
+  const merged = new Set();
+  byId.forEach((id) => { if (byFolderSet.has(id)) merged.add(id); });
+  return merged;
+}
+
+/**
  * 把召回片段拼成给模型的上下文（带 [n] 编号，模型据此引用）。
  * @param {Array} hits
  * @param {number} maxChars
@@ -465,14 +508,15 @@ const QA_SYSTEM_PROMPT = [
 /**
  * 知识库问答（AI 检索的接入入口）。
  * 无 AI 配置时降级为「只返回召回片段」，界面照常展示出处——不让功能整个不可用。
- * @param {object} opts { question, cfg:{baseUrl,apiKey,model}, topK, noteIds }
+ * @param {object} opts { question, cfg:{baseUrl,apiKey,model}, topK, noteIds, folderIds }
+ *        noteIds / folderIds 可把检索与回答范围限定在所选笔记 / 目录（含子目录）内
  * @returns {Promise<{answer:string, hits:Array, degraded:boolean, reason?:string}>}
  */
-async function answer({ question, cfg = {}, topK = DEFAULT_TOP_K, noteIds = null } = {}) {
+async function answer({ question, cfg = {}, topK = DEFAULT_TOP_K, noteIds = null, folderIds = null } = {}) {
   const q = String(question || '').trim();
   if (!q) return { answer: '', hits: [], degraded: true, reason: 'empty' };
   const hasAi = !!(cfg && cfg.apiKey);
-  const hits = await retrieve({ query: q, topK, noteIds, cfg });
+  const hits = await retrieve({ query: q, topK, noteIds, folderIds, cfg });
   const meta = { reranked: hits.some((h) => h.reranked) };
   if (!hits.length) return { answer: '', hits: [], degraded: true, reason: 'no-hit', meta };
   if (!hasAi) {

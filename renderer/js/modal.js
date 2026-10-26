@@ -140,6 +140,7 @@ export function openPanelModal({
   title, html = '', className = '', onMount, okText = '关闭',
   extraButtons = [], onSubmit, onClose, showClose = false, headHtml = '',
   resizable = false, resizeKey = '', minWidth = 520, minHeight = 380,
+  closeOnMask = true,
 }) {
   return new Promise((resolve) => {
     const mask = document.createElement('div');
@@ -198,7 +199,9 @@ export function openPanelModal({
         showError((e && e.message) || '操作失败，请重试');
       }
     });
-    mask.addEventListener('click', (e) => { if (e.target === mask) close(false); });
+    // 点遮罩关闭是可选项：问答弹窗这类「误点一下就丢整个提问结果」的场景要关掉，
+    // 只允许 ✕ / 底部按钮 / Esc 显式关闭
+    if (closeOnMask) mask.addEventListener('click', (e) => { if (e.target === mask) close(false); });
     mask.querySelector('[data-modal="close"]')?.addEventListener('click', () => close(false));
     if (resizable) {
       disposeResize = mountResize(mask.querySelector('.modal'), { key: resizeKey, minWidth, minHeight });
