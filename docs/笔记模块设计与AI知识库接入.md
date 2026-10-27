@@ -24,13 +24,14 @@
 ### 1.1 笔记视图（侧栏「📝 笔记」）
 
 ```
-工具栏：＋ 新建笔记 | 搜索框 | 🗄 归档夹 | 🗑 回收站 | 🧠 知识库问答 | 计数
+工具栏：＋ 新建笔记 | 搜索框 | 🗄 归档夹 | 🗑 回收站 | 🧠 知识库问答 | 📥 导入 | 计数
    ↓
 两栏：目录 / 标签（左） → 笔记列表（右，点击任意行 → 弹出编辑窗口）
    ↓
 编辑窗口（.modal-note-editor，不覆盖列表页）：
    标题输入 + 目录下拉 + 标签输入 + 模式（编辑 / 分栏 / 预览）
    EasyMDE 工具栏（标题、列表、代码块、链接、图片、表格…）+ markdown-it 实时预览
+   （代码块按语言着色 + 语言标签 + 复制；```mermaid 渲染成矢量图）
    → 输入停止 700ms 自动落库（复用既有 autosave.js 的状态机：未保存 / 保存中 / 已保存）
    → 粘贴 / 拖拽 / 工具栏选文件 → 图片落盘并插入 ![](todo-media://…)
    → 窗口底部：图片条（打开 / 复制引用 / 删除）+ 被哪些任务引用（可跳转 / 取消关联）
@@ -208,6 +209,7 @@ ALTER TABLE notes ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
 | `notes:purge` | id | `{noteId, unlinkedTasks}` | 彻底删除，返回被解除引用的任务 id |
 | `notes:trashList` / `notes:emptyTrash` | — | 列表 / `{removed}` | |
 | `notes:search` | `(keyword, {limit, archived, deleted})` | 笔记数组 + `score` / `highlight` | |
+| `notes:importMd` | `(kind, {folderId, tags, titleFrom, importImages})` | `{imported, skipped, notes, images}` | 导入本地 .md；`kind='files'` 选文件（多选）/ `'dir'` 递归扫描目录 |
 | `noteAttachments:list` | noteId | 附件数组 | 图片条用 |
 | `noteAttachments:pasteImage` | `(noteId, dataUrl, name)` | `{entry, attachments, url}` | 粘贴截图落盘，`url` 可直接写进 Markdown |
 | `noteAttachments:pick` | noteId | `{entries, attachments, failed}` | 系统文件选择框（图片优先） |
@@ -277,6 +279,15 @@ const { answer, hits, degraded } = await knowledge.answer({
 |---|---|---|---|
 | `markdown-it` | ^14.3.3 | Markdown → HTML（表格 / 代码块 / 链接 / 图片） | `dependencies` 登记 + `renderer/vendor/markdown-it/markdown-it.min.js` 随仓库 vendor |
 | `easymde` | ^2.21.0 | 编辑器（工具栏、快捷键、列表续行、撤销栈、分栏预览） | 同上，`renderer/vendor/easymde/easymde.min.{js,css}` |
+| `highlight.js` | ^11.12.0 | 代码块按语言着色（笔记预览 / AI 答案） | `npm run build:tools` 打成 IIFE → `renderer/vendor/highlight/highlight.min.js`，挂 `window.hljs`，随页面同步加载 |
+| `mermaid` | ^12.2.0 | ```mermaid 代码块 → SVG 图表（仅流程图 / 时序图 / 类图 / 甘特图 / 饼图） | `npm run build:tools` 打成 ESM → `renderer/vendor/mermaid/mermaid.mjs`，渲染层按需 `import()`；构建期把其余图表模块置空（5.0MB → 3.6MB） |
+
+> **为什么 highlight.js 和 mermaid 的加载方式不同**：markdown-it 的高亮钩子是**同步**的，
+> 渲染正文时 hljs 必须已就绪，所以走经典 `<script>`；mermaid 包有数 MB 且多数笔记用不到，
+> 等检测到正文里真出现 ```mermaid 时再动态 import，不为不需要的笔记付解析成本。
+> 图表类型只保留流程图 / 时序图 / 类图 / 甘特图 / 饼图：mermaid 里其余 30 多种图（思维导图、看板、架构图、C4…）
+> 在 `scripts/build-tools.js` 里被替换成空桩，渲染层有一份同样的白名单（`MERMAID_TYPES`），两边必须一起改。
+> 注意 **elkjs 不能裁**：流程图 / 类图的默认布局就是它，裁掉后图会叠成一团。
 
 约定（与 flatpickr / tom-select 一致）：**构建产物 vendor 进仓库，运行时不联网、不依赖 node_modules 路径**。
 

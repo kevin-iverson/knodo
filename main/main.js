@@ -161,6 +161,15 @@ function buildAppMenu() {
             openStorageDialog();
           },
         },
+        {
+          // 从外部笔记工具 / 自己的 md 文件迁移：正文原样入库，本地图片一起搬进附件目录
+          label: '导入 Markdown 笔记…',
+          accelerator: 'CmdOrCtrl+Shift+I',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:import-md');
+          },
+        },
         { type: 'separator' },
         {
           // 开机自启动：勾选项直接反映系统里实际登记的启动项，点一下即写系统设置

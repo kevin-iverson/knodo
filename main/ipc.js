@@ -18,6 +18,7 @@ const autostart = require('./autostart');
 const searchAssist = require('./search-assist');
 const knowledge = require('./knowledge');
 const sync = require('./sync');
+const mdImport = require('./md-import');
 
 /**
  * 附件相对路径 → 笔记正文里可引用的 todo-media:// URL。
@@ -755,6 +756,35 @@ function registerIpc() {
   ipcMain.handle('notes:trashList', withDb(() => db.listTrash()));
   ipcMain.handle('notes:emptyTrash', withDb(() => ({ removed: db.emptyTrash() })));
   ipcMain.handle('notes:search', withDb((keyword, opts) => db.searchNotes(keyword, opts || {})));
+
+  /**
+   * 导入 Markdown 笔记：选文件（可多选）或整个目录（递归，按子目录结构建笔记目录）。
+   * 为什么放在主进程：只有这里能弹系统文件框、能读磁盘、能往附件目录落盘。
+   * @param {'files'|'dir'} kind
+   * @param {{folderId?:number|null, tags?:string[], titleFrom?:'file'|'h1', importImages?:boolean}} opts
+   */
+  ipcMain.handle('notes:importMd', async (_e, kind = 'files', opts = {}) => {
+    const isDir = kind === 'dir';
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: isDir ? '导入文件夹里的 Markdown 笔记' : '导入 Markdown 笔记',
+      buttonLabel: '导入',
+      properties: isDir ? ['openDirectory'] : ['openFile', 'multiSelections'],
+      filters: isDir ? [] : [
+        { name: 'Markdown', extensions: mdImport.MD_EXT.map((e) => e.replace(/^\./, '')) },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true };
+    try {
+      const entries = isDir
+        ? filePaths.flatMap((dir) => mdImport.walkDir(dir))
+        : filePaths.map((p) => ({ file: p, relDir: '' }));
+      const res = mdImport.importFiles({ files: entries, ...opts });
+      return { ok: true, ...res };
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  });
 
   /* ---------- 笔记附件（图片粘贴 / 插入） ---------- */
   // 复用任务附件同一套落盘规则（main/attachments.js），只是宿主目录换成 note-<id>：

@@ -2009,6 +2009,53 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .editor-preview th, .editor-preview-side th, .nt-guide th, .kb-answer th { background: var(--bg); }
 .editor-preview a, .editor-preview-side a, .nt-guide a, .kb-answer a { color: var(--primary); }
 
+/* 代码块（highlight.js 着色 + 语言标签 + 复制） */
+.md-code {
+  position: relative; margin: 8px 0; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg); overflow: hidden;
+}
+.md-code-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px 3px 10px; border-bottom: 1px solid var(--border); background: var(--bg-panel);
+}
+.md-code-lang {
+  font-size: 11px; letter-spacing: .3px; text-transform: lowercase;
+  color: var(--text-3); user-select: none;
+}
+.md-code-copy {
+  margin-left: auto; border: 1px solid var(--border); border-radius: 4px;
+  background: transparent; color: var(--text-2); font: inherit; font-size: 11.5px;
+  padding: 2px 8px; cursor: pointer;
+}
+.md-code-copy:hover { color: var(--primary); border-color: var(--primary); }
+.md-code pre { margin: 0; padding: 9px 12px; overflow: auto; background: transparent; border-radius: 0; }
+.md-code pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.65; }
+
+/* 代码块里的 Tab 宽度必须和编辑器一致。
+   浏览器对 <pre>/<code> 的 tab-size 默认值是 8，而编辑器（EasyMDE → CodeMirror）
+   的 tabSize 默认是 2：同一段带 Tab 缩进的代码，编辑器里看着缩进 2 格、预览里变成 8 格，
+   就是「缩进比实际多一大截」的观感。这里三处一起钉成 2：
+   预览（本文件）、编辑器（notes.js 里显式传 tabSize:2）、粘贴兜底的 textarea。 */
+.md-code pre, .markdown-body pre, .editor-preview pre, .editor-preview-side pre,
+.nt-guide pre, .kb-answer pre, .mt-markdown pre, .rp-doc pre,
+.md-mermaid .md-mermaid-src, .nt-md-fallback { tab-size: 2; }
+
+/* Mermaid：占位块（渲染中 / 失败时显示源码）→ 渲染成功后换成 SVG */
+.md-mermaid {
+  margin: 10px 0; padding: 10px; text-align: center;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);
+  overflow: auto;
+}
+.md-mermaid svg { max-width: 100%; height: auto; }
+.md-mermaid .md-mermaid-src {
+  margin: 0; padding: 8px 10px; text-align: left; white-space: pre-wrap; word-break: break-word;
+  font-family: Consolas, monospace; font-size: 12.5px; color: var(--text-2); background: transparent;
+}
+.md-mermaid-err {
+  margin-bottom: 6px; padding: 4px 8px; border-radius: 4px; text-align: left; font-size: 12px;
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
 /* EasyMDE：离线运行（不下载 Font Awesome），工具栏图标用 CSS 文字/符号兜底 */
 .editor-toolbar {
   border-color: var(--border); background: var(--bg-panel);

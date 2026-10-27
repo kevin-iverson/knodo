@@ -107,6 +107,8 @@ contextBridge.exposeInMainWorld('api', {
     trashList: () => call('notes:trashList'),
     emptyTrash: () => call('notes:emptyTrash'),
     search: (keyword, opts) => call('notes:search', keyword, opts),
+    // 导入本地 Markdown 文件 / 文件夹（kind: 'files' | 'dir'）
+    importMd: (kind, opts) => call('notes:importMd', kind, opts || {}),
   },
   // 笔记图片 / 附件（复用任务附件落盘规则，宿主目录 note-<id>）
   noteAttachments: {
@@ -238,7 +240,7 @@ contextBridge.exposeInMainWorld('api', {
   on: (channel, cb) => {
     const allowed = [
       'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary',
-      'ui:code-format', 'ui:text-diff', 'ui:json-viewer',
+      'ui:code-format', 'ui:text-diff', 'ui:json-viewer', 'ui:import-md',
     ];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));

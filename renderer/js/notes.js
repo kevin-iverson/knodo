@@ -23,7 +23,7 @@ import { openPanelModal, openFormModal, openPromptModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import {
   renderSafeMarkdown, renderStyledInline, highlightKeyword, markKeywordIn,
-  wrapStyledText, TEXT_COLORS, BG_COLORS,
+  wrapStyledText, TEXT_COLORS, BG_COLORS, enhanceMarkdown,
 } from './markdown-lib.js';
 import { openDetail } from './detail.js';
 import { openFindBar, closeFindBar, isFindOpen } from './note-find.js';
@@ -143,6 +143,7 @@ function shellHtml() {
         <button class="chip" data-nt="toggle-trash">🗑 回收站</button>
         <span class="nt-spacer"></span>
         <button class="ghost-btn" data-nt="kb" title="以笔记为知识库向 AI 提问">🧠 知识库问答</button>
+        <button class="ghost-btn" data-nt="import" title="把本地 .md 文件 / 文件夹导入成笔记">📥 导入</button>
         <span class="nt-count"></span>
       </div>
       <div class="nt-layout">
@@ -524,12 +525,26 @@ function mountEditor(pane, note) {
     autoDownloadFontAwesome: false, // 离线运行：图标由 CSS ::after 提供文字/符号
     spellChecker: false,
     status: false,
+    // Tab 宽度与预览保持一致：预览侧 CSS 的 tab-size 也是 2（见 styles.css「代码块里的 Tab 宽度」）。
+    // 两边不一致时，同一段代码在编辑器里缩进 2 格、预览里缩进 8 格，看着就像「缩进多了一大截」。
+    tabSize: 2,
+    indentWithTabs: false,
     // 关掉「分栏即全屏」的默认行为：EasyMDE 的分栏是给整页编辑器设计的，
     // 在受限容器里会把编辑器变成 position:fixed 盖住整个应用。
     sideBySideFullscreen: false,
-    placeholder: '支持 Markdown：# 标题、- 列表、```代码块```、[链接](url)、| 表格 |；截图可直接粘贴',
+    placeholder: '支持 Markdown：# 标题、- 列表、```代码块```（自动着色）、```mermaid 图表、[链接](url)、| 表格 |；截图可直接粘贴',
     previewRender: (plain) => renderSafeMarkdown(plain),
     toolbar: toolbarConfig(MDE, note.id),
+  });
+  // Tab 键插入空格，而不是制表符。
+  // CodeMirror 的默认键表把 Tab 绑在 defaultTab → insertTab 上，塞进正文的是一个 \t：
+  // 库里存的是「一个制表符」，它有多宽完全取决于谁在显示（编辑器 2 格、预览/导出/别的编辑器 8 格），
+  // 「缩进按照实际情况」就无从谈起。改成 insertSoftTab 后存的就是看得见的空格。
+  editor.codemirror.addKeyMap({
+    Tab: (cm) => {
+      if (cm.somethingSelected()) cm.indentSelection('add');
+      else cm.execCommand('insertSoftTab');
+    },
   });
   // 图片粘贴 / 拖拽：自己接管插入。
   // 不走 EasyMDE 的 uploadImage / imageUploadFunction —— 它内部的插入分支（P()/G()）在
@@ -826,6 +841,7 @@ function switchMode(m) {
     b.classList.toggle('active', b.dataset.mode === mode);
   });
   if (mode !== 'edit') refreshPreview();
+  else enhanceMarkdown(detailPane()); // 编辑态下预览是隐藏的，切回来时补画 mermaid
   // 切换后编辑器宽度变了 → 重新测量（否则行号 / 光标的横向位置会错）
   if (mode !== 'preview') {
     setTimeout(() => {
@@ -864,6 +880,8 @@ function refreshPreview() {
     if (first && typeof first.scrollIntoView === 'function') first.scrollIntoView({ block: 'center' });
   }
   renderToc(pane);
+  // ```mermaid → SVG（异步；隐藏容器里的块会留到切回预览时再画）
+  enhanceMarkdown(box);
 }
 
 /* ---------------- 大纲（目录，仿语雀） ---------------- */
@@ -1320,6 +1338,98 @@ async function onToolbar(act) {
   else if (act === 'toggle-archived') { showArchived = !showArchived; if (showArchived) showTrash = false; await refresh(root); }
   else if (act === 'empty-trash') await emptyTrash();
   else if (act === 'kb') await openKbModal();
+  else if (act === 'import') await importMarkdown();
+}
+
+/* ---------------- 导入 Markdown 笔记 ---------------- */
+
+/** 供应用菜单 / 其它视图调用：先切到笔记视图（骨架要在），再弹导入框 */
+export async function importNotesFromDisk() {
+  await onSwitchView();
+  await importMarkdown();
+}
+
+/**
+ * 导入本地 Markdown：先选「文件 / 文件夹 + 落到哪个目录」，再弹系统文件框。
+ * 目录导入会按子目录结构自动建笔记目录，相对路径的本地图片一并搬进附件目录。
+ */
+async function importMarkdown() {
+  const rows = flattenFolders(folderList);
+  const current = folderId === 'all' || folderId === UNFILED ? UNFILED : Number(folderId);
+  let picked = null;
+  const res = await openFormModal({
+    title: '导入 Markdown 笔记',
+    okText: '选择文件…',
+    grid: false,
+    fields: [
+      {
+        name: 'kind',
+        label: '导入方式',
+        type: 'choices',
+        value: 'files',
+        options: [
+          { value: 'files', label: '选择文件（可多选）' },
+          { value: 'dir', label: '整个文件夹（递归，保留目录结构）' },
+        ],
+        hint: '文件：只导入选中的 .md；文件夹：递归扫描并按子目录建笔记目录。',
+      },
+      {
+        name: 'folderId',
+        label: '导入到',
+        type: 'select',
+        value: String(current),
+        options: [
+          { value: String(UNFILED), label: '未分类' },
+          ...rows.map((f) => ({ value: String(f.id), label: `${'　'.repeat(f.depth || 0)}${f.name}` })),
+        ],
+      },
+      {
+        name: 'titleFrom',
+        label: '标题取自',
+        type: 'choices',
+        value: 'h1',
+        options: [
+          { value: 'h1', label: '首个一级标题（没有就用文件名）' },
+          { value: 'file', label: '文件名' },
+        ],
+      },
+      {
+        name: 'importImages',
+        label: '图片',
+        type: 'choices',
+        value: 'yes',
+        options: [
+          { value: 'yes', label: '连同本地图片一起导入（推荐）' },
+          { value: 'no', label: '只导入文字，图片保持原链接' },
+        ],
+        hint: '相对路径的本地图片会复制进附件目录，正文中改写成 todo-media:/// 引用。',
+      },
+    ],
+    onSubmit: (values) => { picked = values; },
+  });
+  if (!res || !picked) return;
+  const kind = picked.kind === 'dir' ? 'dir' : 'files';
+  const r = await api.notes.importMd(kind, {
+    folderId: Number(picked.folderId) || null,
+    tags: [],
+    titleFrom: picked.titleFrom === 'file' ? 'file' : 'h1',
+    importImages: picked.importImages !== 'no',
+  }).catch((e) => ({ ok: false, message: (e && e.message) || String(e) }));
+
+  if (r.canceled) return;
+  if (!r.ok) { notify(r.message || '导入失败'); return; }
+  if (!r.imported) { notify('没有可导入的 Markdown 文件'); return; }
+  showTrash = false;
+  showArchived = false;
+  // 处在搜索 / 归档 / 回收站筛选态时新笔记会被过滤掉，先回到全量列表再打开
+  keyword = '';
+  const search = boundRoot && boundRoot.querySelector('#nt-search');
+  if (search) search.value = '';
+  await refresh(boundRoot);
+  const img = r.images ? `，${r.images} 张图片` : '';
+  const skip = (r.skipped && r.skipped.length) ? `，${r.skipped.length} 个文件跳过` : '';
+  notify(`已导入 ${r.imported} 篇笔记${img}${skip}`);
+  if (r.notes && r.notes.length) await openNote(r.notes[0].id);
 }
 
 async function clearSearch() {
@@ -1860,6 +1970,7 @@ async function openKbModal() {
           degraded: rec.degraded,
           reason: rec.reason,
         });
+        enhanceMarkdown(resultEl);
         resultEl.querySelectorAll('[data-kb-act="open"]').forEach((b) => {
           b.addEventListener('click', async () => {
             mask.querySelector('[data-modal="ok"]')?.click();
@@ -1878,6 +1989,7 @@ async function openKbModal() {
         const res = await api.kb.ask({ question: q, topK: 8, folderIds: scopeIds.slice() }).catch((e) => ({ __err: e.message }));
         askBtn.disabled = false;
         resultEl.innerHTML = kbResultHtml(q, res);
+        enhanceMarkdown(resultEl);
         resultEl.querySelectorAll('[data-kb-act="open"]').forEach((b) => {
           b.addEventListener('click', async () => {
             // 关闭弹窗 → 右栏打开该笔记，并把命中的词高亮 / 滚动定位过去（便于溯源）
@@ -1952,6 +2064,27 @@ function showGuide() {
       '| 列 A | 列 B |',
       '| --- | --- |',
       '| 1 | 2 |',
+      '',
+      '## 代码块（自动着色）',
+      '```python',
+      'def main():',
+      '    print("按语言自动高亮，右上角可一键复制")',
+      '```',
+      '',
+      '支持 js / ts / python / java / go / rust / c / cpp / sql / bash / yaml / json … '
+      + '不认识的语言会尝试自动识别。Tab 键插入 2 个空格（与预览里的缩进宽度一致）。',
+      '',
+      '## 图表（Mermaid）',
+      '```mermaid',
+      'graph LR',
+      '  A[想法] --> B(笔记)',
+      '  B --> C{进入知识库}',
+      '  C -->|是| D[AI 可检索]',
+      '  C -->|否| E[继续整理]',
+      '```',
+      '',
+      '流程 / 时序 / 类 / 甘特 / 饼图五种语法同 mermaid 官方（其它图表类型不支持）；'
+      + '语法写错时会就地显示源码，改完立刻重画。',
       '',
       '## 颜色与高亮（本应用扩展）',
       '==默认高亮文字==',

@@ -13,8 +13,21 @@
  * （AI 返回的答案也走同一个渲染器），放开原始 HTML 等于给笔记内容开一个注入口子。
  * 所以颜色走「内联标记 + markdown-it 插件」：标记在 content_md 里持久化（导入导出、全文检索、
  * 知识库分块天然生效），渲染时才翻译成 <mark>/<span>；色值只接受 #hex，杜绝 style 注入。
+ *
+ * 代码块 / Mermaid（fence 渲染规则被整体接管，见 getRenderer）：
+ * - 着色用 vendor 里的 highlight.js（renderer/vendor/highlight），随页面同步加载，
+ *   渲染一步到位；语言名对不上时降级为「只转义、不着色」，不报错；
+ * - ```mermaid 换成占位 <div class="md-mermaid">，再由 enhanceMarkdown(root) 异步渲染成 SVG
+ *   —— mermaid 包有数 MB，只在正文里真出现图时才动态 import 进来，不打开就不付解析成本；
+ *   支持的图表类型只有流程图 / 时序图 / 类图 / 甘特图 / 饼图（构建期已裁掉其余图表代码，
+ *   见 MERMAID_TYPES 与 scripts/build-tools.js）。
  */
 import { renderMarkdown } from './markdown.js';
+
+/** mermaid 块的占位 class（渲染层靠它找到待渲染的图） */
+const MERMAID_BOX = 'md-mermaid';
+/** 占位块里承载源码的元素：textContent 拿到的就是原始 Mermaid 文本 */
+const MERMAID_SRC = 'md-mermaid-src';
 
 let mdIt = null;
 
@@ -165,14 +178,92 @@ function styledTextPlugin(md) {
       if (st.color) style.push(`color:${st.color}`);
       if (st.bg) style.push(`background:${st.bg}`);
       if (style.length) open.attrSet('style', style.join(';'));
-      // 内部继续走内联解析：**加粗**、`代码`、链接在色块里照常生效
-      state.md.inline.parse(inner, state.md, state.env, state.tokens);
+      // 内部继续走内联解析：**加粗**、`代码`、链接在色块里照常生效。
+      // 不能直接把外层 state.tokens 当输出数组：内层 parse 结束时会跑一遍内联后处理
+      // （text_collapse 合并相邻 text、emphasis 收尾等），作用范围是**整个数组**，
+      // 会把外层已经生成的 token 合并掉，外层 delimiters 里记录的下标随即失效，
+      // 表现为「==高亮== 和 **加粗** 同时出现时整段渲染直接抛 TypeError」。
+      // 所以先解析进临时数组，再原样追加到外层。
+      const innerTokens = [];
+      state.md.inline.parse(inner, state.md, state.env, innerTokens);
+      innerTokens.forEach((t) => state.tokens.push(t));
       const close = state.push('styled_close', tag, -1);
       close.markup = '==';
     }
     state.pos = pos;
     return true;
   });
+}
+
+/* ---------------- 代码块：复制 ---------------- */
+
+/** Electron 里 navigator.clipboard 在 https / file 下可用；老环境退回 execCommand */
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* 继续走兜底 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return !!ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 复制按钮走「document 级委托」：预览面板每次输入都会重建 innerHTML，
+// 逐个按钮绑监听会随重绘丢失；CSP 也不允许内联 onclick。
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-md-copy]') : null;
+    if (!btn) return;
+    const box = btn.closest('.md-code');
+    const code = box && box.querySelector('code');
+    if (!code) return;
+    const label = btn.textContent;
+    copyToClipboard(code.textContent || '').then((ok) => {
+      btn.textContent = ok ? '已复制' : '复制失败';
+      setTimeout(() => { btn.textContent = label; }, 1200);
+    });
+  });
+}
+
+/** 取全局 highlight.js（由 renderer/index.html 的经典 <script> 引入，见 scripts/vendor/highlight-global.mjs） */
+function hljsInstance() {
+  return typeof window === 'undefined' ? null : (window.hljs || null);
+}
+
+/**
+ * markdown-it 的 highlight 钩子：同步返回着色后的 HTML。
+ * 返回空串时 markdown-it 会退回「转义 + 无着色」，所以任何异常都不会让渲染失败。
+ * @param {string} code 代码块原文（未转义）
+ * @param {string} lang ``` 后面写的语言
+ * @returns {string}
+ */
+function highlightHook(code, lang) {
+  const hljs = hljsInstance();
+  if (!hljs) return '';
+  const name = String(lang || '').trim().toLowerCase();
+  // mermaid 走单独的占位渲染（fence 规则里处理），这里不能输出成普通代码
+  if (!name || name === 'mermaid') return '';
+  try {
+    if (hljs.getLanguage(name)) {
+      return hljs.highlight(code, { language: name, ignoreIllegals: true }).value;
+    }
+    // 语言没打包进来：交给 hljs 的自动识别，识别不出就当纯文本
+    return hljs.highlightAuto(code).value;
+  } catch (e) {
+    return '';
+  }
 }
 
 function getRenderer() {
@@ -187,6 +278,27 @@ function getRenderer() {
     breaks: true,
     typographer: false,
   });
+  // 代码块整体接管：
+  // - ```mermaid → 占位容器，等 enhanceMarkdown() 异步渲染成 SVG；
+  //   占位块里保留源码，加载失败 / 语法错误时就地显示源码，不留空白；
+  // - 其它代码 → highlight.js 着色 + 语言标签 + 复制按钮。
+  //   之所以自己拼 HTML 而不是用 markdown-it 的 highlight 钩子，是为了能顺带包一层
+  //   .md-code 外壳（放语言标签和复制按钮），钩子只能返回 <code> 里的内容。
+  mdIt.renderer.rules.fence = (tokens, idx) => {
+    const token = tokens[idx];
+    const lang = String(token.info || '').trim().split(/\s+/)[0].toLowerCase();
+    if (lang === 'mermaid') {
+      return `<div class="${MERMAID_BOX}"><pre class="${MERMAID_SRC}">${escHtml(token.content)}</pre></div>`;
+    }
+    const body = highlightHook(token.content, lang) || escHtml(token.content);
+    const label = lang || 'text';
+    return `<div class="md-code">`
+      + `<div class="md-code-bar"><span class="md-code-lang">${escHtml(label)}</span>`
+      + `<button type="button" class="md-code-copy" data-md-copy>复制</button></div>`
+      + `<pre><code${lang ? ` class="language-${escHtml(label)}"` : ''}>${body}</code></pre>`
+      + `</div>`;
+  };
+
   const origin = mdIt.renderer.rules.link_open
     || ((tokens, idx, opts, _env, self) => self.renderToken(tokens, idx, opts));
   mdIt.renderer.rules.link_open = (tokens, idx, opts, env, self) => {
@@ -206,6 +318,207 @@ export function renderSafeMarkdown(text) {
   const r = getRenderer();
   if (r) return r.render(String(text || ''));
   return renderMarkdown(text);
+}
+
+/* ---------------- Mermaid 图（异步渲染） ---------------- */
+
+/**
+ * 支持的图表类型白名单：流程图 / 时序图 / 类图 / 甘特图 / 饼图。
+ *
+ * 为什么要有这份名单：mermaid 默认把 30 多种图（思维导图、看板、架构图、C4、ELK 布局…）
+ * 都带上，整个库 5MB，而笔记里 99% 只用得到这五种。构建期（scripts/build-tools.js）会把
+ * 其余图表模块替换成空桩，只打进来这五类 —— 所以这里的名单必须与构建期的 keep 列表一致，
+ * 否则会出现「界面说支持、库却加载不出来」。
+ *
+ * 不支持的语法在**渲染前**就拦下来（见 renderMermaidBatch）：既不白等一次 2MB 的库加载，
+ * 也不会让用户看到 mermaid 内部那句看不懂的 UnknownDiagramError。
+ */
+const MERMAID_TYPES = [
+  { re: /^(?:graph|flowchart)\b/, label: '流程图' },
+  { re: /^sequenceDiagram\b/, label: '时序图' },
+  { re: /^classDiagram\b/, label: '类图' },
+  { re: /^gantt\b/, label: '甘特图' },
+  { re: /^pie\b/, label: '饼图' },
+];
+
+/** 报错 / 帮助文案里复用的「支持哪些图」 */
+export const MERMAID_SUPPORTED =
+  '流程图（graph / flowchart）、时序图（sequenceDiagram）、类图（classDiagram）、甘特图（gantt）、饼图（pie）';
+
+/**
+ * 取 Mermaid 源码的首个关键字判断图表类型，不支持时返回 null。
+ * 需要跳过的行：YAML frontmatter（--- … ---）、注释 / 指令（%% 开头）、空行 ——
+ * 这些都可能出现在真正的图表声明之前，不跳过就会把注释当成类型。
+ * @param {string} src Mermaid 源码
+ * @returns {{label: string}|null}
+ */
+export function detectMermaidType(src) {
+  const lines = String(src == null ? '' : src).replace(/\r\n?/g, '\n').split('\n');
+  let i = 0;
+  if (lines.length && /^---\s*$/.test(lines[0])) {
+    i = 1;
+    while (i < lines.length && !/^(?:---|\.\.\.)\s*$/.test(lines[i])) i++;
+    i++; // 跳过结尾的 ---
+  }
+  for (; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t || t.startsWith('%%')) continue;
+    return MERMAID_TYPES.find((x) => x.re.test(t)) || null;
+  }
+  return null;
+}
+
+/** 已加载的 mermaid 实例 / 正在进行的加载 promise（只会真正 import 一次） */
+let mermaidApi = null;
+let mermaidLoading = null;
+/** mermaid.render 的 id 需要唯一（mermaid 内部会按 id 建临时节点） */
+let mermaidSeq = 0;
+/** 串行化所有渲染：mermaid 内部有共享状态并发渲染会互相踩 */
+let mermaidChain = Promise.resolve();
+
+function isDark() {
+  try {
+    return document.documentElement.getAttribute('data-theme') === 'dark';
+  } catch (e) {
+    return false;
+  }
+}
+
+const MERMAID_CONFIG = {
+  startOnLoad: false,           // 由我们自己扫描并渲染（页面里没有 class="mermaid" 的元素）
+  securityLevel: 'strict',      // DOMPurify 清洗：笔记内容里的脚本进不到 DOM
+  suppressErrorRendering: true, // 语法错误时抛异常，由我们显示「源码 + 提示」而不是一张错误图
+  fontFamily: '-apple-system, "Segoe UI", "Microsoft YaHei", sans-serif',
+  flowchart: { htmlLabels: false, curve: 'basis' },
+};
+
+/** 懒加载 mermaid 并按当前主题初始化（主题变了就重新 initialize） */
+async function ensureMermaid() {
+  const theme = isDark() ? 'dark' : 'default';
+  if (mermaidApi) {
+    if (mermaidApi.__theme !== theme) {
+      mermaidApi.initialize({ ...MERMAID_CONFIG, theme });
+      mermaidApi.__theme = theme;
+    }
+    return mermaidApi;
+  }
+  if (!mermaidLoading) {
+    mermaidLoading = import('../vendor/mermaid/mermaid.mjs')
+      .then((m) => {
+        const api = m.mermaid || m.default;
+        api.initialize({ ...MERMAID_CONFIG, theme });
+        api.__theme = theme;
+        mermaidApi = api;
+        return api;
+      })
+      .catch((e) => {
+        mermaidLoading = null; // 允许下次重试，而不是永久卡在失败态
+        throw e;
+      });
+  }
+  return mermaidLoading;
+}
+
+/** 渲染失败时的占位：保留源码 + 错误提示，用户至少能看到原文 */
+function mermaidFail(el, src, msg, title) {
+  el.classList.add('is-error');
+  el.innerHTML = `<div class="md-mermaid-err">⚠ ${escHtml(title || 'Mermaid 渲染失败：')}${escHtml(msg || '未知错误')}</div>`
+    + `<pre class="${MERMAID_SRC}">${escHtml(src)}</pre>`;
+}
+
+async function renderMermaidBatch(nodes) {
+  // 先做「类型白名单」筛选：不支持的图表类型就地报错，一个字节的库都不用加载。
+  // 空块也在这里一次性处理掉，省得后面几处都判一遍。
+  const supported = [];
+  for (const el of nodes) {
+    if (!el.isConnected) continue;
+    const srcEl = el.querySelector(`.${MERMAID_SRC}`);
+    const src = srcEl ? srcEl.textContent : (el.textContent || '');
+    if (!String(src).trim()) {
+      el.classList.add('is-error');
+      el.innerHTML = '<div class="md-mermaid-err">⚠ 空的 Mermaid 代码块</div>';
+      continue;
+    }
+    if (!detectMermaidType(src)) {
+      mermaidFail(el, src, `仅支持${MERMAID_SUPPORTED}`, '不支持的图表类型：');
+      continue;
+    }
+    supported.push(el);
+  }
+  if (!supported.length) return;
+
+  let api = null;
+  try {
+    api = await ensureMermaid();
+  } catch (e) {
+    supported.forEach((el) => mermaidFail(el, el.textContent || '', `图形库加载失败（${(e && e.message) || e}）`));
+    return;
+  }
+  for (const el of supported) {
+    // 等 mermaid 期间正文可能又被改写过（打字 / 切笔记），节点已脱离文档就不用再插了
+    if (!el.isConnected) continue;
+    const srcEl = el.querySelector(`.${MERMAID_SRC}`);
+    const src = srcEl ? srcEl.textContent : (el.textContent || '');
+    if (!String(src).trim()) {
+      el.classList.add('is-error');
+      el.innerHTML = '<div class="md-mermaid-err">⚠ 空的 Mermaid 代码块</div>';
+      continue;
+    }
+    try {
+      el.__mmSrc = src; // 记住源码：主题切换时要按新主题重画
+      const res = await api.render(`mmd-${Date.now().toString(36)}-${++mermaidSeq}`, src);
+      if (!el.isConnected) continue;
+      const svg = res && res.svg ? res.svg : '';
+      el.innerHTML = svg;
+      el.classList.add('is-ok');
+      if (res && typeof res.bindFunctions === 'function') {
+        try { res.bindFunctions(el); } catch (e) { /* 交互绑定失败不影响看图 */ }
+      }
+    } catch (e) {
+      if (!el.isConnected) continue;
+      mermaidFail(el, src, (e && e.message) || String(e));
+    }
+  }
+}
+
+/**
+ * 渲染结果插入 DOM 后调用：把 ```mermaid 占位块换成真正的 SVG。
+ * - 只对「可见」的块动手：隐藏容器里量不到宽度，图会画成 0 宽（等切回预览时会再调一次）；
+ * - 已经渲染过的块有 data-mm-done 标记，重复调用不会重画；
+ * - 全程不 await 也不会打断渲染流程（返回 promise 仅供需要时等待）。
+ * @param {HTMLElement} root 渲染结果的容器
+ * @returns {Promise<void>}
+ */
+export function enhanceMarkdown(root) {
+  if (!root || typeof document === 'undefined') return Promise.resolve();
+  if (typeof root.querySelectorAll !== 'function') return Promise.resolve();
+  const pending = Array.from(root.querySelectorAll(`.${MERMAID_BOX}:not([data-mm-done])`))
+    .filter((el) => el.getClientRects().length > 0);
+  if (!pending.length) return Promise.resolve();
+  pending.forEach((el) => { el.dataset.mmDone = '1'; });
+  mermaidChain = mermaidChain.then(() => renderMermaidBatch(pending)).catch(() => {});
+  return mermaidChain;
+}
+
+/**
+ * 主题切换后重画：mermaid 的配色是 initialize 时定死的，不重画就会「深色背景配深字」。
+ * 做法是把已渲染的块还原成源码占位、清掉标记，再让下一轮 enhance 重新画。
+ */
+function rerenderMermaidForTheme() {
+  const nodes = Array.from(document.querySelectorAll(`.${MERMAID_BOX}[data-mm-done]`));
+  nodes.forEach((el) => {
+    const src = el.__mmSrc || '';
+    el.innerHTML = `<pre class="${MERMAID_SRC}">${escHtml(src)}</pre>`;
+    delete el.dataset.mmDone;
+  });
+  if (nodes.length) mermaidChain = mermaidChain.then(() => renderMermaidBatch(nodes)).catch(() => {});
+}
+
+if (typeof document !== 'undefined') {
+  // 应用主题切换时由 ui.js 派发；没画过图就什么都不用做（下次渲染自然是新的主题）
+  document.addEventListener('app:theme-changed', () => {
+    if (mermaidApi) rerenderMermaidForTheme();
+  });
 }
 
 /** 纯文本预览（列表摘要用；取渲染结果的前 N 字） */

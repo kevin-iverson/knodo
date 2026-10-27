@@ -19,7 +19,9 @@ import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOptionsHtml } from './group-tree.js';
 import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
-import { renderNotes, setNotesHandlers, createNote, disposeNotes } from './notes.js';
+import {
+  renderNotes, setNotesHandlers, createNote, disposeNotes, importNotesFromDisk,
+} from './notes.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
 import { openSalaryModal, setSalaryHandlers } from './salary.js';
 import { openFormatterWindow, setFormatterHandlers } from './code-format.js';
@@ -99,6 +101,13 @@ export async function init() {
     renderSidebar();
     await render();
     await createNote();
+  });
+  // 菜单栏「导入 Markdown 笔记…」：切到笔记视图后由 notes.js 接管导入流程
+  api.on('ui:import-md', async () => {
+    state.view = 'notes';
+    renderSidebar();
+    await render();
+    await importNotesFromDisk();
   });
   setRecorderHandlers({
     toast,
@@ -1920,6 +1929,8 @@ function applyTheme() {
     effective = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }
   document.documentElement.setAttribute('data-theme', effective);
+  // 通知渲染层（笔记预览里的 Mermaid 图要按新主题重画，否则配色停留在旧主题）
+  document.dispatchEvent(new CustomEvent('app:theme-changed'));
 }
 
 async function toggleTheme() {
