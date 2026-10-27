@@ -46,6 +46,21 @@
 ## 「今天 / 今日已完成」口径
 - `state.recentlyDone`（store.js）= 今天完成的任务就地保留标记，存 settings 带自然日，跨天作废。**记录不分视图、只有「今天」列表展示** → 任何视图的勾选入口都要调 `noteCompletionChange()`；连带完成的祖先用 `rememberCompletedAncestors()` 补记。
 
+## 依赖划分（体积硬约束）
+- 前端库（markdown-it / highlight.js / mermaid / easymde / flatpickr / tom-select / prettier 系 / diff / jsonpath / xml-formatter / @alenaksu/json-viewer）一律放 **devDependencies**：构建期由 esbuild 打成自包含产物进 `renderer/vendor/`，运行时不读 node_modules。`dependencies` 只留 **better-sqlite3**（主进程真 require 的唯一三方包）。
+- 违反这条的后果：electron-builder 把整棵 production node_modules 打进 app.asar（mermaid 一带就是 d3/cytoscape/elkjs/katex/chevrotain）→ asar 30MB→216MB、便携版 94.8MB→116MB，直接顶穿 Gitee 100MB 附件上限。
+
+## 代码块 / Tab
+- 预览 `<pre>` 的 `tab-size` 与编辑器 `tabSize` **必须一致**（现为 2）：`styles.css` 里有一组 `.md-code pre / .markdown-body pre / .editor-preview* pre / .md-mermaid-src / .nt-md-fallback { tab-size: 2 }`，EasyMDE 也显式传 `tabSize: 2`。
+- CodeMirror 的 `defaultTab` 绑的是 `insertTab`（塞真 `\t`，宽度随宿主变化）→ 笔记编辑器用 `cm.addKeyMap({ Tab: insertSoftTab })` 改成插空格。
+
+## Mermaid（只保留五类）
+- keep 列表：`flowchart-v2` / `sequence` / `classDiagram` / `gantt` / `pie`。两份必须同步：`renderer/js/markdown-lib.js` 的 `MERMAID_TYPES` + `scripts/build-tools.js` 的 `MERMAID_KEEP`。
+- 裁剪实现：解析 `node_modules/mermaid/dist/mermaid.core.mjs` 里 `var idN="..."` 后紧随的 `import("./chunks/mermaid.core/xxx.mjs")`，把非 keep 的图表模块用 esbuild 插件换成空桩（产物 5.0MB→3.6MB）。
+- **elkjs 不能裁**（`elk-*.mjs`，1.5MB）：flowchart / class 的默认布局就是它，裁掉后图会叠成一团。`cose-bilkent-*.mjs`（cytoscape 0.5MB）可以裁。
+- 空桩至少要导出 `diagram` / `load` / **`render`**：布局 loader 直接调 `module.render(...)`，缺了会抛 `i.render is not a function`。
+- 不支持的图表类型在 `renderMermaidBatch` 里、加载库之前就拦下（保留源码 + 提示），别让 mermaid 抛 UnknownDiagramError。
+
 ## 实用工具
 - 「实用工具」下的工具统一用**非模态浮窗**（`renderer/js/tool-window.js`，z 210~248，低于 `.modal-mask` 300），同 key 单实例，几何记 localStorage。
 - 浏览器端三方库走 esbuild：入口 `scripts/vendor/*.mjs` → `renderer/vendor/tools/*.mjs`（ESM+minify），**必须随仓库提交**。
@@ -68,6 +83,9 @@
 - 便携版有 `PORTABLE_EXECUTABLE_DIR` → userData 改到 exe 同级 data 目录，且禁用开机自启动。
 - 打包后 exe 不接受命令行参数（`bad option`），无法跑 `--smoke-test`，只能源码冒烟 + 查 `app.asar` 间接验证。
 - 发版（Gitee）：改版本 + `scripts/release-gitee.js` 发行说明 → `chore(release)` 提交 → push → 按上面流程打包 → 7z（`node_modules/7zip-bin/win/x64/7za.exe a -t7z -mx=9 -md=128m -ms=off`，压便携版到 `dist/release/`，**必须 ≤104857600 字节**，压完核对）→ `npm run release -- --token <令牌>`。令牌只走参数/环境变量，绝不写进文件。发版前把上一版 7z 移出 `dist/release/`，否则会被一起传到新 Release。
+- **发布脚本按 HEAD 打 tag**：所有代码提交必须在 `npm run release` 之前完成（不然 tag 指向旧提交）。
+- **Gitee 仓库附件总配额 1GB**（不是单文件限制）：满了上传报 400「验证失败：文件大小已超出仓库附件配额：1 GB」。清法：`GET /repos/{o}/{r}/releases/{id}/attach_files` 拿 id → `DELETE .../attach_files/{fid}`；删旧版附件前先问用户。
+- 打包后 exe 不收命令行参数，验证打包产物用开发版 electron 直接加载 `dist/win-unpacked/resources/app.asar`（能验证 asar 内 vendor 动态 import + better-sqlite3 解包是否正常）。
 
 ## 跨平台现状（Mac）
 - `better-sqlite3` 13 走 N-API prebuilds（`node_modules/better-sqlite3/prebuilds/<platform>-<arch>.node`），`build/Release` 是空的，**不需要 electron-rebuild**；换平台只需换 prebuild。
