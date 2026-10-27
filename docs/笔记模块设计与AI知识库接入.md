@@ -277,7 +277,7 @@ const { answer, hits, degraded } = await knowledge.answer({
 
 | 依赖 | 版本 | 用途 | 引入方式 |
 |---|---|---|---|
-| `markdown-it` | ^14.3.3 | Markdown → HTML（表格 / 代码块 / 链接 / 图片） | `dependencies` 登记 + `renderer/vendor/markdown-it/markdown-it.min.js` 随仓库 vendor |
+| `markdown-it` | ^14.3.3 | Markdown → HTML（表格 / 代码块 / 链接 / 图片） | `devDependencies` 登记（构建期用）+ `renderer/vendor/markdown-it/markdown-it.min.js` 随仓库 vendor |
 | `easymde` | ^2.21.0 | 编辑器（工具栏、快捷键、列表续行、撤销栈、分栏预览） | 同上，`renderer/vendor/easymde/easymde.min.{js,css}` |
 | `highlight.js` | ^11.12.0 | 代码块按语言着色（笔记预览 / AI 答案） | `npm run build:tools` 打成 IIFE → `renderer/vendor/highlight/highlight.min.js`，挂 `window.hljs`，随页面同步加载 |
 | `mermaid` | ^12.2.0 | ```mermaid 代码块 → SVG 图表（仅流程图 / 时序图 / 类图 / 甘特图 / 饼图） | `npm run build:tools` 打成 ESM → `renderer/vendor/mermaid/mermaid.mjs`，渲染层按需 `import()`；构建期把其余图表模块置空（5.0MB → 3.6MB） |
@@ -290,6 +290,9 @@ const { answer, hits, degraded } = await knowledge.answer({
 > 注意 **elkjs 不能裁**：流程图 / 类图的默认布局就是它，裁掉后图会叠成一团。
 
 约定（与 flatpickr / tom-select 一致）：**构建产物 vendor 进仓库，运行时不联网、不依赖 node_modules 路径**。
+因此这些前端库一律登记在 `devDependencies`：`dependencies` 里只剩 `better-sqlite3`（主进程运行时真的要它），
+否则 electron-builder 会把整棵 node_modules（mermaid 一套就带 d3 / cytoscape / elkjs / katex…）塞进 app.asar，
+安装包白胖三十多 MB。
 
 - 关闭 `autoDownloadFontAwesome`（离线运行），工具栏图标用 CSS `::after` 兜底文字/符号。
 - `html: false` —— 关闭原始 HTML 透传，防 XSS；外链统一 `target="_blank" rel="noopener"`。

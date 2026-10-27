@@ -17,10 +17,16 @@
     "release": "node scripts/release-gitee.js"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
     "@alenaksu/json-viewer": "^2.1.2",
-    "better-sqlite3": "^13.0.3",
+    "7zip-bin": "^5.2.0",
     "diff": "^8.0.4",
     "easymde": "^2.21.0",
+    "electron": "^44.8.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.12",
     "flatpickr": "^4.6.13",
     "highlight.js": "^11.12.0",
     "jsonpath-plus": "^11.2.1",
@@ -31,12 +37,6 @@
     "sql-formatter": "^15.9.0",
     "tom-select": "^2.4.3",
     "xml-formatter": "^3.7.0"
-  },
-  "devDependencies": {
-    "7zip-bin": "^5.2.0",
-    "electron": "^44.8.0",
-    "electron-builder": "^26.15.3",
-    "esbuild": "^0.25.12"
   },
   "build": {
     "appId": "com.workbuddy.todo-desktop",

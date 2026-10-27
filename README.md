@@ -101,7 +101,8 @@ npm start
 >
 > better-sqlite3 v13 已迁移到 **N-API**，内置各平台预编译二进制，**无需** electron-rebuild，跨 Node / Electron 版本通用；不依赖本机 Visual Studio 构建工具。
 >
-> 前端第三方库（flatpickr、tom-select）的构建产物已 vendor 进 `renderer/vendor/`（并在 `package.json` 登记来源版本），运行时不联网、也不读 `node_modules`。升级时把新产物覆盖到对应目录并同步 `package.json` 版本号即可。
+> 前端第三方库（flatpickr、tom-select、markdown-it、highlight.js、mermaid 等）的构建产物已 vendor 进 `renderer/vendor/`（并在 `package.json` 登记来源版本），运行时不联网、也不读 `node_modules`。升级时把新产物覆盖到对应目录并同步 `package.json` 版本号即可。
+> 这些库一律登记在 `devDependencies`（构建期用），`dependencies` 里只留主进程运行时真的要用的 `better-sqlite3` —— 否则 electron-builder 会把整棵 node_modules 打进 app.asar，安装包白胖几十 MB。
 
 ## 运行验证
 
