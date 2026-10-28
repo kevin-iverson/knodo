@@ -87,6 +87,8 @@
 - 便携版有 `PORTABLE_EXECUTABLE_DIR` → userData 改到 exe 同级 data 目录，且禁用开机自启动。
 - 打包后 exe 不接受命令行参数（`bad option`），无法跑 `--smoke-test`，只能源码冒烟 + 查 `app.asar` 间接验证。
 - 发版（Gitee）：改版本 + `scripts/release-gitee.js` 发行说明 → `chore(release)` 提交 → push → 按上面流程打包 → 7z（`node_modules/7zip-bin/win/x64/7za.exe a -t7z -mx=9 -md=128m -ms=off`，压便携版到 `dist/release/`，**必须 ≤104857600 字节**，压完核对）→ `npm run release -- --token <令牌>`。令牌只走参数/环境变量，绝不写进文件。发版前把上一版 7z 移出 `dist/release/`，否则会被一起传到新 Release。
+- `package-lock.json` 有两处 `version`（顶层 + `packages[""]`），升版本时两处都要改。`git push` 刷 `credential-manager-core is not a git command` 是可忽略的警告，推送仍会成功。
+- 上传 90MB+ 附件约需 10 分钟（脚本自带 3 次重试，重试前会先复查是否已传成功）；发布前建议先用 API 累加所有 Release 的 `attach_files.size` 核一下 1GB 配额。
 - **发布脚本按 HEAD 打 tag**：所有代码提交必须在 `npm run release` 之前完成（不然 tag 指向旧提交）。
 - **Gitee 仓库附件总配额 1GB**（不是单文件限制）：满了上传报 400「验证失败：文件大小已超出仓库附件配额：1 GB」。清法：`GET /repos/{o}/{r}/releases/{id}/attach_files` 拿 id → `DELETE .../attach_files/{fid}`；删旧版附件前先问用户。
 - 打包后 exe 不收命令行参数，验证打包产物用开发版 electron 直接加载 `dist/win-unpacked/resources/app.asar`（能验证 asar 内 vendor 动态 import + better-sqlite3 解包是否正常）。
