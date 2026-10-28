@@ -23,8 +23,32 @@ const esc = (s) =>
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-/** 只显示一次的弹窗：重复点击不叠第二层 */
+/** 只显示一次的弹窗：重复点击不叠第二层（同步面板与笔记独立导出面板互斥，同一时刻只留一个） */
 let openMask = null;
+
+/**
+ * 独立入口：只导出笔记（笔记视图顶部工具栏的「导出」，与「导入」并列）。
+ * 目录 / 标签按调用方当前筛选预置 —— 正在看「工作」目录就默认导「工作」，不必再选一遍。
+ * @param {{folderId?:number|null, tagId?:number|null}} [preset]
+ */
+export async function openNoteExportModal(preset = {}) {
+  if (openMask && openMask.isConnected) return;
+  const [folders, tags] = await Promise.all([
+    api.noteFolders.list().catch(() => []),
+    api.noteTags.list().catch(() => []),
+  ]);
+  await openPanelModal({
+    title: '导出笔记',
+    className: 'modal-sync modal-note-export',
+    html: `<div class="sync-wrap">${noteSectionHtml({ folders, tags, preset })}
+      <p class="sync-foot">导出的 .md 保留正文与格式（第三方 Markdown 编辑器可直接打开）；压缩包额外带上插入过的本地图片。</p>
+    </div>`,
+    okText: '关闭',
+    showClose: true,
+    onMount: (mask) => { openMask = mask; bindNoteExport(mask); },
+    onClose: () => { openMask = null; },
+  });
+}
 
 export async function openSyncModal() {
   if (openMask && openMask.isConnected) return;
@@ -49,12 +73,6 @@ function syncHtml({ groups, folders, tags }) {
   const groupOpts = ['<option value="all">全部分组</option>']
     .concat(flattenGroupTree(groups, { respectExpansion: false })
       .map(({ g, depth }) => `<option value="${g.id}">${esc(`${depth ? `${'　'.repeat(depth)}└ ` : ''}${g.name}`)}</option>`));
-  // 笔记目录是两层以内的树，按 parent 缩进即可（没有通用树工具，这里自己排一次）
-  const folderOpts = ['<option value="">全部目录</option>']
-    .concat(treeFolders(folders).map(({ f, depth }) =>
-      `<option value="${f.id}">${esc(`${depth ? `${'　'.repeat(depth)}└ ` : ''}${f.name}`)}</option>`));
-  const tagOpts = ['<option value="">全部标签</option>']
-    .concat(tags.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`));
 
   return `
     <div class="sync-wrap">
@@ -91,6 +109,31 @@ function syncHtml({ groups, folders, tags }) {
         </div>
       </section>
 
+      ${noteSectionHtml({ folders, tags })}
+
+      <p class="sync-foot">
+        导出是单向的：生成文件后由目标产品导入，不会改动本地数据。若目标产品开放了写入 API，
+        后续可以直接在这里接上自动同步。
+      </p>
+    </div>`;
+}
+
+/**
+ * 「笔记导出」这一段要出现在两个地方：「☁ 同步」面板里的一节，
+ * 以及笔记视图「导出」按钮单独拉起的面板 —— 所以 HTML 与事件绑定都拆成可复用的两段。
+ * @param {{folders:Array, tags:Array, preset?:{folderId?:number|null, tagId?:number|null}}} opts
+ */
+function noteSectionHtml({ folders, tags, preset = {} } = { folders: [], tags: [] }) {
+  const curFolder = preset.folderId == null ? '' : String(preset.folderId);
+  const curTag = preset.tagId == null ? '' : String(preset.tagId);
+  // 笔记目录是两层以内的树，按 parent 缩进即可（没有通用树工具，这里自己排一次）
+  const folderOpts = [`<option value=""${curFolder ? '' : ' selected'}>全部目录</option>`]
+    .concat(treeFolders(folders).map(({ f, depth }) =>
+      `<option value="${f.id}"${curFolder === String(f.id) ? ' selected' : ''}>${esc(`${depth ? `${'　'.repeat(depth)}└ ` : ''}${f.name}`)}</option>`));
+  const tagOpts = [`<option value=""${curTag ? '' : ' selected'}>全部标签</option>`]
+    .concat(tags.map((t) => `<option value="${t.id}"${curTag === String(t.id) ? ' selected' : ''}>${esc(t.name)}</option>`));
+
+  return `
       <section class="sync-sec">
         <h4 class="sync-sec-title">笔记导出</h4>
         <div class="sync-grid">
@@ -117,13 +160,7 @@ function syncHtml({ groups, folders, tags }) {
           <button type="button" class="primary-btn sync-btn-notes">导出笔记</button>
           <span class="sync-hint">压缩包里的 .md 可批量上传到 ima 知识库；单文件合集适合整篇粘贴。</span>
         </div>
-      </section>
-
-      <p class="sync-foot">
-        导出是单向的：生成文件后由目标产品导入，不会改动本地数据。若目标产品开放了写入 API，
-        后续可以直接在这里接上自动同步。
-      </p>
-    </div>`;
+      </section>`;
 }
 
 /** 扁平目录 → 树形顺序（父在前、子紧随） */
@@ -142,6 +179,12 @@ function treeFolders(folders) {
 }
 
 function bindSyncEvents(mask) {
+  bindTaskExport(mask);
+  bindNoteExport(mask);
+}
+
+/** 任务导出按钮 */
+function bindTaskExport(mask) {
   mask.querySelector('.sync-btn-tasks')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
@@ -166,7 +209,10 @@ function bindSyncEvents(mask) {
       btn.disabled = false;
     }
   });
+}
 
+/** 笔记导出按钮（同步面板与独立导出面板共用） */
+function bindNoteExport(mask) {
   mask.querySelector('.sync-btn-notes')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;

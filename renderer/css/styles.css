@@ -713,6 +713,53 @@ body {
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45); cursor: zoom-out;
 }
 @keyframes imgZoomIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---------------- Mermaid 放大预览（全屏画布：缩放 / 平移） ---------------- */
+/* 层级 420：高于笔记全屏面板（320）与弹窗遮罩（300），低于 Toast */
+.mm-zoom-mask {
+  position: fixed; inset: 0; z-index: 420;
+  display: flex; flex-direction: column;
+  /* 用面板底色而不是图片那层黑底：mermaid 是按当前主题渲染的（浅色主题 = 深字），
+     黑底会把字吃掉。这里跟着主题走，深/浅两套图都能看清 */
+  background: var(--bg-panel); animation: imgZoomIn 0.12s ease-out;
+}
+.mm-zoom-bar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar);
+}
+.mm-zoom-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.mm-zoom-ops { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.mm-zoom-val {
+  min-width: 52px; text-align: center; font-size: 12px; color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.mm-zoom-btn {
+  min-width: 30px; height: 28px; padding: 0 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-panel); color: var(--text-2);
+  font: inherit; font-size: 13px; cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.mm-zoom-btn:hover { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); background: var(--bg-hover); }
+.mm-zoom-btn.is-wide { font-size: 12px; }
+.mm-zoom-close:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.mm-zoom-canvas {
+  flex: 1 1 auto; min-height: 0; overflow: hidden; position: relative;
+  background: var(--bg); cursor: grab; touch-action: none;
+  /* 棋盘格只是提示「这里是画布」：图可以拖出原本的可视区 */
+  background-image: radial-gradient(color-mix(in srgb, var(--text) 8%, transparent) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+.mm-zoom-canvas.is-dragging { cursor: grabbing; }
+.mm-zoom-stage {
+  position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform;
+}
+.mm-zoom-stage svg { max-width: none; }
+.mm-zoom-tip {
+  flex: 0 0 auto; padding: 6px 14px; border-top: 1px solid var(--border);
+  font-size: 11.5px; color: var(--text-3); background: var(--bg-sidebar); text-align: center;
+}
 /* 正文里的图片：限宽 + 提示可放大 */
 .md-image, .markdown-body img, .detail-notes-editor img {
   max-width: 100%; height: auto; border-radius: 6px; cursor: zoom-in;
@@ -1703,6 +1750,8 @@ html.is-resizing .detail-foot { pointer-events: none; }
 
 /* ---------------- 对外同步：导出到其它产品（顶栏「☁ 同步」） ---------------- */
 .modal.modal-sync { width: 640px; max-width: 94vw; }
+/* 只有「笔记导出」一节的独立面板：三个字段一行排得下，不需要那么宽 */
+.modal.modal-sync.modal-note-export { width: 580px; }
 .sync-wrap { display: flex; flex-direction: column; gap: 14px; }
 .sync-sec {
   display: flex; flex-direction: column; gap: 10px;
@@ -1809,6 +1858,46 @@ html.is-resizing .detail-foot { pointer-events: none; }
   border-color: color-mix(in srgb, var(--primary) 45%, transparent);
   background: color-mix(in srgb, var(--primary) 10%, transparent);
 }
+/* 全屏开关：与大纲开关同一套幽灵胶囊样式，只是文案会随状态变（全屏 / 退出全屏） */
+.nt-dp-fs {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-2);
+  font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.nt-dp-fs svg { flex: 0 0 auto; }
+.nt-dp-fs:hover { color: var(--text); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.nt-dp-fs.active {
+  color: var(--primary); font-weight: 600;
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+/* ---------------- 全屏预览 / 编辑 ---------------- */
+/*
+ * 三种模式（预览 / 分栏 / 编辑）都走同一条路：把整个详情面板改成 fixed 铺满窗口，
+ * 而不是只放大某一个子区 —— 目录、标签、大纲、保存状态、底部操作条全都在。
+ * 层级 320：高于弹窗遮罩（300，笔记弹窗里也要能全屏），低于图片 / 图表放大层（400）。
+ * 选择器要带上 `.modal.modal-note-editor` 前缀，否则弹窗里那条 (0,3,0) 的 fixed 高度规则
+ * 会压过 `.nt-dp.is-fs` 的 (0,2,0)，全屏只会得到一个「窗口高的面板」而不是整屏。
+ */
+.nt-dp.is-fs, .modal.modal-note-editor .nt-dp.is-fs {
+  position: fixed; inset: 0; z-index: 320;
+  height: auto; max-height: none; min-height: 0;
+  background: var(--bg); border: none; border-radius: 0; box-shadow: none;
+  padding: 12px 24px 14px; animation: ntFsIn 0.12s ease-out;
+}
+@keyframes ntFsIn { from { opacity: 0.5; } to { opacity: 1; } }
+/* 全屏时锁住底层滚动：面板已经铺满窗口，底层再跟着滚会露馅 */
+body.nt-fs-open { overflow: hidden; }
+/* 全屏后正文别拉成「一行两百字」：只看预览时收一个阅读宽度并居中；
+   编辑 / 分栏仍占满（代码、表格、两张 Mermaid 图本来就需要横向空间） */
+.nt-dp.is-fs > * { width: 100%; margin-left: auto; margin-right: auto; }
+.nt-dp.is-fs[data-mode="preview"] > * { max-width: 1080px; }
+.nt-dp.is-fs .nt-dp-mid { min-height: 0; flex: 1 1 auto; }
+.nt-dp.is-fs .nt-toc { max-height: none; }
+/* 全屏时正文滚动区要真的能滚：高度不再被面板 max-height 限制，交给内部拉伸 */
+.nt-dp.is-fs .nt-dp-scroll { flex: 1 1 auto; min-height: 0; }
 .nt-dp-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 0 0 auto; }
 /* 中段整体滚动：正文再长 / 附件再多，底部操作条也固定可见（之前会被 max-height 裁掉） */
 .nt-dp-scroll {
@@ -2042,11 +2131,27 @@ html.is-resizing .detail-foot { pointer-events: none; }
 
 /* Mermaid：占位块（渲染中 / 失败时显示源码）→ 渲染成功后换成 SVG */
 .md-mermaid {
+  position: relative; /* 给右上角「放大」按钮当定位父级 */
   margin: 10px 0; padding: 10px; text-align: center;
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);
-  overflow: auto;
+  overflow: hidden;
 }
+/* 渲染结果的滚动容器：宽图横向滚动也不动外层，「放大」按钮始终停在右上角 */
+.md-mermaid-view { overflow-x: auto; overflow-y: hidden; }
 .md-mermaid svg { max-width: 100%; height: auto; }
+
+/* 「放大」按钮：默认隐形，鼠标移到图上才出来，避免每张图都挂个方块 */
+.md-mermaid-zoom {
+  position: absolute; top: 6px; right: 6px;
+  min-width: 26px; height: 26px; padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-panel); color: var(--text-2);
+  font: inherit; font-size: 13px; line-height: 1; cursor: zoom-in;
+  opacity: 0; transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+.md-mermaid:hover .md-mermaid-zoom, .md-mermaid-zoom:focus-visible { opacity: 1; }
+.md-mermaid-zoom:hover { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
 .md-mermaid .md-mermaid-src {
   margin: 0; padding: 8px 10px; text-align: left; white-space: pre-wrap; word-break: break-word;
   font-family: Consolas, monospace; font-size: 12.5px; color: var(--text-2); background: transparent;

@@ -426,6 +426,62 @@ function mermaidFail(el, src, msg, title) {
     + `<pre class="${MERMAID_SRC}">${escHtml(src)}</pre>`;
 }
 
+/**
+ * 渲染好的图右上角挂一个「放大」按钮（hover 才显形，不打扰阅读）。
+ * 按钮本身不带数据，点击时由事件委托读同块的 SVG —— mermaid 是异步渲染的，
+ * 绑定在按钮上的闭包会挂在「随时可能被重绘替换掉」的节点上，委托才不会失效。
+ */
+function addZoomButton(el) {
+  if (!el || el.querySelector('.md-mermaid-zoom')) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'md-mermaid-zoom';
+  btn.title = '放大查看（可缩放 / 拖动；双击图也可以）';
+  btn.setAttribute('aria-label', '放大查看');
+  btn.textContent = '⤢';
+  el.appendChild(btn);
+}
+
+/** 取图所属的类型名（流程图 / 时序图…）用于放大层标题；认不出来就统称「图表」 */
+function zoomTitleOf(el) {
+  const src = (el && el.__mmSrc) || '';
+  const hit = detectMermaidType(src);
+  return (hit && hit.label) || '图表';
+}
+
+/** 打开某张图的放大层（库按需 import：没画过图就永远不加载这份代码） */
+function openZoomFor(el) {
+  const svg = el && el.querySelector ? el.querySelector('svg') : null;
+  if (!svg) return;
+  import('./mermaid-zoom.js')
+    .then((m) => m.openMermaidZoom({ source: svg, title: zoomTitleOf(el) }))
+    .catch(() => { /* 加载失败就不放大，正文里的图照常可看 */ });
+}
+
+if (typeof document !== 'undefined') {
+  // 点「放大」按钮
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('.md-mermaid-zoom') : null;
+    if (!btn) return;
+    const box = btn.closest('.md-mermaid');
+    if (!box) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openZoomFor(box);
+  });
+  // 双击图也能放大。用捕获阶段 + stopPropagation：预览区自己绑了「双击进编辑」，
+  // 冒泡到那里会在打开放大层的同时把界面切成编辑态。
+  document.addEventListener('dblclick', (e) => {
+    const svg = e.target && e.target.closest ? e.target.closest('.md-mermaid svg') : null;
+    if (!svg) return;
+    const box = svg.closest('.md-mermaid');
+    if (!box) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openZoomFor(box);
+  }, true);
+}
+
 async function renderMermaidBatch(nodes) {
   // 先做「类型白名单」筛选：不支持的图表类型就地报错，一个字节的库都不用加载。
   // 空块也在这里一次性处理掉，省得后面几处都判一遍。
@@ -469,8 +525,11 @@ async function renderMermaidBatch(nodes) {
       const res = await api.render(`mmd-${Date.now().toString(36)}-${++mermaidSeq}`, src);
       if (!el.isConnected) continue;
       const svg = res && res.svg ? res.svg : '';
-      el.innerHTML = svg;
+      // 包一层 .md-mermaid-view：横向滚动交给内层，外层留着定位「放大」按钮
+      // （按钮若跟着横向滚动走，图一宽就被推出可视区了）
+      el.innerHTML = svg ? `<div class="md-mermaid-view">${svg}</div>` : '';
       el.classList.add('is-ok');
+      if (svg) addZoomButton(el);
       if (res && typeof res.bindFunctions === 'function') {
         try { res.bindFunctions(el); } catch (e) { /* 交互绑定失败不影响看图 */ }
       }

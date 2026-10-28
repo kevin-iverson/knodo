@@ -42,6 +42,9 @@
 - 「取消」基线 = 最后一次保存成功的状态（每次 save 成功后前移），不是打开时的快照。
 - 笔记详情面板两种宿主（右栏 #view / 弹窗）共用 detailHtml/mountEditor/bindSaver；`editor`/`saver` 是模块级单例，换宿主前必须 dispose；`detailPane()` 要优先命中 `modalRoot`（弹窗挂 body，#view 委托够不到，自己绑一份）。滚动区用 `.nt-dp-scroll` 包正文，foot 放外面。色板色块只能用 `background:` 预览。
 - `note-find.js`（Ctrl+F/H）：复用 EasyMDE 内的 `getSearchCursor`；① 全部替换必须**倒序**；② 快捷键在**捕获阶段**拦（pcDefault 已绑 Ctrl-F）；③ Esc 在宿主层兜住。
+- **笔记全屏预览/编辑**：`.nt-dp` 加 `.is-fs`（`position:fixed; inset:0; z-index:320`，预览态 1080px 居中、编辑态占满），按钮 `data-nt-act="fs-toggle"`，状态记 localStorage `nt-fullscreen`（跨笔记沿用），Esc 走 document 捕获（查找条/色板开着时让位）。凡是会拆掉面板的路径（关面板 / 删除后 / 弹窗 onClose / `disposeNotes`）都必须 `exitFullscreen()`，否则 Esc 监听器一直挂在 document 上——而且它是 fixed，**不退出会浮在别的视图上面**。
+- **Mermaid 放大**：`renderer/js/mermaid-zoom.js`（`.mm-zoom-mask`，z 420；transform 层做 translate+scale，不是改 SVG width/height；背景用 `--bg-panel` 而非黑底，否则浅色主题的深字看不见）。渲染成功后 SVG 包一层 `.md-mermaid-view`（横向滚动在内层，`放大`按钮才不会被宽图推出可视区）；双击图打开放大要在 **document 捕获阶段 `stopPropagation`**，否则 Preview 区「双击进编辑」会同时触发。
+- **笔记导出入口**：`sync.js` 拆出 `noteSectionHtml()` + `bindNoteExport()` + `openNoteExportModal(preset)`（class `modal-sync modal-note-export`，只有笔记一节，目录/标签按当前筛选预置）；笔记工具栏「📤 导出」紧挨「📥 导入」，notes.js 动态 `import('./sync.js')`。`☁ 同步` 面板与它共用 `openMask`（同时只留一个）。
 
 ## 「今天 / 今日已完成」口径
 - `state.recentlyDone`（store.js）= 今天完成的任务就地保留标记，存 settings 带自然日，跨天作废。**记录不分视图、只有「今天」列表展示** → 任何视图的勾选入口都要调 `noteCompletionChange()`；连带完成的祖先用 `rememberCompletedAncestors()` 补记。
@@ -72,6 +75,7 @@
 - CDP：WebSocket 会吊住 node → 结尾 `process.exit(0)`；断言限定作用域（`.nt-empty` 会命中侧栏标签列表）；`Runtime.evaluate` 带 `awaitPromise` 求值动态 `import()` 会永久挂住 → 异步写成发后不管 + 轮询 `window.__out`；后台节流需加 `--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows`。
 - 本机跑 electron 必须先 `env -u ELECTRON_RUN_AS_NODE`；临时目录每次新建（`rm -rf` 会被宿主批量删除守卫拦）。
 - CDP 合成的按键进不了原生加速键链路 → 菜单/快捷键只能在主进程侧用探针验证。
+- **给新 UI 改动做定向验证**：先用 `run_in_background` 起一个带 `--remote-debugging-port=9444` 的 electron（必须 `env -u ELECTRON_RUN_AS_NODE`），脚本里用 `CDP_ATTACH=1` 直接连现有窗口（自己在脚本里 spawn 会被宿主回收，常取不到 target）；临时脚本别留在 `scripts/`，验证完 `mv` 到 `D:/WorkBuddyWorkSpace/.tmp/`。
 - CDP 易错：点 `.task-title-text` 是就地重命名（打开详情点整行）；笔记选择器点 `.np-pick-check`；用例实体名带时间戳。
 
 ## 打包 / 发版（Windows）

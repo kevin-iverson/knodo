@@ -78,6 +78,15 @@ let focusTerm = '';
 let tocVisible = (() => {
   try { return localStorage.getItem('nt-toc-visible') !== '0'; } catch (e) { return true; }
 })();
+/**
+ * 全屏预览 / 编辑：面板铺满窗口（预览阅读更宽、编辑能多看好几行源码）。
+ * 记忆到 localStorage 而不是「每次打开笔记都重置」：想全屏的人通常一连看很多篇。
+ */
+let fullscreen = (() => {
+  try { return localStorage.getItem('nt-fullscreen') === '1'; } catch (e) { return false; }
+})();
+/** Esc 退出全屏的监听器是否挂着（只在全屏时挂，避免平时吞掉别的 Esc） */
+let fsKeyBound = false;
 
 /* ---------------- 弹窗形态的编辑器（任务详情 → 关联笔记） ---------------- */
 /** 弹窗容器：detailPane / 状态位 / 保存按钮都要优先命中它（右栏可能根本没开） */
@@ -144,6 +153,7 @@ function shellHtml() {
         <span class="nt-spacer"></span>
         <button class="ghost-btn" data-nt="kb" title="以笔记为知识库向 AI 提问">🧠 知识库问答</button>
         <button class="ghost-btn" data-nt="import" title="把本地 .md 文件 / 文件夹导入成笔记">📥 导入</button>
+        <button class="ghost-btn" data-nt="export" title="把笔记导出成 Markdown / 压缩包（目录、标签按当前筛选预置）">📤 导出</button>
         <span class="nt-count"></span>
       </div>
       <div class="nt-layout">
@@ -391,6 +401,15 @@ function detailHtml(note) {
             </g>
           </svg>大纲
         </button>
+        <button type="button" class="nt-dp-fs${fullscreen ? ' active' : ''}" data-nt-act="fs-toggle"
+                title="${fullscreen ? '退出全屏（Esc）' : '全屏预览 / 编辑（Esc 退出）'}">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 2.5H2.5V6" /><path d="M10 2.5h3.5V6" />
+              <path d="M13.5 10v3.5H10" /><path d="M2.5 10v3.5H6" />
+            </g>
+          </svg><span class="nt-dp-fs-text">${fullscreen ? '退出全屏' : '全屏'}</span>
+        </button>
         <button class="nt-dp-close" data-nt-act="dp-close" title="关闭（有未保存改动会先提示）">×</button>
       </div>
       <div class="nt-dp-meta">
@@ -476,6 +495,7 @@ export async function openNote(id, opts = {}) {
   mountEditor(pane, note);
   bindSaver(pane, note);
   switchMode(mode);
+  applyFullscreen(pane); // 全屏状态跨笔记沿用（新建 DOM 要按状态再铺一次）
   renderAttachments(pane, note);
   renderRefs(pane, note);
   updateDetailMeta(pane, note);
@@ -931,6 +951,71 @@ function toggleToc() {
   renderToc(pane);
 }
 
+/* ---------------- 全屏预览 / 编辑 ---------------- */
+
+/**
+ * 全屏：`.nt-dp` 本身改成 `position: fixed; inset: 0`（右栏与弹窗两种宿主通用）。
+ *
+ * 为什么不动 EasyMDE 自带的 fullscreen：它的实现是 `position: fixed` 到整页，
+ * 会把「目录 / 标签 / 大纲 / 保存状态 / 操作按钮」全部盖掉，只剩一个孤零零的编辑框，
+ * 而且只覆盖编辑区 —— 预览态下点了没有任何反应。这里让**整个详情面板**铺满窗口，
+ * 预览 / 分栏 / 编辑三种模式都能全屏，模式切换、保存、大纲全都照常可用。
+ *
+ * 铺满后要在下一帧重新测量 CodeMirror（宽度变了不 refresh 会让光标横向错位）——
+ * mountEditor 里那个 ResizeObserver 也会兜住，这里补一次是为了切换当帧就准。
+ */
+function applyFullscreen(pane) {
+  const p = pane || detailPane();
+  document.body.classList.toggle('nt-fs-open', fullscreen);
+  if (!p) { setFsKeyBound(false); return; }
+  p.classList.toggle('is-fs', fullscreen);
+  const btn = p.querySelector('[data-nt-act="fs-toggle"]');
+  if (btn) {
+    btn.classList.toggle('active', fullscreen);
+    btn.title = fullscreen ? '退出全屏（Esc）' : '全屏预览 / 编辑（Esc 退出）';
+    const label = btn.querySelector('.nt-dp-fs-text');
+    if (label) label.textContent = fullscreen ? '退出全屏' : '全屏';
+  }
+  setFsKeyBound(fullscreen);
+  requestAnimationFrame(() => {
+    refreshEditorLayout();
+    // 全屏后正文宽度变了 → mermaid 图是按容器宽度画的，不重画会留着旧的（偏窄的）尺寸
+    const box = p.querySelector('#nt-preview');
+    if (box) enhanceMarkdown(box);
+  });
+}
+
+function toggleFullscreen() {
+  fullscreen = !fullscreen;
+  try { localStorage.setItem('nt-fullscreen', fullscreen ? '1' : '0'); } catch (e) { /* 忽略 */ }
+  applyFullscreen();
+}
+
+/** 退出全屏（关闭面板 / 切走视图时都要拆掉键盘监听，否则 Esc 会被一直吞着） */
+function exitFullscreen() {
+  if (!fullscreen) { setFsKeyBound(false); document.body.classList.remove('nt-fs-open'); return; }
+  fullscreen = false;
+  try { localStorage.setItem('nt-fullscreen', '0'); } catch (e) { /* 忽略 */ }
+  applyFullscreen();
+}
+
+function setFsKeyBound(on) {
+  if (on && !fsKeyBound) { document.addEventListener('keydown', onFsKey, true); fsKeyBound = true; }
+  else if (!on && fsKeyBound) { document.removeEventListener('keydown', onFsKey, true); fsKeyBound = false; }
+}
+
+/**
+ * 全屏时的 Esc。挂在 document 捕获阶段（早于弹窗自己的 Esc），
+ * 但浮层（查找条 / 取色板）开着时让位：先关最上面那一层，别一次按掉两个东西。
+ */
+function onFsKey(e) {
+  if (!e || e.key !== 'Escape' || !fullscreen) return;
+  if (isFindOpen() || paletteEl) return;
+  e.preventDefault();
+  e.stopPropagation();
+  toggleFullscreen();
+}
+
 /** 当前表单值（自动保存与「保存」按钮共用，保证两条路径写入一致） */
 function readPayload() {
   const pane = detailPane();
@@ -1084,6 +1169,7 @@ async function closeDetailPane() {
 
 /** 静默收掉右栏（打开弹窗前用：editor / saver 是模块级单例，不能两处同时挂） */
 function closeDetailPaneSilent() {
+  exitFullscreen(); // 面板要拆了：先收全屏，别留一个 Esc 监听器在 document 上
   disposeEditor();
   activeNoteId = null;
   currentNote = null;
@@ -1135,6 +1221,7 @@ export async function openNoteModal(id) {
     onClose: () => {
       closePalette();
       if (!discardSave) flushNow().catch(() => {});
+      exitFullscreen(); // 全屏状态下关弹窗：fixed 面板跟着 mask 走，监听器必须显式拆掉
       disposeEditor();
       modalRoot = null;
       modalClose = null;
@@ -1153,6 +1240,7 @@ function bindModalEvents(mask) {
     const act = el.dataset.ntAct;
     if (act === 'mode') switchMode(el.dataset.mode);
     else if (act === 'toc-toggle') toggleToc();
+    else if (act === 'fs-toggle') toggleFullscreen();
     else if (act === 'dp-close') { if (modalClose) modalClose(); }
     else if (act === 'dp-save') { await flushNow(); notify('已保存'); }
     else if (act === 'dp-cancel') await cancelEdit();
@@ -1206,6 +1294,7 @@ function bindEvents(root) {
     // ---- 右栏 ----
     else if (act === 'mode') { switchMode(el.dataset.mode); }
     else if (act === 'toc-toggle') { toggleToc(); }
+    else if (act === 'fs-toggle') { toggleFullscreen(); }
     else if (act === 'dp-close') { await closeDetailPane(); }
     else if (act === 'dp-save') { await flushNow(); notify('已保存'); }
     else if (act === 'dp-cancel') { await cancelEdit(); }
@@ -1339,6 +1428,25 @@ async function onToolbar(act) {
   else if (act === 'empty-trash') await emptyTrash();
   else if (act === 'kb') await openKbModal();
   else if (act === 'import') await importMarkdown();
+  else if (act === 'export') await exportNotes();
+}
+
+/**
+ * 导出笔记：拉起只含「笔记导出」的面板，出口就在旁边的「导入」旁边 ——
+ * 以前它藏在顶栏「☁ 同步」里，对「想把笔记拷给同事 / 传到 ima」的人等于没有入口。
+ * 目录 / 标签按当前筛选预置：正在看某个目录就默认导这个目录。
+ */
+async function exportNotes() {
+  const mod = await import('./sync.js').catch(() => null);
+  if (!mod || typeof mod.openNoteExportModal !== 'function') { notify('导出面板加载失败'); return; }
+  try {
+    await mod.openNoteExportModal({
+      folderId: folderId === 'all' || folderId === UNFILED ? null : Number(folderId),
+      tagId: tagId == null ? null : Number(tagId),
+    });
+  } catch (e) {
+    notify(`打开导出面板失败：${(e && e.message) || e}`);
+  }
 }
 
 /* ---------------- 导入 Markdown 笔记 ---------------- */
@@ -1679,6 +1787,7 @@ async function deleteFromDetail() {
 }
 
 async function afterDelete(id) {
+  exitFullscreen(); // 面板整块要被清空：先退出全屏，别把 Esc 监听器留在 document 上
   disposeEditor();
   activeNoteId = null;
   currentNote = null;
@@ -1748,6 +1857,8 @@ export function disposeNotes() {
   // 切视图不再弹窗打断用户：有未落库的改动就直接兜底写掉，绝不丢内容
   if (dirty && saver) saver.flush().catch(() => {});
   closePalette();
+  // 全屏面板是 position:fixed 的，视图容器的隐藏盖不住它 —— 不先退出会一直浮在别的视图上
+  exitFullscreen();
   disposeEditor();
   currentNote = null;
   baseline = null;
