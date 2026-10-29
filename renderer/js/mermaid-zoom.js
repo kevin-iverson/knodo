@@ -97,11 +97,11 @@ export function openMermaidZoom({ source = null, svgText = '', title = '' } = {}
         <button type="button" class="mm-zoom-btn" data-mmz="in" title="放大">＋</button>
         <button type="button" class="mm-zoom-btn is-wide" data-mmz="fit" title="缩放到适应窗口">适应</button>
         <button type="button" class="mm-zoom-btn is-wide" data-mmz="one" title="按图表原始尺寸显示">1:1</button>
-        <button type="button" class="mm-zoom-btn mm-zoom-close" data-mmz="close" title="关闭（Esc）">✕</button>
+        <button type="button" class="mm-zoom-btn mm-zoom-close" data-mmz="close" aria-label="关闭预览" title="关闭（Esc）">✕</button>
       </span>
     </div>
     <div class="mm-zoom-canvas"><div class="mm-zoom-stage"></div></div>
-    <div class="mm-zoom-tip">滚轮以光标为中心缩放 · 按住拖动平移 · 双击复位 · 点空白或按 Esc 关闭</div>`;
+    <div class="mm-zoom-tip">滚轮以光标为中心缩放 · 按住拖动平移 · 双击复位 · 点右上角 ✕ 或按 Esc 关闭</div>`;
   const canvas = mask.querySelector('.mm-zoom-canvas');
   const stage = mask.querySelector('.mm-zoom-stage');
   const valEl = mask.querySelector('.mm-zoom-val');
@@ -189,7 +189,10 @@ export function openMermaidZoom({ source = null, svgText = '', title = '' } = {}
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
   canvas.addEventListener('dblclick', () => fit());
-  canvas.addEventListener('click', (e) => { if (e.target === canvas) closeZoom(); });
+  // 刻意不绑「点画布关闭」：
+  // 拖着图平移时松手会在 target 上产生一次 click（哪怕 pointermove 过几十像素），
+  // 结果「看清楚某块区域」这个动作本身就把预览关了 —— 误触率极高。
+  // 关闭只留两条显式路径：右上角 ✕ 按钮、Esc（保留 Esc 是因为它同样是有意为之）。
 
   // 窗口尺寸变了要重算「适应窗口」的比例，否则图会偏到一边
   mask.__onResize = () => fit();

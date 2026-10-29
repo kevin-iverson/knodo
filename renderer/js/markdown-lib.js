@@ -436,7 +436,7 @@ function addZoomButton(el) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'md-mermaid-zoom';
-  btn.title = '放大查看（可缩放 / 拖动；双击图也可以）';
+  btn.title = '放大查看（滚轮缩放 / 按住拖动平移；双击图也可以；✕ 或 Esc 关闭）';
   btn.setAttribute('aria-label', '放大查看');
   btn.textContent = '⤢';
   el.appendChild(btn);
@@ -469,8 +469,8 @@ if (typeof document !== 'undefined') {
     e.stopPropagation();
     openZoomFor(box);
   });
-  // 双击图也能放大。用捕获阶段 + stopPropagation：预览区自己绑了「双击进编辑」，
-  // 冒泡到那里会在打开放大层的同时把界面切成编辑态。
+  // 双击图也能放大。用捕获阶段 + stopPropagation：宿主（笔记预览 / 详情等）可能自己也监听双击，
+  // 冒泡过去会出现「放大层开了、底下的界面也跟着跳」的叠加反应。
   document.addEventListener('dblclick', (e) => {
     const svg = e.target && e.target.closest ? e.target.closest('.md-mermaid svg') : null;
     if (!svg) return;

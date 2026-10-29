@@ -438,6 +438,17 @@ body {
 }
 .editor-title:focus { border-color: var(--primary); }
 
+/* 分组下拉从「更多选项」提到主行（标题右侧、计划时间左侧）：
+   新建任务时归属是最常用的字段之一，藏在折叠区里容易被忽略。
+   宽度给上下限 + text-overflow：分组名很长时不能把后面的日期控件挤出可视区。 */
+.editor-row .editor-group {
+  flex: 0 1 auto; min-width: 96px; max-width: 180px; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+  color: var(--text); font-size: 13px; outline: none; cursor: pointer; height: 34px;
+}
+.editor-row .editor-group:hover { border-color: var(--primary); }
+.editor-row .editor-group:focus { border-color: var(--primary); }
+
 .editor-details {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
@@ -743,6 +754,8 @@ body {
 }
 .mm-zoom-btn:hover { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); background: var(--bg-hover); }
 .mm-zoom-btn.is-wide { font-size: 12px; }
+/* 关闭只此一处可点（画布不再响应点击关闭），给它一点视觉重量 + 与其他 ops 拉开距离 */
+.mm-zoom-close { margin-left: 6px; width: 32px; border-color: color-mix(in srgb, var(--danger) 30%, var(--border)); }
 .mm-zoom-close:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
 .mm-zoom-canvas {
   flex: 1 1 auto; min-height: 0; overflow: hidden; position: relative;
@@ -1340,6 +1353,7 @@ html.is-resizing .detail-foot { pointer-events: none; }
   .editor-details { grid-template-columns: 1fr; }
   .editor-row { gap: 6px; }
   .editor-title { min-width: 120px; }
+  .editor-row .editor-group { max-width: 130px; }
   .time-filter { padding-left: 16px; padding-right: 16px; gap: 10px; }
   .editor-date input { width: 100%; }
   .detail-panel { width: 100%; }

@@ -5,7 +5,8 @@
  * 交互取舍（与任务详情页对齐）：
  * - **左右分栏**：点左栏条目，右栏直接展示该笔记（不再弹窗）——与「任务列表 → 任务详情抽屉」
  *   是同一套心智：列表保持筛选与滚动位置，内容在旁边看 / 改；
- * - **默认预览**：打开笔记先进「预览」，要看源码或改内容再切「分栏 / 编辑」（双击预览区也可直接进编辑）；
+ * - **默认预览**：打开笔记先进只读预览，要看源码或改内容手动点标题栏的「分栏 / 编辑」
+ *   （不在预览区绑双击，避免把「双击选词」误判成「要编辑」）；
  * - 保存 / 取消：改动先落在界面上（防抖自动写库，与任务详情一致），「保存」立即落库，
  *   「取消」整体回滚到打开笔记时的快照；有未落库的改动时状态位显示「● 未保存」，
  *   切换笔记 / 关闭详情会先弹确认（保存 / 放弃 / 留在原处）；
@@ -203,7 +204,7 @@ function renderDetailPlaceholder(root) {
     <div class="nt-empty-pane">
       <div class="nt-empty-ico">📝</div>
       <div>从左侧选一篇笔记</div>
-      <div class="nt-empty-sub">右侧会直接展示内容；默认预览，切「编辑」或双击正文即可修改。</div>
+      <div class="nt-empty-sub">右侧会直接展示内容；默认只读预览，要改动请点右上角「编辑 / 分栏」。</div>
     </div>`;
 }
 
@@ -582,9 +583,9 @@ function mountEditor(pane, note) {
     ro.observe(pane.querySelector('.nt-dp-body') || pane);
     editorObserver = ro;
   }
-  // 双击预览区直接进编辑（比先找「编辑」按钮更快）
-  const preview = pane.querySelector('#nt-preview');
-  if (preview) preview.addEventListener('dblclick', () => switchMode('edit'));
+  // 注：这里刻意不绑「双击预览进编辑」。
+  // 双击是最常用的选中词 /段落手势，顺手就把界面切成编辑态既不符合预期，
+  // 也容易让选中的字在重排后被改动误伤 —— 是否编辑交给标题栏的「编辑 / 分栏」按钮显式决定。
 }
 
 /** CodeMirror 的尺寸变了（切换模式 / 窗口缩放）后要重新测量一次 */
@@ -1378,7 +1379,7 @@ function openNoteFind({ replace = false } = {}) {
   const pane = detailPane();
   if (!pane) return;
   const target = findTarget();
-  if (!target.getCm()) { notify('先双击正文或切到「分栏 / 编辑」，再查找替换'); return; }
+  if (!target.getCm()) { notify('请先点右上角「编辑 / 分栏」，再查找替换'); return; }
   // 预览模式下编辑区是 display:none 的，命中标记看不见 —— 自动切成「分栏」，
   // 左边看源码里的高亮、右边看渲染结果，不必再手动切一次
   if (mode === 'preview') switchMode('split');

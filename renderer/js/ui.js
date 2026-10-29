@@ -924,7 +924,7 @@ function priorityOptionsHtml(selected) {
     .join('');
 }
 
-/** 编辑器内部结构（新增与编辑共用）。计划开始/完成日期直接放在主行表单中 */
+/** 编辑器内部结构（新增与编辑共用）。计划开始/完成日期、分组直接放在主行表单中 */
 function taskEditorHtml(task) {
   const isEdit = !!task;
   const t = task || {};
@@ -940,15 +940,15 @@ function taskEditorHtml(task) {
   <div class="task-editor" data-editor="${isEdit ? t.id : 'new'}">
     <div class="editor-row">
       <input class="editor-title" type="text" placeholder="任务标题（回车保存，Esc 取消）" value="${esc(t.title || '')}" />
+      <select class="editor-group" title="分组" aria-label="分组">${groupOptionsHtml(state.groups, defaultGroup)}</select>
       ${dateRangeFieldHtml(range.start, range.end, rangeOpts)}
-      <button class="ghost-btn" data-act="editor-more" title="展开更多字段（分组 / 优先级 / 提醒 / 标签 / 备注）">⚙ 更多选项</button>
+      <button class="ghost-btn" data-act="editor-more" title="展开更多字段（优先级 / 提醒 / 标签 / 备注）">⚙ 更多选项</button>
       ${isEdit ? '<button class="danger-btn" data-act="editor-delete" title="删除任务">删除</button>' : ''}
       <button class="ghost-btn" data-act="editor-cancel">取消</button>
       <button class="primary-btn" data-act="editor-save">${isEdit ? '保存' : '添加'}</button>
       ${isEdit ? '<span class="editor-save-state" hidden title="修改会自动保存"></span>' : ''}
     </div>
     <div class="editor-details"${detailsHidden}>
-      <select class="editor-group" title="分组">${groupOptionsHtml(state.groups, defaultGroup)}</select>
       <select class="editor-priority" title="优先级">${priorityOptionsHtml(t.priority)}</select>
       ${reminderHtml(t.reminder_at, t.plan_end)}
       <input class="editor-tags" type="text" placeholder="标签（逗号分隔）" value="${esc((t.tag_names || []).join(', '))}" />
