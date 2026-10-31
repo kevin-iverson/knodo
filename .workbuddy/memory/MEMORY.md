@@ -78,7 +78,8 @@
 - 打包后 exe 不接受命令行参数（无法 `--smoke-test`）；验证产物用开发版 electron 加载 `dist/win-unpacked/resources/app.asar`。
 - 发版：改版本（`package-lock.json` 顶层 + `packages[""]` 两处）→ `scripts/release-gitee.js` 写说明 → `chore(release)` 提交 → push → 打包 → 7z（`7za.exe a -t7z -mx=9 -md=128m -ms=off`，产物 ≤104857600 字节）→ `npm run release -- --token`（令牌只走参数/环境变量）。发版前把上一版 7z 移出 `dist/release/`。
 - **发布脚本按 HEAD 打 tag** → 所有代码提交必须在 release 之前。上传 90MB+ 约 10 分钟（脚本 3 次重试，重试前复查）。
-- **Gitee 附件总配额 1GB**（非单文件）：满了报 400「验证失败：文件大小已超出仓库附件配额」。清：`GET /repos/{o}/{r}/releases/{id}/attach_files` → `DELETE .../attach_files/{fid}`，删前先问用户。
+- **Gitee 附件总配额 1GB**（非单文件）：满了报 400「验证失败：文件大小已超出仓库附件配额」。清：`GET /repos/{o}/{r}/releases/{id}/attach_files` → `DELETE .../attach_files/{fid}`，删前先问用户。用量查法：release 列表的 assets 没有 size 字段，得对 `browser_download_url` 发 HEAD 取 Content-Length 累加。v1.8.5 发布后约 750MB / 1024MB（v1.6.0、v1.7.0 为清理候选）。
+- Git Bash 下多行提交信息**别用 `@'...'@`**（那是 PowerShell here-string，bash 会把它当字面量，`@` 会变成消息首行）；写临时文件 `git commit -F <file>`。
 
 ## 跨平台（Mac）
 - `better-sqlite3` 13 走 N-API prebuilds（`prebuilds/<platform>-<arch>.node`），`build/Release` 空，**不需 electron-rebuild**。
