@@ -194,12 +194,31 @@ body {
 .view-desc { color: var(--text-3); font-size: 12.5px; }
 .topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
+/* 搜索框：右侧留出 36px 给「📝 笔记」附件按钮，点击不改变搜索框宽度
+   （宽度一旦变宽，顶栏这排按钮就会换行，把「＋ 新建任务」挤到第二行） */
+.search-box { position: relative; display: inline-flex; align-items: center; }
 .search-box input {
-  width: 200px; padding: 8px 12px; border: 1px solid var(--border);
+  width: 200px; padding: 8px 36px 8px 12px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--bg-panel); color: var(--text);
   font-size: 13px; outline: none; transition: width 0.2s;
 }
 .search-box input:focus { width: 260px; border-color: var(--primary); }
+.search-box:focus-within .search-action { color: var(--text); }
+/* 笔记入口：贴着搜索框右缘的小按钮（图标形态，省下 73px 的行宽）；
+   左侧留一道分隔线，读起来是「搜索框里的一个动作」，而不是输入内容的一部分 */
+.search-action {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: none; border-radius: 6px; background: transparent;
+  color: var(--text-3); font-size: 14px; line-height: 1; cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.search-action::before {
+  content: ''; position: absolute; left: -5px; top: 4px; bottom: 4px;
+  width: 1px; background: var(--border);
+}
+.search-action:hover { background: var(--bg-hover); color: var(--text); }
+.search-action:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 
 .icon-btn {
   width: 34px; height: 34px; border: 1px solid var(--border);
@@ -1904,7 +1923,7 @@ html.is-resizing .detail-foot { pointer-events: none; }
  * 选择器要带上 `.modal.modal-note-editor` 前缀，否则弹窗里那条 (0,3,0) 的 fixed 高度规则
  * 会压过 `.nt-dp.is-fs` 的 (0,2,0)，全屏只会得到一个「窗口高的面板」而不是整屏。
  */
-.nt-dp.is-fs, .modal.modal-note-editor .nt-dp.is-fs {
+.nt-dp.is-fs, .modal.modal-note-editor .nt-dp.is-fs, .modal.modal-notes-dock .nt-dp.is-fs {
   position: fixed; inset: 0; z-index: 320;
   height: auto; max-height: none; min-height: 0;
   background: var(--bg); border: none; border-radius: 0; box-shadow: none;
@@ -2291,6 +2310,57 @@ body.nt-fs-open { overflow: hidden; }
 .np-pick-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .np-pick-sub { font-size: 11.5px; color: var(--text-3); }
 .np-picker-empty { padding: 20px; text-align: center; color: var(--text-3); font-size: 12.5px; }
+
+/* ---------------- 快速笔记弹窗（任务视图 → 顶栏「笔记」） ---------------- */
+/*
+ * 内容与侧栏「笔记」完全同一份（renderNotes 复用同一套 HTML / 事件委托），
+ * 这里只处理「弹窗不是窗口」带来的尺寸差异：原先按 100vh 算的限高改成吃满弹窗高度，
+ * 目录 / 列表 / 正文各自内部滚动，工具栏与底部按钮固定可见。
+ */
+.modal.modal-notes-dock {
+  width: min(1320px, 95vw);
+  height: min(900px, 92vh);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  display: flex; flex-direction: column;
+}
+.modal.modal-notes-dock .modal-head { flex: 0 0 auto; padding: 10px 12px 10px 18px; }
+.modal.modal-notes-dock .modal-foot { flex: 0 0 auto; padding: 8px 18px 10px; }
+.modal.modal-notes-dock .modal-body {
+  flex: 1 1 auto; min-height: 0; padding: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.modal.modal-notes-dock .nt-dock { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.modal.modal-notes-dock .nt-wrap {
+  flex: 1 1 auto; min-height: 0; height: 100%;
+  padding: 12px 16px 6px; gap: 10px;
+}
+.modal.modal-notes-dock .nt-toolbar { flex: 0 0 auto; }
+.modal.modal-notes-dock .nt-layout {
+  flex: 1 1 auto; min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+}
+.modal.modal-notes-dock .nt-side { max-height: none; min-height: 0; }
+.modal.modal-notes-dock .nt-col { min-height: 0; }
+.modal.modal-notes-dock .nt-list { max-height: none; flex: 1 1 auto; min-height: 0; }
+.modal.modal-notes-dock .nt-detail { min-height: 0; display: flex; flex-direction: column; }
+.modal.modal-notes-dock .nt-dp { max-height: none; height: 100%; min-height: 0; }
+.modal.modal-notes-dock .nt-dp-body, .modal.modal-notes-dock .nt-dp-mid { min-height: 180px; }
+/* 没选中笔记时的空态：弹窗里居中，不再用 420px 的最小高度把面板撑出滚动条 */
+.modal.modal-notes-dock .nt-empty-pane {
+  height: 100%; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+/*
+ * 窗口很矮时（笔记本横屏 / 拖小窗口）：弹窗高度不够，详情面板的头部与底部按钮条
+ * 都是不可压缩的，正文区会被压到 0 高 —— 表现为「弹窗里看不到正文，底部按钮还被裁掉一半」。
+ * 这里给正文区一个最小高度，装不下就让详情面板整块滚动（正文是主角，按钮可以滚出来）。
+ */
+@media (max-height: 660px) {
+  .modal.modal-notes-dock .nt-dp-scroll { min-height: 200px; }
+  .modal.modal-notes-dock .nt-dp { overflow-y: auto; }
+}
 
 /* ---------------- 笔记编辑弹窗（弹窗形态，不整屏覆盖；可拖拽缩放） ---------------- */
 .modal.modal-note-editor {

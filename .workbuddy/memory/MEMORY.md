@@ -30,6 +30,7 @@
 - 「取消」基线 = 最后一次保存成功的状态（每次 save 成功即前移）。
 
 ## 笔记（notes.js）
+- 「📝 笔记」弹窗（`openNotesDock`，入口在顶栏搜索框内右侧 `.search-action`）= 复用 `renderNotes`/`bindEvents`，只把宿主从 `#view` 换成弹窗容器（`boundRoot` 换宿主、`activeNoteId` 跨关窗保留、关窗复位 `boundRoot=null`）；弹窗开着时 `renderNotes(#view)` 必须让位（编辑器/saver 是单例）。顶栏 1080 宽已排满（可用 790 / 已占 788），新增按钮一律不能再占行宽。
 - 详情面板两种宿主（右栏 `#view` / 弹窗）共用 detailHtml/mountEditor/bindSaver；`editor`/`saver` 是模块级单例，换宿主前 dispose；`detailPane()` 要优先命中 `modalRoot`（弹窗挂 body，#view 委托够不到，自己绑一份）。滚动区用 `.nt-dp-scroll` 包正文，foot 放外边；色板色块只能用 `background:` 预览。
 - 编辑器自实现（`data-mode` + grid + 自己渲染 `#nt-preview`），**别用 EasyMDE 的分栏/预览/全屏**（会 position:fixed 盖全屏）；图片自己监听 paste/drop + `replaceSelection`，别用 uploadImage。
 - **预览区不绑「双击进编辑」**（双击是选词手势）；入口统一是标题栏三态按钮。

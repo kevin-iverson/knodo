@@ -95,6 +95,12 @@ let modalRoot = null;
 /** 弹窗的编程式关闭入口（onMount 时取到，删除笔记后用来收窗） */
 let modalClose = null;
 
+/* ---------------- 整块笔记界面弹窗：宿主状态（见 openNotesDock） ---------------- */
+/** 整块笔记界面的弹窗遮罩（非 null = 当前处于弹窗形态） */
+let dockMask = null;
+/** 弹窗里的笔记宿主：renderNotes 把骨架建在它里面，boundRoot 随之指向它 */
+let dockHost = null;
+
 /* ---------------- 骨架与渲染 ---------------- */
 
 export async function renderNotes(containerSelector = '#view') {
@@ -102,6 +108,14 @@ export async function renderNotes(containerSelector = '#view') {
     ? document.querySelector(containerSelector)
     : containerSelector;
   if (!container) return;
+  // 弹窗形态（openNotesDock）开着时，弹窗里的容器就是唯一的笔记宿主。
+  // 这时候 #view 若被要求渲染笔记（菜单「新建笔记」会把 state.view 切到 notes），
+  // 不能把宿主抢过去：编辑器 / 保存器是模块级单例，两份骨架会互相踩。
+  // 直接刷新弹窗里的那一份，关窗时 onChanged 会把视图重新渲染一遍。
+  if (dockHost && container !== dockHost) {
+    if (dockHost.isConnected) await refresh(dockHost);
+    return;
+  }
   // 骨架被别的视图整块替换过（#view 是共享容器，任务列表会重写它的 innerHTML），
   // 所以不能只比对容器引用——必须确认骨架还在，否则重建
   const needShell = boundRoot !== container || !container.querySelector('.nt-wrap');
@@ -1276,6 +1290,69 @@ function bindModalEvents(mask) {
       e.preventDefault();
       flushNow().then(() => notify('已保存'));
     }
+  });
+}
+
+/* ---------------- 弹窗形态的完整笔记界面（任务视图 → 顶栏「笔记」） ---------------- */
+
+/**
+ * 以弹窗打开「整块笔记界面」（目录 / 标签 + 列表 + 详情），不切换当前视图。
+ *
+ * 复用同一套 renderNotes / bindEvents / 右栏逻辑，只是把宿主从 #view 换成弹窗里的容器：
+ * boundRoot 的语义本来就是「当前活着的笔记宿主」，换宿主后 markListActive、refresh、
+ * 编辑器挂载、自动保存全都自然跟着走 —— 不给笔记模块再开一套并行实现，也就不会有两份
+ * 状态互相打架（笔记模块里 editor / saver 是单例）。
+ *
+ * 关窗时 boundRoot 复位（容器随之被移除，留着会让 refresh 打到已脱离文档的 DOM 上）；
+ * activeNoteId 故意保留 —— 再次打开还是上次那篇，和侧栏笔记视图的体验一致。
+ */
+export async function openNotesDock() {
+  if (dockMask) return null;  // 已开着：不叠第二层
+  if (modalRoot) return null; // 单篇笔记弹窗开着时让位（理论上点不到，遮罩挡住了）
+  // 真的停在笔记视图里（正常入口是侧栏，此时顶栏按钮本来就是隐藏的）：弹窗形态没有意义
+  if (boundRoot && boundRoot.isConnected && boundRoot.querySelector('.nt-wrap')) return null;
+
+  return openPanelModal({
+    title: '笔记',
+    className: 'modal-notes-dock',
+    html: '<div class="nt-dock" id="nt-dock"></div>',
+    okText: '完成',
+    showClose: true,
+    resizable: true,
+    resizeKey: 'notes-dock',
+    minWidth: 820,
+    minHeight: 480,
+    headHtml: '<button type="button" class="modal-icon-btn" data-dock="max" title="最大化 / 还原">⤢</button>',
+    // Esc 先给笔记搜索框清空用：和侧栏笔记视图里「Esc 退出搜索」保持一致，
+    // 否则打了关键词按 Esc 会把整个弹窗关掉（见 modal.js 的 escGuard）
+    escGuard: () => {
+      const el = document.activeElement;
+      return !!(el && el.id === 'nt-search' && el.value);
+    },
+    onMount: async (mask) => {
+      dockMask = mask;
+      dockHost = mask.querySelector('#nt-dock');
+      mask.querySelector('[data-dock="max"]')?.addEventListener('click', () => {
+        const panel = mask.querySelector('.modal');
+        if (panel && typeof panel.__toggleMax === 'function') panel.__toggleMax();
+      });
+      // 骨架建在弹窗里：与侧栏笔记视图完全同一份 HTML / 同一个 bindEvents
+      await renderNotes(dockHost);
+    },
+    onClose: () => {
+      closePalette();
+      // 与切走笔记视图同一策略：不弹确认打断用户，未落库的改动直接写掉
+      if (!discardSave) flushNow().catch(() => {});
+      exitFullscreen(); // 全屏面板是 fixed 的，弹窗没了它会浮在别的视图上
+      disposeEditor();
+      currentNote = null;
+      baseline = null;
+      dockMask = null;
+      dockHost = null;
+      boundRoot = null; // 宿主随弹窗一起被移除
+      // 列表摘要 / 关联角标可能变了：让外层把当前视图刷一遍（与单篇笔记弹窗一致）
+      onChanged();
+    },
   });
 }
 

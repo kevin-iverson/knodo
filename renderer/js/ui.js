@@ -20,7 +20,7 @@ import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOpti
 import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
 import {
-  renderNotes, setNotesHandlers, createNote, disposeNotes, importNotesFromDisk,
+  renderNotes, setNotesHandlers, createNote, disposeNotes, importNotesFromDisk, openNotesDock,
 } from './notes.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
 import { openSalaryModal, setSalaryHandlers } from './salary.js';
@@ -200,6 +200,11 @@ function bindStaticEvents() {
       state.search = searchInput.value.trim();
       renderTasks();
     }, 200);
+  });
+
+  // 笔记弹窗：不离开当前任务视图就能看 / 改笔记（弹窗里是同一套笔记界面）
+  document.getElementById('btn-notes-dock')?.addEventListener('click', () => {
+    openNotesDock().catch((e) => toast(`打开笔记失败：${(e && e.message) || e}`));
   });
 
   // 顶栏标签筛选指示：点击即清除筛选

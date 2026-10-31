@@ -134,13 +134,15 @@ export function openPromptModal(opts) {
  * @param {string} [opts.resizeKey] 尺寸记忆键：同一键的弹窗下次打开沿用上次大小
  * @param {number} [opts.minWidth] 缩放最小宽度（默认 520）
  * @param {number} [opts.minHeight] 缩放最小高度（默认 380）
+ * @param {(mask:HTMLElement) => boolean} [opts.escGuard]
+ *        返回 true 时把这次 Esc 让给弹窗内部处理（如笔记搜索框「Esc 清空关键词」），不关窗
  * @returns {Promise<boolean>} 是否以“确认”关闭
  */
 export function openPanelModal({
   title, html = '', className = '', onMount, okText = '关闭',
   extraButtons = [], onSubmit, onClose, showClose = false, headHtml = '',
   resizable = false, resizeKey = '', minWidth = 520, minHeight = 380,
-  closeOnMask = true,
+  closeOnMask = true, escGuard = null,
 }) {
   return new Promise((resolve) => {
     const mask = document.createElement('div');
@@ -189,6 +191,11 @@ export function openPanelModal({
       // 面板内的浮层（如笔记查找浮条）自带 data-esc-stop：Esc 先关最上面那一层，
       // 不然在笔记弹窗里关搜索会连整个弹窗一起关掉
       if (mask.querySelector('[data-esc-stop]')) return;
+      // 宿主自带「Esc 先做点别的」的语义（笔记搜索框清空关键词）：这一下让给它，
+      // 事件照常继续传播，内部处理器会把关键词清掉；下一次 Esc 才关窗
+      if (typeof escGuard === 'function') {
+        try { if (escGuard(mask)) return; } catch (e) { /* 判定失败按「关窗」处理 */ }
+      }
       e.stopPropagation();
       close(false);
     };

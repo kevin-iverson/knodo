@@ -87,8 +87,14 @@
           <span class="view-desc" id="view-desc"></span>
         </div>
         <div class="topbar-right">
+          <!-- 搜索框 + 笔记入口：顶栏在 1080 宽下已经排满（按钮加起来 788 / 可用 790），
+               所以笔记做成搜索框右侧的附件而不是并排新按钮 —— 位置就在「搜索栏旁」，
+               又不把「＋ 新建任务」挤到第二行。点开是完整笔记界面（弹窗），不切换视图。 -->
           <div class="search-box">
             <input type="text" id="search-input" placeholder="搜索任务 / 标签…" />
+            <button type="button" class="search-action" id="btn-notes-dock"
+                    title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）"
+                    aria-label="打开笔记">📝</button>
           </div>
           <button class="text-btn" id="btn-sync" title="导出任务 / 笔记到腾讯文档、ima 等其它产品">☁ 同步</button>
           <button class="text-btn" id="btn-import" title="从 JSON 文件导入恢复">📥 导入</button>
