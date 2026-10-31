@@ -78,7 +78,9 @@
 - 打包后 exe 不接受命令行参数（无法 `--smoke-test`）；验证产物用开发版 electron 加载 `dist/win-unpacked/resources/app.asar`。
 - 发版：改版本（`package-lock.json` 顶层 + `packages[""]` 两处）→ `scripts/release-gitee.js` 写说明 → `chore(release)` 提交 → push → 打包 → 7z（`7za.exe a -t7z -mx=9 -md=128m -ms=off`，产物 ≤104857600 字节）→ `npm run release -- --token`（令牌只走参数/环境变量）。发版前把上一版 7z 移出 `dist/release/`。
 - **发布脚本按 HEAD 打 tag** → 所有代码提交必须在 release 之前。上传 90MB+ 约 10 分钟（脚本 3 次重试，重试前复查）。
-- **Gitee 附件总配额 1GB**（非单文件）：满了报 400「验证失败：文件大小已超出仓库附件配额」。清：`GET /repos/{o}/{r}/releases/{id}/attach_files` → `DELETE .../attach_files/{fid}`，删前先问用户。用量查法：release 列表的 assets 没有 size 字段，得对 `browser_download_url` 发 HEAD 取 Content-Length 累加。v1.8.5 发布后约 750MB / 1024MB（v1.6.0、v1.7.0 为清理候选）。
+- **Gitee 附件总配额 1GB**（非单文件）：满了报 400「验证失败：文件大小已超出仓库附件配额」。清：`GET /repos/{o}/{r}/releases/{id}/attach_files` → `DELETE /repos/{o}/{r}/releases/{id}/attach_files/{fid}`（**路径里必须带 release id**，漏了 404），删前先问用户。用量查法：release 列表的 assets 没有 size 字段，得对 `browser_download_url` 发 HEAD 取 Content-Length 累加。v1.8.5 发布后约 859MB / 1024MB（v1.6.0、v1.7.0 为清理候选）。
+- **单附件 >100MB 只能分卷**（100MiB 硬上限，GVP 才 200MiB）：`7za a -t7z -v95m -mx=9 -md=128m -ms=off`。**压缩时必须在文件所在目录用 `./文件名`**——传 `dist/xxx.exe` 会让包内带 `dist/` 前缀，用户解压多一层。便携版 exe 已是 LZMA SFX，二次压缩只省 70KB。
+- Release 已存在时要同步说明：PATCH `.../releases/{id}` **必须带 `tag_name`**，缺了返回 400。`attach_files` 列表有缓存，重试前复查同名附件必须加 `&t=<Date.now()>`，否则读旧结果 → 同一个 95MB 分卷被传两遍。
 - Git Bash 下多行提交信息**别用 `@'...'@`**（那是 PowerShell here-string，bash 会把它当字面量，`@` 会变成消息首行）；写临时文件 `git commit -F <file>`。
 
 ## 跨平台（Mac）
