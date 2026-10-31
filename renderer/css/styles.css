@@ -1819,6 +1819,15 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .cm-find-current { background: #ffd55c; box-shadow: 0 0 0 1px var(--primary); }
 [data-theme="dark"] .cm-find-hit { background: rgba(255, 214, 10, 0.22); }
 [data-theme="dark"] .cm-find-current { background: rgba(255, 214, 10, 0.42); box-shadow: 0 0 0 1px var(--primary); }
+/* 预览态命中：正文已经是渲染结果，标记是 DOM 里的 <mark>（配色与源码态对齐） */
+.nt-find-hit {
+  padding: 0 1px; border-radius: 2px; color: inherit; background: #fff3a3;
+}
+.nt-find-hit.is-current { background: #ffd55c; box-shadow: 0 0 0 1px var(--primary); }
+[data-theme="dark"] .nt-find-hit { background: rgba(255, 214, 10, 0.22); }
+[data-theme="dark"] .nt-find-hit.is-current { background: rgba(255, 214, 10, 0.42); box-shadow: 0 0 0 1px var(--primary); }
+/* 预览滚动区可编程聚焦（让预览态的 Ctrl+F / Ctrl+S 有宿主），不要焦点框 */
+.nt-dp-scroll:focus, .nt-dp-scroll:focus-visible { outline: none; }
 
 .nt-ed-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .nt-ed[data-mode="split"] .nt-ed-body,

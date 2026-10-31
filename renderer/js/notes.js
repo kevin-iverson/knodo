@@ -27,7 +27,7 @@ import {
   wrapStyledText, TEXT_COLORS, BG_COLORS, enhanceMarkdown,
 } from './markdown-lib.js';
 import { openDetail } from './detail.js';
-import { openFindBar, closeFindBar, isFindOpen } from './note-find.js';
+import { openFindBar, closeFindBar, isFindOpen, findQuery, refreshFind } from './note-find.js';
 
 let notify = () => {};
 let onChanged = () => {};
@@ -425,7 +425,7 @@ function detailHtml(note) {
         </label>
         <span class="nt-meta-info" id="nt-meta-info"></span>
       </div>
-      <div class="nt-dp-scroll">
+      <div class="nt-dp-scroll" tabindex="-1">
         <div class="nt-dp-mid">
           <div class="nt-dp-body">
             <div class="nt-pane">
@@ -856,6 +856,9 @@ function detailPane() {
 function switchMode(m) {
   const pane = detailPane();
   if (!pane) return;
+  // 浮条跟着模式换后端（预览 ↔ 源码），查询词与当前项都要接着用
+  const findWasOpen = isFindOpen();
+  const findSeed = findWasOpen ? findQuery() : '';
   mode = m || 'preview';
   pane.dataset.mode = mode;
   pane.querySelectorAll('[data-nt-act="mode"]').forEach((b) => {
@@ -863,6 +866,7 @@ function switchMode(m) {
   });
   if (mode !== 'edit') refreshPreview();
   else enhanceMarkdown(detailPane()); // 编辑态下预览是隐藏的，切回来时补画 mermaid
+  if (findWasOpen) openNoteFind({ seed: findSeed });
   // 切换后编辑器宽度变了 → 重新测量（否则行号 / 光标的横向位置会错）
   if (mode !== 'preview') {
     setTimeout(() => {
@@ -901,6 +905,8 @@ function refreshPreview() {
     if (first && typeof first.scrollIntoView === 'function') first.scrollIntoView({ block: 'center' });
   }
   renderToc(pane);
+  // 重渲会清掉预览里的命中标记：浮条开着就地按当前词重算一遍（不抢焦点、不滚走）
+  refreshFind();
   // ```mermaid → SVG（异步；隐藏容器里的块会留到切回预览时再画）
   enhanceMarkdown(box);
 }
@@ -1250,7 +1256,8 @@ function bindModalEvents(mask) {
     else if (act === 'dp-delete') await deleteFromDetail();
   });
   mask.addEventListener('input', (e) => {
-    if (e.target.closest && e.target.closest('.nt-dp') && saver) saver.schedule();
+    if (e.target.closest && (e.target.closest('.nt-find') || !e.target.closest('.nt-dp'))) return;
+    if (saver) saver.schedule();
   });
   mask.addEventListener('change', async (e) => {
     if (!e.target.closest || !e.target.closest('.nt-dp')) return;
@@ -1263,6 +1270,7 @@ function bindModalEvents(mask) {
   });
   // 与右栏同一套快捷键（弹窗挂在 body 下，#view 的委托够不到它，得自己绑一份）
   mask.addEventListener('keydown', handleFindShortcut, true);
+  mask.addEventListener('mousedown', focusPreviewOnPress);
   mask.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S') && e.target.closest && e.target.closest('.nt-dp')) {
       e.preventDefault();
@@ -1272,6 +1280,25 @@ function bindModalEvents(mask) {
 }
 
 /* ---------------- 事件绑定 ---------------- */
+
+/**
+ * 点在预览正文上时把键盘焦点收进详情面板。
+ *
+ * 预览区里没有可聚焦控件，点过正文后 activeElement 会停在 body —— 而 Ctrl+F / Ctrl+S
+ * 都靠「事件目标就在 .nt-dp 里」来判断要不要接管，判定落空时快捷键看起来就是失灵。
+ * `.nt-dp-scroll` 带 tabindex="-1"（见 detailHtml），可编程聚焦，正好当宿主。
+ * 只接管「当前没有任何焦点控件」的情况，不抢输入框 / 链接的焦点。
+ */
+function focusPreviewOnPress(e) {
+  const t = e.target;
+  if (!t || typeof t.closest !== 'function') return;
+  if (!t.closest('#nt-preview')) return;
+  if (t.closest('a, button, input, textarea, select, [contenteditable="true"]')) return;
+  const scroll = t.closest('.nt-dp-scroll');
+  const active = document.activeElement;
+  if (!scroll || (active && active !== document.body)) return;
+  try { scroll.focus({ preventScroll: true }); } catch (err) { scroll.focus(); }
+}
 
 function bindEvents(root) {
   root.addEventListener('click', async (e) => {
@@ -1310,6 +1337,8 @@ function bindEvents(root) {
   // 表现为「顶部搜索框打不出结果」。所以搜索框与其他输入一样走容器级委托。
   root.addEventListener('input', (e) => {
     if (e.target.id === 'nt-search') { scheduleSearch(root, e.target.value); return; }
+    // 查找 / 替换浮条的输入框也在 .nt-dp 里，但不属于笔记内容：不能让打字把状态位变成「未保存」
+    if (e.target.closest('.nt-find')) return;
     if (e.target.closest('.nt-dp') && saver) saver.schedule();
   });
   root.addEventListener('change', async (e) => {
@@ -1325,6 +1354,8 @@ function bindEvents(root) {
   root.addEventListener('click', (e) => {
     if (e.target.classList && e.target.classList.contains('nt-dp-state') && saver) saver.flush();
   });
+  // 点在预览正文上时把键盘焦点收进面板（见 focusPreviewOnPress）
+  root.addEventListener('mousedown', focusPreviewOnPress);
   // 捕获阶段吃掉 Ctrl+F / Ctrl+H：CodeMirror 的默认键表里本身就绑了 Ctrl-F → find
   // （lib/codemirror.js 的 pcDefault）—— 虽然 search 插件没一起打包、实际不会执行，
   // 但在捕获阶段先拦最稳，避免以后补了插件再跟它抢按键
@@ -1365,27 +1396,62 @@ async function runSearch(root = boundRoot, value = '') {
 
 /* ---------------- 正文查找 / 替换（Ctrl+F / Ctrl+H） ---------------- */
 
-/** 找 / 替换的目标：编辑器可能还没挂好，所以传 getter 而不是直接传实例 */
+/**
+ * 找 / 替换的目标：编辑器可能还没挂好，所以传 getter 而不是直接传实例。
+ * 预览态没有可见的源码区（编辑区是 display:none 的，打了标记也看不见），
+ * 搜索直接作用在渲染结果上；分栏 / 编辑态才走 CodeMirror 的源码检索。
+ */
 function findTarget() {
+  const pane = detailPane();
+  const previewOnly = mode === 'preview';
   return {
-    pane: detailPane(),
+    pane,
+    backend: previewOnly ? 'dom' : 'cm',
     getCm: () => (editor && editor.codemirror) || null,
+    getRoot: () => (pane ? pane.querySelector('#nt-preview') : null),
     onChange: () => { if (saver) saver.schedule(); schedulePreviewRefresh(); },
   };
 }
 
-/** 打开浮条：没编辑器要给出可用提示，而不是默默什么都不发生 */
-function openNoteFind({ replace = false } = {}) {
+/** 预览区里选中的词：Ctrl+F 预填，与编辑态的「拿编辑器选区」对齐（只取第一行） */
+function selectionInPreview(pane) {
+  try {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return '';
+    const text = String(sel.toString() || '').split('\n')[0].trim();
+    if (!text) return '';
+    const root = pane && pane.querySelector('#nt-preview');
+    if (!root || !sel.anchorNode || !root.contains(sel.anchorNode)) return '';
+    return text.slice(0, 80);
+  } catch (e) { return ''; }
+}
+
+/**
+ * 打开浮条：没编辑器 / 没预览区要给出可用提示，而不是默默什么都不发生。
+ * @param {{replace?:boolean, seed?:string}} [o] seed 用于切模式后把查询词带过去
+ */
+function openNoteFind({ replace = false, seed } = {}) {
   const pane = detailPane();
   if (!pane) return;
+  // 替换必须写源码：预览态按 Ctrl+H 仍然先切到分栏（与以前一致），查找则留在预览里
+  if (replace && mode === 'preview') switchMode('split');
+  const previewOnly = mode === 'preview';
+  const cmInst = editor && editor.codemirror;
+  if (!previewOnly && !cmInst) { notify('编辑器还没准备好，请稍后再试'); return; }
   const target = findTarget();
-  if (!target.getCm()) { notify('请先点右上角「编辑 / 分栏」，再查找替换'); return; }
-  // 预览模式下编辑区是 display:none 的，命中标记看不见 —— 自动切成「分栏」，
-  // 左边看源码里的高亮、右边看渲染结果，不必再手动切一次
-  if (mode === 'preview') switchMode('split');
-  const seed = editor && editor.codemirror ? editor.codemirror.getSelection() : '';
-  const ok = openFindBar({ ...target, replace, seed });
-  if (!ok) notify('编辑器还没准备好，请稍后再试');
+  const seedText = seed != null
+    ? seed
+    : (previewOnly ? selectionInPreview(pane) : (cmInst ? cmInst.getSelection() : ''));
+  const ok = openFindBar({
+    pane: target.pane,
+    backend: target.backend,
+    getCm: target.getCm,
+    getRoot: target.getRoot,
+    replace: previewOnly ? false : replace,
+    seed: seedText,
+    onChange: target.onChange,
+  });
+  if (!ok) notify(previewOnly ? '预览区还没准备好，请稍后再试' : '编辑器还没准备好，请稍后再试');
 }
 
 /**

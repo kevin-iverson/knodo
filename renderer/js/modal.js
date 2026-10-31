@@ -185,7 +185,12 @@ export function openPanelModal({
       resolve(ok);
     };
     const onKey = (e) => {
-      if (e.key === 'Escape') { e.stopPropagation(); close(false); }
+      if (e.key !== 'Escape') return;
+      // 面板内的浮层（如笔记查找浮条）自带 data-esc-stop：Esc 先关最上面那一层，
+      // 不然在笔记弹窗里关搜索会连整个弹窗一起关掉
+      if (mask.querySelector('[data-esc-stop]')) return;
+      e.stopPropagation();
+      close(false);
     };
     document.addEventListener('keydown', onKey, true);
     mask.querySelector('[data-modal="ok"]').addEventListener('click', async () => {
