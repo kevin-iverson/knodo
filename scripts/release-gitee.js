@@ -71,11 +71,15 @@ async function main() {
     `## ${BRAND} ${tag}`,
     '',
     '### 下载',
-    `- **${BRAND}-*.7z**：免安装版，解压后运行其中的 \`${BRAND}.exe\`（需 7-Zip / WinRAR / Win11 自带解压）。`,
-    '  数据保存在 exe 同级的 `data/` 目录，整个文件夹拷走即可换机。',
+    `- **${BRAND}-${pkg.version}-便携版.7z.001 / .002**（推荐）：单文件便携版，**两卷都要下载**。`,
+    `  把两个文件放在同一目录，双击 \`.001\` 用 7-Zip 解压，得到 \`${BRAND}-${pkg.version}-便携版.exe\`，双击即用。`,
+    '  数据写在 exe 同级的 `data/` 目录，不写系统 AppData、不注册开机自启，整个文件夹拷走即可换机。',
+    `  体积 109.6 MiB 超过 Gitee 单附件 100 MiB 上限，因此分卷发布。`,
+    `- **${BRAND}-${pkg.version}-win64.7z**：解压即用版，解压后运行其中的 \`${BRAND}.exe\`（需 7-Zip / WinRAR / Win11 自带解压）。`,
+    '  行为与安装版一致：数据存在系统用户目录（AppData），首次运行可设置开机自启。',
     '',
     '### 安装说明',
-    '1. 下载 .7z 文件并解压到任意目录；',
+    '1. 下载上面的 .7z / 分卷包并解压到任意目录（分卷版需两卷同目录，只解压 `.001`）；',
     `2. 双击 \`${BRAND}.exe\` 运行；首次运行如被 SmartScreen 拦截，点「更多信息 → 仍要运行」（未购买代码签名证书）。`, '',
     '### 本版功能',
     '- 任务管理（分组/标签/子任务/优先级/计划日期/提醒/归档/统计下钻）',
@@ -183,7 +187,14 @@ async function main() {
     const rel = await findRes.json();
     if (rel && rel.id) {
       releaseId = rel.id;
-      console.log(`② Release ${tag} 已存在（id=${releaseId}），直接复用`);
+      // 发行说明由代码管理：重跑脚本时同步 body，否则「Release 已存在」会让说明永远停在旧版
+      const patchRes = await fetch(`${API}/repos/${owner}/${repo}/releases/${releaseId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: token, tag_name: tag, name: `${BRAND} ${tag}`, body: desc }),
+      });
+      console.log(`② Release ${tag} 已存在（id=${releaseId}），`
+        + (patchRes.ok ? '发行说明已同步' : `说明同步失败 ${patchRes.status}`));
     }
   }
   if (releaseId == null) {
@@ -214,8 +225,12 @@ async function main() {
     console.error(`dist/release/ 下没有附件。先运行 npm run dist 并把要发布的文件放进去。`);
     process.exit(1);
   }
-  const existRes = await fetch(`${API}/repos/${owner}/${repo}/releases/${releaseId}/attach_files?access_token=${encodeURIComponent(token)}`);
-  const existed = new Set(existRes.ok ? (await existRes.json()).map((a) => a.name) : []);
+  // Gitee 的附件列表有缓存：必须带时间戳绕过，否则重试复查会读到旧结果，把同一个文件传两遍
+  const listAttach = async () => {
+    const res = await fetch(`${API}/repos/${owner}/${repo}/releases/${releaseId}/attach_files?access_token=${encodeURIComponent(token)}&t=${Date.now()}`);
+    return res.ok ? await res.json() : [];
+  };
+  const existed = new Set((await listAttach()).map((a) => a.name));
 
   for (const name of files) {
     if (existed.has(name)) {
@@ -234,9 +249,14 @@ async function main() {
     let lastErr = '';
     for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
       if (attempt > 1) {
-        // 超时 ≠ 失败：服务端可能已经收下了文件，重试前先复查，避免传重
-        const check = await fetch(`${API}/repos/${owner}/${repo}/releases/${releaseId}/attach_files?access_token=${encodeURIComponent(token)}`);
-        if (check.ok && (await check.json()).some((a) => a.name === name)) {
+        // 超时 ≠ 失败：服务端可能已经收下了文件，重试前先复查，避免传重。
+        // 列表有延迟，复查 3 轮、每轮间隔 5 秒，别一次读不到就判定失败。
+        let found = false;
+        for (let i = 0; i < 3 && !found; i++) {
+          if ((await listAttach()).some((a) => a.name === name)) found = true;
+          else if (i < 2) await new Promise((r) => setTimeout(r, 5000));
+        }
+        if (found) {
           ok = true;
           console.log('复查发现已上传成功，跳过重试');
           break;
@@ -264,6 +284,11 @@ async function main() {
       }
     }
     if (!ok) console.log(`失败：${lastErr}（可重新运行本脚本续传）`);
+  }
+  const names = (await listAttach()).map((a) => a.name);
+  const dups = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))];
+  if (dups.length) {
+    console.log(`⚠ 发现重复附件：${dups.join('、')}（多占配额，建议到发行版页面手动删掉一份）`);
   }
   console.log(`\n✅ 发布完成：https://gitee.com/${owner}/${repo}/releases/tag/${tag}`);
 }
