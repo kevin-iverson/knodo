@@ -30,6 +30,7 @@ import { openSyncModal, setSyncHandlers } from './sync.js';
 import { openJsonViewWindow, setJsonViewHandlers } from './json-view.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
+import { openContextMenu, closeContextMenu } from './ctx-menu.js';
 
 /** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
 const AUTO_SAVE_DELAY = 700;
@@ -134,6 +135,8 @@ export async function init() {
   await initRecentlyDone();
   // 恢复任务列表里被折叠的分组
   await initCollapsedTaskGroups();
+  // 已钉到桌面上的清单：右键菜单与侧边栏标记都要用
+  await refreshDesktopPins(false);
   await renderSidebar();
   await render();
 }
@@ -259,6 +262,37 @@ function bindStaticEvents() {
     ensureTaskView();
     startEdit(id);
   });
+
+  // 桌面浮窗里改了数据（勾选 / 新增 / 删除）→ 主窗口跟上。
+  // 只有变化来自浮窗时主进程才会推这条事件，所以这里不用再判断来源；
+  // 但用户正在主窗口里操作（或开着弹窗）时宁可先不刷，免得把正在输入的编辑器冲掉。
+  api.on('ui:data-changed', async (payload) => {
+    if (document.hasFocus() || document.querySelector('.modal-mask')) return;
+    if (payload && payload.taskId && payload.completed) {
+      // 在浮窗里勾掉的也算「今天完成」，回到今天视图时它要留在列表里
+      noteCompletionChange(payload.taskId, true, payload.parentId);
+    }
+    await refreshAll();
+    renderSidebarList();
+    if (TASK_VIEWS.includes(state.view)) await renderTasks();
+  });
+  // 已钉清单变化（钉 / 取消钉住 / 主进程还原）：刷新侧边栏的 📌 标记
+  api.on('desktop:projection-changed', () => { refreshDesktopPins(); });
+
+  // 右键：分组项自己绑（见 renderSidebarList），这里管「今天」导航项与今天列表空白处
+  document.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('#group-list')) return;
+    if (e.target.closest('.nav-item[data-view="today"]')) {
+      e.preventDefault();
+      showTodayContextMenu(e);
+      return;
+    }
+    // 今天视图的任务区：右键任意空白 / 行都能钉「今天」（行内的输入框除外）
+    if (state.view === 'today' && e.target.closest('#view') && !e.target.closest('input, textarea')) {
+      e.preventDefault();
+      showTodayContextMenu(e);
+    }
+  });
 }
 
 /* ---------------- 时间筛选面板（复用 flatpickr 范围控件） ---------------- */
@@ -335,6 +369,8 @@ let lastView = null;
 let noteCounts = {};
 
 async function render() {
+  // 视图切换 / 重绘时先收起右键菜单：菜单里的操作带着旧上下文，留着容易点错
+  closeContextMenu();
   // 离开笔记视图时销毁编辑器：整页 innerHTML 重建后，旧的自动保存器会继续写库
   if (lastView === 'notes' && state.view !== 'notes') disposeNotes();
   lastView = state.view;
@@ -380,6 +416,112 @@ function groupEmptyHint(groups, groupList) {
   groupList.appendChild(empty);
 }
 
+/* ---------------- 桌面浮窗（钉到桌面） ---------------- */
+
+/**
+ * 已钉清单的内存镜像：右键菜单的勾选状态、侧边栏的 📌 标记共用一份。
+ * 真身在 settings（主进程），这里只是缓存；主进程推送 desktop:projection-changed 时刷新。
+ */
+let desktopPins = [];
+
+async function refreshDesktopPins(rerender = true) {
+  try {
+    const list = await api.desktop.list();
+    desktopPins = Array.isArray(list) ? list : [];
+  } catch (e) {
+    desktopPins = []; // 主进程没就绪时当作「都没钉」，不影响其它功能
+  }
+  if (rerender) {
+    renderSidebarList();
+    // 菜单里的 📌 状态变了，顶栏无需变动，但侧边栏要重画（已在上面做了）
+  }
+}
+
+/** 某个分组 / 今天是否已钉在桌面 */
+function pinnedOf(kind, refId) {
+  return desktopPins.find(
+    (p) => p.kind === kind && (kind === 'today' || Number(p.refId) === Number(refId)),
+  ) || null;
+}
+
+async function pinToDesktop(kind, refId, label) {
+  try {
+    await api.desktop.pin(kind, refId);
+    toast(`已钉到桌面：${label}`);
+  } catch (e) {
+    toast(`钉到桌面失败：${(e && e.message) || e}`);
+  }
+  await refreshDesktopPins();
+}
+
+async function unpinFromDesktop(pin, label) {
+  try {
+    await api.desktop.unpin(pin.id);
+    toast(`已取消钉住：${label}`);
+  } catch (e) {
+    toast(`取消钉住失败：${(e && e.message) || e}`);
+  }
+  await refreshDesktopPins();
+}
+
+/** 「钉到桌面 / 取消钉住」这一组（分组与今天共用的那几项） */
+function pinMenuItems(kind, refId, label) {
+  const pin = pinnedOf(kind, refId);
+  const items = [];
+  if (pin) {
+    items.push({ label: '取消钉住（从桌面移除）', icon: '📌', checked: true, onClick: () => unpinFromDesktop(pin, label) });
+    if (!pin.visible) {
+      items.push({ label: '在桌面显示这个窗口', icon: '👁', onClick: () => api.desktop.show(pin.id).catch(() => {}) });
+    } else {
+      items.push({ label: '暂时收起这个窗口', icon: '—', onClick: () => api.desktop.hide(pin.id).catch(() => {}) });
+    }
+    items.push({ label: '恢复默认位置', icon: '⌖', onClick: () => api.desktop.resetPosition(pin.id).catch(() => {}) });
+  } else {
+    const full = desktopPins.length >= 6;
+    items.push({
+      label: '钉到桌面',
+      icon: '📌',
+      disabled: full,
+      hint: full ? '已钉满 6 个，请先在「桌面浮窗」菜单里收起一个' : '把它常驻在桌面上，一个清单一个窗',
+      onClick: () => pinToDesktop(kind, refId, label),
+    });
+  }
+  return items;
+}
+
+/** 分组右键菜单 */
+function showGroupContextMenu(g, e) {
+  const label = groupPath(g, state.groups);
+  openContextMenu([
+    ...pinMenuItems('group', g.id, label),
+    { type: 'sep' },
+    { label: '在此分组新增任务', icon: '＋', onClick: () => addTaskToGroup(g.id) },
+    { label: '新增子分组', icon: '⊞', onClick: () => promptAddGroup(g.id) },
+    { label: '编辑分组', icon: '✎', onClick: () => editGroup(g) },
+    { type: 'sep' },
+    { label: '删除分组', icon: '×', danger: true, onClick: () => deleteGroup(g) },
+  ], { x: e.clientX, y: e.clientY });
+}
+
+/** 「今天」右键菜单（导航项与今天列表空白处共用） */
+function showTodayContextMenu(e) {
+  openContextMenu([
+    ...pinMenuItems('today', null, '今天'),
+    { type: 'sep' },
+    {
+      label: '在「今天」里新建任务',
+      icon: '＋',
+      onClick: () => {
+        state.view = 'today';
+        state.currentGroup = 'all';
+        renderSidebar();
+        render();
+        startAdd();
+      },
+    },
+  ], { x: e.clientX, y: e.clientY });
+}
+
 function renderSidebarList() {
   const groups = state.groups;
   const groupList = document.getElementById('group-list');
@@ -415,6 +557,7 @@ function renderSidebarList() {
     : '<span class="group-arrow space"></span>'}
       <span class="group-dot" style="background:${esc(g.color)}"></span>
       <span class="group-name">${esc(g.name)}</span>
+      ${pinnedOf('group', g.id) ? '<span class="group-pin" title="已钉在桌面上">📌</span>' : ''}
       <span class="group-count" title="含子分组的任务数">${g.total_count ?? g.active_count ?? 0}</span>
       <span class="group-actions">
         <button class="g-task-add" title="在此分组下新增任务" data-act="add-task">＋</button>
@@ -439,6 +582,12 @@ function renderSidebarList() {
       state.currentGroup = g.id;
       renderSidebarList();
       renderTasks();
+    });
+    // 右键分组：主入口是「钉到桌面」，其余分组操作顺带放在同一个菜单里（低频但顺手）
+    li.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showGroupContextMenu(g, e);
     });
     groupList.appendChild(li);
   }

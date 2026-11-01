@@ -20,6 +20,7 @@ const knowledge = require('./knowledge');
 const sync = require('./sync');
 const mdImport = require('./md-import');
 const backup = require('./backup');
+const desktopWindow = require('./desktop-window');
 
 /**
  * 附件相对路径 → 笔记正文里可引用的 todo-media:// URL。
@@ -123,13 +124,24 @@ function guard(fn) {
   };
 }
 
-/** 取数据库连接，初始化失败时给出可读原因 */
-function withDb(fn) {
-  return guard(async (_e, ...args) => {
+/**
+ * 取数据库连接，初始化失败时给出可读原因。
+ * @param {Function} fn 业务实现（参数为 IPC 实参，不含 event）
+ * @param {object} [opts]
+ * @param {boolean} [opts.notify] 写库成功后广播给桌面浮窗（浮窗只投射数据，必须知道数据变了）；
+ *   渲染层来源是浮窗自己时还会回灌主窗口一次，见 desktop-window.js 的 notifyChange。
+ */
+function withDb(fn, opts = {}) {
+  const notify = !!opts.notify;
+  return guard(async (event, ...args) => {
     if (!db.isReady()) {
       throw new Error(`数据库未就绪${db.getInitError() ? '：' + db.getInitError() : ''}`);
     }
-    return fn(...args);
+    const result = await fn(...args);
+    if (notify) {
+      try { desktopWindow.notifyChange(event && event.sender); } catch (e) { /* 广播失败不能让写操作失败 */ }
+    }
+    return result;
   });
 }
 
@@ -139,28 +151,35 @@ function registerIpc() {
 
   /* ---------- 分组 ---------- */
   ipcMain.handle('groups:list', withDb(() => db.listGroups()));
-  ipcMain.handle('groups:create', withDb((p) => db.createGroup(p)));
-  ipcMain.handle('groups:update', withDb((id, p) => db.updateGroup(id, p)));
-  ipcMain.handle('groups:delete', withDb((id) => db.deleteGroup(id)));
+  ipcMain.handle('groups:create', withDb((p) => db.createGroup(p), { notify: true }));
+  ipcMain.handle('groups:update', withDb((id, p) => db.updateGroup(id, p), { notify: true }));
+  ipcMain.handle('groups:delete', withDb((id) => {
+    const ok = db.deleteGroup(id);
+    // 钉在桌面上的那个清单没了 → 浮窗显示「该清单已删除」并自动关窗（E-01）
+    if (ok) {
+      try { desktopWindow.dropByGroup(id); } catch (e) { /* 通知失败不影响删除结果 */ }
+    }
+    return ok;
+  }, { notify: true }));
   ipcMain.handle('groups:reorder', withDb((ids) => db.reorderGroups(ids)));
 
   /* ---------- 任务 ---------- */
   ipcMain.handle('tasks:list', withDb((f) => db.listTasks(f)));
   ipcMain.handle('tasks:get', withDb((id) => db.getTask(id)));
-  ipcMain.handle('tasks:create', withDb((p) => db.createTask(p)));
-  ipcMain.handle('tasks:update', withDb((id, p) => db.updateTask(id, p)));
+  ipcMain.handle('tasks:create', withDb((p) => db.createTask(p), { notify: true }));
+  ipcMain.handle('tasks:update', withDb((id, p) => db.updateTask(id, p), { notify: true }));
   ipcMain.handle('tasks:delete', withDb((id) => {
     // 删除任务会连带删除子任务：先收集整棵子树，删库成功后一并清掉它们的附件文件
     const ids = db.subtreeTaskIds(id);
     const ok = db.deleteTask(id);
     ids.forEach((tid) => attachments.removeTaskDir(tid));
     return ok;
-  }));
-  ipcMain.handle('tasks:toggle', withDb((id) => db.toggleTask(id)));
+  }, { notify: true }));
+  ipcMain.handle('tasks:toggle', withDb((id) => db.toggleTask(id), { notify: true }));
   ipcMain.handle('tasks:reorder', withDb((ids) => db.reorderTasks(ids)));
-  ipcMain.handle('tasks:archiveCompleted', withDb((groupId) => db.archiveCompleted(groupId)));
-  ipcMain.handle('tasks:archive', withDb((id) => db.archiveTask(id)));
-  ipcMain.handle('tasks:unarchive', withDb((id) => db.unarchiveTask(id)));
+  ipcMain.handle('tasks:archiveCompleted', withDb((groupId) => db.archiveCompleted(groupId), { notify: true }));
+  ipcMain.handle('tasks:archive', withDb((id) => db.archiveTask(id), { notify: true }));
+  ipcMain.handle('tasks:unarchive', withDb((id) => db.unarchiveTask(id), { notify: true }));
   ipcMain.handle('tasks:subtasks', withDb((parentId) => db.listSubtasks(parentId)));
 
   /* ---------- 任务附件 ---------- */
@@ -1047,6 +1066,8 @@ function registerIpc() {
       } catch (e) {
         console.error('[ipc] 导入后重建知识库索引失败', e && e.message);
       }
+      // 导入会整体换库：桌面浮窗里投射的清单 id 可能已经不存在了，让它们各自重拉一次
+      try { desktopWindow.notifyChange(null); } catch (e) { /* 广播失败不影响导入结果 */ }
       return { ok: true, filePath: src, counts, restored, missing, manifest, reindexed, legacy: !isZip };
     } catch (e) {
       return { ok: false, message: e.message };

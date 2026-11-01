@@ -1,0 +1,356 @@
+/**
+ * 桌面浮窗样式（单清单钉到桌面）。
+ *
+ * 材质只做两套：深色玻璃 55% / 浅色 93% 白。刻意不用 backdrop-filter ——
+ * Electron 的透明窗上它表现不稳定（会把整窗刷成不透明或直接丢帧），
+ * 也不依赖 Win11 的 acrylic 材质（Win10 没有，两套走法反而更不一致）。
+ * 圆角与内描边画在 .dw 上，窗口本体是全透明的，所以外轮廓才干净。
+ */
+
+:root {
+  --dw-r: 14px;
+  --dw-head-h: 42px;
+  --dw-foot-h: 36px;
+  --dw-row-h: 34px;
+  --dw-primary: #4f7cff;
+  --dw-primary-strong: #3a62e0;
+}
+
+/* 深色（默认：壁纸透出来，余光可读但不刺眼） */
+html[data-theme='dark'] {
+  /* 设计稿是 55% + 背景模糊；Electron 的透明窗上做不了可靠的模糊，
+     纯 rgba 55% 压在浅色壁纸上会灰成一片、正文读不清，
+     所以把不透明度提到 72% —— 仍然能透出壁纸，但对比度守住了 */
+  --dw-bg: rgba(24, 26, 33, 0.72);
+  --dw-bg-solid: rgba(24, 26, 33, 0.97);
+  --dw-ring: rgba(255, 255, 255, 0.16);
+  --dw-hover: rgba(255, 255, 255, 0.09);
+  --dw-text: #f4f2f8;
+  --dw-text-2: #9d9aab;
+  --dw-text-3: #8f8c9c;
+  --dw-check: rgba(255, 255, 255, 0.32);
+  --dw-sep: rgba(255, 255, 255, 0.08);
+  --dw-scroll: rgba(255, 255, 255, 0.18);
+  --dw-grip: rgba(255, 255, 255, 0.45);
+}
+
+/* 浅色：结构与深色完全一致，只换颜色令牌 */
+html[data-theme='light'] {
+  --dw-bg: rgba(255, 255, 255, 0.93);
+  --dw-bg-solid: #ffffff;
+  --dw-ring: rgba(0, 0, 0, 0.08);
+  --dw-hover: rgba(20, 25, 40, 0.06);
+  --dw-text: #26262e;
+  --dw-text-2: #8b8899;
+  --dw-text-3: #8a8798;
+  --dw-check: rgba(0, 0, 0, 0.26);
+  --dw-sep: rgba(0, 0, 0, 0.07);
+  --dw-scroll: rgba(0, 0, 0, 0.18);
+  --dw-grip: rgba(0, 0, 0, 0.32);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  background: transparent; /* 窗口本体透明，圆角靠 .dw 自己裁 */
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', Roboto, sans-serif;
+  font-size: 13px;
+  color: var(--dw-text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.dw {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border-radius: var(--dw-r);
+  background: var(--dw-bg);
+  box-shadow: inset 0 0 0 1px var(--dw-ring);
+  overflow: hidden;
+  /* 180ms 淡入 + 4px 上浮：明确「它来了」，但不闪不跳 */
+  animation: dw-in 180ms ease-out both;
+}
+
+/* 数据没就绪时用不透明底，避免半透明窗口里看不清提示文字 */
+.dw[data-state='error'],
+.dw[data-state='missing'] { background: var(--dw-bg-solid); }
+
+@keyframes dw-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dw { animation: none; }
+}
+
+/* ---------------- 标题栏（可拖动） ---------------- */
+
+.dw-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--dw-head-h);
+  padding: 0 6px 0 12px;
+  flex: none;
+  /* 原生拖动：交给系统处理，拖动时有系统级跟手，也省掉一套 pointer 逻辑 */
+  -webkit-app-region: drag;
+}
+
+.dw-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  flex: none;
+}
+
+.dw-title {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dw-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--dw-text-2);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.dw-btns {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+
+.dw-btn {
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dw-text-2);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dw-btn:hover { background: var(--dw-hover); color: var(--dw-text); }
+
+.dw-btn.is-rotated { transform: rotate(180deg); }
+
+/* ---------------- 列表 ---------------- */
+
+.dw-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dw-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dw-scroll) transparent;
+}
+
+.dw-list::-webkit-scrollbar { width: 8px; }
+.dw-list::-webkit-scrollbar-thumb {
+  background: var(--dw-scroll);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.dw-list::-webkit-scrollbar-track { background: transparent; }
+
+.dw-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: var(--dw-row-h);
+  padding: 0 6px;
+  border-radius: 7px;
+  cursor: pointer;
+  position: relative;
+}
+
+.dw-row:hover { background: var(--dw-hover); }
+.dw-row.is-sel { background: var(--dw-hover); box-shadow: inset 0 0 0 1px var(--dw-ring); }
+.dw-row.is-new { animation: dw-row-new 400ms ease-out; }
+
+@keyframes dw-row-new {
+  from { background: rgba(79, 124, 255, 0.22); }
+  to { background: transparent; }
+}
+
+.dw-row.is-child { padding-left: 20px; }
+
+/* 复选框 16×16 圆角 5：未选 1.5px 描边，选中填充品牌蓝 + 白勾 */
+.dw-check {
+  width: 16px; height: 16px;
+  flex: none;
+  border-radius: 5px;
+  border: 1.5px solid var(--dw-check);
+  position: relative;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.dw-row:hover .dw-check { border-color: var(--dw-primary); }
+
+.dw-check.on {
+  background: var(--dw-primary);
+  border-color: var(--dw-primary);
+}
+
+.dw-check.on::after {
+  content: '';
+  position: absolute;
+  left: 4px; top: 1.5px;
+  width: 5px; height: 8px;
+  border-right: 1.7px solid #fff;
+  border-bottom: 1.7px solid #fff;
+  transform: rotate(40deg);
+}
+
+.dw-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 已完成：同字号、只降色，不加删除线（密排列表里删除线会让整屏发脏） */
+.dw-row.is-done .dw-text { color: var(--dw-text-2); }
+
+/* 行尾图标只在悬停出现，常态界面保持干净 */
+.dw-row-acts {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.dw-row:hover .dw-row-acts { opacity: 1; }
+
+.dw-row-btn {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; padding: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dw-text-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dw-row-btn:hover { background: var(--dw-hover); color: var(--dw-text); }
+.dw-row-btn[data-act='del']:hover { color: #e5484d; }
+
+/* ---------------- 提示 / 空态 ---------------- */
+
+.dw-hint {
+  padding: 18px 16px 20px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--dw-text-2);
+}
+
+.dw-hint.is-link { cursor: pointer; }
+.dw-hint.is-link:hover { color: var(--dw-text); }
+.dw-hint b { color: var(--dw-text); font-weight: 600; }
+
+/* ---------------- 新增行 ---------------- */
+
+.dw-foot {
+  flex: none;
+  height: var(--dw-foot-h);
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+}
+
+.dw-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dw-text-3);
+  font-size: 12.5px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dw-add:hover { background: var(--dw-hover); color: var(--dw-text); }
+
+.dw-add-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--dw-ring);
+  border-radius: 7px;
+  background: var(--dw-hover);
+  color: var(--dw-text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  user-select: text;
+}
+
+.dw-add-input:focus { border-color: var(--dw-primary); }
+.dw-add-input::placeholder { color: var(--dw-text-3); }
+
+/* ---------------- 右下角缩放手柄 ---------------- */
+
+.dw-grip {
+  position: absolute;
+  right: 1px; bottom: 1px;
+  width: 16px; height: 16px;
+  cursor: ew-resize;
+  /* 两道短斜线暗示「可以往右拉」，不占正文空间；常态很淡，悬停才明显 */
+  background:
+    linear-gradient(135deg, transparent 52%, var(--dw-grip) 52%, var(--dw-grip) 62%, transparent 62%),
+    linear-gradient(135deg, transparent 72%, var(--dw-grip) 72%, var(--dw-grip) 82%, transparent 82%);
+  border-bottom-right-radius: var(--dw-r);
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+.dw:hover .dw-grip { opacity: 0.9; }
+
+/* ---------------- 折叠态 ---------------- */
+
+.dw.is-collapsed .dw-body,
+.dw.is-collapsed .dw-foot,
+.dw.is-collapsed .dw-grip { display: none; }

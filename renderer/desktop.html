@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- 浮窗是独立顶层面，只加载本地资源：内容全部来自主进程投影，不引外链 -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self';" />
+  <title>Knodo 浮窗</title>
+  <link rel="stylesheet" href="css/desktop.css" />
+</head>
+<body>
+  <!-- 三段固定：标题栏（42）· 列表（自适应）· 新增行（36）。
+       位置永不互换 —— 286px 的小窗里，肌肉记忆比布局灵活更值钱。 -->
+  <div class="dw" id="dw" data-state="loading">
+    <header class="dw-head" id="dw-head">
+      <span class="dw-dot" id="dw-dot" hidden></span>
+      <span class="dw-title" id="dw-title">加载中…</span>
+      <span class="dw-count" id="dw-count" hidden></span>
+      <span class="dw-btns">
+        <button type="button" class="dw-btn" id="dw-collapse" title="折叠为标题条" aria-label="折叠">⌃</button>
+        <button type="button" class="dw-btn" id="dw-more" title="更多" aria-label="更多">⋯</button>
+      </span>
+    </header>
+
+    <div class="dw-body" id="dw-body">
+      <div class="dw-list" id="dw-list" role="list"></div>
+      <div class="dw-hint" id="dw-hint" hidden></div>
+    </div>
+
+    <div class="dw-foot" id="dw-foot">
+      <button type="button" class="dw-add" id="dw-add" title="新增待办（Ctrl+N）">＋ 新增待办</button>
+      <input type="text" class="dw-add-input" id="dw-add-input" maxlength="200"
+             placeholder="写点什么，回车添加 · Esc 退出" hidden />
+    </div>
+
+    <div class="dw-grip" id="dw-grip" title="拖动调整宽度（双击恢复默认宽度）" role="separator" aria-label="调整窗口大小"></div>
+  </div>
+  <script type="module" src="js/desktop.js"></script>
+</body>
+</html>

@@ -226,6 +226,30 @@ contextBridge.exposeInMainWorld('api', {
     getAutoStart: () => call('app:getAutoStart'),
   },
   /**
+   * 桌面浮窗（单清单钉到桌面）。
+   * 主窗口用它查询 / 切换「已钉」状态，浮窗自身用它读写自己那份投影。
+   * 浮窗不拥有数据：所有内容都从主进程按 projection 实时读库。
+   */
+  desktop: {
+    list: () => call('desktop:list'),
+    pin: (kind, refId) => call('desktop:pin', kind, refId),
+    unpin: (id) => call('desktop:unpin', id),
+    togglePin: (kind, refId) => call('desktop:togglePin', kind, refId),
+    get: (id) => call('desktop:get', id),
+    toggleTask: (taskId) => call('desktop:toggleTask', taskId),
+    deleteTask: (id, taskId) => call('desktop:deleteTask', id, taskId),
+    addTask: (id, title) => call('desktop:addTask', id, title),
+    openInMain: (taskId) => call('desktop:openInMain', taskId),
+    update: (id, patch) => call('desktop:update', id, patch),
+    fit: (id, h) => call('desktop:fit', id, h),
+    size: (id, w) => call('desktop:size', id, w),
+    hover: (id, on) => call('desktop:hover', id, on),
+    menu: (id) => call('desktop:menu', id),
+    show: (id) => call('desktop:show', id),
+    hide: (id) => call('desktop:hide', id),
+    resetPosition: (id) => call('desktop:resetPosition', id),
+  },
+  /**
    * 拖拽进来的 File 对象在 Electron 32+ 已没有 .path，必须用 webUtils 换绝对路径。
    * 拿到路径后再交给 attachments.addPaths 复制进数据目录。
    */
@@ -241,6 +265,9 @@ contextBridge.exposeInMainWorld('api', {
     const allowed = [
       'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary',
       'ui:code-format', 'ui:text-diff', 'ui:json-viewer', 'ui:import-md',
+      // 桌面浮窗：浮窗重拉自己的投影 / 主窗口重绘 / 菜单里的已钉列表变化 / 清单被删除
+      'desktop:invalidate', 'desktop:missing', 'desktop:collapsed', 'desktop:projection-changed',
+      'ui:data-changed',
     ];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));

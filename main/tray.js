@@ -6,20 +6,43 @@ const { Tray, Menu, nativeImage, Notification } = require('electron');
 const path = require('path');
 
 let tray = null;
+/** 动态菜单项（桌面浮窗列表）：每次弹出前重建，保证「已钉清单」永远是最新的 */
+let extraItems = () => [];
+/** 菜单回调（refreshTrayMenu 重建时要用同一组） */
+let handlers = {};
 
-function setupTray({ getWindow, onShow, onQuickAdd, onQuit }) {
-  const iconPath = path.join(__dirname, '..', 'assets', 'tray.png');
-  const image = nativeImage.createFromPath(iconPath);
-  tray = new Tray(image);
-  tray.setToolTip('Knodo');
-
-  const menu = Menu.buildFromTemplate([
+function buildMenu() {
+  const { onShow, onQuickAdd, onQuit } = handlers;
+  const template = [
     { label: '显示主界面', click: onShow },
     { label: '快速添加任务', click: onQuickAdd },
     { type: 'separator' },
-    { label: '退出', click: onQuit },
-  ]);
-  tray.setContextMenu(menu);
+  ];
+  let extra = [];
+  try {
+    extra = extraItems() || [];
+  } catch (e) {
+    extra = [];
+  }
+  if (extra.length) template.push(...extra, { type: 'separator' });
+  template.push({ label: '退出', click: onQuit });
+  return Menu.buildFromTemplate(template);
+}
+
+function setupTray({ getWindow, onShow, onQuickAdd, onQuit, desktopItems }) {
+  const iconPath = path.join(__dirname, '..', 'assets', 'tray.png');
+  const image = nativeImage.createFromPath(iconPath);
+  handlers = { onShow, onQuickAdd, onQuit };
+  if (typeof desktopItems === 'function') extraItems = desktopItems;
+  tray = new Tray(image);
+  tray.setToolTip('Knodo');
+
+  tray.setContextMenu(buildMenu());
+  // 右键即重建：新钉 / 取消钉住之后不用等下一次状态变化才更新菜单
+  tray.on('right-click', () => {
+    if (!tray) return;
+    tray.popUpContextMenu(buildMenu());
+  });
   // 单击托盘图标切换显示/隐藏
   tray.on('click', () => {
     const win = getWindow();
@@ -30,8 +53,18 @@ function setupTray({ getWindow, onShow, onQuickAdd, onQuit }) {
   return tray;
 }
 
+/** 投影列表变化后刷新托盘菜单（托盘不可用时静默跳过） */
+function refreshTrayMenu() {
+  if (!tray) return;
+  try {
+    tray.setContextMenu(buildMenu());
+  } catch (e) { /* 菜单构建失败不影响托盘本身 */ }
+}
+
 function destroyTray() {
   if (tray) { tray.destroy(); tray = null; }
+  handlers = {};
+  extraItems = () => [];
 }
 
 /**
@@ -53,4 +86,6 @@ function showTrayNotification({ title, body }) {
   }
 }
 
-module.exports = { setupTray, destroyTray, showTrayNotification, NOTIFICATION_ICON };
+module.exports = {
+  setupTray, destroyTray, refreshTrayMenu, showTrayNotification, NOTIFICATION_ICON,
+};

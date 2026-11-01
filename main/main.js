@@ -13,7 +13,8 @@ const db = require('./db');
 const storage = require('./storage');
 const attachments = require('./attachments');
 const { registerIpc } = require('./ipc');
-const { setupTray, destroyTray } = require('./tray');
+const { setupTray, destroyTray, refreshTrayMenu } = require('./tray');
+const desktopWindow = require('./desktop-window');
 const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
 const { markdownToDocx } = require('./docx');
@@ -257,8 +258,51 @@ function buildAppMenu() {
         },
       ],
     },
+    {
+      // 桌面浮窗：主路径是「分组 / 今天」右键 → 钉到桌面，这里是次要入口 ——
+      // 钉了三四个之后，从菜单里找窗比在桌面上翻快，也是位置跑偏后的兜底（见 E-08）
+      label: '桌面浮窗',
+      submenu: desktopMenuTemplate(),
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/** 「桌面浮窗」菜单项：已钉清单列表 + 恢复默认位置 / 全部收起 */
+function desktopMenuTemplate() {
+  let items = [];
+  try {
+    items = db.isReady() ? desktopWindow.list() : [];
+  } catch (e) {
+    items = [];
+  }
+  const listItems = items.length
+    ? items.map((p) => ({
+      label: `${p.title}${p.missing ? '（已删除）' : ''}  ${p.done}/${p.total}`,
+      type: 'checkbox',
+      checked: p.visible,
+      click: () => {
+        if (p.visible) desktopWindow.hide(p.id);
+        else desktopWindow.show(p.id);
+      },
+    }))
+    : [{ label: '（还没有钉住的清单）', enabled: false }];
+  return [
+    ...listItems,
+    { type: 'separator' },
+    {
+      label: '全部恢复默认位置',
+      enabled: items.length > 0,
+      click: () => items.forEach((p) => desktopWindow.resetPosition(p.id)),
+    },
+    {
+      label: '全部收起',
+      enabled: items.length > 0,
+      click: () => items.forEach((p) => desktopWindow.hide(p.id)),
+    },
+    { type: 'separator' },
+    { label: '在分组 / 「今天」上右键即可钉到桌面', enabled: false },
+  ];
 }
 
 /**
@@ -596,6 +640,14 @@ app.whenReady().then(async () => {
 
   applyTheme();
   registerIpc();
+  // 桌面浮窗：窗口层独立于主窗口，投影列表变化时重建应用菜单 / 托盘菜单
+  desktopWindow.init({
+    getMainWindow: () => mainWindow,
+    onChanged: () => {
+      buildAppMenu();
+      refreshTrayMenu();
+    },
+  });
   buildAppMenu();
 
   // 录制需要麦克风 / 屏幕采集权限：这是本机应用、且由用户主动点「录制」触发，
@@ -625,11 +677,32 @@ app.whenReady().then(async () => {
     getWindow: () => mainWindow,
     onShow: showWindow,
     onQuickAdd: quickAdd,
+    // 托盘是浮窗的兜底入口：主窗口关掉（驻留托盘）后仍能唤回
+    desktopItems: () => {
+      let items = [];
+      try { items = db.isReady() ? desktopWindow.list() : []; } catch (e) { items = []; }
+      if (!items.length) return [];
+      return [
+        {
+          label: '桌面浮窗',
+          submenu: items.map((p) => ({
+            label: `${p.title}${p.missing ? '（已删除）' : ''}  ${p.done}/${p.total}`,
+            type: 'checkbox',
+            checked: p.visible,
+            click: () => { if (p.visible) desktopWindow.hide(p.id); else desktopWindow.show(p.id); },
+          })),
+        },
+      ];
+    },
     onQuit: () => {
       isQuitting = true;
       app.quit();
     },
   });
+
+  // 还原上次钉在桌面上的清单（静默显示，不抢焦点）。
+  // 冒烟测试跳过：它要的是干净环境，不该被用户遗留的浮窗干扰。
+  if (!isSmoke) setTimeout(() => desktopWindow.restoreAll(), 500);
 
   startReminderScheduler({ onFocusTask: focusTask });
   // 自动备份：启动 5 分钟后首次，之后每 24 小时一份（只含数据库，附件靠完整备份包）
@@ -2979,6 +3052,8 @@ app.on('before-quit', () => {
   stopReminderScheduler();
   backup.stopAutoBackup();
   destroyTray();
+  // 浮窗随应用退出一起销毁（关主窗口不关它们：托盘常驻时浮窗要留着）
+  desktopWindow.destroyAll();
 });
 
 app.on('window-all-closed', () => {
