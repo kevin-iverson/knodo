@@ -18,6 +18,7 @@ const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
 const { markdownToDocx } = require('./docx');
 const reportMod = require('./report');
+const backup = require('./backup');
 
 const isSmoke = process.argv.includes('--smoke-test');
 
@@ -78,6 +79,21 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  // 纵深防御（渲染层已经把链接限到 http/https，这里是第二道）：
+  //  - 笔记里的 <a target="_blank"> 若无人接管，Electron 会自己开一个没有 preload 的裸窗口，
+  //    用户会看到「怎么又开了一个 Knodo」，而且那个窗口完全不受控；
+  //  - 任何把主窗口导航走的尝试一律拦下，改交系统浏览器。
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (e, url) => {
+    if (url.startsWith('file://')) return; // 自身页面（reload / 恢复后刷新）
+    e.preventDefault();
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+  });
+  mainWindow.webContents.on('will-attach-webview', (e) => e.preventDefault());
 
   mainWindow.once('ready-to-show', () => {
     // 开机自启动唤起时只驻留托盘，不弹主窗口（用户想用时点托盘图标即可）
@@ -159,6 +175,14 @@ function buildAppMenu() {
           click: () => {
             showWindow();
             openStorageDialog();
+          },
+        },
+        {
+          // 自动备份的状态与手动入口都放这里：数据目录在哪、备份在哪，属同一件事
+          label: '备份与恢复…',
+          click: () => {
+            showWindow();
+            openBackupDialog();
           },
         },
         {
@@ -259,6 +283,149 @@ async function toggleAutoStart(next) {
     });
   }
   return res;
+}
+
+/**
+ * 「备份与恢复」对话框：展示自动备份状态 + 立即备份 / 打开目录 / 从快照恢复。
+ * 用原生对话框而不是渲染层弹窗：恢复要先关库再换文件，界面还在跑容易产生「窗口里是旧数据」的中间态。
+ */
+function fmtSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${n} B`;
+}
+
+function fmtTime(ms) {
+  const d = new Date(ms);
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function openBackupDialog() {
+  for (;;) {
+    const info = backup.getInfo();
+    const latest = info.latest
+      ? `${fmtTime(info.latest.time)}（${fmtSize(info.latest.size)}）`
+      : '还没有备份（启动 5 分钟后会自动备份一次）';
+    const { response } = await msgBox({
+      type: 'info',
+      title: '备份与恢复',
+      message: `最近自动备份：${latest}`,
+      detail: [
+        `备份目录：${info.dir || '（数据目录未知）'}`,
+        `现有 ${info.count} 份，共 ${fmtSize(info.totalBytes)}；保留最近 ${info.dailyDays} 天每日 1 份 + 最近 ${info.weeklyCount} 周每周 1 份，总量上限 500MB。`,
+        '',
+        '注意：自动备份只保数据库（任务 / 笔记 / 会议记录 / 设置）。',
+        '附件与录音本体请用主界面工具栏「📤 备份」导出完整备份包，并放到别的磁盘或网盘。',
+      ].join('\n'),
+      buttons: ['立即备份', '打开备份目录', '从备份恢复…', '关闭'],
+      defaultId: 0,
+      cancelId: 3,
+      noLink: true,
+    });
+
+    if (response === 3) return;
+
+    if (response === 0) {
+      const r = await backup.runAutoBackup();
+      await msgBox({
+        type: r.ok ? 'info' : 'warning',
+        title: '备份',
+        message: r.ok ? '备份完成' : '本次备份未执行',
+        detail: r.ok
+          ? `已写入：${r.filePath}\n大小：${fmtSize(r.size)}`
+          : (r.reason || '未知原因'),
+        buttons: ['好'],
+        noLink: true,
+      });
+      continue;
+    }
+
+    if (response === 1) {
+      if (!info.dir) continue;
+      fs.mkdirSync(info.dir, { recursive: true });
+      shell.openPath(info.dir);
+      continue;
+    }
+
+    // response === 2：从快照恢复
+    if (!info.latest) {
+      await msgBox({ type: 'info', title: '从备份恢复', message: '目前还没有可用的备份', buttons: ['好'], noLink: true });
+      continue;
+    }
+    const pick = await dirDialog({
+      title: '选择要恢复的备份',
+      defaultPath: info.dir,
+      properties: ['openFile'],
+      filters: [{ name: '数据库备份', extensions: ['db'] }],
+    });
+    if (pick.canceled || !pick.filePaths || !pick.filePaths.length) continue;
+    const target = pick.filePaths[0];
+    const stat = fs.statSync(target);
+    const confirmRes = await msgBox({
+      type: 'warning',
+      title: '确认覆盖当前数据',
+      message: '恢复会用这份备份覆盖当前的任务 / 笔记 / 会议记录',
+      detail: `备份文件：${target}\n备份时间：${fmtTime(stat.mtimeMs)}（${fmtSize(stat.size)}）\n\n`
+        + '当前数据库不会删除，会改名成 todo.db.broken-<时间> 留在原目录，必要时还能取回。\n'
+        + '附件与录音不受影响（它们不在数据库里）。',
+      buttons: ['恢复', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (confirmRes.response !== 0) continue;
+    try {
+      backup.restoreFromBackup(target);
+      await msgBox({ type: 'info', title: '恢复完成', message: '已从备份恢复，界面即将刷新', buttons: ['好'], noLink: true });
+      if (mainWindow) mainWindow.webContents.reload();
+    } catch (e) {
+      dialog.showErrorBox('恢复失败', e && e.message ? e.message : String(e));
+    }
+    continue;
+  }
+}
+
+/**
+ * 启动时数据库打不开（文件被删 / 损坏 / 同步盘占位）→ 直接从最近一份自动快照恢复。
+ * 给用户两个选择就够了：能救就救，救不了就别让它带着一个坏库继续跑。
+ */
+async function offerRecoveryAtStartup() {
+  const err = db.getInitError() || '未知原因';
+  const info = backup.getInfo();
+  if (!info.latest) {
+    await msgBox({
+      type: 'error',
+      title: '数据库无法打开',
+      message: '数据文件打不开，且没有可用的自动备份',
+      detail: `${err}\n\n数据目录：${storage.getInfo().dir}\n\n`
+        + '可以检查目录是否被占用 / 只读，或从别处的完整备份包（.zip）恢复后再启动。',
+      buttons: ['退出'],
+      noLink: true,
+    });
+    return false;
+  }
+  const { response } = await msgBox({
+    type: 'warning',
+    title: '数据库无法打开',
+    message: '数据文件打不开，但找到了一份自动备份',
+    detail: `${err}\n\n最近备份：${fmtTime(info.latest.time)}（${fmtSize(info.latest.size)}）\n`
+      + `备份目录：${info.dir}\n\n是否用它恢复？损坏的库文件会改名保留，不会丢。`,
+    buttons: ['从备份恢复', '退出'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (response !== 0) return false;
+  try {
+    backup.restoreFromBackup(info.latest.path);
+    await msgBox({ type: 'info', title: '恢复完成', message: '已恢复到最近一次备份', buttons: ['好'], noLink: true });
+    return true;
+  } catch (e) {
+    dialog.showErrorBox('恢复失败', e && e.message ? e.message : String(e));
+    return false;
+  }
 }
 
 /**
@@ -396,7 +563,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   protocol.registerFileProtocol('todo-media', (req, callback) => {
     try {
       const u = new URL(req.url);
@@ -415,6 +582,18 @@ app.whenReady().then(() => {
   const dataInfo = storage.resolve();
   db.init(dataInfo.dir);
   attachments.init(path.join(dataInfo.dir, storage.ATTACH_DIR));
+
+  // 主库打不开（被删 / 损坏 / 同步盘占位）：先尝试用最近一份自动快照救回来，
+  // 救不了就别带着坏库继续跑——继续跑只会在界面上到处报"数据库未就绪"。
+  if (!db.isReady() && !isSmoke) {
+    const recovered = await offerRecoveryAtStartup();
+    if (!recovered) {
+      isQuitting = true;
+      app.quit();
+      return;
+    }
+  }
+
   applyTheme();
   registerIpc();
   buildAppMenu();
@@ -453,6 +632,8 @@ app.whenReady().then(() => {
   });
 
   startReminderScheduler({ onFocusTask: focusTask });
+  // 自动备份：启动 5 分钟后首次，之后每 24 小时一份（只含数据库，附件靠完整备份包）
+  if (db.isReady()) backup.startAutoBackup();
 
   ipcMain.handle('app:quit', () => { isQuitting = true; app.quit(); });
   app.on('activate', () => showWindow());
@@ -2796,6 +2977,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   isQuitting = true;
   stopReminderScheduler();
+  backup.stopAutoBackup();
   destroyTray();
 });
 

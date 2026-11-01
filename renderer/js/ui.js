@@ -1362,24 +1362,66 @@ async function deleteTaskConfirm(id) {
   renderTasks();
 }
 
-/* ---------------- 数据导入 / 导出 ---------------- */
+/* ---------------- 数据导入 / 导出（完整备份包） ---------------- */
 
 async function exportData() {
   const r = await api.data.export();
-  if (r.ok) toast(`已导出 ${r.counts.tasks} 个任务、${r.counts.groups} 个分组`);
-  else if (!r.canceled) toast('导出失败');
+  if (!r.ok) {
+    if (!r.canceled) toast(r.message || '导出失败');
+    return;
+  }
+  const c = (r.manifest && r.manifest.counts) || {};
+  const size = r.size ? `${(r.size / 1024 / 1024).toFixed(1)}MB` : '';
+  toast(`已导出完整备份：${c.tasks || 0} 个任务、${c.notes || 0} 篇笔记、${c.attachments || 0} 个附件、${c.recordings || 0} 段录音 ${size}`);
+  // 导出时就能发现「库里登记了、文件却不在了」的附件，别等换机恢复时才暴露
+  const lost = (r.manifest && r.manifest.missingAttachments) || [];
+  const lostRec = (r.manifest && r.manifest.missingRecordings) || [];
+  if (lost.length || lostRec.length) showBackupMissing(lost, lostRec);
+}
+
+/** 缺失附件 / 录音清单：导入后与导出时各用一次 */
+function showBackupMissing(list, recList = []) {
+  const lines = list.slice(0, 50).map((m) => {
+    const owner = m.kind === 'note' ? '笔记' : '任务';
+    return `· [${owner}] ${m.title || ''} — ${m.name || m.path || '（无文件名）'}`;
+  });
+  const recLines = recList.slice(0, 20).map((p) => `· ${String(p).split(/[\\/]/).slice(-2).join('/')}`);
+  const more = list.length > 50 ? `\n… 另有 ${list.length - 50} 条` : '';
+  const recMore = recList.length > 20 ? `\n… 另有 ${recList.length - 20} 段录音` : '';
+  const body = [
+    `共 ${list.length} 个附件文件已丢失：`,
+    lines.join('\n') + more,
+    recList.length ? `\n共 ${recList.length} 段录音已丢失：` : '',
+    recLines.join('\n') + recMore,
+    '',
+    '这些记录还留在任务 / 笔记里，但打不开原件。若手上有更早的完整备份包，重新导入一次即可补回。',
+  ].filter(Boolean).join('\n');
+
+  openPanelModal({
+    title: recList.length ? '备份里缺少附件与录音' : '备份里缺少附件',
+    className: 'modal-backup-missing',
+    html: '<div class="backup-missing-body" style="white-space:pre-wrap;line-height:1.7;max-height:52vh;overflow:auto"></div>',
+    okText: '知道了',
+    onMount(mask) {
+      const box = mask.querySelector('.backup-missing-body');
+      if (box) box.textContent = body; // textContent：文件名可能含尖括号，不能拼 HTML
+    },
+  });
 }
 
 async function importData() {
-  if (!confirm('导入将覆盖当前所有任务、分组和标签数据，是否继续？')) return;
+  if (!confirm('导入会覆盖当前的任务、分组、标签、笔记与会议纪要（附件会被合并到数据目录），是否继续？')) return;
   const r = await api.data.import();
   if (r.ok) {
-    toast(`已导入 ${r.counts.tasks} 个任务、${r.counts.groups} 个分组、${r.counts.tags} 个标签`);
+    const c = r.counts || {};
+    toast(`已导入 ${c.tasks || 0} 个任务、${c.groups || 0} 个分组、${c.tags || 0} 个标签、${c.notes || 0} 篇笔记`);
     state.currentGroup = 'all';
     state.currentTag = null;
     await refreshAll();
     renderSidebarList();
     renderTasks();
+    if (r.missing && r.missing.length) showBackupMissing(r.missing);
+    else if (r.legacy) toast('这份是旧版 JSON 备份：只含数据，不含附件与录音');
   } else if (!r.canceled) {
     toast(r.message || '导入失败');
   }

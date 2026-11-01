@@ -19,6 +19,7 @@ const searchAssist = require('./search-assist');
 const knowledge = require('./knowledge');
 const sync = require('./sync');
 const mdImport = require('./md-import');
+const backup = require('./backup');
 
 /**
  * 附件相对路径 → 笔记正文里可引用的 todo-media:// URL。
@@ -985,43 +986,60 @@ function registerIpc() {
   }));
 
   /* ---------- 数据导入 / 导出 ---------- */
+  // 导出 = 完整备份包（db.json + attachments/ + recordings/）。
+  // 以前只写一个 JSON，恢复后图片全破、附件点不开、录音没声音——用户却以为已经备份过了。
   ipcMain.handle('data:export', async () => {
-    const data = db.exportData();
     const { canceled, filePath } = await dialog.showSaveDialog({
-      title: '导出任务数据',
-      defaultPath: `knodo-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      title: '导出完整备份',
+      defaultPath: `knodo-backup-${new Date().toISOString().slice(0, 10)}.zip`,
       filters: [
-        { name: 'JSON 文件', extensions: ['json'] },
+        { name: 'Knodo 备份包（含附件与录音）', extensions: ['zip'] },
         { name: '所有文件', extensions: ['*'] },
       ],
     });
     if (canceled || !filePath) return { ok: false, canceled: true };
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
-    return {
-      ok: true,
-      filePath,
-      counts: {
-        groups: data.groups.length,
-        tags: data.tags.length,
-        tasks: data.tasks.length,
-        notes: (data.notes || []).length,
-      },
-    };
+    try {
+      const r = backup.writeArchive(filePath);
+      return { ok: true, filePath, manifest: r.manifest, size: r.size };
+    } catch (e) {
+      return { ok: false, message: `导出失败：${e && e.message ? e.message : e}` };
+    }
   });
   ipcMain.handle('data:import', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
-      title: '导入任务数据',
+      title: '导入备份',
       properties: ['openFile'],
       filters: [
-        { name: 'JSON 文件', extensions: ['json'] },
+        { name: 'Knodo 备份（.zip / .json）', extensions: ['zip', 'json'] },
         { name: '所有文件', extensions: ['*'] },
       ],
     });
     if (canceled || !filePaths || filePaths.length === 0) return { ok: false, canceled: true };
+    const src = filePaths[0];
     try {
-      const raw = fs.readFileSync(filePaths[0], 'utf8');
-      const data = JSON.parse(raw);
-      const counts = db.importData(data);
+      // ZIP 与旧 JSON 用文件头区分：PK\x03\x04 就是备份包，其余按老格式处理
+      let head = Buffer.alloc(2);
+      try {
+        const fd = fs.openSync(src, 'r');
+        fs.readSync(fd, head, 0, 2, 0);
+        fs.closeSync(fd);
+      } catch (e) { /* 读不到就交给下面的解析报错 */ }
+      const isZip = head[0] === 0x50 && head[1] === 0x4b;
+
+      let counts;
+      let restored = null;
+      let missing = [];
+      let manifest = null;
+      if (isZip) {
+        const r = backup.importArchive(src);
+        counts = r.counts; restored = r.restored; missing = r.missing; manifest = r.manifest;
+      } else {
+        const data = JSON.parse(fs.readFileSync(src, 'utf8'));
+        counts = db.importData(data);
+        // 旧 JSON 备份天然不含附件：把它们也报出来，别让用户以为图片能一起回来
+        missing = backup.findMissingAttachments();
+      }
+
       // 分块是派生数据，不随备份走：导入后立刻按正文重建笔记知识库索引
       let reindexed = null;
       try {
@@ -1029,7 +1047,7 @@ function registerIpc() {
       } catch (e) {
         console.error('[ipc] 导入后重建知识库索引失败', e && e.message);
       }
-      return { ok: true, filePath: filePaths[0], counts, reindexed };
+      return { ok: true, filePath: src, counts, restored, missing, manifest, reindexed, legacy: !isZip };
     } catch (e) {
       return { ok: false, message: e.message };
     }
@@ -1164,7 +1182,18 @@ function registerIpc() {
     db.setSetting(`tool.${k}`, JSON.stringify(v));
     return true;
   });
-  ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(url));
+  // 外链是通用通道：只放行 http/https。放开 file:// / ms-settings: / UNC（\\host\share 在 Windows
+  // 上会外发 NTLM 凭据）等于给渲染层留一把万能钥匙，将来任何一处逻辑把它当「打开链接」用都会中招。
+  ipcMain.handle('app:openExternal', async (_e, url) => {
+    const s = String(url || '').trim();
+    if (!/^https?:\/\//i.test(s)) return { ok: false, reason: '仅支持 http/https 链接' };
+    try {
+      await shell.openExternal(s);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, reason: e && e.message ? e.message : String(e) };
+    }
+  });
   ipcMain.handle('app:getVersion', () => app.getVersion());
 }
 

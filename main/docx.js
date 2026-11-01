@@ -3,98 +3,12 @@
  * Markdown → Word（.docx）导出，零第三方依赖。
  *
  * 实现思路：
- *  - docx 本质是一个 ZIP 包（OOXML），这里用手写的极简 ZIP 写入器打包（deflate + CRC32）；
+ *  - docx 本质是一个 ZIP 包（OOXML），打包用 main/zip.js 里的极简 ZIP 写入器（deflate + CRC32）；
  *  - Markdown 只覆盖报告用到的语法：标题、无序 / 有序列表、任务清单（- [x]）、引用、
  *    代码块、分隔线，以及行内 粗体 / 斜体 / 删除线 / 行内代码；
  *  - 中文字体统一指定微软雅黑，避免 Word 里出现方块或回退成等宽字体。
  */
-const zlib = require('zlib');
-
-/* ------------------------------ ZIP 写入器 ------------------------------ */
-
-let CRC_TABLE = null;
-function crc32(buf) {
-  if (!CRC_TABLE) {
-    CRC_TABLE = new Int32Array(256);
-    for (let i = 0; i < 256; i++) {
-      let c = i;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-      CRC_TABLE[i] = c;
-    }
-  }
-  let c = -1;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ -1) >>> 0;
-}
-
-/**
- * 打包成 ZIP（方法 8 = deflate）。
- * @param {Array<{name:string, data:string|Buffer}>} entries
- * @returns {Buffer}
- */
-function zip(entries) {
-  const parts = [];
-  const centrals = [];
-  let offset = 0;
-
-  for (const e of entries) {
-    const nameBuf = Buffer.from(e.name, 'utf8');
-    const raw = Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data, 'utf8');
-    const comp = zlib.deflateRawSync(raw, { level: 9 });
-    const crc = crc32(raw);
-
-    const local = Buffer.alloc(30 + nameBuf.length);
-    local.writeUInt32LE(0x04034b50, 0); // local file header signature
-    local.writeUInt16LE(20, 4);         // version needed to extract
-    local.writeUInt16LE(0, 6);          // general purpose bit flag
-    local.writeUInt16LE(8, 8);          // compression method: deflate
-    local.writeUInt16LE(0, 10);         // last mod time
-    local.writeUInt16LE(0, 12);         // last mod date
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(comp.length, 18);
-    local.writeUInt32LE(raw.length, 22);
-    local.writeUInt16LE(nameBuf.length, 26);
-    local.writeUInt16LE(0, 28);         // extra field length
-    nameBuf.copy(local, 30);
-
-    const central = Buffer.alloc(46 + nameBuf.length);
-    central.writeUInt32LE(0x02014b50, 0); // central directory header signature
-    central.writeUInt16LE(20, 4);         // version made by
-    central.writeUInt16LE(20, 6);         // version needed
-    central.writeUInt16LE(0, 8);
-    central.writeUInt16LE(8, 10);
-    central.writeUInt16LE(0, 12);
-    central.writeUInt16LE(0, 14);
-    central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(comp.length, 20);
-    central.writeUInt32LE(raw.length, 24);
-    central.writeUInt16LE(nameBuf.length, 28);
-    central.writeUInt16LE(0, 30);         // extra
-    central.writeUInt16LE(0, 32);         // comment
-    central.writeUInt16LE(0, 34);         // disk number start
-    central.writeUInt16LE(0, 36);         // internal attrs
-    central.writeUInt32LE(0, 38);         // external attrs
-    central.writeUInt32LE(offset, 42);    // relative offset of local header
-    nameBuf.copy(central, 46);
-
-    parts.push(local, comp);
-    centrals.push(central);
-    offset += local.length + comp.length;
-  }
-
-  const centralBuf = Buffer.concat(centrals);
-  const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0); // end of central directory signature
-  end.writeUInt16LE(0, 4);
-  end.writeUInt16LE(0, 6);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
-  end.writeUInt32LE(centralBuf.length, 12);
-  end.writeUInt32LE(offset, 16);
-  end.writeUInt16LE(0, 20);
-
-  return Buffer.concat([...parts, centralBuf, end]);
-}
+const { zip } = require('./zip');
 
 /* ------------------------------ Markdown 解析 ------------------------------ */
 

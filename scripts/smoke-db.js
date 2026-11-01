@@ -11,6 +11,9 @@ const db = require('../main/db');
 const report = require('../main/report');
 const knowledge = require('../main/knowledge');
 const attachments = require('../main/attachments');
+const recording = require('../main/recording');
+const backupMod = require('../main/backup');
+const { unzip } = require('../main/zip');
 
 let passed = 0;
 let failed = 0;
@@ -280,8 +283,10 @@ check('导出含 meetings 且 schema 升级到 12',
   && Array.isArray(exportSnap.task_notes) && Array.isArray(exportSnap.knowledge_bases));
 check('导出保留 todos 与 media_paths', (() => {
   const row = exportSnap.meetings.find((m) => m.id === m1.id);
-  return !!row && row.title === '周会(改)' && typeof row.todos === 'string'
-    && JSON.parse(row.todos)[0].title === '整理接口文档';
+  // 导出即规范化为数组（以前是 JSON 文本，导入时会被当成非数组清空，录音路径整段丢失）
+  return !!row && row.title === '周会(改)'
+    && Array.isArray(row.todos) && row.todos[0].title === '整理接口文档'
+    && Array.isArray(row.media_paths);
 })());
 
 check('删除会议记录', db.deleteMeeting(m2.id) === 1 && db.getMeeting(m2.id) === null);
@@ -883,9 +888,100 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
     zipBuf.slice(0, 2).toString('latin1') === 'PK' && hasName && zipBuf.length > 200);
   check('导出文件名带时间戳', /^Knodo-任务-\d{8}-\d{4}\.csv$/.test(sync.defaultName('任务', 'csv')));
 
+  /* ---------- [22] 完整备份包：导出 → 换数据目录 → 导入 ---------- */
+  console.log('\n[22] 完整备份包（db + 附件 + 录音）');
+  attachments.init(path.join(tmpDir, 'attachments'));
+  recording.init(tmpDir);
+
+  const recSession = path.join(tmpDir, 'recordings', '20261101-120000-abcdef');
+  fs.mkdirSync(recSession, { recursive: true });
+  const recFile = path.join(recSession, 'chunk-001.webm');
+  fs.writeFileSync(recFile, Buffer.from('fake-audio-bytes-'.repeat(20)));
+  db.createMeeting({ title: '备份用会议', media_paths: [recFile] });
+
+  const bt = db.createTask({ title: '备份用任务' });
+  const srcFile = path.join(tmpDir, '说明.txt');
+  fs.writeFileSync(srcFile, '附件本体');
+  const attEntry = attachments.importFile(bt.id, srcFile);
+  db.setAttachments(bt.id, [attEntry]);
+
+  const pngPixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const picNote = db.createNote({ title: '备份用笔记', contentMd: '![](x)' });
+  const picEntry = attachments.importDataUrl('note', picNote.id, pngPixel, '备份图.png');
+  db.setNoteAttachments(picNote.id, [picEntry]);
+
+  const archivePath = path.join(tmpDir, 'knodo-test-backup.zip');
+  const exported = backupMod.writeArchive(archivePath);
+  check('导出时统计到附件与录音',
+    exported.manifest.counts.attachments === 2 && exported.manifest.counts.recordings === 1);
+  const missingKeys = exported.manifest.missingAttachments.map((m) => `${m.kind}:${m.owner_id}`);
+  check('本次用到的附件都不在缺失清单里',
+    !missingKeys.includes(`task:${bt.id}`) && !missingKeys.includes(`note:${picNote.id}`));
+
+  // 缺失检测本身要能工作：登记一条磁盘上不存在的附件，导出时必须被点名
+  db.setAttachments(bt.id, [...db.getTask(bt.id).attachments, {
+    id: 'ghost1', name: '幽灵附件.png', size: 1, mime: 'image/png', path: `task-${bt.id}/ghost1_幽灵附件.png`,
+  }]);
+  check('能识别「库里登记了但文件已丢失」的附件',
+    backupMod.findMissingAttachments().some((m) => m.name === '幽灵附件.png'));
+  db.setAttachments(bt.id, [attEntry]);
+
+  const packedNames = Object.keys(unzip(fs.readFileSync(archivePath)));
+  check('备份包内含 manifest / db.json / attachments / recordings',
+    packedNames.includes('manifest.json') && packedNames.includes('db.json')
+    && packedNames.some((n) => n.startsWith('attachments/task-'))
+    && packedNames.some((n) => n.startsWith('attachments/note-'))
+    && packedNames.some((n) => n.startsWith('recordings/')));
+  check('备份包中文文件名未乱码', packedNames.includes(`attachments/note-${picNote.id}/${picEntry.path.split('/')[1]}`));
+
+  // 换一个数据目录，模拟「重装 / 换机」
+  const taskCountBefore = db.listTasks({ status: 'all' }).length;
+  const noteCountBefore = db.listNotes({ archived: 'all' }).length;
+  const tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'todo-smoke-restore-'));
+  db.close();
+  db.init(tmpDir2);
+  attachments.init(path.join(tmpDir2, 'attachments'));
+  recording.init(tmpDir2);
+
+  const imported = backupMod.importArchive(archivePath);
+  check('导入后任务 / 笔记数量一致',
+    db.listTasks({ status: 'all' }).length === taskCountBefore
+    && db.listNotes({ archived: 'all' }).length === noteCountBefore);
+  check('导入后附件文件真实存在且可解析',
+    attachments.exists(db.getTask(bt.id).attachments[0])
+    && attachments.exists(db.getNote(picNote.id).attachments[0]));
+  const importedMeeting = db.listMeetings().find((m) => m.title === '备份用会议');
+  check('导入后录音路径改写到新数据目录且文件可播放',
+    !!importedMeeting
+    && importedMeeting.media_paths[0].startsWith(path.join(tmpDir2, 'recordings'))
+    && fs.existsSync(importedMeeting.media_paths[0]));
+  check('导入后缺失清单为空（图片 / 附件 / 录音全部到位）',
+    !imported.missing.some((m) => m.kind === 'task' && m.owner_id === bt.id)
+    && !imported.missing.some((m) => m.kind === 'note' && m.owner_id === picNote.id));
+  check('导入结果回报搬运数量',
+    imported.restored.attachments === 2 && imported.restored.recordings === 1);
+
+  // 自动快照：写一份、quick_check 通过、列表能列出来
+  const snap = await backupMod.runAutoBackup();
+  check('自动快照成功且通过 quick_check', snap.ok === true && fs.existsSync(snap.filePath));
+  check('快照列表能读到刚写的这份',
+    backupMod.listAutoBackups().length === 1 && db.quickCheck().ok === true);
+  check('保留策略不会删掉最近一份', backupMod.pruneAutoBackups().count === 1);
+
+  // 主库被删 / 写坏：从快照一键恢复（评审验收：删掉 todo.db 后启动能救回来）
+  const liveDbPath = db.getDbPath();
+  const tasksBeforeCrash = db.listTasks({ status: 'all' }).length;
+  db.close();
+  fs.writeFileSync(liveDbPath, 'this is not a sqlite database'); // 模拟损坏
+  const revived = backupMod.restoreFromBackup(snap.filePath);
+  check('损坏的主库能用快照恢复',
+    revived.ok && db.isReady() && db.listTasks({ status: 'all' }).length === tasksBeforeCrash);
+  check('损坏文件被改名保留（不删用户数据）', fs.existsSync(revived.parked));
+
   console.log('\n====================');
   console.log(`结果：${passed} 通过，${failed} 失败`);
   db.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  fs.rmSync(tmpDir2, { recursive: true, force: true });
   process.exit(failed > 0 ? 1 : 0);
 })();

@@ -34,11 +34,23 @@ function destroyTray() {
   if (tray) { tray.destroy(); tray = null; }
 }
 
+/**
+ * 通知统一用托盘图标：以前托盘气泡与提醒调度各写一份 new Notification()，
+ * 同一条提醒会弹两次、图标还可能不一致。现在只在这里定义一份图标，调度侧直接引用。
+ */
+const NOTIFICATION_ICON = path.join(__dirname, '..', 'assets', 'tray.png');
+
 /** 托盘气泡提醒 */
 function showTrayNotification({ title, body }) {
-  if (!Notification.isSupported()) return;
-  const n = new Notification({ title, body, icon: path.join(__dirname, '..', 'assets', 'tray.png') });
-  n.show();
+  if (!Notification.isSupported()) return false;
+  try {
+    const n = new Notification({ title, body, icon: NOTIFICATION_ICON });
+    n.show();
+    return true;
+  } catch (e) {
+    console.error('[tray] 通知发送失败：', e && e.message ? e.message : e);
+    return false;
+  }
 }
 
-module.exports = { setupTray, destroyTray, showTrayNotification };
+module.exports = { setupTray, destroyTray, showTrayNotification, NOTIFICATION_ICON };

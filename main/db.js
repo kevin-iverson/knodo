@@ -1055,14 +1055,15 @@ function setTaskTags(taskId, tagIds) {
 
 /* ------------------------------ 提醒 ------------------------------ */
 
-/** 返回所有到期未提醒且未完成的任务 */
+/** 返回所有到期未提醒且未完成的任务（按提醒时间升序：最早的一条先弹） */
 function dueReminders() {
   const t = nowIso();
   return db
     .prepare(
       `SELECT * FROM tasks
        WHERE reminder_at IS NOT NULL AND reminder_at <= ? AND reminder_fired = 0
-         AND completed = 0 AND archived = 0`
+         AND completed = 0 AND archived = 0
+       ORDER BY reminder_at ASC`
     )
     .all(t);
 }
@@ -2497,7 +2498,9 @@ function exportData() {
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
     tasks: db.prepare('SELECT * FROM tasks ORDER BY id').all(),
     task_tags: db.prepare('SELECT * FROM task_tags ORDER BY task_id').all(),
-    meetings: db.prepare('SELECT * FROM meetings ORDER BY id').all(),
+    // 会议必须过 rowToMeeting：库里 media_paths / todos 是 JSON 文本，
+    // 直接导出原始行会让导入时被当成"非数组"清洗成 []，录音路径整段丢掉。
+    meetings: db.prepare('SELECT * FROM meetings ORDER BY id').all().map(rowToMeeting),
     reports: db.prepare('SELECT * FROM reports ORDER BY id').all(),
     ai_searches: db.prepare('SELECT * FROM ai_searches ORDER BY id').all(),
     kb_qa: db.prepare('SELECT * FROM kb_qa ORDER BY id').all(),
@@ -2591,7 +2594,13 @@ function importData(data) {
          transcript, summary, todos, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
-    const jsonOf = (v) => JSON.stringify(Array.isArray(v) || (v && typeof v === 'object') ? v : []);
+    // 兼容两种来源：新导出是数组，旧版 JSON 备份里是 JSON 文本（不兼容的话会被清成 []）
+    const jsonOf = (v) => {
+      if (typeof v === 'string') {
+        try { return Array.isArray(JSON.parse(v)) ? v : '[]'; } catch (e) { return '[]'; }
+      }
+      return JSON.stringify(Array.isArray(v) || (v && typeof v === 'object') ? v : []);
+    };
     for (const m of data.meetings || []) {
       insMeeting.run(
         m.id, m.title || '未命名会议', m.source_label || '', m.mode || 'audio',
@@ -2710,6 +2719,50 @@ function importData(data) {
   };
 }
 
+/**
+ * 数据库自检（备份前调用）：quick_check 比 integrity_check 快得多，
+ * 足够发现页损坏 / 索引错乱这类会让备份变成垃圾的问题。
+ */
+function quickCheck() {
+  if (!db) return { ok: false, message: '数据库未初始化' };
+  try {
+    const r = db.pragma('quick_check', { simple: true });
+    return r === 'ok' ? { ok: true } : { ok: false, message: String(r) };
+  } catch (e) {
+    return { ok: false, message: e && e.message ? e.message : String(e) };
+  }
+}
+
+/**
+ * 所有附件元数据（只读 attachments 列，不拉正文）。
+ * 备份导出 / 导入后校验都靠它：库里登记了哪些附件、各自应该落在哪。
+ * @returns {Array<{kind:'task'|'note', owner_id:number, title:string, name:string, path:string}>}
+ */
+function collectAttachmentMeta() {
+  if (!db) return [];
+  const out = [];
+  const collect = (kind, sql) => {
+    for (const row of db.prepare(sql).all()) {
+      let list = [];
+      try { list = JSON.parse(row.attachments || '[]'); } catch (e) { continue; }
+      if (!Array.isArray(list)) continue;
+      for (const a of list) {
+        out.push({
+          kind,
+          owner_id: row.id,
+          title: row.title || '',
+          name: (a && a.name) || '',
+          path: (a && a.path) || '',
+        });
+      }
+    }
+  };
+  const where = "attachments IS NOT NULL AND attachments <> '' AND attachments <> '[]'";
+  collect('task', `SELECT id, title, attachments FROM tasks WHERE ${where}`);
+  collect('note', `SELECT id, title, attachments FROM notes WHERE ${where}`);
+  return out;
+}
+
 module.exports = {
   init,
   getDb,
@@ -2719,6 +2772,8 @@ module.exports = {
   getInitError,
   close,
   nowIso,
+  quickCheck,
+  collectAttachmentMeta,
   // groups
   listGroups,
   createGroup,
