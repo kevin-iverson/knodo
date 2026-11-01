@@ -10,3 +10,7 @@ data/
 *.db
 *.db-wal
 *.db-shm
+
+# 本地工作目录（AI 协作日志、调试脚本、临时截图）：只在本机存在，不进仓库
+.workbuddy/
+.vscode/
