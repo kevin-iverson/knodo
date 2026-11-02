@@ -93,6 +93,55 @@ check('空名被拒绝', (() => {
   try { db.createGroup({ name: '   ' }); return false; } catch (e) { return /不能为空/.test(e.message); }
 })());
 
+console.log('\n[1.7] 分组位置移动（同级重排 / 跨层级 / 边界）');
+const mvRoot = db.createGroup({ name: '移动测试根' });
+const mvA = db.createGroup({ name: 'A', parentId: mvRoot.id });
+const mvB = db.createGroup({ name: 'B', parentId: mvRoot.id });
+const mvC = db.createGroup({ name: 'C', parentId: mvRoot.id });
+// 同级顺序按名称拼串比对，直观且不受 id 影响
+const orderUnder = (pid) => db.siblingGroupIds(pid).map((id) => db.getGroup(id).name).join('');
+const seqUnder = (pid) => db.siblingGroupIds(pid).map((id) => db.getGroup(id).sort_order).join(',');
+
+check('新建分组排在同层末尾', orderUnder(mvRoot.id) === 'ABC');
+db.moveGroup(mvC.id, { parentId: mvRoot.id, index: 0 });
+check('移到首位（index=0）', orderUnder(mvRoot.id) === 'CAB');
+db.moveGroup(mvC.id, { parentId: mvRoot.id, index: 999 });
+check('index 超长钳制到末尾', orderUnder(mvRoot.id) === 'ABC');
+db.moveGroup(mvC.id, { parentId: mvRoot.id, index: -3 });
+check('index 负数钳制到首位', orderUnder(mvRoot.id) === 'CAB');
+check('同级序号连续 0..n-1', seqUnder(mvRoot.id) === '0,1,2');
+
+db.moveGroup(mvA.id, { parentId: mvB.id });
+check('跨层级移动：换了父级并落到目标层首位', db.getGroup(mvA.id).parent_id === mvB.id
+  && db.getGroup(mvA.id).sort_order === 0);
+check('原层级序号重排无空档', seqUnder(mvRoot.id) === '0,1');
+check('省略 index = 排到目标层末尾', (() => {
+  const r = db.moveGroup(mvA.id, { parentId: null });
+  return r.parent_id == null;
+})());
+
+const mvA1 = db.createGroup({ name: 'A1', parentId: mvA.id });
+check('移到自己的子孙下被拒绝', (() => {
+  try { db.moveGroup(mvA.id, { parentId: mvA1.id }); return false; } catch (e) { return /自己的子分组/.test(e.message); }
+})());
+check('移到自己下面被拒绝', (() => {
+  try { db.moveGroup(mvA.id, { parentId: mvA.id }); return false; } catch (e) { return /不能是它自己/.test(e.message); }
+})());
+
+const mvDup = db.createGroup({ name: 'B', parentId: mvC.id }); // 与 mvRoot 下的 B 同名，但在 C 下面
+check('移动到已有同名分组的父级被拒绝', (() => {
+  try { db.moveGroup(mvDup.id, { parentId: mvRoot.id }); return false; } catch (e) { return /已存在同名分组/.test(e.message); }
+})());
+check('同级内换位不触发重名校验', (() => {
+  const r = db.moveGroup(mvDup.id, { parentId: mvC.id, index: 0 });
+  return r.parent_id === mvC.id && r.sort_order === 0;
+})());
+
+check('分组不存在返回 null', db.moveGroup(999999, { parentId: null }) === null);
+check('目标父级不存在报错', (() => {
+  try { db.moveGroup(mvB.id, { parentId: 888888 }); return false; } catch (e) { return /上级分组不存在/.test(e.message); }
+})());
+
 console.log('\n[1.6] 任务附件元数据');
 const attTask = db.createTask({ title: '带附件的任务', groupId: g1.id });
 const att1 = { id: 'a1', name: '需求说明.docx', size: 1024, mime: 'application/msword', path: `task-${attTask.id}/a1_需求说明.docx`, added_at: new Date().toISOString() };
@@ -573,6 +622,42 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
     groupIds: [], data: promptData,
   })[1].content;
   check('提示词携带子任务明细', promptMsg.includes('"subtasks"') && promptMsg.includes('RPT子任务B'));
+
+  console.log('\n[12d] 报告分组归属（同名分组不得跨模块合并）');
+  // 名称唯一性只在同一父级内生效，跨级可同名 —— 报告的汇总与提示词都必须按 id + 完整路径
+  const rptPm = db.createGroup({ name: '项目管理' });
+  const rptDm = db.createGroup({ name: '数据管理' });
+  const rptPmIssue = db.createGroup({ name: '问题项', parentId: rptPm.id });
+  const rptDmIssue = db.createGroup({ name: '问题项', parentId: rptDm.id });
+  check('跨父级同名分组是不同 id', rptPmIssue.id !== rptDmIssue.id
+    && rptPmIssue.name === rptDmIssue.name);
+  const rptFrom = new Date(Date.now() - 3600e3);
+  const rptTo = new Date(Date.now() + 3600e3);
+  for (const title of ['RPT问题项-PM1', 'RPT问题项-PM2']) {
+    db.toggleTask(db.createTask({ title, groupId: rptPmIssue.id }).id);
+  }
+  db.toggleTask(db.createTask({ title: 'RPT问题项-DM1', groupId: rptDmIssue.id }).id);
+  const rptMd = report.buildLocalReport('day', rptFrom, rptTo, [rptPm.id, rptDm.id]);
+  check('同名分组按 id 分别汇总，并带父级路径',
+    rptMd.includes('- 项目管理 / 问题项：2 项') && rptMd.includes('- 数据管理 / 问题项：1 项'));
+  check('不再出现合并成一条的裸分组名', !rptMd.includes('- 问题项：'));
+  const rptPrompt = report.buildPrompt({
+    type: 'day', start: rptFrom, end: rptTo, groupIds: [rptPm.id, rptDm.id],
+    data: db.rangeStats(rptFrom.toISOString(), rptTo.toISOString(), [rptPm.id, rptDm.id]),
+  })[1].content;
+  check('提示词逐条带分组归属',
+    rptPrompt.includes('"group":"项目管理 / 问题项"') && rptPrompt.includes('"group":"数据管理 / 问题项"'));
+  check('提示词约束同名分组靠路径区分', rptPrompt.includes('可能存在同名分组'));
+  // 子任务分组为 NULL 时跟随父任务，不能掉进「未分组」
+  const rptParent = db.createTask({ title: 'RPT父任务X', groupId: rptDmIssue.id });
+  const rptSub = db.createTask({ title: 'RPT子任务X', parentId: rptParent.id });
+  db.toggleTask(rptSub.id);
+  const rptMd2 = report.buildLocalReport('day', rptFrom, rptTo, [rptDm.id]);
+  check('子任务无分组时继承父任务归属', rptMd2.includes('- 数据管理 / 问题项：2 项')
+    && !rptMd2.includes('- 未分组：'));
+  check('历史记录分组标签用完整路径', report.groupLabelForHistory([rptPmIssue.id, rptDmIssue.id])
+    === '项目管理 / 问题项、数据管理 / 问题项');
+  check('未选分组时历史标签为全部分组', report.groupLabelForHistory([]) === '全部分组');
 
   console.log('\n[13] 任务创建时间（created_at）');
   const ct = db.createTask({ title: '创建时间用例' });

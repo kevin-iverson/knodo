@@ -446,6 +446,78 @@ function destroyWin(id) {
   return true;
 }
 
+/**
+ * 当前聚焦的浮窗投影（给全局快捷键判断"这次操作是在哪个窗上按的"）。
+ * 没有聚焦的浮窗返回 null —— 调用方据此退回主窗口上下文。
+ */
+function focusedProjection() {
+  let focused = null;
+  try { focused = BrowserWindow.getFocusedWindow(); } catch (e) { focused = null; }
+  if (!focused) return null;
+  for (const [id, w] of wins) {
+    if (!w.isDestroyed() && w === focused) return findProjection(id);
+  }
+  return null;
+}
+
+/**
+ * 一键显示 / 隐藏全部浮窗（Ctrl+Alt+H）。
+ * 演示、截屏、共享屏幕时 6 个置顶窗全在屏幕上很尴尬，必须有一个总开关。
+ * 隐藏的窗只是 hide，位置与折叠态都不动，再按一次原样回来。
+ */
+function toggleAllVisible() {
+  const list0 = readAll();
+  if (!list0.length) return { ok: false, total: 0, visible: false };
+  const anyVisible = list0.some((p) => isShown(p.id));
+  if (anyVisible) {
+    list0.forEach((p) => hideWin(p.id));
+    notifyProjections();
+    return { ok: true, total: list0.length, visible: false };
+  }
+  let shown = 0;
+  list0.forEach((p) => {
+    try {
+      if (windowOf(p.id)) show(p.id);
+      else openWindow(p);
+      shown += 1;
+    } catch (e) {
+      console.error('[desktop] 显示浮窗失败', e && e.message);
+    }
+  });
+  notifyProjections();
+  return { ok: true, total: list0.length, visible: true, shown };
+}
+
+/**
+ * 唤起第 n 个浮窗（Ctrl+Alt+1~6）并置顶 2 秒。
+ * 浮窗可能被别的窗口盖住，数字键比挨个点可靠；置顶 2 秒是"让你看见它在哪"，
+ * 之后回落到它自己的置顶策略（always / hover），不改用户配置。
+ */
+function focusNth(n) {
+  const list0 = readAll();
+  const idx = Number(n) - 1;
+  if (!Number.isInteger(idx) || idx < 0 || idx >= list0.length) {
+    return { ok: false, reason: 'none', total: list0.length };
+  }
+  const p = list0[idx];
+  let win = windowOf(p.id);
+  if (!win) {
+    try { win = openWindow(p); } catch (e) { return { ok: false, reason: 'error', total: list0.length }; }
+  }
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.show();
+    win.focus();
+    setTimeout(() => {
+      if (win.isDestroyed()) return;
+      const cur = findProjection(p.id);
+      if (cur) applyPinMode(win, cur);
+    }, 2000);
+  }
+  return { ok: true, total: list0.length, title: safeView(p).title };
+}
+
 /* ------------------------------ 对外操作 ------------------------------ */
 
 function pin(kind, refId) {
@@ -793,5 +865,6 @@ module.exports = {
   init, restoreAll, destroyAll,
   list, pin, unpin, togglePin, update, fit, resize, resetPosition,
   show, hide: hideWin, dropByGroup, notifyChange, isDesktopSender,
+  toggleAllVisible, focusNth, focusedProjection,
   MAX_WINDOWS,
 };

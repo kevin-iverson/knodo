@@ -71,11 +71,67 @@ function normalizeGroupIds(param) {
   return raw.map((v) => Number(v)).filter((v) => Number.isFinite(v));
 }
 
-/** 分组 id 数组 → 展示用名称（空数组 = 全部） */
+/** 分组 id 数组 → 展示用完整路径（空数组 = 全部）；同名分组靠「父 / 子」路径区分 */
 function groupNamesText(ids) {
   if (!ids.length) return '全部';
-  const names = ids.map((id) => (db.getGroup(id) && db.getGroup(id).name) || '').filter(Boolean);
+  const { pathOf } = buildGroupPaths();
+  const names = ids.map((id) => groupLabelOf(Number(id), pathOf));
   return names.length ? names.join('、') : '全部';
+}
+
+/**
+ * 历史记录里存的分组标签（"项目管理 / 问题项、数据管理 / 问题项"）。
+ * 只存 id 数组看不出当时筛了什么，只存叶子名又会把同名分组写成一模一样的两个词，
+ * 所以统一在主进程按 id + 完整路径生成，界面不再自己拼。
+ */
+function groupLabelForHistory(ids) {
+  const list = (Array.isArray(ids) ? ids : [])
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v));
+  if (!list.length) return '全部分组';
+  const { pathOf } = buildGroupPaths();
+  return list.map((id) => groupLabelOf(id, pathOf)).join('、');
+}
+
+/**
+ * 分组 id → 完整路径（"项目管理 / 问题项"）。
+ *
+ * 为什么必须按 id + 路径：分组名的唯一性只在**同一父级**内生效（db.groupNameTaken 的作用域），
+ * 「项目管理 / 问题项」与「数据管理 / 问题项」是两个不同 id 的合法分组。任何按名字聚合
+ * 或只写叶子名的展示，都会把跨模块的同名分组悄悄合并成一条。
+ * 一次取全表建 Map，避免每个任务都查一次库。
+ */
+function buildGroupPaths() {
+  const nodes = new Map(db.listGroups().map((g) => [Number(g.id), g]));
+  const pathOf = (id) => {
+    if (id == null) return '';
+    const parts = [];
+    let cur = nodes.get(Number(id));
+    let guard = 0;
+    while (cur && guard++ < 32) { // 防御历史脏数据成环
+      parts.unshift(cur.name);
+      cur = cur.parent_id == null ? null : nodes.get(Number(cur.parent_id));
+    }
+    return parts.join(' / ');
+  };
+  return { pathOf };
+}
+
+/** 展示用分组文案：null → 未分组；id 已失效（历史脏数据）→ 标出来，别静默并进其它分组 */
+function groupLabelOf(gid, pathOf) {
+  if (gid == null) return '未分组';
+  return pathOf(gid) || `已删除分组#${gid}`;
+}
+
+/** 任务的实际归属分组：自身 group_id 优先；子任务为空时继承父任务（历史数据/手动改过父分组会留 NULL） */
+function taskGroupId(t) {
+  if (!t) return null;
+  if (t.group_id != null) return Number(t.group_id);
+  if (t.parent_id != null) {
+    const p = db.getTask(t.parent_id);
+    if (p && p.group_id != null) return Number(p.group_id);
+  }
+  return null;
 }
 
 function buildLocalReport(type, start, end, groupIds) {
@@ -94,11 +150,17 @@ function buildLocalReport(type, start, end, groupIds) {
   // 子任务可能来自更早的周期（父任务早已创建），比例只作参考，封顶 100%
   const rate = totalCreated > 0 ? Math.min(100, Math.round((totalDone / totalCreated) * 100)) : 100;
 
-  // 按分组汇总完成情况
-  const byGroup = {};
+  // 按分组汇总完成情况：键必须是分组 id。
+  // 名称只在同一父级内唯一（跨级可同名），用名称当键会把「项目管理 / 问题项」和
+  // 「数据管理 / 问题项」合成一行；展示一律用「父 / 子」完整路径区分同名分组。
+  const { pathOf } = buildGroupPaths();
+  const byGroup = new Map(); // key = group_id 字符串（未分组用 'none'），保持首次出现顺序
   for (const t of completedTasks) {
-    const g = t.group_id ? (db.getGroup(t.group_id)?.name || '未分组') : '未分组';
-    byGroup[g] = (byGroup[g] || 0) + 1;
+    const gid = taskGroupId(t);
+    const key = gid == null ? 'none' : String(gid);
+    const cur = byGroup.get(key) || { id: gid, label: groupLabelOf(gid, pathOf), count: 0 };
+    cur.count += 1;
+    byGroup.set(key, cur);
   }
 
   const lines = [];
@@ -115,8 +177,8 @@ function buildLocalReport(type, start, end, groupIds) {
   if (completedTasks.length === 0) {
     lines.push('本周期暂无已完成任务。');
   } else {
-    for (const [g, c] of Object.entries(byGroup)) {
-      lines.push(`- ${g}：${c} 项`);
+    for (const { label, count } of byGroup.values()) {
+      lines.push(`- ${label}：${count} 项`);
     }
     lines.push('');
     lines.push('### 已完成清单');
@@ -191,6 +253,11 @@ function parentTitleOf(t) {
 function buildPrompt({ type, start, end, groupIds, data, extraPrompt }) {
   const { completedTasks, createdTasks, activeNow, overdue } = data;
 
+  // 分组归属必须逐条给到模型：报告里可能同时出现两个同名分组（如「项目管理 / 问题项」与
+  // 「数据管理 / 问题项」），只给表头一串分组名，模型只能按标题猜 —— 跨模块错归就是这么来的。
+  const { pathOf } = buildGroupPaths();
+  const groupOf = (t) => groupLabelOf(taskGroupId(t), pathOf);
+
   // 子任务挂到父任务下：清单带层级，模型才能数对条目、写出真实的工作明细
   const childrenOf = (list, parentId) => list.filter((t) => t.parent_id === parentId);
 
@@ -199,6 +266,7 @@ function buildPrompt({ type, start, end, groupIds, data, extraPrompt }) {
     if (t.parent_id != null) continue; // 子任务跟随父任务输出，孤儿在下面兜底
     completedTitles.push({
       title: t.title,
+      group: groupOf(t),
       priority: PRIORITY_LABEL[t.priority],
       completedAt: fmtDate(t.completed_at),
       // 计划完成时间一并给出：用户常要求「按计划完成时间推演下月计划」
@@ -206,6 +274,7 @@ function buildPrompt({ type, start, end, groupIds, data, extraPrompt }) {
       planEnd: t.plan_end || '',
       subtasks: childrenOf(completedTasks, t.id).map((c) => ({
         title: c.title,
+        group: groupOf(c),
         completedAt: fmtDate(c.completed_at),
       })),
     });
@@ -216,6 +285,7 @@ function buildPrompt({ type, start, end, groupIds, data, extraPrompt }) {
     if (completedTasks.some((p) => p.id === c.parent_id)) continue;
     completedTitles.push({
       title: c.title,
+      group: groupOf(c),
       priority: PRIORITY_LABEL[c.priority],
       completedAt: fmtDate(c.completed_at),
       planStart: '',
@@ -229,17 +299,20 @@ function buildPrompt({ type, start, end, groupIds, data, extraPrompt }) {
     .filter((t) => t.parent_id == null)
     .map((t) => ({
       title: t.title,
+      group: groupOf(t),
       priority: PRIORITY_LABEL[t.priority],
       planStart: t.plan_start || '',
       due: t.plan_end || '',
       subtasks: childrenOf(activeNow, t.id).map((c) => ({
         title: c.title,
+        group: groupOf(c),
         due: c.plan_end || '',
       })),
     }));
 
   const overdueTitles = overdue.map((t) => ({
     title: t.title,
+    group: groupOf(t),
     due: t.plan_end,
     parentTitle: parentTitleOf(t),
   }));
@@ -260,6 +333,8 @@ function buildPrompt({ type, start, end, groupIds, data, extraPrompt }) {
     '',
     '要求：使用 Markdown 格式；包含「完成情况」「进行中」「问题与风险」「下一步计划」四部分；',
     '条目数量必须与数据一致：已完成条目按主任务 + 其 subtasks 逐条列出，不要合并或省略；',
+    '分组归属只看每个条目的 group 字段（「上级 / 下级」完整路径）：数据里可能存在同名分组，'
+      + '必须靠完整路径区分，不得把条目挪到别的分组，也不得把不同分组下的同名条目合并成一条；',
     '语言简洁专业，基于真实数据，不要编造不存在的内容；结尾给出 2-3 条可执行的下一步建议。',
   ];
 
@@ -323,4 +398,6 @@ async function generateReport(params, aiConfig) {
   }
 }
 
-module.exports = { generateReport, buildLocalReport, buildPrompt, resolveRange, TYPE_TEXT };
+module.exports = {
+  generateReport, buildLocalReport, buildPrompt, resolveRange, TYPE_TEXT, groupLabelForHistory,
+};

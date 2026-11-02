@@ -10,7 +10,7 @@ import { api } from './api.js';
 import { loadGroups } from './store.js';
 import { toast } from './ui.js';
 import { openAiSettingsModal } from './ai-settings.js';
-import { flattenGroupTree } from './group-tree.js';
+import { flattenGroupTree, descendantGroupIds } from './group-tree.js';
 import { openPanelModal } from './modal.js';
 import { mdToDocHtml, docHtmlToMd } from './report-doc.js';
 
@@ -35,6 +35,8 @@ let docMode = 'doc';
 let currentReportId = null;
 /** 上次勾选的分组（跨重绘保留，Tom Select 重建后回填） */
 let selectedGroups = [];
+/** 全部分组（扁平，含 parent_id）：判断「哪些是某个已选父分组的子孙」要用到树关系 */
+let groupList = [];
 /** Tom Select 实例（视图重绘时要先销毁，避免重复实例与内存泄漏） */
 let groupSelect = null;
 /** 自动保存防抖定时器 */
@@ -97,7 +99,7 @@ export async function renderReports() {
         <label>结束日期
           <input type="date" id="rp-end" />
         </label>
-        <label class="rp-group-label">分组筛选（可多选）
+        <label class="rp-group-label" title="选中父分组时自动包含其全部子分组（子分组会置灰，不可单独再选）">分组筛选（可多选）
           <select id="rp-group" multiple placeholder="全部分组（不选即全部）" aria-label="分组筛选">
             ${groupOptionsHtml(groups)}
           </select>
@@ -139,7 +141,7 @@ export async function renderReports() {
     </div>`;
 
   bindReportEvents();
-  initGroupSelect();
+  initGroupSelect(groups);
   applyDocMode();
 }
 
@@ -232,10 +234,14 @@ function groupOptionsHtml(groups) {
 /**
  * 分组多选：第三方组件 Tom Select（可搜索 + 已选 chips + 一键清除）。
  * 层级信息放在 data-depth 上，渲染时按层级缩进，搜索仍然按纯分组名匹配。
+ *
+ * 级联规则：选中父分组 = 连带其全部子孙分组。报告侧本就由主进程 expandGroupIds 展开，
+ * 这里负责界面语义 —— 子孙选项置灰不可单选，父分组取消后恢复。
  */
-function initGroupSelect() {
+function initGroupSelect(groups = []) {
   const el = document.getElementById('rp-group');
   if (!el) return;
+  groupList = Array.isArray(groups) ? groups : [];
   if (groupSelect) { try { groupSelect.destroy(); } catch (e) { /* 已销毁 */ } groupSelect = null; }
   if (typeof window.TomSelect !== 'function') return; // 依赖缺失时退回原生多选，不至于整页失效
 
@@ -252,10 +258,14 @@ function initGroupSelect() {
     render: {
       option: (data, escapeHtml) => {
         const d = Number(data.depth) || 0;
-        return `<div class="ts-opt" style="padding-left:${6 + d * 14}px">`
+        // 父分组已选中时子孙置灰：右侧标「随父分组」，用户一眼知道为什么点不动
+        const locked = !!data.disabled;
+        return `<div class="ts-opt${locked ? ' is-locked' : ''}" style="padding-left:${6 + d * 14}px">`
           + (d ? '<span class="ts-tree">└</span>' : '')
           + dot(data, escapeHtml)
-          + `<span class="ts-name">${escapeHtml(data.text)}</span></div>`;
+          + `<span class="ts-name">${escapeHtml(data.text)}</span>`
+          + (locked ? '<span class="ts-lock">随父分组</span>' : '')
+          + '</div>';
       },
       item: (data, escapeHtml) =>
         `<span class="ts-item">${dot(data, escapeHtml)}${escapeHtml(data.text)}</span>`,
@@ -264,7 +274,12 @@ function initGroupSelect() {
   });
 
   if (selectedGroups.length) groupSelect.setValue(selectedGroups, true);
-  groupSelect.on('change', () => { selectedGroups = selectedGroupIds(); });
+  groupSelect.on('change', () => {
+    selectedGroups = selectedGroupIds();
+    syncGroupLock();
+  });
+  // 回填后可能带着一个父分组：重建时同样要让它的子孙保持置灰
+  syncGroupLock();
 }
 
 /** 读取当前勾选的分组 id（空数组 = 全部） */
@@ -274,12 +289,35 @@ function selectedGroupIds() {
   return String(v || '').split(',').filter(Boolean).map(Number).filter(Number.isFinite);
 }
 
-/** 分组文案（存进历史记录，回看时知道当时筛了什么） */
-function groupLabelText() {
-  const ids = selectedGroupIds();
-  if (!ids.length) return '全部分组';
-  return `已选 ${ids.length} 个分组`;
+/**
+ * 父分组选中 → 子孙分组置灰（不可单独选）；父分组取消 → 恢复可选。
+ * 子孙此前若已被单独选中，静默移除：父分组已覆盖它们，留着只会让 chips
+ * 和报告头的分组文案出现「工作、工作 / 冒烟子分组」这种重复路径。
+ * 置灰只影响能否点选，报告范围仍由主进程按父分组展开子孙决定。
+ */
+function syncGroupLock() {
+  if (!groupSelect || !groupList.length) return;
+  const selected = selectedGroupIds();
+  const covered = new Set();
+  for (const id of selected) {
+    for (const child of descendantGroupIds(groupList, id)) covered.add(child);
+  }
+
+  const keep = selected.filter((id) => !covered.has(id));
+  if (keep.length !== selected.length) {
+    groupSelect.setValue(keep, true); // 静默写入，避免再触发 change 递归
+    selectedGroups = keep;
+  }
+
+  for (const key of Object.keys(groupSelect.options)) {
+    const opt = groupSelect.options[key];
+    const want = covered.has(Number(key)) && !keep.includes(Number(key));
+    if (!!opt.disabled !== want) groupSelect.updateOption(key, { ...opt, disabled: want });
+  }
+  groupSelect.refreshOptions(false);
 }
+
+/** 分组文案由主进程按 group_ids 生成（含「父 / 子」路径），界面不再自己拼 */
 
 /* ---------------- 历史记录 ---------------- */
 
@@ -290,10 +328,13 @@ function historyRowHtml(r) {
   const bits = [fmtTime(r.created_at), TYPE_TEXT[r.type] || r.type, range, r.group_label || '全部分组'];
   if (r.extra_prompt) bits.push('含自定义要求');
   if (r.degraded) bits.push('本地模板');
+  // 分组标签可能是「项目管理 / 问题项、数据管理 / 问题项」这种长串：整行单行省略，
+  // 完整内容挂 title，鼠标悬停可看全（否则长标签会把右侧操作按钮挤走）。
+  const sub = bits.filter(Boolean).join(' · ');
   return `<div class="rpt-row" data-id="${r.id}">
     <div class="rpt-main">
       <div class="rpt-title">${esc(r.title)}</div>
-      <div class="rpt-sub">${esc(bits.filter(Boolean).join(' · '))}</div>
+      <div class="rpt-sub" title="${esc(sub)}">${esc(sub)}</div>
     </div>
     <div class="rpt-ops">
       <button type="button" class="ghost-btn" data-act="view">查看</button>
@@ -435,7 +476,6 @@ function bindReportEvents() {
     const start = document.getElementById('rp-start').value;
     const end = document.getElementById('rp-end').value;
     const groupIds = selectedGroupIds();
-    const groupLabel = groupLabelText();
     // 自定义要求：原样传给主进程，由 buildPrompt 追加到 user 消息里
     const extraEl = document.getElementById('rp-extra');
     const extra = extraEl ? extraEl.value.trim().slice(0, 600) : '';
@@ -478,8 +518,7 @@ function bindReportEvents() {
         type,
         range_start: start || null,
         range_end: end || null,
-        group_ids: groupIds,
-        group_label: groupLabel,
+        group_ids: groupIds, // group_label 由主进程按 id 生成（「父 / 子」完整路径）
         extra_prompt: extra,
         content: reportContent,
         degraded: !!r.degraded,

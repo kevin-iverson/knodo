@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('api', {
     update: (id, p) => call('groups:update', id, p),
     remove: (id) => call('groups:delete', id),
     reorder: (ids) => call('groups:reorder', ids),
+    // 移动分组：{ parentId, index } —— 换父级 / 调整同级顺序（index 省略 = 排到末尾）
+    move: (id, p) => call('groups:move', id, p),
   },
   // 任务
   tasks: {
@@ -222,8 +224,21 @@ contextBridge.exposeInMainWorld('api', {
     quit: () => call('app:quit'),
     openExternal: (url) => call('app:openExternal', url),
     getVersion: () => call('app:getVersion'),
-    // 开机自启动状态（菜单项 File → 开机自启动 的写入入口在主进程；这里只读，供界面核对）
+    // 开机自启动：读的是系统里实际登记的启动项，写会走主进程同一套 setLoginItemSettings
     getAutoStart: () => call('app:getAutoStart'),
+    setAutoStart: (enabled) => call('app:setAutoStart', enabled),
+    // 换数据目录 / 备份恢复：都是带确认与进度的主进程对话框，这里只负责把它叫起来
+    openStorageDialog: () => call('app:openStorageDialog'),
+    openBackupDialog: () => call('app:openBackupDialog'),
+  },
+  /**
+   * 设置中心用的只读环境信息（数据目录在哪、备份有几份）。
+   * openPath 只接受 'data' | 'backup'，主进程侧同样按枚举校验。
+   */
+  env: {
+    getStorageInfo: () => call('app:getStorageInfo'),
+    getBackupInfo: () => call('app:getBackupInfo'),
+    openPath: (kind) => call('app:openPath', kind),
   },
   /**
    * 桌面浮窗（单清单钉到桌面）。
@@ -260,11 +275,44 @@ contextBridge.exposeInMainWorld('api', {
       return '';
     }
   },
+  /**
+   * 全局快捷键（主进程 globalShortcut）。
+   * 动作表只存在于主进程（main/shortcuts.js）：渲染层拿 list() 展示、拿 apply() 改键，
+   * 不在两处各写一份默认值 —— 否则改默认键时必然漏掉一边。
+   * apply 的返回里带 takenFrom（该组合原来属于哪个动作）与 message（可读的失败原因）。
+   */
+  keys: {
+    list: () => call('keys:list'),
+    apply: (actionId, accel) => call('keys:apply', actionId, accel),
+    clear: (actionId) => call('keys:clear', actionId),
+    reset: () => call('keys:reset'),
+    clearAll: () => call('keys:clearAll'),
+    health: () => call('keys:health'),
+  },
+  /**
+   * 快速捕捉条（Ctrl+Alt+C）。
+   * 捕捉条是独立窗口：它自己调 save / cycle / undo，主窗口只负责把"当前选中的清单"
+   * 同步过去（setContext），让「从主窗口按 C」落到对的地方。
+   */
+  capture: {
+    state: () => call('capture:state'),
+    save: (title) => call('capture:save', title),
+    undo: () => call('capture:undo'),
+    cycle: () => call('capture:cycle'),
+    hide: () => call('capture:hide'),
+    toggle: (opts) => call('capture:toggle', opts || {}),
+    setContext: (groupId) => call('capture:setContext', groupId),
+    openMain: () => call('capture:openMain'),
+  },
   // 主进程事件
   on: (channel, cb) => {
     const allowed = [
       'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary',
       'ui:code-format', 'ui:text-diff', 'ui:json-viewer', 'ui:import-md',
+      // 全局快捷键：设置面板入口 / 快捷键变更（多条浮窗时同步刷新）/ 没有钉住清单时的提示
+      'ui:settings', 'keys:changed', 'ui:no-desktop-pins',
+      // 捕捉条显示（主进程在 show 之后推一份目标清单 / 草稿状态）
+      'capture:show',
       // 桌面浮窗：浮窗重拉自己的投影 / 主窗口重绘 / 菜单里的已钉列表变化 / 清单被删除
       'desktop:invalidate', 'desktop:missing', 'desktop:collapsed', 'desktop:projection-changed',
       'ui:data-changed',

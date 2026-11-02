@@ -48,8 +48,11 @@ function childGroups(groups, id) {
 /** 某分组的全部子孙 id（不含自身） */
 function descendantGroupIds(groups, id) {
   const out = [];
+  const seen = new Set([id]); // 脏数据可能有环（A.parent=B / B.parent=A），跟着 flattenGroupTree 一起兜住
   const walk = (pid) => {
     childGroups(groups, pid).forEach((c) => {
+      if (seen.has(c.id)) return;
+      seen.add(c.id);
       out.push(c.id);
       walk(c.id);
     });

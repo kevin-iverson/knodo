@@ -1,0 +1,205 @@
+/**
+ * 捕捉条样式。
+ *
+ * 与浮窗的差别：浮窗是半透的（常驻桌面，要让下面的内容透出来），
+ * 捕捉条是**打字的地方**，必须不透明到能看清正在输入的字，否则背景文字会串进来。
+ * 所以这里用 92% 玻璃 + 明显阴影，而不是浮窗那种更透的观感。
+ */
+
+:root {
+  --cap-bg: rgba(255, 255, 255, 0.94);
+  --cap-border: rgba(20, 30, 60, 0.12);
+  --cap-text: #1f2430;
+  --cap-text-2: #6b7280;
+  --cap-text-3: #9aa1ad;
+  --cap-primary: #4f7cff;
+  --cap-hover: rgba(79, 124, 255, 0.08);
+  --cap-shadow: 0 18px 48px rgba(16, 24, 44, 0.22), 0 2px 8px rgba(16, 24, 44, 0.12);
+  --cap-ok: #23b07e;
+  --cap-err: #e5484d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cap-bg: rgba(29, 33, 42, 0.94);
+    --cap-border: rgba(255, 255, 255, 0.12);
+    --cap-text: #e7eaf0;
+    --cap-text-2: #9aa3b2;
+    --cap-text-3: #6c7482;
+    --cap-primary: #6b90ff;
+    --cap-hover: rgba(107, 144, 255, 0.16);
+    --cap-shadow: 0 18px 48px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+}
+
+html[data-theme="light"] {
+  --cap-bg: rgba(255, 255, 255, 0.94);
+  --cap-border: rgba(20, 30, 60, 0.12);
+  --cap-text: #1f2430;
+  --cap-text-2: #6b7280;
+  --cap-text-3: #9aa1ad;
+  --cap-primary: #4f7cff;
+  --cap-hover: rgba(79, 124, 255, 0.08);
+  --cap-shadow: 0 18px 48px rgba(16, 24, 44, 0.22), 0 2px 8px rgba(16, 24, 44, 0.12);
+}
+
+html[data-theme="dark"] {
+  --cap-bg: rgba(29, 33, 42, 0.94);
+  --cap-border: rgba(255, 255, 255, 0.12);
+  --cap-text: #e7eaf0;
+  --cap-text-2: #9aa3b2;
+  --cap-text-3: #6c7482;
+  --cap-primary: #6b90ff;
+  --cap-hover: rgba(107, 144, 255, 0.16);
+  --cap-shadow: 0 18px 48px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/**
+ * 捕捉条是独立页面，拿不到 styles.css 里那条全局规则。
+ * 缺了它，下面 `.cap-empty { display: flex }` / `.cap-flash { display: flex }`
+ * 会盖掉 [hidden] 的 `display: none` —— 空状态层会永远铺在整条上，
+ * 输入框明明有焦点、字也打进去了，用户看到的却是"不能输入"。
+ * 必须 !important：属性选择器的优先级低于 class。
+ */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  /* 透明窗口：body 不能有底色，否则圆角外会出现一块方角 */
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+}
+
+.cap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 100%;
+  padding: 0 12px;
+  border-radius: 14px;
+  background: var(--cap-bg);
+  border: 1px solid var(--cap-border);
+  box-shadow: var(--cap-shadow);
+  color: var(--cap-text);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  animation: capIn 0.14s ease-out;
+}
+
+@keyframes capIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 目标清单：整块可点，Tab 也能切 */
+.cap-target {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cap-text-2);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  max-width: 150px;
+  flex-shrink: 0;
+}
+.cap-target:hover { background: var(--cap-hover); }
+.cap-target-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--cap-primary);
+  flex-shrink: 0;
+}
+.cap-target-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cap-caret { font-size: 10px; color: var(--cap-text-3); }
+
+.cap-input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--cap-text);
+  font-size: 14.5px;
+  font-family: inherit;
+  caret-color: var(--cap-primary);
+}
+.cap-input::placeholder { color: var(--cap-text-3); }
+
+.cap-draft {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--cap-text-3);
+  border: 1px solid var(--cap-border);
+  border-radius: 6px;
+  padding: 1px 5px;
+}
+
+.cap-hint {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--cap-text-3);
+  white-space: nowrap;
+}
+.cap-hint b { color: var(--cap-text-2); font-weight: 600; }
+
+/* 「已添加到 X · 1」：覆盖在整条上淡入淡出，不挤压输入框 */
+.cap-flash {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: var(--cap-bg);
+  font-size: 13px;
+  color: var(--cap-ok);
+  font-weight: 500;
+  pointer-events: none;
+  animation: capFlash 0.18s ease-out;
+}
+.cap-flash.is-error { color: var(--cap-err); }
+@keyframes capFlash {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 没有清单：整条换成提示 + 出口 */
+.cap-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 14px;
+  background: var(--cap-bg);
+  font-size: 13px;
+  color: var(--cap-text-2);
+}
+.cap-empty-btn {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--cap-border);
+  border-radius: 8px;
+  background: var(--cap-primary);
+  color: #fff;
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.cap-empty-btn:hover { filter: brightness(1.06); }
+
+/* 列表滚动条等一律不出现：这条窗口没有滚动区 */
+::-webkit-scrollbar { display: none; }

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- 捕捉条是独立顶层面：只加载本地资源，不引外链 -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self';" />
+  <title>Knodo 捕捉条</title>
+  <link rel="stylesheet" href="css/capture.css" />
+</head>
+<body>
+  <!-- 一行三段：目标清单 · 输入区 · 提示。52px 高度里不再放第二个交互元素 -->
+  <div class="cap" id="cap" data-mode="input">
+    <button type="button" class="cap-target" id="cap-target" title="切换清单（Tab）">
+      <span class="cap-target-dot" id="cap-dot"></span>
+      <span class="cap-target-name" id="cap-target-name">今天</span>
+      <span class="cap-caret" aria-hidden="true">▾</span>
+    </button>
+
+    <input type="text" class="cap-input" id="cap-input" maxlength="200" autocomplete="off"
+           spellcheck="false" placeholder="记一条…" aria-label="记一条待办" />
+    <span class="cap-draft" id="cap-draft" hidden title="上次按 Esc 收起时未提交的内容">未提交</span>
+
+    <span class="cap-hint" id="cap-hint"><b>Enter</b> 保存</span>
+
+    <div class="cap-flash" id="cap-flash" hidden></div>
+
+    <!-- 没有清单时的兜底：说清原因并给一个出口，不静默失败 -->
+    <div class="cap-empty" id="cap-empty" hidden>
+      <span class="cap-empty-text">还没有清单，先在主窗口建一个</span>
+      <button type="button" class="cap-empty-btn" id="cap-open-main">打开主窗口</button>
+    </div>
+  </div>
+  <script type="module" src="js/capture.js"></script>
+</body>
+</html>

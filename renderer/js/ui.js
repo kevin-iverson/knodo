@@ -31,6 +31,7 @@ import { openJsonViewWindow, setJsonViewHandlers } from './json-view.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
 import { openContextMenu, closeContextMenu } from './ctx-menu.js';
+import { openSettings, setSettingsHandlers } from './settings.js';
 
 /** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
 const AUTO_SAVE_DELAY = 700;
@@ -83,6 +84,19 @@ const TF_RANGES = [
 /** 面板级监听只绑一次（面板内容会被重建，容器本身不换） */
 let tfEventsBound = false;
 
+/* ---------------- 应用内快捷键（固定键位，不开放自定义） ---------------- */
+/**
+ * 只在主窗口聚焦时生效，走渲染层 keydown，与主进程的全局键完全分开。
+ * 这一组的核心是 ↑↓ / Space / Enter 必须一起上：只给 Space 不给 ↑↓，
+ * 用户还得回去用鼠标选行，等于没做。
+ */
+/** 当前键盘选中的任务 id（null = 没有选中） */
+let kbSelectedId = null;
+/** 删除快照：Ctrl+Z 在 5 秒内可以原样恢复 */
+let lastDeleted = null;
+/** 上次同步给主进程（捕捉条）的当前清单，避免每次渲染都发一次 IPC */
+let lastSentContext;
+
 /* ---------------- 初始化 ---------------- */
 
 export async function init() {
@@ -97,12 +111,7 @@ export async function init() {
     refresh: () => { renderSidebar(); render(); },
     switchView: async () => { state.view = 'notes'; renderSidebar(); await render(); },
   });
-  api.on('ui:new-note', async () => {
-    state.view = 'notes';
-    renderSidebar();
-    await render();
-    await createNote();
-  });
+  api.on('ui:new-note', () => { openNewNote(); });
   // 菜单栏「导入 Markdown 笔记…」：切到笔记视图后由 notes.js 接管导入流程
   api.on('ui:import-md', async () => {
     state.view = 'notes';
@@ -189,6 +198,23 @@ function bindStaticEvents() {
   api.on('ui:json-viewer', () => {
     openJsonViewWindow().catch((e) => toast(`打开 JSON 查看器失败：${(e && e.message) || e}`));
   });
+
+  // 设置（Ctrl+, / 菜单 / 托盘三条入口都汇到这条事件）
+  setSettingsHandlers({
+    toast,
+    // 设置面板里改主题后要同步回主界面：顶栏主题按钮读的是 state.theme，
+    // 两边各自持有一份状态的话，改完就会出现「按钮说浅色、界面是深色」
+    onTheme: (mode) => { state.theme = mode; applyTheme(); },
+  });
+  api.on('ui:settings', () => {
+    openSettings().catch((e) => toast(`打开设置失败：${(e && e.message) || e}`));
+  });
+  // 全局键 Ctrl+Alt+1~6 / H 在"还没钉浮窗"时的明确反馈：不静默失败
+  api.on('ui:no-desktop-pins', () => {
+    toast('还没有钉到桌面的清单：在侧边栏右键清单 →「钉到桌面」');
+  });
+  // 应用内快捷键（固定，不开放自定义）
+  bindInAppKeys();
 
   // 数据导入 / 导出
   document.getElementById('btn-export').addEventListener('click', exportData);
@@ -492,8 +518,26 @@ function pinMenuItems(kind, refId, label) {
 /** 分组右键菜单 */
 function showGroupContextMenu(g, e) {
   const label = groupPath(g, state.groups);
+  const sibs = siblingsOf(g.parent_id);
+  const idx = sibs.findIndex((x) => x.id === g.id);
+  const total = sibs.length + 1; // 含自己
   openContextMenu([
     ...pinMenuItems('group', g.id, label),
+    { type: 'sep' },
+    // 位置调整：上移/下移按同级序号走，首尾置灰（点了也不会有变化，不如直接不可用）
+    { label: '上移', icon: '↑', disabled: idx <= 0, hint: '与上一个同级分组交换位置', onClick: () => moveGroupTo(g.id, g.parent_id, idx - 1) },
+    { label: '下移', icon: '↓', disabled: idx < 0 || idx >= sibs.length - 1, hint: '与下一个同级分组交换位置', onClick: () => moveGroupTo(g.id, g.parent_id, idx + 1) },
+    { label: '移到最前', icon: '⇤', disabled: idx === 0, onClick: () => moveGroupTo(g.id, g.parent_id, 0) },
+    { label: '移到最后', icon: '⇥', disabled: idx >= sibs.length - 1, onClick: () => moveGroupTo(g.id, g.parent_id, sibs.length) },
+    {
+      label: '移动到分组…',
+      icon: '↪',
+      hint: `当前在第 ${idx + 1}/${total} 位`,
+      onClick: () => promptMoveGroup(g),
+    },
+    ...(g.parent_id == null
+      ? []
+      : [{ label: '移到顶层', icon: '⤒', hint: '成为顶级分组，排在最后', onClick: () => moveGroupTo(g.id, null, siblingsOf(null).length) }]),
     { type: 'sep' },
     { label: '在此分组新增任务', icon: '＋', onClick: () => addTaskToGroup(g.id) },
     { label: '新增子分组', icon: '⊞', onClick: () => promptAddGroup(g.id) },
@@ -501,6 +545,229 @@ function showGroupContextMenu(g, e) {
     { type: 'sep' },
     { label: '删除分组', icon: '×', danger: true, onClick: () => deleteGroup(g) },
   ], { x: e.clientX, y: e.clientY });
+}
+
+/* ---------------- 分组位置移动（拖拽 / 右键 / 弹窗） ---------------- */
+
+/** 当前正在拖拽的分组 id（dragover 阶段读不到 dataTransfer 里的数据，只能记在模块里） */
+let dragGroupId = null;
+/** 当前高亮的落点元素（配合 markGroupDrop 做增量清理） */
+let dropMark = null;
+
+/** 同一父级下的分组，按 sort_order 排好，可排除某个分组（拖拽时排除自己） */
+function siblingsOf(parentId, exceptId = null) {
+  const key = parentId == null ? null : Number(parentId);
+  return state.groups
+    .filter((g) => (g.parent_id == null ? null : Number(g.parent_id)) === key)
+    .filter((g) => exceptId == null || g.id !== Number(exceptId))
+    .sort((a, b) => ((a.sort_order ?? 0) - (b.sort_order ?? 0)) || (a.id - b.id));
+}
+
+/** 清掉所有落点标记（拖动过程中反复切换目标，必须逐次清理） */
+function clearGroupDropMarks() {
+  if (dropMark) {
+    dropMark.classList.remove('drop-before', 'drop-after', 'drop-inside');
+    dropMark = null;
+  }
+  const list = document.getElementById('group-list');
+  if (list) list.classList.remove('drop-end');
+}
+
+/** 给某一行打落点标记（同一行同一落点不重复改 DOM，dragover 触发频率很高） */
+function markGroupDrop(li, zone) {
+  if (dropMark === li && li.classList.contains(`drop-${zone}`)) return;
+  clearGroupDropMarks();
+  li.classList.add(`drop-${zone}`);
+  dropMark = li;
+}
+
+/**
+ * 拖到某一行的哪个位置：上 1/4 → 插到它前面，下 1/4 → 插到它后面，中间 → 变成它的子分组。
+ * 返回 null 表示这个目标非法（自己、或自己的子孙 —— 否则树会成环）。
+ */
+function groupDropZone(li, e, g) {
+  if (dragGroupId == null) return null;
+  if (g.id === dragGroupId) return null;
+  if (descendantGroupIds(state.groups, dragGroupId).includes(g.id)) return null;
+  const rect = li.getBoundingClientRect();
+  const h = rect.height || 1;
+  const y = e.clientY - rect.top;
+  if (y < h * 0.28) return 'before';
+  if (y > h * 0.72) return 'after';
+  return 'inside';
+}
+
+/**
+ * 移动分组并刷新界面。
+ * @param {number} id 分组 id
+ * @param {number|null} parentId 目标上级（null = 顶级）
+ * @param {number} index 目标层级里的位置（0 基；负数/超长由主进程钳制）
+ * @param {{silent?: boolean}} [opts] silent = 不弹 toast（由调用方自己给更具体的提示）
+ */
+async function moveGroupTo(id, parentId, index, opts = {}) {
+  const gid = Number(id);
+  const g = state.groups.find((x) => x.id === gid);
+  if (!g) return false;
+  const pid = parentId == null ? null : Number(parentId);
+  if (pid === gid) { toast('不能把分组移动到自己下面'); return false; }
+  if (pid != null && descendantGroupIds(state.groups, gid).includes(pid)) {
+    toast('不能把分组移动到它自己的子分组下');
+    return false;
+  }
+  const ok = await guardAction(() => api.groups.move(gid, { parentId: pid, index }), '移动分组失败');
+  if (!ok) return false;
+
+  await refreshAll();
+  // 目标父级展开：否则移过去的那个分组藏在折叠节点里，看着像"消失了"
+  if (pid != null) state.expandedGroups.add(pid);
+  if (g.parent_id != null) state.expandedGroups.add(g.parent_id);
+  renderSidebarList();
+  renderTasks();
+  highlightSidebarItem('group', gid);
+  if (!opts.silent) {
+    const where = pid == null ? '顶层' : `「${state.groups.find((x) => x.id === pid)?.name || '目标分组'}」下`;
+    toast(`「${g.name}」已移动到${where}`);
+  }
+  return true;
+}
+
+/** 拖拽落点 → 写库：before/after 插到目标前/后，inside 追加为目标组的最后一个子分组 */
+async function dropGroupOn(dragId, target, zone) {
+  if (zone === 'inside') {
+    return moveGroupTo(dragId, target.id, siblingsOf(target.id).length);
+  }
+  const sibs = siblingsOf(target.parent_id, dragId);
+  const at = sibs.findIndex((x) => x.id === target.id);
+  if (at < 0) return false;
+  return moveGroupTo(dragId, target.parent_id, zone === 'before' ? at : at + 1);
+}
+
+/**
+ * 给一行分组绑定拖拽。整行即可拖（组内没有输入框，不像任务行那样必须靠左侧抓手）；
+ * 普通的单击选中不会触发 dragstart，所以不影响原有交互。
+ */
+function bindGroupRowDrag(li, g) {
+  li.draggable = true;
+
+  li.addEventListener('dragstart', (e) => {
+    dragGroupId = g.id;
+    li.classList.add('dragging');
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      // 带上 group: 前缀，避免和任务行的普通 id 混淆（任务拖进来时这里直接忽略）
+      e.dataTransfer.setData('text/plain', `group:${g.id}`);
+    }
+  });
+
+  li.addEventListener('dragend', () => {
+    dragGroupId = null;
+    li.classList.remove('dragging');
+    clearGroupDropMarks();
+  });
+
+  li.addEventListener('dragover', (e) => {
+    const zone = groupDropZone(li, e, g);
+    if (!zone) return; // 自己 / 自己的子孙：不接受，光标显示禁止
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    markGroupDrop(li, zone);
+  });
+
+  li.addEventListener('dragleave', (e) => {
+    if (li.contains(e.relatedTarget)) return;
+    if (dropMark === li) clearGroupDropMarks();
+  });
+
+  li.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const zone = groupDropZone(li, e, g);
+    const from = dragGroupId;
+    dragGroupId = null;
+    clearGroupDropMarks();
+    if (from == null || !zone) return;
+    await dropGroupOn(from, g, zone);
+  });
+}
+
+/**
+ * 列表空白处作为「移到顶级末尾」的落点（含「全部」那一行 = 顶级首位）。
+ * #group-list 是常驻元素，只绑一次，否则每次 render 都会叠一层监听。
+ */
+function bindGroupListDrop() {
+  const list = document.getElementById('group-list');
+  if (!list || list.dataset.dropBound === '1') return;
+  list.dataset.dropBound = '1';
+  const isRow = (t) => !!(t && t.closest && t.closest('.group-item'));
+
+  list.addEventListener('dragover', (e) => {
+    if (dragGroupId == null || isRow(e.target)) return; // 行内落点由行自己处理
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    clearGroupDropMarks();
+    list.classList.add('drop-end');
+  });
+
+  list.addEventListener('dragleave', (e) => {
+    if (list.contains(e.relatedTarget)) return;
+    list.classList.remove('drop-end');
+  });
+
+  list.addEventListener('drop', async (e) => {
+    if (isRow(e.target)) return;
+    e.preventDefault();
+    const from = dragGroupId;
+    dragGroupId = null;
+    clearGroupDropMarks();
+    if (from == null) return;
+    await moveGroupTo(from, null, siblingsOf(null, from).length);
+  });
+}
+
+/** 「移动到分组…」：显式指定目标上级 + 排到最前/最后 */
+async function promptMoveGroup(g) {
+  const exclude = [g.id, ...descendantGroupIds(state.groups, g.id)];
+  const options = [
+    { value: '', label: '（无，作为顶级分组）' },
+    ...flattenGroupTree(state.groups, { respectExpansion: false })
+      .filter(({ g: x }) => !exclude.includes(x.id))
+      .map(({ g: x, depth }) => ({
+        value: x.id,
+        label: `${depth ? `${'　'.repeat(depth)}└ ` : ''}${x.name}`,
+      })),
+  ];
+  await openFormModal({
+    title: `移动分组「${g.name}」`,
+    okText: '移动',
+    grid: false,
+    fields: [
+      {
+        name: 'parentId',
+        label: '目标上级分组',
+        type: 'select',
+        value: g.parent_id ?? '',
+        hint: '移到别的分组下面 = 变成它的子分组；自身与其子分组不在候选里',
+        options,
+      },
+      {
+        name: 'position',
+        label: '在目标层的位置',
+        type: 'select',
+        value: 'last',
+        options: [
+          { value: 'last', label: '排到最后' },
+          { value: 'first', label: '排到最前' },
+        ],
+      },
+    ],
+    onSubmit: async (v) => {
+      const pid = v.parentId === '' ? null : Number(v.parentId);
+      const index = v.position === 'first' ? 0 : siblingsOf(pid, g.id).length;
+      const ok = await moveGroupTo(g.id, pid, index, { silent: true });
+      return ok ? undefined : '移动失败，请稍后重试';
+    },
+  });
 }
 
 /** 「今天」右键菜单（导航项与今天列表空白处共用） */
@@ -537,7 +804,29 @@ function renderSidebarList() {
     renderSidebarList();
     renderTasks();
   });
+  // 拖到「全部」上 = 放到顶级分组的第一位（它在列表最上面，落点位置和视觉一致）
+  allItem.addEventListener('dragover', (e) => {
+    if (dragGroupId == null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    markGroupDrop(allItem, 'after');
+  });
+  allItem.addEventListener('dragleave', (e) => {
+    if (allItem.contains(e.relatedTarget)) return;
+    if (dropMark === allItem) clearGroupDropMarks();
+  });
+  allItem.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const from = dragGroupId;
+    dragGroupId = null;
+    clearGroupDropMarks();
+    if (from == null) return;
+    await moveGroupTo(from, null, 0);
+  });
   groupList.appendChild(allItem);
+  bindGroupListDrop();
 
   for (const { g, depth } of flattenGroupTree(state.groups, { expanded: state.expandedGroups })) {
     const children = childGroups(state.groups, g.id);
@@ -589,6 +878,7 @@ function renderSidebarList() {
       e.stopPropagation();
       showGroupContextMenu(g, e);
     });
+    bindGroupRowDrag(li, g);
     groupList.appendChild(li);
   }
 
@@ -656,6 +946,127 @@ function renderTagFilterChip() {
   el.hidden = false;
   el.innerHTML = `<span class="tag-color" style="background:${esc(t.color)}"></span>`
     + `<span>标签：${esc(t.name)}</span><span class="chip-x">×</span>`;
+}
+
+/* ---------------- 应用内键盘操作 ---------------- */
+
+/** 当前是否在可输入控件里（在输入框里按 Space / 方向键必须是打字，不是勾选 / 选行） */
+function isTypingTarget(t) {
+  if (!t) return false;
+  const tag = t.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (t.isContentEditable) return true;
+  return !!(t.closest && t.closest('[contenteditable="true"]'));
+}
+
+/** 列表里可选中的任务行（编辑中的行、子任务行都在内；编辑器行不允许被选中） */
+function selectableRows() {
+  const viewEl = document.getElementById('view');
+  if (!viewEl) return [];
+  return [...viewEl.querySelectorAll('.task-item[data-id]')].filter((el) => !el.classList.contains('editing'));
+}
+
+function paintKbSelection() {
+  const rows = selectableRows();
+  const exists = kbSelectedId != null && rows.some((r) => Number(r.dataset.id) === kbSelectedId);
+  if (!exists) kbSelectedId = null;
+  rows.forEach((r) => {
+    r.classList.toggle('is-kb-selected', kbSelectedId != null && Number(r.dataset.id) === kbSelectedId);
+  });
+}
+
+function moveKbSelection(delta) {
+  const rows = selectableRows();
+  if (!rows.length) return;
+  const i = rows.findIndex((r) => Number(r.dataset.id) === kbSelectedId);
+  let next;
+  if (i < 0) next = delta > 0 ? 0 : rows.length - 1;
+  else next = Math.max(0, Math.min(rows.length - 1, i + delta));
+  kbSelectedId = Number(rows[next].dataset.id);
+  paintKbSelection();
+  rows[next].scrollIntoView({ block: 'nearest' });
+}
+
+/**
+ * 应用内键总入口。
+ * Ctrl+N / Ctrl+Shift+N 在输入框里也生效（它们不是文本编辑语义）；
+ * Space / ↑↓ / Enter / Delete / Ctrl+Z 只在列表里生效 —— 否则打字会变成勾选。
+ */
+function bindInAppKeys() {
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || e.isComposing) return;
+    // 弹窗里的事情交给弹窗自己（设置面板的录制态更是不能被打断）
+    if (document.querySelector('.modal-mask')) return;
+    const mod = e.ctrlKey || e.metaKey;
+    const key = e.key;
+    const typing = isTypingTarget(e.target);
+
+    if (mod && !e.altKey && key.toLowerCase() === 'n') {
+      if (e.shiftKey) {
+        // 新建笔记：从任何位置都放行（它本身就是"换个地方做事"）
+        e.preventDefault();
+        openNewNote();
+        return;
+      }
+      // 新建任务：输入框 / 笔记编辑器里不抢（那里 Ctrl+N 有别的含义，误触会丢上下文）
+      if (typing) return;
+      e.preventDefault();
+      ensureTaskView();
+      startAdd();
+      return;
+    }
+    if (mod && !e.altKey && key.toLowerCase() === 'z' && !typing) {
+      e.preventDefault();
+      undoDelete();
+      return;
+    }
+    if (mod || e.altKey) return; // 其余组合留给系统 / 菜单加速键
+    if (typing) return;
+
+    if (key === 'ArrowDown') { e.preventDefault(); moveKbSelection(1); return; }
+    if (key === 'ArrowUp') { e.preventDefault(); moveKbSelection(-1); return; }
+    if (key === ' ' || key === 'Spacebar') {
+      if (!kbSelectedId) return;
+      e.preventDefault();
+      toggleTask(kbSelectedId);
+      return;
+    }
+    if (key === 'Enter') {
+      // 焦点在按钮 / 链接上时，Enter 是"点它"，别抢
+      const tag = e.target && e.target.tagName;
+      if (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') return;
+      if (!kbSelectedId) return;
+      e.preventDefault();
+      openDetail(kbSelectedId);
+      return;
+    }
+    if (key === 'Delete') {
+      if (!kbSelectedId) return;
+      e.preventDefault();
+      deleteTaskConfirm(kbSelectedId);
+    }
+  });
+}
+
+/** 切到笔记视图并新建一篇（菜单 / Ctrl+Shift+N 共用一条路径） */
+async function openNewNote() {
+  state.view = 'notes';
+  renderSidebar();
+  await render();
+  await createNote();
+}
+
+/**
+ * 把主窗口当前选中的清单同步给主进程：
+ * 从主窗口按 Ctrl+Alt+C 时，捕捉条要落到这个清单（设计里的落点规则 2）。
+ */
+function syncCaptureContext() {
+  const raw = state.currentGroup;
+  const gid = raw === 'all' || raw == null ? null : Number(raw);
+  const val = Number.isFinite(gid) && gid > 0 ? gid : null;
+  if (val === lastSentContext) return;
+  lastSentContext = val;
+  try { api.capture.setContext(val).catch(() => {}); } catch (e) { /* 捕捉条不可用时忽略 */ }
 }
 
 /* ---------------- 任务列表 ---------------- */
@@ -743,6 +1154,10 @@ async function renderTasks() {
   bindTaskListEvents(viewEl);
   bindEditorEvents(viewEl);
   if (state.addingTask || state.editingTaskId != null) focusEditor();
+  // 键盘选中的行在整表重绘后要接着亮着（否则按一下 ↓ 才有反馈，中间那一下看着像没反应）
+  paintKbSelection();
+  // 当前清单同步给主进程：捕捉条从主窗口按 C 时落到这里
+  syncCaptureContext();
 }
 
 /**
@@ -1158,6 +1573,16 @@ function bindEditorEvents(container) {
 }
 
 function startAdd() {
+  // 幂等：全局键 Ctrl+Alt+N 在主窗口已聚焦时也会触发（quickAdd → 这里），
+  // 若已经有一条正在新建的行，只把光标还给它 —— 再 startAdd 一次会把用户刚打的字整块冲掉。
+  if (state.addingTask) {
+    const live = document.querySelector('.task-editor[data-editor="new"] .editor-title');
+    if (live) {
+      live.focus();
+      live.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+  }
   state.addingTask = true;
   state.editingTaskId = null;
   renderTasks();
@@ -1504,11 +1929,81 @@ async function unarchiveTask(id) {
 
 async function deleteTaskConfirm(id) {
   if (!confirm('确定删除该任务吗？此操作不可恢复。')) return;
+  // 删除前留一份快照：Ctrl+Z 5 秒内原样恢复（新 id，附件不随快照回来）
+  const snap = await snapshotTaskTree(id);
   await api.tasks.remove(id);
-  toast('任务已删除');
+  if (snap) lastDeleted = { snap, at: Date.now() };
+  toast('任务已删除，5 秒内按 Ctrl+Z 可撤销');
+  if (kbSelectedId === id) kbSelectedId = null;
   await refreshAll();
   renderSidebarList();
   renderTasks();
+}
+
+/** 取任务（含一层子任务）的可重建快照 */
+async function snapshotTaskTree(id) {
+  try {
+    const t = await api.tasks.get(id);
+    if (!t) return null;
+    const subs = await api.tasks.subtasks(id).catch(() => []);
+    return {
+      title: t.title,
+      notes: t.notes || '',
+      groupId: t.group_id == null ? null : t.group_id,
+      priority: t.priority,
+      planStart: t.plan_start || null,
+      planEnd: t.plan_end || null,
+      tagIds: t.tag_ids || [],
+      subtasks: (subs || []).map((s) => ({
+        title: s.title,
+        notes: s.notes || '',
+        priority: s.priority,
+        planStart: s.plan_start || null,
+        planEnd: s.plan_end || null,
+      })),
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Ctrl+Z：撤销上一次删除（5 秒内有效） */
+async function undoDelete() {
+  if (!lastDeleted || Date.now() - lastDeleted.at > 5000) {
+    lastDeleted = null;
+    toast('没有可撤销的删除（只在删除后 5 秒内有效）');
+    return;
+  }
+  const { snap } = lastDeleted;
+  lastDeleted = null;
+  try {
+    const t = await api.tasks.create({
+      title: snap.title,
+      notes: snap.notes,
+      groupId: snap.groupId,
+      priority: snap.priority,
+      planStart: snap.planStart,
+      planEnd: snap.planEnd,
+      tagIds: snap.tagIds,
+    });
+    for (const s of snap.subtasks) {
+      await api.tasks.create({
+        title: s.title,
+        notes: s.notes,
+        groupId: snap.groupId,
+        parentId: t.id,
+        priority: s.priority,
+        planStart: s.planStart,
+        planEnd: s.planEnd,
+      });
+    }
+    toast(`已恢复「${snap.title}」${snap.subtasks.length ? `（含 ${snap.subtasks.length} 个子任务）` : ''}`);
+    await refreshAll();
+    renderSidebarList();
+    renderTasks();
+  } catch (e) {
+    toast(`恢复失败：${(e && e.message) || e}`);
+  }
 }
 
 /* ---------------- 数据导入 / 导出（完整备份包） ---------------- */

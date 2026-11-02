@@ -693,12 +693,85 @@ function deleteGroup(id) {
   return run();
 }
 
-function reorderGroups(ids) {
+/** 同一父级下的分组 id（按 sort_order，id 兜底），可按 exceptId 排除某个分组 */
+function siblingGroupIds(parentId = null, exceptId = null) {
+  const rows = parentId == null
+    ? db.prepare('SELECT id FROM groups WHERE parent_id IS NULL ORDER BY sort_order ASC, id ASC').all()
+    : db.prepare('SELECT id FROM groups WHERE parent_id = ? ORDER BY sort_order ASC, id ASC').all(parentId);
+  return rows.map((r) => r.id).filter((id) => id !== exceptId);
+}
+
+/** 把一组同级分组按给定顺序写成 0..n-1，避免移动后 sort_order 断档或重号 */
+function renumberSiblings(ids) {
   const stmt = db.prepare('UPDATE groups SET sort_order = ? WHERE id = ?');
-  const tx = db.transaction((arr) => {
-    arr.forEach((gid, i) => stmt.run(i, gid));
+  ids.forEach((gid, i) => stmt.run(i, gid));
+}
+
+/**
+ * 移动分组：换父级 + 落到目标同级的第 index 位（0 基，越界自动钳制到首/尾）。
+ *
+ * 边界与校验：
+ *  - 不能挂到自己或自己的子孙下面（否则树成环，侧边栏渲染死循环）；
+ *  - 换父级 = 换了「同级」作用域，要按目标父级重新校验重名；同级内挪位置不校验；
+ *  - 原父级的序号会留下空档，所以两边都要按新顺序重排 0..n-1；
+ *  - index 省略（null）= 排到目标层末尾；负数 / 超过长度都钳到合法区间。
+ *
+ * @returns {object|null} 移动后的分组（分组不存在时 null）
+ */
+function moveGroup(id, { parentId, index } = {}) {
+  const gid = Number(id);
+  const cur = getGroup(gid);
+  if (!cur) return null;
+
+  const curParent = cur.parent_id == null ? null : Number(cur.parent_id);
+  const nextParent = parentId === undefined ? curParent : (parentId == null ? null : Number(parentId));
+  if (nextParent === gid) throw new Error('上级分组不能是它自己');
+  if (nextParent != null) {
+    if (!getGroup(nextParent)) throw new Error('上级分组不存在');
+    if (descendantGroupIds(gid).includes(nextParent)) {
+      throw new Error('不能把分组移动到它自己的子分组下');
+    }
+  }
+  // 同级重名：移动到新父级下可能与该父级已有的同名分组撞车
+  if (nextParent !== curParent) assertGroupName(cur.name, nextParent, gid);
+
+  const run = db.transaction(() => {
+    const list = siblingGroupIds(nextParent, gid);
+    let pos = list.length;
+    if (index != null) {
+      const n = Number(index);
+      if (Number.isFinite(n)) pos = Math.max(0, Math.min(Math.trunc(n), list.length));
+    }
+    list.splice(pos, 0, gid);
+    db.prepare('UPDATE groups SET parent_id = ?, updated_at = ? WHERE id = ?')
+      .run(nextParent, nowIso(), gid);
+    renumberSiblings(list);
+    // 换父级后原层级少了这一项，序号要重排（留空档会让下一次插入的位置算歪）
+    if (curParent !== nextParent) renumberSiblings(siblingGroupIds(curParent));
   });
-  tx(ids);
+  run();
+  return getGroup(gid);
+}
+
+/**
+ * 按给定的扁平 id 顺序重排（历史接口，界面已改用 moveGroup）。
+ * 注意 sort_order 是「同级内」的序号：这里按父级分组分别编号，
+ * 不能拿整棵树的顺序直接写全局序号，否则同层序号会被别层插进来打乱。
+ */
+function reorderGroups(ids) {
+  const arr = (Array.isArray(ids) ? ids : []).map(Number).filter((x) => Number.isFinite(x));
+  const run = db.transaction(() => {
+    const byParent = new Map();
+    for (const gid of arr) {
+      const g = getGroup(gid);
+      if (!g) continue;
+      const key = g.parent_id == null ? 'root' : String(g.parent_id);
+      if (!byParent.has(key)) byParent.set(key, []);
+      byParent.get(key).push(gid);
+    }
+    for (const [key, list] of byParent) renumberSiblings(list);
+  });
+  run();
 }
 
 /* ------------------------------ 任务 ------------------------------ */
@@ -2781,6 +2854,8 @@ module.exports = {
   updateGroup,
   deleteGroup,
   reorderGroups,
+  moveGroup,
+  siblingGroupIds,
   descendantGroupIds,
   expandGroupIds,
   // tasks

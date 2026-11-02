@@ -15,6 +15,8 @@ const attachments = require('./attachments');
 const { registerIpc } = require('./ipc');
 const { setupTray, destroyTray, refreshTrayMenu } = require('./tray');
 const desktopWindow = require('./desktop-window');
+const shortcuts = require('./shortcuts');
+const capture = require('./capture');
 const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
 const { markdownToDocx } = require('./docx');
@@ -143,6 +145,77 @@ function quickAdd() {
   mainWindow.webContents.send('ui:quick-add');
 }
 
+/**
+ * 数据变更广播（捕捉条 / 浮窗 / 快捷键动作改库后）。
+ * 浮窗走 desktopWindow.notifyChange（各窗重拉自己的投影），主窗口单独推一条 ——
+ * notifyChange 只在变化来自浮窗时才回灌主窗口，而捕捉条不属于浮窗。
+ */
+function broadcastDataChanged(payload) {
+  try { desktopWindow.notifyChange(null, payload); } catch (e) { /* 浮窗刷新失败不影响数据 */ }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('ui:data-changed', payload || {});
+  }
+}
+
+/** 没有钉住任何清单时的统一反馈：不静默失败 */
+function noDesktopPins() {
+  showWindow();
+  if (mainWindow) mainWindow.webContents.send('ui:no-desktop-pins');
+}
+
+/**
+ * 捕捉条的落点上下文：正在操作的桌面浮窗 → 它的清单；否则用主窗口当前选中的清单。
+ * 这条规则用的是**确定信息**，不是猜用户意图。
+ */
+function captureContext() {
+  const p = desktopWindow.focusedProjection();
+  if (p && p.kind === 'group' && p.refId != null) return p.refId;
+  return undefined; // undefined = 让 capture 用主窗口同步过来的上下文
+}
+
+/**
+ * 全局快捷键的动作分发。
+ * app.capture 与 app.show / app.quickAdd 必须是完全独立的分支：
+ * 捕捉条一旦顺带把主窗口拉起来，"不打断"这个前提就没了。
+ */
+function dispatchShortcut(actionId) {
+  if (!db.isReady()) return;
+  switch (actionId) {
+    case 'app.show':
+      showWindow();
+      return;
+    case 'app.quickAdd':
+      quickAdd();
+      return;
+    case 'app.capture':
+      capture.toggle({ contextGroupId: captureContext() });
+      return;
+    case 'app.toggleDesktop': {
+      const r = desktopWindow.toggleAllVisible();
+      if (!r.total) noDesktopPins();
+      return;
+    }
+    case 'util.salary':
+      showWindow();
+      if (mainWindow) mainWindow.webContents.send('ui:salary');
+      return;
+    default:
+      if (actionId.startsWith('desktop.focus.')) {
+        const n = Number(actionId.split('.')[2]);
+        const r = desktopWindow.focusNth(n);
+        if (!r.ok) {
+          if (r.reason === 'none') noDesktopPins();
+        }
+      }
+  }
+}
+
+/** 设置面板（Ctrl+, / 托盘 / 菜单三条入口都走这里） */
+function openSettings() {
+  showWindow();
+  if (mainWindow) mainWindow.webContents.send('ui:settings');
+}
+
 function focusTask(taskId) {
   showWindow();
   mainWindow.webContents.send('ui:focus-task', taskId);
@@ -194,6 +267,14 @@ function buildAppMenu() {
             showWindow();
             if (mainWindow) mainWindow.webContents.send('ui:import-md');
           },
+        },
+        { type: 'separator' },
+        {
+          // 设置：快捷键页签就在这里。顶栏 1080 宽已排满，不再加按钮；
+          // Ctrl+, 是国际通用约定（与 renderer 的应用内键不冲突：这里走菜单加速键，只注册一份）
+          label: '设置…',
+          accelerator: 'CmdOrCtrl+,',
+          click: () => openSettings(),
         },
         { type: 'separator' },
         {
@@ -306,17 +387,19 @@ function desktopMenuTemplate() {
 }
 
 /**
- * 切换开机自启动（File 菜单勾选项的唯一入口）。
+ * 切换开机自启动（File 菜单勾选项 / 设置中心开关的两个入口）。
  * 失败时重建菜单让勾选状态回到系统实际值，并弹出原因——避免"看着开了其实没开"。
  * 返回结构同时供 IPC 使用，渲染层据此保持状态一致。
+ * @param {boolean} next
+ * @param {{silent?:boolean}} [opts] silent=不弹系统对话框（设置面板会用自己的行内提示，不重复打扰）
  */
-async function toggleAutoStart(next) {
+async function toggleAutoStart(next, { silent = false } = {}) {
   const res = autostart.setEnabled(!!next);
   // 记一份用户意图（换机器 / 重装后仍能看出偏好）；读取一律以系统状态为准
   db.setSetting('app.autoStart', res.enabled ? '1' : '0');
   buildAppMenu(); // 重建菜单，让勾选状态与系统实际状态一致
   if (mainWindow) mainWindow.webContents.send('ui:autostart-changed', res);
-  if (!res.ok) {
+  if (!res.ok && !silent) {
     await msgBox({
       type: 'warning',
       title: '开机自启动',
@@ -327,6 +410,25 @@ async function toggleAutoStart(next) {
     });
   }
   return res;
+}
+
+/**
+ * 设置中心需要的三个主进程动作。
+ * 它们都依赖本文件里的对话框 / 菜单函数（openStorageDialog、openBackupDialog、buildAppMenu），
+ * 所以 IPC 注册放在这里，而不是统一塞进 ipc.js。
+ */
+function registerSettingsIpc() {
+  ipcMain.handle('app:setAutoStart', (_e, enabled) => toggleAutoStart(!!enabled, { silent: true }));
+  ipcMain.handle('app:openStorageDialog', () => {
+    showWindow();
+    openStorageDialog().catch((e) => console.error('[settings] 打开存储位置失败', e && e.message));
+    return true;
+  });
+  ipcMain.handle('app:openBackupDialog', () => {
+    showWindow();
+    openBackupDialog().catch((e) => console.error('[settings] 打开备份与恢复失败', e && e.message));
+    return true;
+  });
 }
 
 /**
@@ -640,6 +742,8 @@ app.whenReady().then(async () => {
 
   applyTheme();
   registerIpc();
+  // 设置中心专用的三个动作（开机自启 / 换数据目录 / 备份恢复对话框）
+  registerSettingsIpc();
   // 桌面浮窗：窗口层独立于主窗口，投影列表变化时重建应用菜单 / 托盘菜单
   desktopWindow.init({
     getMainWindow: () => mainWindow,
@@ -649,6 +753,21 @@ app.whenReady().then(async () => {
     },
   });
   buildAppMenu();
+
+  // 快速捕捉条：预创建一个隐藏窗口（第一次按 C 才不会 200ms 白屏），
+  // 保存后广播给浮窗与主窗口 —— 与浮窗里勾选 / 新增走同一条刷新链路。
+  capture.init({
+    getMainWindow: () => mainWindow,
+    onDataChange: (payload) => broadcastDataChanged(payload),
+  });
+
+  // 全局快捷键：必须在这里（whenReady 之后）注册，早于此时机 register() 静默失败
+  shortcuts.init({ onAction: dispatchShortcut });
+  // 退出前必须注销：否则系统里残留热键，下次启动可能注册失败
+  app.on('will-quit', () => {
+    capture.destroy();
+    shortcuts.destroy();
+  });
 
   // 录制需要麦克风 / 屏幕采集权限：这是本机应用、且由用户主动点「录制」触发，
   // 不弹 Chromium 的权限气泡而是直接放行；其它权限（定位、通知等）一律拒绝。
@@ -677,6 +796,11 @@ app.whenReady().then(async () => {
     getWindow: () => mainWindow,
     onShow: showWindow,
     onQuickAdd: quickAdd,
+    onCapture: () => {
+      // 托盘入口与 Ctrl+Alt+C 走同一条链路（没有前台浮窗，落点沿用主窗口上下文）
+      try { capture.toggle({ contextGroupId: captureContext() }); } catch (e) { /* 捕捉条不可用时不拦托盘 */ }
+    },
+    onSettings: openSettings,
     // 托盘是浮窗的兜底入口：主窗口关掉（驻留托盘）后仍能唤回
     desktopItems: () => {
       let items = [];
@@ -934,6 +1058,69 @@ app.whenReady().then(async () => {
               rowOf('全部').click();
               await new Promise(r => setTimeout(r, 300));
 
+              /* ---- 分组位置移动：右键「上移」+ 拖到另一组中间成为子分组 ---- */
+              const topNames = () => [...document.querySelectorAll('#group-list .group-item')]
+                .filter((el) => el.dataset.depth === '0')
+                .map((el) => (el.querySelector('.group-name') || {}).textContent || '');
+              // 走界面新增（api 直建不会触发主窗重绘，侧边栏里看不到新分组）
+              document.getElementById('btn-add-group').click();
+              await new Promise(r => setTimeout(r, 200));
+              const mvModal = document.querySelector('.modal-mask');
+              if (mvModal) {
+                mvModal.querySelector('[data-field="name"]').value = '冒烟分组2';
+                mvModal.querySelector('[data-modal="ok"]').click();
+                await new Promise(r => setTimeout(r, 700));
+              }
+              out.moveBeforeOrder = topNames();
+              const r2 = rowOf('冒烟分组2');
+              if (r2) {
+                const rr = r2.getBoundingClientRect();
+                r2.dispatchEvent(new MouseEvent('contextmenu', {
+                  bubbles: true, cancelable: true,
+                  clientX: Math.round(rr.left + 40), clientY: Math.round(rr.top + 8),
+                }));
+                await new Promise(r => setTimeout(r, 260));
+                const labels = [...document.querySelectorAll('.ctx-menu .ctx-item .ctx-label')].map((x) => x.textContent);
+                out.moveMenuHasUpdown = labels.includes('上移') && labels.includes('下移') && labels.includes('移动到分组…');
+                const upBtn = [...document.querySelectorAll('.ctx-menu .ctx-item')]
+                  .find((b) => b.querySelector('.ctx-label').textContent === '上移');
+                if (upBtn) upBtn.click();
+                await new Promise(r => setTimeout(r, 700));
+              }
+              out.moveAfterOrder = topNames();
+              const idxBefore = out.moveBeforeOrder.indexOf('冒烟分组2');
+              const idxAfter = out.moveAfterOrder.indexOf('冒烟分组2');
+              out.moveReordered = idxBefore >= 0 && idxAfter >= 0 && idxAfter === idxBefore - 1;
+
+              // 拖拽：把「冒烟分组2」拖到「冒烟分组」中间 → 成为它的子分组
+              const dragRow = rowOf('冒烟分组2');
+              const dropRow = rowOf('冒烟分组');
+              if (dragRow && dropRow) {
+                const dt = new DataTransfer();
+                dragRow.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+                const dr = dropRow.getBoundingClientRect();
+                const dropOpt = {
+                  bubbles: true, cancelable: true, dataTransfer: dt,
+                  clientX: Math.round(dr.left + 60), clientY: Math.round(dr.top + dr.height / 2),
+                };
+                dropRow.dispatchEvent(new DragEvent('dragover', dropOpt));
+                out.moveDropMarked = dropRow.classList.contains('drop-inside');
+                dropRow.dispatchEvent(new DragEvent('drop', dropOpt));
+                dragRow.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+                await new Promise(r => setTimeout(r, 900));
+              }
+              const afterDrag = await window.api.groups.list();
+              const movedG = afterDrag.find((g) => g.name === '冒烟分组2');
+              out.moveIntoChild = !!movedG && movedG.parent_id === parentId;
+              const movedRow = rowOf('冒烟分组2');
+              out.moveIntoChildRow = !!movedRow && movedRow.dataset.depth === '1';
+              // 收尾：删掉这个临时分组并重绘，后面几轮的分组计数不受影响
+              if (movedG) {
+                await window.api.groups.remove(movedG.id);
+                document.querySelector('.nav-item[data-view="all"]').click();
+                await new Promise(r => setTimeout(r, 600));
+              }
+
               /* ---- AI 设置入口已挪到顶部菜单栏：工具栏里不应再有该按钮 ---- */
               out.aiToolbarBtnGone = !document.getElementById('btn-ai-settings');
               } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
@@ -1087,6 +1274,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 取消后编辑器关闭 = ${dom.editorClosed ? '成功' : '失败'}`);
           console.log(`[SMOKE] 分组：新增=${dom.groupAdded ? '是' : '否'}（${dom.groupCountBefore} → ${dom.groupCount}）；重名错误=${dom.dupErrorShown ? '已提示' : '未提示'}`);
           console.log(`[SMOKE] 子分组：父行含箭头=${dom.hasArrow ? '是' : '否'}；上级默认带入=${dom.parentPresetMatched ? '是' : '否'}；子分组可见=${dom.childRowVisible ? '是' : '否'}；折叠后隐藏=${dom.childHiddenAfterCollapse ? '是' : '否'}；再展开回来=${dom.childBackAfterExpand ? '是' : '否'}；父筛选含子任务=${dom.parentFilterIncludesChildTask ? '是' : '否'}`);
+          console.log(`[SMOKE] 分组移动 = 菜单含上移/下移/移动到分组=${dom.moveMenuHasUpdown ? '是' : '否'}；右键上移生效=${dom.moveReordered ? '是' : '否'}（${JSON.stringify(dom.moveBeforeOrder)} → ${JSON.stringify(dom.moveAfterOrder)}）；拖拽落点高亮=${dom.moveDropMarked ? '是' : '否'}；拖成子分组=${dom.moveIntoChild ? '是' : '否'}；侧边栏层级=${dom.moveIntoChildRow ? '1' : '未变'}`);
           console.log(`[SMOKE] AI 设置（菜单栏）= 工具栏按钮已移除${dom.aiToolbarBtnGone ? '✓' : '✗'}；菜单项${dom.aiMenuItem ? '存在' : '缺失'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
           console.log(`[SMOKE] AI 设置排版 = ${dom.aiCols} 列；分区 ${dom.aiSections} 个；字段 ${dom.aiFieldCount} 个；弹窗高 ${dom.aiBox ? dom.aiBox.h : '-'}px / 视口 ${dom.aiBox ? dom.aiBox.vh : '-'}px；完整在视口内=${dom.aiInViewport ? '是' : '否'}；底部按钮可点=${dom.aiFootReachable ? '是' : '否'}；内容无需滚动=${dom.aiBodyScrolls ? '是' : '否'}；横向无溢出=${dom.aiNoHOverflow ? '是' : '否'}`);
           console.log(`[SMOKE] 标签新增弹窗 = ${dom.tagModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.tagAdded ? '是' : '否'}`);
@@ -1461,9 +1649,45 @@ app.whenReady().then(async () => {
                 out.tsHasSearchInput = !!document.querySelector('.ts-control input');
                 out.tsIndented = !!dd && [...dd.querySelectorAll('.ts-opt')]
                   .some((el) => parseFloat(getComputedStyle(el).paddingLeft) > 6);
-                if (opts.length > 1) { opts[0].click(); await wait(200); opts[1].click(); await wait(250); }
+                // 只挑顶级分组：父子一起选会触发级联置灰，多选 chips 的验证就不稳定了
+                const allGroups = await window.api.groups.list();
+                const topIdSet = new Set(allGroups.filter((g) => g.parent_id == null).map((g) => String(g.id)));
+                const topOpts = opts.filter((el) => topIdSet.has(el.dataset.value));
+                const pick = topOpts.length > 1 ? topOpts : opts;
+                if (pick.length > 1) { pick[0].click(); await wait(200); pick[1].click(); await wait(250); }
                 out.tsChips = document.querySelectorAll('.ts-control .item').length;
                 out.tsHasRemove = document.querySelectorAll('.ts-control .item .remove').length;
+
+                /* 级联：选中父分组 → 其子孙选项置灰不可单独选；取消父分组 → 恢复可选 */
+                const pageGroup = allGroups.find((g) => allGroups.some((x) => x.parent_id === g.id)) || null;
+                const pageChild = pageGroup ? allGroups.find((x) => x.parent_id === pageGroup.id) : null;
+                const optionOf = (id) => document.querySelector('.ts-dropdown .option[data-value="' + id + '"]');
+                const reopen = async () => {
+                  const d = document.querySelector('.ts-dropdown');
+                  if (d && getComputedStyle(d).display !== 'none') return;
+                  document.querySelector('.rp-group-label .ts-control').click();
+                  await wait(300);
+                };
+                if (pageGroup && pageChild) {
+                  const clearBtn = document.querySelector('.rp-group-label .ts-control .clear-button');
+                  if (clearBtn) { clearBtn.click(); await wait(260); }
+                  await reopen();
+                  const po = optionOf(pageGroup.id);
+                  if (po) { po.click(); await wait(320); }
+                  await reopen();
+                  const co = optionOf(pageChild.id);
+                  out.tsChildLocked = !!co && co.getAttribute('aria-disabled') === 'true'
+                    && !co.hasAttribute('data-selectable') && !!co.querySelector('.ts-lock');
+                  if (co) { co.click(); await wait(260); } // 点置灰项应当无效
+                  out.tsChildClickIgnored = document.querySelectorAll('.rp-group-label .ts-control .item').length === 1;
+                  const rm = document.querySelector('.rp-group-label .ts-control .item .remove');
+                  if (rm) { rm.click(); await wait(320); }
+                  await reopen();
+                  const co2 = optionOf(pageChild.id);
+                  out.tsChildRestored = !!co2 && co2.hasAttribute('data-selectable')
+                    && co2.getAttribute('aria-disabled') === null;
+                  out.tsCascadePair = pageGroup.name + ' / ' + pageChild.name;
+                }
               }
               out.exportDocxBtn = !!document.getElementById('rp-export-docx');
               out.exportMdBtn = !!document.getElementById('rp-export-md');
@@ -1475,6 +1699,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 拖拽排序（子任务）= ${JSON.stringify(r4.subAfterOrder)}；互换=${r4.subReordered ? '是' : '否'}`);
           console.log(`[SMOKE] 工具栏中文 = 行操作「${r4.actionLabel}」${r4.hasChineseAction ? '✓' : '✗'}；更多「${r4.moreLabel}」${r4.hasChineseMore ? '✓' : '✗'}`);
           console.log(`[SMOKE] 报告分组多选(Tom Select) = 第三方库=${r4.tsThirdParty ? '已加载' : '未加载'}；控件=${r4.tsWrapper ? '已渲染' : '缺失'}；面板${r4.tsOpened ? '展开' : '未展开'}（挂 body=${r4.tsOnBody ? '是' : '否'}，${r4.tsOptionCount} 项，缩进=${r4.tsIndented ? '有' : '无'}）；多选 chips=${r4.tsChips}（带 ×=${r4.tsHasRemove}）；Word/MD 按钮=${r4.exportDocxBtn && r4.exportMdBtn ? '齐全' : '缺失'}`);
+          console.log(`[SMOKE] 分组级联（${r4.tsCascadePair || '无父子分组'}）= 选父后子置灰${r4.tsChildLocked ? '✓' : '✗'}；点置灰项无效${r4.tsChildClickIgnored ? '✓' : '✗'}；取消父后恢复${r4.tsChildRestored ? '✓' : '✗'}`);
 
           // 主进程侧：Word 导出与分组多选入参
           const docxBuf = markdownToDocx('# 冒烟报告\\n\\n- [x] 完成任务 **3** 项\\n- [ ] 待办 1\\n', { title: '冒烟报告' });
@@ -1483,7 +1708,20 @@ app.whenReady().then(async () => {
             isZip: docxBuf.slice(0, 2).toString('latin1') === 'PK',
           };
           const groups = db.listGroups();
-          const multiNames = groups.slice(0, 2).map((g) => g.name).join('、');
+          // 报告头的分组文案是「父 / 子」完整路径（同名分组靠路径区分），断言按同样规则拼期望值
+          const groupPathOf = (g) => {
+            const parts = [g.name];
+            let pid = g.parent_id;
+            let guard = 0;
+            while (pid != null && guard++ < 32) {
+              const p = groups.find((x) => x.id === pid);
+              if (!p) break;
+              parts.unshift(p.name);
+              pid = p.parent_id;
+            }
+            return parts.join(' / ');
+          };
+          const multiNames = groups.slice(0, 2).map(groupPathOf).join('、');
           const multi = await reportMod.generateReport(
             { type: 'week', customStart: null, customEnd: null, groupIds: groups.slice(0, 2).map((g) => g.id) },
             null,
@@ -1495,7 +1733,7 @@ app.whenReady().then(async () => {
           const none = await reportMod.generateReport({ type: 'week', customStart: null, customEnd: null, groupIds: [] }, null);
           const r4multi = {
             multi: multi.markdown.includes(`分组：${multiNames}`),
-            single: single.markdown.includes(`分组：${groups[0].name}`),
+            single: single.markdown.includes(`分组：${groupPathOf(groups[0])}`),
             none: none.markdown.includes('分组：全部'),
           };
           console.log(`[SMOKE] Word 导出 = ${r4docx.size} 字节，ZIP 头 ${r4docx.isZip ? '正确' : '错误'}`);
@@ -2869,6 +3107,8 @@ app.whenReady().then(async () => {
             && dom.tbStatsHidden && dom.tbReportsHidden && dom.tbSearchHidden && dom.tbMeetingsHidden && dom.tbTaskShown
             && dom.gcModalOpened && dom.gcPicker && dom.gcAuto && dom.gcCustom && dom.gcAbbrev
             && dom.gcInvalidKept && dom.gcPreset && dom.gcCreated && dom.gcDot && dom.gcPersisted && dom.gcEditEcho
+            && dom.moveMenuHasUpdown && dom.moveReordered && dom.moveDropMarked
+            && dom.moveIntoChild && dom.moveIntoChildRow
             && detail.panelOpen && detail.hasResizer && detail.widthAfter > detail.widthBefore
             && detail.resizingClassCleared && !!detail.persisted
             && Math.abs(detail.widthReopened - detail.widthAfter) <= 2
@@ -2886,6 +3126,7 @@ app.whenReady().then(async () => {
             && r4.hasChineseAction && r4.hasChineseMore
             && r4.tsThirdParty && r4.tsWrapper && r4.tsControl && r4.tsOpened && r4.tsOnBody
             && r4.tsOptionCount >= 2 && r4.tsChips >= 2 && r4.tsHasRemove >= 1
+            && r4.tsChildLocked && r4.tsChildClickIgnored && r4.tsChildRestored
             && r4.exportDocxBtn && r4.exportMdBtn
             && r4docx.size > 1000 && r4docx.isZip
             && r4multi.multi && r4multi.single && r4multi.none

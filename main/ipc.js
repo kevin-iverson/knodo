@@ -20,6 +20,7 @@ const knowledge = require('./knowledge');
 const sync = require('./sync');
 const mdImport = require('./md-import');
 const backup = require('./backup');
+const storage = require('./storage');
 const desktopWindow = require('./desktop-window');
 
 /**
@@ -162,11 +163,21 @@ function registerIpc() {
     return ok;
   }, { notify: true }));
   ipcMain.handle('groups:reorder', withDb((ids) => db.reorderGroups(ids)));
+  // 移动分组：换父级 / 调同级顺序。桌面浮窗按分组取数，位置变了要广播让它们重排
+  ipcMain.handle('groups:move', withDb((id, p) => db.moveGroup(id, p), { notify: true }));
 
   /* ---------- 任务 ---------- */
   ipcMain.handle('tasks:list', withDb((f) => db.listTasks(f)));
   ipcMain.handle('tasks:get', withDb((id) => db.getTask(id)));
-  ipcMain.handle('tasks:create', withDb((p) => db.createTask(p), { notify: true }));
+  ipcMain.handle('tasks:create', withDb((p) => {
+    const t = db.createTask(p);
+    // 记住「上次添加任务用的清单」：捕捉条在第三方应用里按 Ctrl+Alt+C 时，
+    // 没有别的上下文可依，就落在这个清单（用户上一次的显式选择，不是猜测）。
+    try {
+      if (t && t.group_id != null) db.setSetting('ui.lastAddGroupId', String(t.group_id));
+    } catch (e) { /* 记忆失败不影响创建结果 */ }
+    return t;
+  }, { notify: true }));
   ipcMain.handle('tasks:update', withDb((id, p) => db.updateTask(id, p), { notify: true }));
   ipcMain.handle('tasks:delete', withDb((id) => {
     // 删除任务会连带删除子任务：先收集整棵子树，删库成功后一并清掉它们的附件文件
@@ -559,7 +570,12 @@ function registerIpc() {
     docx: { ext: 'docx', label: 'Word 文档' },
   };
   /* ---------- 报告历史（持久化） ---------- */
-  ipcMain.handle('report:save', withDb((p) => db.createReport(p || {})));
+  // 分组标签由主进程按 group_ids 现算（id → 「父 / 子」完整路径）：
+  // 界面只传 id，既不重复拼串，也不会因为同名分组写出两个一模一样的词。
+  ipcMain.handle('report:save', withDb((p) => {
+    const payload = p || {};
+    return db.createReport({ ...payload, group_label: report.groupLabelForHistory(payload.group_ids) });
+  }));
   ipcMain.handle('report:list', withDb((limit) => db.listReports(Number(limit) || 100)));
   ipcMain.handle('report:get', withDb((id) => db.getReport(id)));
   ipcMain.handle('report:update', withDb(({ id, patch }) => db.updateReport(id, patch || {})));
@@ -1078,6 +1094,25 @@ function registerIpc() {
   // 写入入口只有应用菜单「File → 开机自启动」（见 main.js 的 toggleAutoStart），
   // 这里只暴露状态读取，供界面核对系统里实际登记的启动项。
   ipcMain.handle('app:getAutoStart', () => autostart.getState());
+
+  /* ---------- 设置中心 · 环境信息 ---------- */
+  // 只读快照：数据目录在哪、备份有几份。写入型操作（换目录 / 恢复备份）走各自的对话框，
+  // 因为它们需要二次确认与进度提示，不适合做成「点一下就好了」的 IPC。
+  ipcMain.handle('app:getStorageInfo', () => storage.getInfo());
+  ipcMain.handle('app:getBackupInfo', () => backup.getInfo());
+  /**
+   * 在文件管理器里打开数据目录 / 备份目录。
+   * 只认这两个枚举值，不接受任意路径 —— 否则渲染层就拿到了一个万能 shell.openPath。
+   */
+  ipcMain.handle('app:openPath', async (_e, kind) => {
+    const which = String(kind || '');
+    const dir = which === 'data' ? storage.getInfo().dir
+      : which === 'backup' ? backup.getInfo().dir
+        : '';
+    if (!dir) return { ok: false, reason: '未知的目录' };
+    const msg = await shell.openPath(dir);
+    return msg ? { ok: false, reason: msg } : { ok: true };
+  });
 
   /* ---------- 应用 / 主题 ---------- */
   ipcMain.handle('theme:get', () => db.getSetting('theme', 'system'));

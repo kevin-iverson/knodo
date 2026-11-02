@@ -12,11 +12,16 @@ let extraItems = () => [];
 let handlers = {};
 
 function buildMenu() {
-  const { onShow, onQuickAdd, onQuit } = handlers;
+  const {
+    onShow, onQuickAdd, onQuit, onCapture, onSettings,
+  } = handlers;
   const template = [
     { label: '显示主界面', click: onShow },
     { label: '快速添加任务', click: onQuickAdd },
+    // 托盘是全局键的兜底：快捷键被别的软件占掉（或用户在管理员窗口前）时仍有一条路
+    ...(typeof onCapture === 'function' ? [{ label: '快速捕捉…', click: onCapture }] : []),
     { type: 'separator' },
+    ...(typeof onSettings === 'function' ? [{ label: '设置…', click: onSettings }, { type: 'separator' }] : []),
   ];
   let extra = [];
   try {
@@ -29,10 +34,14 @@ function buildMenu() {
   return Menu.buildFromTemplate(template);
 }
 
-function setupTray({ getWindow, onShow, onQuickAdd, onQuit, desktopItems }) {
+function setupTray({
+  getWindow, onShow, onQuickAdd, onQuit, desktopItems, onCapture, onSettings,
+}) {
   const iconPath = path.join(__dirname, '..', 'assets', 'tray.png');
   const image = nativeImage.createFromPath(iconPath);
-  handlers = { onShow, onQuickAdd, onQuit };
+  handlers = {
+    onShow, onQuickAdd, onQuit, onCapture, onSettings,
+  };
   if (typeof desktopItems === 'function') extraItems = desktopItems;
   tray = new Tray(image);
   tray.setToolTip('Knodo');
