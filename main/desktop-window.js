@@ -19,6 +19,7 @@ const {
 const path = require('path');
 const db = require('./db');
 const attachments = require('./attachments');
+const focus = require('./focus');
 
 /** 设置键（projection 列表） */
 const KEY = 'tool.desktopWindows';
@@ -190,9 +191,18 @@ function countsOf(tasks) {
 /** 取投影对应的数据：标题 + 任务 + 计数（不缓存，永远读实时的库） */
 function safeView(p) {
   try {
-    return buildView(p);
+    const v = buildView(p);
+    // 番茄钟：浮窗同步显示「正在专注的那一格」的倒计时（只读展示，不提供入口）
+    v.focus = focus.peek();
+    return v;
   } catch (e) {
-    return { title: '数据未就绪', error: e && e.message ? e.message : String(e), tasks: [], counts: { done: 0, total: 0 } };
+    return {
+      title: '数据未就绪',
+      error: e && e.message ? e.message : String(e),
+      tasks: [],
+      counts: { done: 0, total: 0 },
+      focus: focus.peek(),
+    };
   }
 }
 
@@ -772,7 +782,8 @@ function registerIpc() {
     const p = findProjection(id);
     if (!p) throw new Error('浮窗已被移除');
     const view = buildView(p);
-    return { ...view, projection: p };
+    // 番茄钟：浮窗同步显示「正在专注那一格」的倒计时（只读展示）
+    return { ...view, projection: p, focus: focus.peek() };
   }));
 
   ipcMain.handle('desktop:toggleTask', wrap((event, taskId) => {

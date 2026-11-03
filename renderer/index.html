@@ -87,22 +87,21 @@
           <span class="view-desc" id="view-desc"></span>
         </div>
         <div class="topbar-right">
-          <!-- 搜索框 + 笔记入口：顶栏在 1080 宽下已经排满（按钮加起来 788 / 可用 790），
-               所以笔记做成搜索框右侧的附件而不是并排新按钮 —— 位置就在「搜索栏旁」，
-               又不把「＋ 新建任务」挤到第二行。点开是完整笔记界面（弹窗），不切换视图。 -->
+          <!-- 番茄钟今日格数：常驻、极小、无背景（不显示目标值，避免制造压力） -->
+          <span class="topbar-focus-count" id="topbar-focus-count" title="今天已完成的番茄格数"></span>
+          <!-- 搜索框 + 笔记按钮：笔记做成搜索框右侧一个带文字的按钮（不是藏在框里的图标），
+               新用户一眼就能看到入口；点开是完整笔记界面（弹窗），不切换视图。
+               「同步」「主题」两个低频入口已收进顶部菜单栏，腾出的行宽给这里。 -->
           <div class="search-box">
             <input type="text" id="search-input" placeholder="搜索任务 / 标签…" />
-            <button type="button" class="search-action" id="btn-notes-dock"
-                    title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）"
-                    aria-label="打开笔记">📝</button>
           </div>
-          <button class="text-btn" id="btn-sync" title="导出任务 / 笔记到腾讯文档、ima 等其它产品">☁ 同步</button>
+          <button type="button" class="text-btn note-btn" id="btn-notes-dock"
+                  title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）">📝 笔记</button>
           <button class="text-btn" id="btn-import" title="从完整备份包（.zip）或旧版 JSON 恢复">📥 导入</button>
           <button class="text-btn" id="btn-export" title="导出完整备份包（任务 / 笔记 / 附件 / 录音都在里面）">📤 备份</button>
           <button class="text-btn" id="btn-archive-done" title="归档已完成任务">🗂 归档</button>
           <button class="text-btn" id="btn-record" title="录制会议音频（或屏幕），结束后转文字并生成纪要">⏺ 录制</button>
-          <!-- AI 设置 / 开机自启动 已移到顶部菜单栏（主进程应用菜单） -->
-          <button class="text-btn" id="btn-theme" title="切换主题">🌓 主题</button>
+          <!-- AI 设置 / 开机自启动 / 同步 / 主题 都在顶部菜单栏（主进程应用菜单） -->
           <button class="primary-btn" id="btn-new-task">＋ 新建任务</button>
         </div>
       </header>

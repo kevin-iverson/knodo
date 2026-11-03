@@ -9,14 +9,14 @@
  *  - 同一行内再做一次词级 diff，高亮到底改了哪几个词（行太长时跳过，避免卡顿）；
  *  - 「忽略空白 / 空行 / 大小写」是在**比较前**把每一行归一化，比较用的是归一化文本、
  *    显示的仍是原文，所以行号与内容不会错位。
- * 「格式化双方」直接复用 code-format.js 的 formatText —— 先各自格式化再比，
+ * 「格式化双方」复用 format-lib.js 的 formatText —— 先各自格式化再比，
  * 排版差异就不会淹没真正的改动。
  */
 import { api } from './api.js';
 import { openToolWindow } from './tool-window.js';
 import {
   formatText, LANG_OPTIONS, copyText, highlightSync, loadHighlightModule,
-} from './code-format.js';
+} from './format-lib.js';
 
 let notify = () => {};
 export function setDiffHandlers({ toast } = {}) {

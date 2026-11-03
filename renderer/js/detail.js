@@ -407,6 +407,34 @@ function notesToHtml(notes) {
   return renderMarkdown(notes);
 }
 
+/**
+ * 番茄时间线（任务详情里的专注日志）。
+ * 格式与方案 §创意1 一致：`11-03 10:25  ●  一句话`（● = 跑满 / ◐ = 半格）。
+ * 无会话时返回空串（不渲染这一节）。
+ */
+function focusTimelineHtml(sessions) {
+  const list = sessions || [];
+  if (!list.length) return '';
+  const rows = list.map((s) => {
+    const d = new Date(s.started_at);
+    const p = (n) => String(n).padStart(2, '0');
+    const stamp = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    const mark = s.outcome === 'full' ? '●' : '◐';
+    const cls = s.outcome === 'full' ? 'ft-full' : 'ft-half';
+    const note = s.note ? `<span class="ft-note">${esc(s.note)}</span>` : '';
+    const dur = s.actual_sec >= 60 ? `<span class="ft-dur">${Math.round(s.actual_sec / 60)} 分钟</span>` : '';
+    return `<div class="ft-row">
+      <span class="ft-time">${stamp}</span>
+      <span class="ft-mark ${cls}">${mark}</span>
+      ${note}${dur}
+    </div>`;
+  }).join('');
+  return `<div class="detail-section" data-section="focus">
+    <div class="detail-section-head"><span>专注 🍅 <span class="att-count">${list.length}</span></span></div>
+    <div class="focus-timeline">${rows}</div>
+  </div>`;
+}
+
 async function resolveTagIds(namesStr) {
   const names = namesStr.split(/[,，、\s]+/).map((s) => s.trim()).filter(Boolean);
   const ids = [];
@@ -451,6 +479,8 @@ async function renderDetail() {
 
   const subtreeHtml = await renderSubtreeHtml(id);
   const linkedNotes = await api.taskNotes.list(id).catch(() => []);
+  // 番茄时间线（该任务的专注日志，按开始时间倒序）
+  const focusTimeline = await api.focus.timeline(id).catch(() => []);
   // 期间若已切换到别的任务 / 被又一次渲染取代，直接放弃本次结果
   if (token !== renderToken) return;
   // 描述必须回填：之前这里一直是空编辑器，用户看到的永远是「没有描述」，
@@ -505,6 +535,8 @@ async function renderDetail() {
             <button class="ghost-btn" data-act="subtask-add">＋ 添加</button>
           </div>
         </div>
+
+        ${focusTimelineHtml(focusTimeline)}
 
         <div class="detail-section">
           <div class="detail-section-head">

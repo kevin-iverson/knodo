@@ -18,6 +18,7 @@ const {
 const path = require('path');
 const db = require('./db');
 const attachments = require('./attachments');
+const focus = require('./focus');
 
 /** settings['tool.capture']：与键位解耦，键改了不影响行为 */
 const KEY = 'tool.capture';
@@ -338,7 +339,11 @@ function save(rawTitle) {
   // 捕捉条记的都是「当下要处理的事」：默认计划今天，加完立刻出现在「今天」视图，
   // 不会出现"记了却找不到"。要改期去主窗口改，这里不弹任何选择框。
   const today = todayStr();
-  const task = db.createTask({ title, groupId: t.id, planStart: today, planEnd: today });
+  // 专注进行中存下的一闪念 → 落款 capture_during_focus = 1（方案 §创意4，便于事后统计）
+  const task = db.createTask({
+    title, groupId: t.id, planStart: today, planEnd: today,
+    captureDuringFocus: focus.isRunning() ? 1 : 0,
+  });
   sessionCount += 1;
   lastSaved = { id: task.id, title: task.title, at: Date.now() };
   const cfg = writeCfg({

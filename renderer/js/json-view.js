@@ -7,7 +7,7 @@
  * 三件事（都交给成熟库，不自己造轮子）：
  *  - 树形展示 / 按类型着色 / 折叠展开 → @alenaksu/json-viewer（Lit 写的 Web Component，
  *    自带 filter / expand / search，正好是「对象搜索查询」需要的那套能力）；
- *  - 格式化 → 复用 code-format.js 的 formatText（JSON 走 JSON.stringify，输出只由数据决定）；
+ *  - 格式化 → 复用 format-lib.js 的 formatText（JSON 走 JSON.stringify，输出只由数据决定）；
  *  - 路径查询 → jsonpath-plus（$.a.b[0] / $..name 这类表达式）。
  * 产物都在 renderer/vendor/tools/ 下，首次打开才动态 import。
  *
@@ -15,7 +15,7 @@
  */
 import { api } from './api.js';
 import { openToolWindow } from './tool-window.js';
-import { formatText, copyText, paintHighlight } from './code-format.js';
+import { formatText, copyText, paintHighlight } from './format-lib.js';
 
 let notify = () => {};
 export function setJsonViewHandlers({ toast } = {}) {

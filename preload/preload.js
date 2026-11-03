@@ -306,11 +306,28 @@ contextBridge.exposeInMainWorld('api', {
     setContext: (groupId) => call('capture:setContext', groupId),
     openMain: () => call('capture:openMain'),
   },
+  /**
+   * 番茄钟（专注计时）。计时器在主进程（wall clock 对账），渲染层只发指令、
+   * 订阅 focus:changed 事件并按「当前时间 - 段起点」重算显示。
+   */
+  focus: {
+    state: () => call('focus:state'),
+    start: (p) => call('focus:start', p || {}),
+    togglePause: () => call('focus:togglePause'),
+    settle: (outcome, note) => call('focus:settle', outcome, note),
+    cancel: () => call('focus:cancel'),
+    manualEnd: () => call('focus:manualEnd'),
+    counts: (taskIds) => call('focus:counts', taskIds || []),
+    today: () => call('focus:today'),
+    timeline: (taskId) => call('focus:timeline', taskId),
+  },
   // 主进程事件
   on: (channel, cb) => {
     const allowed = [
       'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary',
-      'ui:code-format', 'ui:text-diff', 'ui:json-viewer', 'ui:import-md',
+      'ui:text-diff', 'ui:json-viewer', 'ui:import-md',
+      // 顶部菜单栏入口：同步面板 / 主题（主进程已改好 nativeTheme，推一份当前值让界面跟进）
+      'ui:sync', 'ui:theme-changed',
       // 全局快捷键：设置面板入口 / 快捷键变更（多条浮窗时同步刷新）/ 没有钉住清单时的提示
       'ui:settings', 'keys:changed', 'ui:no-desktop-pins',
       // 捕捉条显示（主进程在 show 之后推一份目标清单 / 草稿状态）
@@ -318,6 +335,8 @@ contextBridge.exposeInMainWorld('api', {
       // 桌面浮窗：浮窗重拉自己的投影 / 主窗口重绘 / 菜单里的已钉列表变化 / 清单被删除
       'desktop:invalidate', 'desktop:missing', 'desktop:collapsed', 'desktop:projection-changed',
       'ui:data-changed',
+      // 番茄钟：计时状态变化（开钟 / 暂停 / 结算 / 被打断）
+      'focus:changed',
     ];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));

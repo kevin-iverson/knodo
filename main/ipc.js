@@ -22,6 +22,7 @@ const mdImport = require('./md-import');
 const backup = require('./backup');
 const storage = require('./storage');
 const desktopWindow = require('./desktop-window');
+const focus = require('./focus');
 
 /**
  * 附件相对路径 → 笔记正文里可引用的 todo-media:// URL。
@@ -1218,10 +1219,10 @@ function registerIpc() {
     db.setSetting('tool.salary', JSON.stringify(cfg));
     return cfg;
   });
-  // 实用工具（代码格式化 / 文本对比）的选项：语言 / 缩进 / 对比模式等。
+  // 实用工具（文本对比 / JSON 查看器）的选项：语言 / 对比模式 / 缩进等。
   // 同样是纯搬运——格式化与对比都在渲染层做（要按需加载第三方库、实时响应输入，没必要过主进程）。
   // key 白名单：避免渲染层拿它当任意键值存储使用。
-  const TOOL_PREF_KEYS = ['formatter', 'diff', 'json'];
+  const TOOL_PREF_KEYS = ['diff', 'json'];
   ipcMain.handle('ui:getToolPref', (_e, key) => {
     const k = TOOL_PREF_KEYS.includes(String(key || '')) ? String(key) : '';
     if (!k) return null;
@@ -1254,6 +1255,17 @@ function registerIpc() {
     }
   });
   ipcMain.handle('app:getVersion', () => app.getVersion());
+
+  /* ---------- 番茄钟（专注计时） ---------- */
+  ipcMain.handle('focus:state', () => focus.getState());
+  ipcMain.handle('focus:start', withDb((p) => focus.start(p || {})));
+  ipcMain.handle('focus:togglePause', withDb(() => focus.togglePause()));
+  ipcMain.handle('focus:settle', withDb((outcome, note) => focus.settle(outcome, note || '')));
+  ipcMain.handle('focus:cancel', withDb(() => focus.cancel()));
+  ipcMain.handle('focus:manualEnd', withDb(() => focus.manualEnd()));
+  ipcMain.handle('focus:counts', withDb((taskIds) => db.focusCountsForTasks(Array.isArray(taskIds) ? taskIds : [])));
+  ipcMain.handle('focus:today', withDb(() => db.todayFocusCount()));
+  ipcMain.handle('focus:timeline', withDb((taskId) => db.listFocusSessions(taskId)));
 }
 
 module.exports = { registerIpc };

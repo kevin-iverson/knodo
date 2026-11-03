@@ -1088,6 +1088,53 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
     revived.ok && db.isReady() && db.listTasks({ status: 'all' }).length === tasksBeforeCrash);
   check('损坏文件被改名保留（不删用户数据）', fs.existsSync(revived.parked));
 
+  console.log('\n[22] 番茄钟（focus_sessions）');
+  const focusTask = db.listTasks({ status: 'active' })[0] || db.createTask({ title: '番茄钟测试任务' });
+  const f1 = db.createFocusSession({ taskId: focusTask.id, groupId: focusTask.group_id, plannedSec: 1800 });
+  check('开钟写入未结算会话（ended_at 为空）',
+    !!f1 && f1.ended_at === null && f1.planned_sec === 1800
+    && db.getActiveFocusSession() && db.getActiveFocusSession().id === f1.id);
+  check('番茄必须挂任务（task_id 为空直接抛错）',
+    (() => { try { db.createFocusSession({ taskId: null }); return false; } catch (e) { return true; } })());
+
+  const f1s = db.settleFocusSession(f1.id, { outcome: 'full', actualSec: 1800, note: '  鉴权写完了  ' });
+  check('跑满结算为 full（首尾空白去掉）',
+    f1s.outcome === 'full' && f1s.actual_sec === 1800 && f1s.note === '鉴权写完了' && !!f1s.ended_at);
+  const noteAfterFull = db.getTask(focusTask.id).notes || '';
+  check('收尾那句写回任务备注（行首 ● + 时间）',
+    /(^|\n)● \d\d-\d\d \d\d:\d\d 鉴权写完了/.test(noteAfterFull));
+  check('stripStyleMarks 剥掉时间线前缀但保留正文',
+    !db.stripStyleMarks(noteAfterFull).includes('●') && db.stripStyleMarks(noteAfterFull).includes('鉴权写完了'));
+
+  const f2 = db.createFocusSession({ taskId: focusTask.id, plannedSec: 1800 });
+  db.settleFocusSession(f2.id, { outcome: 'partial', actualSec: 1200, note: '评审意见改了一半' });
+  check('主动收 / 被打断记半格（行首 ◐）',
+    /(^|\n)◐ \d\d-\d\d \d\d:\d\d 评审意见改了一半/.test(db.getTask(focusTask.id).notes || ''));
+
+  const counts = db.focusCountsForTasks([focusTask.id])[focusTask.id];
+  check('按任务聚合格数（1 整格 + 1 半格）', !!counts && counts.full === 1 && counts.partial === 1);
+  check('今日等效格数 = 1.5（半格按 0.5 计）', db.todayFocusCount() === 1.5);
+  check('时间线按开始时间倒序（最新在前）',
+    db.listFocusSessions(focusTask.id).map((s) => s.id).join(',') === `${f2.id},${f1.id}`);
+
+  const f3 = db.createFocusSession({ taskId: focusTask.id, plannedSec: 1800 });
+  check('不足 8 分钟结束 → 删除会话行，不留脏数据',
+    db.deleteFocusSession(f3.id) === true
+    && !db.listFocusSessions(focusTask.id).some((s) => s.id === f3.id));
+
+  const dumpFocus = db.exportData();
+  check('导出含已结算番茄记录（进行中的 0 条）',
+    Array.isArray(dumpFocus.focus_sessions) && dumpFocus.focus_sessions.length === 2
+    && dumpFocus.focus_sessions.every((s) => !!s.ended_at));
+
+  // 删任务后记录仍在（task_id 指向已不存在的 id，统计不因此蒸发）
+  const orphan = db.createTask({ title: '会被删掉的任务' });
+  const f4 = db.createFocusSession({ taskId: orphan.id, plannedSec: 900 });
+  db.settleFocusSession(f4.id, { outcome: 'full', actualSec: 900, note: '' });
+  db.deleteTask(orphan.id);
+  check('删任务不连带删除番茄记录（记录保留，展示降级）',
+    db.getFocusSession(f4.id) !== null && db.getFocusSession(f4.id).task_id === orphan.id);
+
   console.log('\n====================');
   console.log(`结果：${passed} 通过，${failed} 失败`);
   db.close();

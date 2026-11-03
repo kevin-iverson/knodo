@@ -153,8 +153,8 @@ function mountGeneral(pane) {
     try {
       await api.theme.set(mode);
       S.theme = mode;
-      // 必须回传给 ui.js：主窗口顶栏的主题按钮读的是它自己的 state.theme，
-      // 只改这里会让「顶栏按钮」和「设置里的选择」各说各话
+      // 必须回传给 ui.js：主界面配色读的是它自己的 state.theme，
+      // 只改这里会让「界面配色」和「设置里的选择」各说各话
       if (ext.onTheme) ext.onTheme(mode);
       toast('主题已切换');
     } catch (err) {

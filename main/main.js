@@ -4,7 +4,7 @@
  * 关闭窗口默认最小化到托盘，仅当显式退出时才真正退出。
  */
 const {
-  app, BrowserWindow, nativeTheme, ipcMain, session, Menu, dialog, shell, protocol,
+  app, BrowserWindow, nativeTheme, ipcMain, session, Menu, dialog, shell, protocol, powerMonitor,
 } = require('electron');
 const fs = require('fs');
 const os = require('os');
@@ -17,6 +17,7 @@ const { setupTray, destroyTray, refreshTrayMenu } = require('./tray');
 const desktopWindow = require('./desktop-window');
 const shortcuts = require('./shortcuts');
 const capture = require('./capture');
+const focus = require('./focus');
 const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
 const { markdownToDocx } = require('./docx');
@@ -245,20 +246,24 @@ function applyTheme() {
 
 /**
  * 应用菜单：保留系统默认的 File / Edit / View / Window（role 复用默认行为），
- * 末尾追加「AI 设置」与「实用工具」——原来在顶部工具栏，挪到菜单栏后非任务视图才能整排隐藏工具区。
- * 与"应用级设置"同类的项（存储位置、开机自启动）统一收进 File 菜单，其余菜单保持系统默认分组。
+ * 末尾追加「AI 设置」「实用工具」「主题」——原来在顶部工具栏，挪到菜单栏后非任务视图才能整排隐藏工具区。
+ * 与"应用级设置"同类的项（存储位置、开机自启动、对外同步）统一收进 File 菜单，其余菜单保持系统默认分组。
  *
- * 注：笔记不再是独立菜单项（入口统一到左侧导航，避免两处入口不一致）。
+ * 注：笔记不再是独立菜单项（入口统一到左侧导航 + 顶栏搜索框旁的「📝 笔记」按钮）。
  * 全局快捷键 CmdOrCtrl+Shift+N（新建笔记）继续保留 —— 它是窗口级快捷键，不属于某个菜单的功能入口。
  */
 function buildAppMenu() {
   const auto = autostart.getState();
+  // 「主题」菜单的勾选状态读库（与设置中心同源）；库还没就绪时按默认「跟随系统」画
+  const themeMode = (() => {
+    try { return db.getSetting('theme', 'system'); } catch (e) { return 'system'; }
+  })();
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     {
       // 显式构建 File 菜单：不用 role: 'fileMenu'，以便在同一个子菜单里追加自定义项；
       // Exit 行为与默认一致。
-      // 分组：存储位置（数据层）｜ 开机自启动（系统启动项）｜ Exit。
+      // 分组：存储位置（数据层）｜ 备份 / 同步（数据进出）｜ 开机自启动（系统启动项）｜ Exit。
       label: 'File',
       submenu: [
         {
@@ -274,6 +279,15 @@ function buildAppMenu() {
           click: () => {
             showWindow();
             openBackupDialog();
+          },
+        },
+        {
+          // 原本是顶栏「☁ 同步」按钮：导出任务 / 笔记到腾讯文档、ima 等第三方。
+          // 低频但常被找，收进菜单后顶栏腾出的行宽留给「📝 笔记」按钮
+          label: '同步到腾讯文档 / ima…',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:sync');
           },
         },
         {
@@ -321,15 +335,7 @@ function buildAppMenu() {
       label: '实用工具',
       submenu: [
         {
-          // 代码格式化 / 文本对比：非模态浮窗（不挡主界面），库按需加载
-          label: '代码格式化',
-          accelerator: 'CmdOrCtrl+Shift+F',
-          click: () => {
-            showWindow();
-            if (mainWindow) mainWindow.webContents.send('ui:code-format');
-          },
-        },
-        {
+          // 文本对比：非模态浮窗（不挡主界面），库按需加载
           label: '文本对比',
           accelerator: 'CmdOrCtrl+Shift+D',
           click: () => {
@@ -354,16 +360,41 @@ function buildAppMenu() {
             if (mainWindow) mainWindow.webContents.send('ui:salary');
           },
         },
+        { type: 'separator' },
+        {
+          // 桌面浮窗：主路径是「分组 / 今天 / 即将到期」右键 → 钉到桌面，这里是次要入口 ——
+          // 钉了三四个之后，从菜单里找窗比在桌面上翻快，也是位置跑偏后的兜底（见 E-08）。
+          // 原本占着菜单栏顶格，为给「主题」腾位并进实用工具（同属"不占视图的工具"）。
+          label: '桌面浮窗',
+          submenu: desktopMenuTemplate(),
+        },
       ],
     },
     {
-      // 桌面浮窗：主路径是「分组 / 今天 / 即将到期」右键 → 钉到桌面，这里是次要入口 ——
-      // 钉了三四个之后，从菜单里找窗比在桌面上翻快，也是位置跑偏后的兜底（见 E-08）
-      label: '桌面浮窗',
-      submenu: desktopMenuTemplate(),
+      // 主题：radio 三项（跟随系统 / 浅色 / 深色），与设置中心共用同一个 db 键与 nativeTheme，
+      // 点一下即生效；点击后重建菜单让勾选状态跟上
+      label: '主题',
+      submenu: [
+        { label: '跟随系统', type: 'radio', checked: themeMode === 'system', click: () => setThemeMode('system') },
+        { label: '浅色', type: 'radio', checked: themeMode === 'light', click: () => setThemeMode('light') },
+        { label: '深色', type: 'radio', checked: themeMode === 'dark', click: () => setThemeMode('dark') },
+      ],
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/**
+ * 切换主题（菜单栏「主题」/ 设置中心两个入口）。
+ * 三件事必须一起做：写库（下次启动仍生效）、改 nativeTheme（标题栏 / 原生菜单 / 桌面浮窗跟着变）、
+ * 推给渲染层（主界面配色读的是它自己的 state.theme）。
+ */
+function setThemeMode(mode) {
+  const m = ['system', 'light', 'dark'].includes(mode) ? mode : 'system';
+  if (db.isReady()) db.setSetting('theme', m);
+  nativeTheme.themeSource = m;
+  if (mainWindow) mainWindow.webContents.send('ui:theme-changed', m);
+  buildAppMenu();
 }
 
 /** 「桌面浮窗」菜单项：已钉清单列表 + 恢复默认位置 / 全部收起 */
@@ -780,8 +811,27 @@ app.whenReady().then(async () => {
 
   // 全局快捷键：必须在这里（whenReady 之后）注册，早于此时机 register() 静默失败
   shortcuts.init({ onAction: dispatchShortcut });
+
+  // 番茄钟（专注计时）：主进程计时器，状态变化推给主窗口渲染进度环 / 收尾条。
+  focus.init({
+    onStateChange: (snap) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('focus:changed', snap);
+      // 桌面浮窗也同步：重拉自己的投影（buildView 已带 focus 快照，refresh 后行内显示倒计时）
+      try { desktopWindow.notifyChange(null); } catch (e) { /* 浮窗刷新失败不影响主窗口 */ }
+    },
+  });
+  // 崩溃 / 强杀残留的未结算会话，启动时对账（不足 8 分钟删除，否则记 partial 并提示）
+  focus.reconcileOnStartup();
+  // 系统休眠 / 唤醒：挂起时结算睡眠前专注，唤醒后按 wall clock 对账（方案 §6.3）
+  powerMonitor.on('suspend', () => focus.onPowerSuspend());
+  powerMonitor.on('resume', () => focus.onPowerResume());
+  // 任一 Knodo 窗口失焦 / 聚焦 → 只更新「是否聚焦」标记（计时照常走，不再因此冻结）
+  app.on('browser-window-blur', () => setImmediate(() => focus.onWindowFocusChanged()));
+  app.on('browser-window-focus', () => setImmediate(() => focus.onWindowFocusChanged()));
+
   // 退出前必须注销：否则系统里残留热键，下次启动可能注册失败
   app.on('will-quit', () => {
+    focus.handleWillQuit(); // 进行中的番茄按已跑时长记 partial
     capture.destroy();
     shortcuts.destroy();
   });
@@ -1297,7 +1347,28 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] AI 设置排版 = ${dom.aiCols} 列；分区 ${dom.aiSections} 个；字段 ${dom.aiFieldCount} 个；弹窗高 ${dom.aiBox ? dom.aiBox.h : '-'}px / 视口 ${dom.aiBox ? dom.aiBox.vh : '-'}px；完整在视口内=${dom.aiInViewport ? '是' : '否'}；底部按钮可点=${dom.aiFootReachable ? '是' : '否'}；内容无需滚动=${dom.aiBodyScrolls ? '是' : '否'}；横向无溢出=${dom.aiNoHOverflow ? '是' : '否'}`);
           console.log(`[SMOKE] 标签新增弹窗 = ${dom.tagModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.tagAdded ? '是' : '否'}`);
 
-          // 对外同步面板（顶栏「☁ 同步」）：打开 → 选项齐全 → 关闭无残留
+          // 对外同步面板（顶部菜单 File → 同步）：菜单项存在 → 打开 → 选项齐全 → 关闭无残留
+          // 顶栏按钮已收进菜单，这里不再点按钮，直接走菜单那条 IPC（等价于点菜单项）
+          const appMenu = Menu.getApplicationMenu();
+          const topLabels = (appMenu ? appMenu.items : []).map((i) => i.label);
+          const fileItem = appMenu ? appMenu.items.find((i) => i.label === 'File') : null;
+          const fileLabels = fileItem ? fileItem.submenu.items.map((i) => i.label) : [];
+          const toolsItem = appMenu ? appMenu.items.find((i) => i.label === '实用工具') : null;
+          const toolsLabels = toolsItem ? toolsItem.submenu.items.map((i) => i.label) : [];
+          const themeItem = appMenu ? appMenu.items.find((i) => i.label === '主题') : null;
+          console.log(`[SMOKE] 菜单栏结构 = 顶格「${topLabels.join(' / ')}」；同步项在 File=${fileLabels.some((l) => l.startsWith('同步')) ? '是' : '否'}；桌面浮窗已并入实用工具=${toolsLabels.includes('桌面浮窗') ? '是' : '否'}（顶格已移除=${topLabels.includes('桌面浮窗') ? '否' : '是'}）；主题顶格=${themeItem ? '有' : '无'}（${themeItem ? themeItem.submenu.items.map((i) => `${i.label}${i.checked ? '✓' : ''}`).join(' / ') : '-'}）`);
+          const topbarOut = await mainWindow.webContents.executeJavaScript(`(() => {
+            const nb = document.getElementById('btn-notes-dock');
+            return {
+              noteOutside: !!nb && !nb.closest('.search-box'),
+              noteText: nb ? (nb.textContent || '').trim() : '',
+              noteVisible: !!nb && nb.offsetWidth > 0,
+              syncGone: !document.getElementById('btn-sync'),
+              themeGone: !document.getElementById('btn-theme'),
+            };
+          })()`);
+          console.log(`[SMOKE] 顶栏入口 = 「${topbarOut.noteText || '-'}」在搜索栏外=${topbarOut.noteOutside ? '是' : '否'}；可见=${topbarOut.noteVisible ? '是' : '否'}；同步按钮已移除=${topbarOut.syncGone ? '是' : '否'}；主题按钮已移除=${topbarOut.themeGone ? '是' : '否'}`);
+          mainWindow.webContents.send('ui:sync');
           const syncOut = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const out = {};
@@ -1310,8 +1381,6 @@ app.whenReady().then(async () => {
                 }
               };
               try {
-                out.btnExists = !!document.getElementById('btn-sync');
-                document.getElementById('btn-sync').click();
                 out.opened = await waitUntil(() => !!document.querySelector('.modal-sync'));
                 const root = document.querySelector('.modal-sync');
                 out.taskFields = !!(root && root.querySelector('.sync-task-format')
@@ -1332,7 +1401,7 @@ app.whenReady().then(async () => {
             })()
           `);
           if (syncOut.__fatal) console.log('[SMOKE][sync fatal]', syncOut.__fatal);
-          console.log(`[SMOKE] 对外同步面板 = 按钮${syncOut.btnExists ? '有' : '无'}；打开=${syncOut.opened ? '成功' : '失败'}；任务字段=${syncOut.taskFields ? '齐全' : '缺失'}；笔记字段=${syncOut.noteFields ? '齐全' : '缺失'}；分组选项 ${syncOut.groupOptions} 个；导出按钮 ${syncOut.exportBtns} 个；关闭=${syncOut.closed ? '成功' : '失败'}；无残留遮罩=${syncOut.noMask ? '是' : '否'}`);
+          console.log(`[SMOKE] 对外同步面板（菜单入口）= 打开=${syncOut.opened ? '成功' : '失败'}；任务字段=${syncOut.taskFields ? '齐全' : '缺失'}；笔记字段=${syncOut.noteFields ? '齐全' : '缺失'}；分组选项 ${syncOut.groupOptions} 个；导出按钮 ${syncOut.exportBtns} 个；关闭=${syncOut.closed ? '成功' : '失败'}；无残留遮罩=${syncOut.noMask ? '是' : '否'}`);
 
           // 详情侧边栏：拖拽调宽 + 子任务添加（局部刷新，不重绘整页）
           const detail = await mainWindow.webContents.executeJavaScript(`
@@ -2912,9 +2981,10 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 检索联想（Top5）= ${r17.topCount} 条（≤5=${r17.topCapped ? '是' : '否'}；均带分值=${r17.topHasScore ? '是' : '否'}）`);
           console.log(`[SMOKE] 检索联想（界面）= 精确 ${JSON.stringify(r17.uiExact)}；联想 ${JSON.stringify(r17.uiAssoc)}；无关联 ${JSON.stringify(r17.uiNone)}`);
 
-          /* ============ 第 18 轮：实用工具（代码格式化 / 文本对比 浮窗） ============ */
+          /* ============ 第 18 轮：实用工具（文本对比 / JSON 查看器浮窗 + 格式化引擎） ============ */
           // 菜单快捷键走不了 CDP，这里直接调渲染层的入口（与菜单 ipc 触发的是同一条路径）：
-          // 1) 各语言格式化是否真出结果   2) 浮窗是否非模态（无遮罩、开着还能操作主界面）
+          // 1) 各语言格式化是否真出结果（代码格式化浮窗已下线，仍要守 format-lib 的引擎）
+          // 2) 浮窗是否非模态（无遮罩、开着还能操作主界面）
           // 3) 最小化 / 最大化   4) 对比的增删行、内联视图、忽略大小写   5) 对比里复用格式化
           const r18 = await mainWindow.webContents.executeJavaScript(`
             (async () => {
@@ -2922,30 +2992,12 @@ app.whenReady().then(async () => {
               const wait = (ms) => new Promise((r) => setTimeout(r, ms));
               const q = (s) => document.querySelector(s);
               try {
-                const fmt = await import('./js/code-format.js');
+                const lib = await import('./js/format-lib.js');
                 const dfm = await import('./js/text-diff.js');
-                out.modulesLoaded = !!fmt && !!dfm;
+                out.modulesLoaded = !!lib && !!dfm;
 
-                /* ---- 1) 代码格式化 ---- */
-                await fmt.openFormatterWindow();
-                await wait(400);
-                const win = q('.tool-win[data-tool="code-format"]');
-                out.fmtOpened = !!win;
-                out.noMask = document.querySelectorAll('.modal-mask').length === 0;
-                out.winBtns = win ? win.querySelectorAll('.tool-win-btn').length : 0;
-                const inEl = win.querySelector('.fmt-in');
-                const outEl = win.querySelector('.fmt-out');
-                const status = win.querySelector('.fmt-status');
-                const run = async (text, lang) => {
-                  const sel = win.querySelector('.fmt-lang');
-                  sel.value = lang;
-                  sel.dispatchEvent(new Event('change', { bubbles: true }));
-                  inEl.value = text;
-                  inEl.dispatchEvent(new Event('input', { bubbles: true }));
-                  win.querySelector('.fmt-run').click();
-                  await wait(1200);
-                  return outEl.value;
-                };
+                /* ---- 1) 格式化引擎（format-lib 直测，不经界面） ---- */
+                const run = async (text, lang, extra) => (await lib.formatText(text, { lang, ...extra })).text;
                 const j = await run('{"b":2,"a":[1,2,{"c":3}]}', 'json');
                 out.jsonOk = /\\n/.test(j) && /"b": 2/.test(j) && /\\[/.test(j);
                 const x = await run('<root><a x="1">hi</a></root>', 'xml');
@@ -2975,33 +3027,22 @@ app.whenReady().then(async () => {
                   out.multi[lg] = ok;
                   if (!ok) out.multiOk = false;
                 }
-                await run('{"a":}', 'json'); // 语法错误：必须报错，不能静默
-                out.errShown = status.dataset.state === 'err';
-                out.statusText = status.textContent.slice(0, 50);
+                try {
+                  await run('{"a":}', 'json'); // 语法错误必须抛出，不能静默返回原文
+                  out.errThrown = false;
+                } catch (e) {
+                  out.errThrown = true;
+                  out.statusText = String((e && e.message) || e).split('\\n')[0].slice(0, 50);
+                }
+                out.errShown = out.errThrown; // 断言沿用原字段名
 
-                /* ---- 2) 最小化 / 最大化 / 还原 ---- */
-                win.querySelector('[data-act="min"]').click(); await wait(200);
-                out.minApplied = win.classList.contains('is-min')
-                  && getComputedStyle(win.querySelector('.tool-win-body')).display === 'none';
-                win.querySelector('[data-act="min"]').click(); await wait(200);
-                out.minRestored = !win.classList.contains('is-min');
-                win.querySelector('[data-act="max"]').click(); await wait(300);
-                out.maxApplied = win.classList.contains('is-max')
-                  && win.getBoundingClientRect().width >= window.innerWidth - 40;
-                win.querySelector('[data-act="max"]').click(); await wait(300);
-                out.maxRestored = !win.classList.contains('is-max');
-
-                /* ---- 3) 非模态：开着工具窗照样能操作主界面 ---- */
-                document.querySelector('.nav-item[data-view="all"]').click();
-                await wait(500);
-                out.mainUsable = (q('#view-title') || {}).textContent === '全部任务' && !!win.isConnected;
-
-                /* ---- 4) 文本对比 ---- */
+                /* ---- 2) 文本对比 ---- */
                 await dfm.openDiffWindow();
                 await wait(400);
                 const dwin = q('.tool-win[data-tool="text-diff"]');
                 out.diffOpened = !!dwin;
-                out.bothOpen = document.querySelectorAll('.tool-win').length === 2;
+                out.noMask = document.querySelectorAll('.modal-mask').length === 0;
+                out.winBtns = dwin ? dwin.querySelectorAll('.tool-win-btn').length : 0;
                 const aEl = dwin.querySelector('.df-a');
                 const bEl = dwin.querySelector('.df-b');
                 const view = dwin.querySelector('.df-view');
@@ -3030,7 +3071,7 @@ app.whenReady().then(async () => {
                 cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true }));
                 await wait(600);
 
-                /* ---- 5) 对比里复用格式化：同一段 JSON 排版不同 → 格式化后应当无差异 ---- */
+                /* ---- 3) 对比里复用格式化：同一段 JSON 排版不同 → 格式化后应当无差异 ---- */
                 await feed('{"a":1,"b":2}', '{\\n  "a": 1,\\n  "b": 2\\n}');
                 out.beforeFormat = view.querySelectorAll('.df-cell.del').length;
                 dwin.querySelector('.df-format').click();
@@ -3051,12 +3092,30 @@ app.whenReady().then(async () => {
                   await wait(700);
                 }
 
+                /* ---- 4) 浮窗控制：最小化 / 最大化 / 还原 / 非模态 ---- */
+                dwin.querySelector('[data-act="min"]').click(); await wait(200);
+                out.minApplied = dwin.classList.contains('is-min')
+                  && getComputedStyle(dwin.querySelector('.tool-win-body')).display === 'none';
+                dwin.querySelector('[data-act="min"]').click(); await wait(200);
+                out.minRestored = !dwin.classList.contains('is-min');
+                dwin.querySelector('[data-act="max"]').click(); await wait(300);
+                out.maxApplied = dwin.classList.contains('is-max')
+                  && dwin.getBoundingClientRect().width >= window.innerWidth - 40;
+                dwin.querySelector('[data-act="max"]').click(); await wait(300);
+                out.maxRestored = !dwin.classList.contains('is-max');
+
+                /* ---- 5) 非模态：开着工具窗照样能操作主界面 ---- */
+                document.querySelector('.nav-item[data-view="all"]').click();
+                await wait(500);
+                out.mainUsable = (q('#view-title') || {}).textContent === '全部任务' && !!dwin.isConnected;
+
                 /* ---- 6) JSON 查看器：树形渲染 + 搜索 + JSONPath ---- */
                 const jvm = await import('./js/json-view.js');
                 await jvm.openJsonViewWindow();
                 await wait(600);
                 const jwin = q('.tool-win[data-tool="json-view"]');
                 out.jvOpened = !!jwin;
+                out.bothOpen = document.querySelectorAll('.tool-win').length === 2;
                 const jArea = jwin && jwin.querySelector('.jv-area');
                 const jTree = jwin && jwin.querySelector('.jv-tree');
                 if (jArea) {
@@ -3091,7 +3150,6 @@ app.whenReady().then(async () => {
 
                 /* ---- 7) 关闭后不留残留 ---- */
                 dwin.querySelector('[data-act="close"]').click(); await wait(250);
-                win.querySelector('[data-act="close"]').click(); await wait(250);
                 out.closed = document.querySelectorAll('.tool-win').length === 0;
               } catch (e) {
                 out.err = String((e && e.message) || e);
@@ -3099,7 +3157,7 @@ app.whenReady().then(async () => {
               return out;
             })()
           `);
-          console.log(`[SMOKE] 实用工具·格式化 = 开窗=${r18.fmtOpened ? '是' : '否'}（无遮罩=${r18.noMask ? '是' : '否'}）JSON=${r18.jsonOk ? '✓' : '✗'} XML=${r18.xmlOk ? '✓' : '✗'} SQL=${r18.sqlOk ? '✓' : '✗'} Java=${r18.javaOk ? '✓' : '✗'} 自动识别=${r18.autoOk ? '✓' : '✗'}；其它语言全通过=${r18.multiOk ? '✓' : '✗'}${r18.multiOk ? '' : '（' + JSON.stringify(r18.multi) + '）'}；语法错误提示=${r18.errShown ? '有' : '无'}（${r18.statusText || '-'}）`);
+          console.log(`[SMOKE] 实用工具·格式化引擎 = 无遮罩=${r18.noMask ? '是' : '否'}；JSON=${r18.jsonOk ? '✓' : '✗'} XML=${r18.xmlOk ? '✓' : '✗'} SQL=${r18.sqlOk ? '✓' : '✗'} Java=${r18.javaOk ? '✓' : '✗'} 自动识别=${r18.autoOk ? '✓' : '✗'}；其它语言全通过=${r18.multiOk ? '✓' : '✗'}${r18.multiOk ? '' : '（' + JSON.stringify(r18.multi) + '）'}；语法错误抛出=${r18.errThrown ? '是' : '否'}（${r18.statusText || '-'}）`);
           console.log(`[SMOKE] 实用工具·浮窗 = 最小化=${r18.minApplied ? '✓' : '✗'} 还原=${r18.minRestored ? '✓' : '✗'}；最大化=${r18.maxApplied ? '✓' : '✗'} 还原=${r18.maxRestored ? '✓' : '✗'}；开着仍能操作主界面=${r18.mainUsable ? '是' : '否'}；两窗共存=${r18.bothOpen ? '是' : '否'}`);
           console.log(`[SMOKE] 实用工具·对比 = 行 ${r18.diffRows}（增 ${r18.diffAdd} / 删 ${r18.diffDel}）统计「${r18.diffStat || '-'}」；内联=${r18.inlineRows} 行 / ${r18.inlineSigns} 个符号；忽略大小写生效=${r18.caseIgnored ? '是' : '否'}；格式化后收敛=${r18.formatConverged ? '是' : '否'}（前 ${r18.beforeFormat} → 后 ${r18.afterFormat}）；关闭=${r18.closed ? '✓' : '✗'}${r18.err ? '；异常=' + r18.err : ''}`);
           console.log(`[SMOKE] 实用工具·高亮 = 差异行 token ${r18.diffHl} 个；开关=${r18.diffHlToggle ? '有' : '无'}；关掉后无 token=${r18.diffHlOff ? '是' : '否'}`);
@@ -3113,8 +3171,9 @@ app.whenReady().then(async () => {
             && dom.reopened && dom.closedByTrigger && dom.calInViewport && dom.persistedMatches
             && dom.groupModalOpened && dom.groupAdded && dom.dupErrorShown
             && dom.tagModalOpened && dom.tagAdded
-            // 对外同步面板（顶栏「☁ 同步」）
-            && syncOut.btnExists && syncOut.opened && syncOut.taskFields && syncOut.noteFields
+            // 对外同步面板（菜单栏 File → 同步）+ 顶栏入口整理（笔记按钮外置、同步/主题收进菜单）
+            && topbarOut.noteOutside && topbarOut.noteVisible && topbarOut.syncGone && topbarOut.themeGone
+            && syncOut.opened && syncOut.taskFields && syncOut.noteFields
             && syncOut.groupOptions >= 2 && syncOut.exportBtns === 2 && syncOut.closed && syncOut.noMask
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
@@ -3237,8 +3296,8 @@ app.whenReady().then(async () => {
             && r17.uiAssoc.items >= 1 && (r17.uiAssoc.reasons || []).some((s) => /缩写还原|同义词|关键词/.test(s))
             && r17.uiNone.empty && r17.uiNone.items === 0 && r17.uiNone.tried >= 1
             // 第 18 轮：实用工具（代码格式化 / 文本对比 浮窗）
-            && r18.fmtOpened && r18.noMask && r18.winBtns >= 3
-            && r18.jsonOk && r18.xmlOk && r18.sqlOk && r18.javaOk && r18.autoOk && r18.multiOk && r18.errShown
+            && r18.noMask && r18.winBtns >= 3
+            && r18.jsonOk && r18.xmlOk && r18.sqlOk && r18.javaOk && r18.autoOk && r18.multiOk && r18.errThrown
             && r18.minApplied && r18.minRestored && r18.maxApplied && r18.maxRestored && r18.mainUsable
             && r18.diffOpened && r18.bothOpen && r18.diffRows >= 3 && r18.diffAdd >= 1 && r18.diffDel >= 1
             && r18.inlineRows >= 3 && r18.inlineSigns >= 2 && r18.splitBack
@@ -3258,6 +3317,8 @@ app.whenReady().then(async () => {
               'r9:tagBeforeActive',        // 期望「点击前未选中」
               'r10:tfNativeDates',         // 期望「原生 date 输入框 0 个」
               'r15:masksBefore',           // 提示用：期望润色前没有残留遮罩 = 0
+              'r17:noneCount',             // 期望「确实无关联」时候选就是 0 条
+              'r18:afterFormat',           // 期望格式化后差异收敛到 0 处
             ]);
             let printed = 0;
             const dumpFalsy = (label, obj) => {

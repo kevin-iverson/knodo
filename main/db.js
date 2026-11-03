@@ -382,6 +382,35 @@ const MIGRATIONS = [
       d.exec("ALTER TABLE kb_qa ADD COLUMN scope TEXT NOT NULL DEFAULT ''");
     }
   },
+  // v14：番茄钟（专注计时）。见《番茄钟创意功能方案》§7 —— tasks 表不加字段，
+  // 格数通过 GROUP BY task_id 聚合得到。
+  // task_id NOT NULL：番茄必须挂任务（用户拍板，不支持自由专注），删任务时记录仍保留——
+  // 所以**不加** FOREIGN KEY ... ON DELETE SET NULL（记录要指向已不存在的 id，展示降级「已删除的任务」）。
+  // outcome: full（跑满 1 格）| partial（主动收 0.5 格）| interrupted（被打断 0.5 格）。
+  (d) => {
+    d.exec(`CREATE TABLE IF NOT EXISTS focus_sessions (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id     INTEGER NOT NULL,
+      group_id    INTEGER,
+      started_at  TEXT NOT NULL,
+      ended_at    TEXT,
+      planned_sec INTEGER NOT NULL,
+      actual_sec  INTEGER NOT NULL DEFAULT 0,
+      outcome     TEXT NOT NULL,
+      note        TEXT,
+      created_at  TEXT NOT NULL
+    )`);
+    d.exec('CREATE INDEX IF NOT EXISTS idx_focus_task  ON focus_sessions(task_id)');
+    d.exec('CREATE INDEX IF NOT EXISTS idx_focus_start ON focus_sessions(started_at)');
+  },
+  // v15：番茄钟「杂念暂存」落款——捕捉条在专注进行中存下的一闪念标记为 1，
+  // 便于事后统计「专注时最容易想起什么」（方案 §创意4）。
+  (d) => {
+    const cols = d.prepare('PRAGMA table_info(tasks)').all().map((c) => c.name);
+    if (!cols.includes('capture_during_focus')) {
+      d.exec('ALTER TABLE tasks ADD COLUMN capture_during_focus INTEGER NOT NULL DEFAULT 0');
+    }
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -886,6 +915,7 @@ function createTask({
   reminderAt = null,
   completedAt = null,
   tagIds = [],
+  captureDuringFocus = 0,
   createdAt = null, // 留空 = 取当前时间；导入历史数据时可指定以保留原始创建时间
   dueAt = null, // 兼容旧字段
 }) {
@@ -900,10 +930,10 @@ function createTask({
     const info = db
       .prepare(
         `INSERT INTO tasks (group_id, parent_id, title, notes, attachments, priority, plan_start, plan_end, reminder_at,
-           completed_at, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           completed_at, capture_during_focus, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(groupId, parentId, title, notes, JSON.stringify(attachments || []), priority, planStart, pe, reminderAt, completedAt, max + 1, created, t);
+      .run(groupId, parentId, title, notes, JSON.stringify(attachments || []), priority, planStart, pe, reminderAt, completedAt, captureDuringFocus ? 1 : 0, max + 1, created, t);
     const taskId = info.lastInsertRowid;
     setTaskTags(taskId, tagIds);
     return taskId;
@@ -1665,7 +1695,10 @@ function hashText(s) {
  * @param {string} md
  */
 function stripStyleMarks(md) {
-  return String(md || '').replace(/==([^=\n]+)==(?:\{[^{}\n]*\})?/g, '$1');
+  return String(md || '')
+    .replace(/==([^=\n]+)==(?:\{[^{}\n]*\})?/g, '$1')
+    // 番茄时间线前缀（行首 ● / ◐）：只剥前缀，保留那句「做到哪了」的正文
+    .replace(/^[●◐]\s*/gm, '');
 }
 
 /**
@@ -2585,6 +2618,8 @@ function exportData() {
     note_tag_map: db.prepare('SELECT * FROM note_tag_map ORDER BY note_id').all(),
     task_notes: db.prepare('SELECT * FROM task_notes ORDER BY task_id').all(),
     knowledge_bases: db.prepare('SELECT * FROM knowledge_bases ORDER BY id').all(),
+    // 番茄钟：与任务一样是用户产生的第一手数据，随备份走（不含「进行中未结算」的残留行）
+    focus_sessions: db.prepare('SELECT * FROM focus_sessions WHERE ended_at IS NOT NULL ORDER BY id').all(),
     settings: db
       .prepare('SELECT * FROM settings WHERE key NOT LIKE ?')
       .all('ai.apiKey%'),
@@ -2612,6 +2647,7 @@ function importData(data) {
     db.prepare('DELETE FROM ai_searches').run();
     db.prepare('DELETE FROM kb_qa').run();
     db.prepare('DELETE FROM task_notes').run();
+    db.prepare('DELETE FROM focus_sessions').run();
     db.prepare('DELETE FROM note_tag_map').run();
     db.prepare('DELETE FROM notes').run();
     db.prepare('DELETE FROM note_tags').run();
@@ -2642,8 +2678,8 @@ function importData(data) {
 
     const insTask = db.prepare(
       `INSERT INTO tasks (id, group_id, parent_id, title, notes, attachments, priority, plan_start, plan_end, reminder_at,
-         reminder_fired, completed, completed_at, archived, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         reminder_fired, completed, completed_at, archived, capture_during_focus, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const t of data.tasks) {
       // 兼容旧导出文件：优先 plan_end，回退到 due_at 的前 10 位
@@ -2652,7 +2688,7 @@ function importData(data) {
       insTask.run(
         t.id, t.group_id ?? null, t.parent_id ?? null, t.title, t.notes || '', att, t.priority ?? 1,
         t.plan_start ?? null, planEnd, t.reminder_at ?? null, t.reminder_fired ?? 0,
-        t.completed ?? 0, t.completed_at ?? null, t.archived ?? 0, t.sort_order ?? 0,
+        t.completed ?? 0, t.completed_at ?? null, t.archived ?? 0, t.capture_during_focus ?? 0, t.sort_order ?? 0,
         t.created_at || t0, t.updated_at || t0
       );
     }
@@ -2766,6 +2802,21 @@ function importData(data) {
       }
     }
 
+    // 番茄钟：只回填已结算的会话。task_id 原样保留（NOT NULL）：即使指向已删除的任务也要留痕，
+    // 不因「任务不存在」而置空（删任务时记录必须保留的决策）。缺失 task_id 的脏行跳过。
+    const insFocus = db.prepare(
+      `INSERT INTO focus_sessions (id, task_id, group_id, started_at, ended_at, planned_sec, actual_sec, outcome, note, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const s of data.focus_sessions || []) {
+      if (s.task_id == null) continue;
+      insFocus.run(
+        s.id, s.task_id, s.group_id ?? null,
+        s.started_at || t0, s.ended_at ?? null, Number(s.planned_sec) || 1800,
+        Number(s.actual_sec) || 0, s.outcome || 'full', s.note || '', s.created_at || t0
+      );
+    }
+
     const insKb = db.prepare(
       `INSERT INTO knowledge_bases (id, name, type, icon, color, source_json, enabled, status, last_error,
          doc_count, chunk_count, embed_model, embed_dim, sort_order, last_sync_at, created_at, updated_at)
@@ -2836,6 +2887,138 @@ function collectAttachmentMeta() {
   return out;
 }
 
+/* ------------------------------ 番茄钟（专注计时） ------------------------------ */
+
+/** 结局 → 行首标记：跑满 ●、主动收 / 被打断 ◐（半格） */
+function focusMark(outcome) {
+  return outcome === 'full' ? '●' : '◐';
+}
+
+/** 等效格数：full = 1 格，partial / interrupted = 0.5 格 */
+function focusEquivalent(outcome) {
+  return outcome === 'full' ? 1 : 0.5;
+}
+
+/**
+ * 收尾那句「做到哪了」写回任务的 notes 时，追加一行带番茄前缀的时间线。
+ * 格式：`● 11-03 10:25 一句话`（●=跑满 / ◐=半格）；行首 ●/◐ 前缀用于与用户自己写的备注区分，
+ * stripStyleMarks() 会把它剥掉（只剥前缀，保留正文），避免污染字数 / content_hash。
+ */
+function focusTimelineLine(startedAtIso, outcome, note) {
+  const d = new Date(startedAtIso);
+  const p = (n) => String(n).padStart(2, '0');
+  const stamp = `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${focusMark(outcome)} ${stamp} ${String(note || '').trim()}`;
+}
+
+/** 规范化 focus_sessions 行（outcome 兜底 / 数值字段转 number） */
+function rowToFocus(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    task_id: row.task_id ?? null,
+    group_id: row.group_id ?? null,
+    started_at: row.started_at,
+    ended_at: row.ended_at ?? null,
+    planned_sec: Number(row.planned_sec) || 0,
+    actual_sec: Number(row.actual_sec) || 0,
+    outcome: row.outcome || 'full',
+    note: row.note || '',
+    created_at: row.created_at,
+  };
+}
+
+/** 开钟：插入一条进行中的会话（ended_at 为空 = 未结算），返回新行。taskId 必填（不支持自由专注）。 */
+function createFocusSession({ taskId, groupId = null, plannedSec = 1800 } = {}) {
+  if (taskId == null) throw new Error('番茄钟必须挂任务');
+  const t = nowIso();
+  const info = db.prepare(
+    `INSERT INTO focus_sessions (task_id, group_id, started_at, planned_sec, actual_sec, outcome, note, created_at)
+     VALUES (?, ?, ?, ?, 0, 'full', '', ?)`
+  ).run(
+    taskId, groupId ?? null, t, Number(plannedSec) || 1800, t
+  );
+  return getFocusSession(info.lastInsertRowid);
+}
+
+/**
+ * 结算会话：写 ended_at / actual_sec / outcome / note，并把那句「做到哪了」追加到任务的备注末尾。
+ * 任务已被删除时（task_id 指向不存在的 id）不写回 notes，但记录本身仍保留（供统计）。
+ */
+function settleFocusSession(id, { outcome = 'full', actualSec = 0, note = '', endedAt = null } = {}) {
+  const cur = getFocusSession(id);
+  if (!cur) return null;
+  const ended = endedAt || nowIso();
+  const text = String(note || '').trim();
+  db.prepare(
+    `UPDATE focus_sessions SET ended_at = ?, actual_sec = ?, outcome = ?, note = ? WHERE id = ?`
+  ).run(ended, Number(actualSec) || 0, outcome, text, id);
+
+  if (text && cur.task_id != null) {
+    const task = getTask(cur.task_id);
+    if (task) {
+      const line = focusTimelineLine(cur.started_at, outcome, text);
+      const prev = task.notes || '';
+      const next = prev ? `${prev.replace(/\n+$/, '')}\n${line}` : line;
+      db.prepare('UPDATE tasks SET notes = ?, updated_at = ? WHERE id = ?')
+        .run(next, nowIso(), cur.task_id);
+    }
+  }
+  return getFocusSession(id);
+}
+
+function getFocusSession(id) {
+  return rowToFocus(db.prepare('SELECT * FROM focus_sessions WHERE id = ?').get(id));
+}
+
+/** 删除一条会话（误触结束 / <8 分钟，不留脏数据） */
+function deleteFocusSession(id) {
+  return db.prepare('DELETE FROM focus_sessions WHERE id = ?').run(id).changes > 0;
+}
+
+/** 未结算的会话（应用异常退出 / 崩溃后残留）：启动时用于对账补记。 */
+function getActiveFocusSession() {
+  return rowToFocus(db.prepare('SELECT * FROM focus_sessions WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1').get());
+}
+
+/** 按任务聚合格数：task_id → { full, partial }（partial 含 partial + interrupted） */
+function focusCountsForTasks(taskIds = []) {
+  const out = {};
+  if (!taskIds.length) return out;
+  const placeholders = taskIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT task_id, outcome, COUNT(*) AS c FROM focus_sessions
+     WHERE task_id IN (${placeholders}) AND ended_at IS NOT NULL
+     GROUP BY task_id, outcome`
+  ).all(...taskIds);
+  for (const r of rows) {
+    const e = out[r.task_id] || (out[r.task_id] = { full: 0, partial: 0 });
+    if (r.outcome === 'full') e.full += r.c;
+    else e.partial += r.c;
+  }
+  return out;
+}
+
+/** 今日等效格数（跨天番茄归入「开始那天」） */
+function todayFocusCount() {
+  const now = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const day = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+  const start = new Date(`${day}T00:00:00`).toISOString();
+  const end = new Date(`${day}T23:59:59.999`).toISOString();
+  const rows = db.prepare(
+    `SELECT outcome FROM focus_sessions WHERE started_at >= ? AND started_at <= ? AND ended_at IS NOT NULL`
+  ).all(start, end);
+  return rows.reduce((sum, r) => sum + focusEquivalent(r.outcome), 0);
+}
+
+/** 某任务的时间线（详情页番茄日志，按开始时间倒序） */
+function listFocusSessions(taskId, limit = 100) {
+  return db.prepare(
+    `SELECT * FROM focus_sessions WHERE task_id = ? AND ended_at IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT ?`
+  ).all(taskId, Number(limit) || 100).map(rowToFocus);
+}
+
 module.exports = {
   init,
   getDb,
@@ -2887,6 +3070,17 @@ module.exports = {
   DEFAULT_TREND_RANGE,
   normalizeTrendRange,
   rangeStats,
+  // 番茄钟（专注计时）
+  createFocusSession,
+  settleFocusSession,
+  getFocusSession,
+  deleteFocusSession,
+  getActiveFocusSession,
+  focusCountsForTasks,
+  todayFocusCount,
+  listFocusSessions,
+  focusMark,
+  focusEquivalent,
   // settings
   getSetting,
   setSetting,

@@ -209,31 +209,22 @@ body {
 .view-desc { color: var(--text-3); font-size: 12.5px; }
 .topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-/* 搜索框：右侧留出 36px 给「📝 笔记」附件按钮，点击不改变搜索框宽度
-   （宽度一旦变宽，顶栏这排按钮就会换行，把「＋ 新建任务」挤到第二行） */
+/* 搜索框：右侧不再塞图标按钮（笔记已挪成框外的独立按钮） */
 .search-box { position: relative; display: inline-flex; align-items: center; }
 .search-box input {
-  width: 200px; padding: 8px 36px 8px 12px; border: 1px solid var(--border);
+  width: 200px; padding: 8px 12px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--bg-panel); color: var(--text);
   font-size: 13px; outline: none; transition: width 0.2s;
 }
 .search-box input:focus { width: 260px; border-color: var(--primary); }
-.search-box:focus-within .search-action { color: var(--text); }
-/* 笔记入口：贴着搜索框右缘的小按钮（图标形态，省下 73px 的行宽）；
-   左侧留一道分隔线，读起来是「搜索框里的一个动作」，而不是输入内容的一部分 */
-.search-action {
-  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
-  width: 28px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
-  padding: 0; border: none; border-radius: 6px; background: transparent;
-  color: var(--text-3); font-size: 14px; line-height: 1; cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+/* 顶栏「📝 笔记」：紧贴搜索框的高亮按钮 —— 笔记是最容易被新用户忽略的核心功能，
+   用主色描边 + 主色文字让它从一排灰按钮里跳出来，悬停转实心 */
+.text-btn.note-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  border-color: var(--primary); background: var(--bg-active);
+  color: var(--primary-strong); font-weight: 600;
 }
-.search-action::before {
-  content: ''; position: absolute; left: -5px; top: 4px; bottom: 4px;
-  width: 1px; background: var(--border);
-}
-.search-action:hover { background: var(--bg-hover); color: var(--text); }
-.search-action:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.text-btn.note-btn:hover { background: var(--primary); border-color: var(--primary); color: #fff; }
 
 .icon-btn {
   width: 34px; height: 34px; border: 1px solid var(--border);
@@ -438,6 +429,102 @@ body {
 }
 .task-actions button:hover { background: var(--bg-hover); color: var(--text); }
 .task-actions button.del:hover { color: var(--danger); }
+
+/* ---------------- 番茄钟（专注计时） ---------------- */
+/* 悬停出现的「▶ 专注」+ 时长；格数标记 ●●◐ 与专注态进度环/剩余时间都挂在任务行上 */
+.focus-start { display: inline-flex; align-items: center; gap: 2px; }
+.focus-btn {
+  width: 20px; height: 20px; padding: 0; border: none; background: transparent;
+  color: var(--primary); cursor: pointer; font-size: 12px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 5px;
+}
+.focus-btn:hover { background: color-mix(in srgb, var(--primary) 14%, transparent); color: var(--primary-strong); }
+.focus-dur {
+  border: none; background: transparent; color: var(--text-3); cursor: pointer;
+  font-size: 11px; line-height: 1; padding: 2px 3px; border-radius: 4px; white-space: nowrap;
+}
+.focus-dur:hover { background: var(--bg-hover); color: var(--primary); }
+/* 格数标记：圆点，最多 3 个 + 「+N」；紧贴标题右侧，扫一眼知道推进了几格 */
+.focus-dots {
+  display: inline-flex; align-items: center; gap: 3px; margin-left: 8px;
+  color: var(--primary); font-size: 12px; line-height: 1; letter-spacing: 0;
+}
+.focus-dots .dot-full { color: var(--primary-strong); }
+.focus-dots .dot-half { color: #f59e0b; }
+.focus-dots .dot-more { color: var(--text-3); margin-left: 2px; font-size: 10px; }
+/* 专注中的任务行：整行轻微高亮 */
+.task-item.is-focus {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  background: color-mix(in srgb, var(--primary) 4%, var(--bg-panel));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent) inset;
+}
+/* 进度环：14px、2px 描边，主色填充（点击暂停/继续） */
+.focus-ring {
+  width: 14px; height: 14px; flex: none; cursor: pointer; display: inline-flex;
+  align-items: center; justify-content: center; margin: 0 2px;
+}
+.focus-ring svg { display: block; transform: rotate(-90deg); }
+.focus-ring .fr-bg { fill: none; stroke: color-mix(in srgb, var(--primary) 22%, var(--border)); stroke-width: 2; }
+.focus-ring .fr-fg {
+  fill: none; stroke: var(--primary); stroke-width: 2; stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s linear;
+}
+.task-item.is-focus.is-paused .focus-ring .fr-fg { stroke: var(--text-3); }
+/* 专注态右侧状态：剩余时间 + 结束按钮（常显，不随 hover） */
+.focus-status {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+}
+.focus-remain {
+  font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600; color: var(--primary-strong);
+  white-space: nowrap;
+}
+.task-item.is-focus.is-paused .focus-remain { color: var(--text-3); }
+.focus-end {
+  border: none; background: transparent; cursor: pointer; color: var(--text-3);
+  font-size: 11px; padding: 2px 6px; border-radius: 5px; white-space: nowrap;
+}
+.focus-end:hover { background: var(--bg-hover); color: var(--danger); }
+/* 收尾条：内联展开在任务行下方，浅底色、不用阴影（避免像又一层浮层） */
+li.focus-wrapup {
+  list-style: none; margin: -4px 0 10px; padding: 0;
+}
+.focus-wrapup-inner {
+  background: color-mix(in srgb, var(--primary) 5%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border));
+  border-radius: var(--radius-sm); padding: 10px 12px;
+}
+.fw-head { font-size: 13px; color: var(--text-2); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.fw-head .fw-mark { font-size: 14px; }
+.fw-head .fw-mark.fw-full { color: var(--primary); }
+.fw-head .fw-mark.fw-half { color: #f59e0b; }
+.fw-hint { font-size: 12px; color: var(--text-3); margin-top: 6px; }
+.fw-input {
+  width: 100%; box-sizing: border-box; padding: 7px 10px; font: inherit; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); color: var(--text);
+  outline: none; resize: none;
+}
+.fw-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 14%, transparent); }
+.fw-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.fw-actions button {
+  border: 1px solid var(--border); background: var(--bg-panel); cursor: pointer;
+  font-size: 12px; padding: 5px 12px; border-radius: 6px; color: var(--text-2);
+}
+.fw-actions button:hover { border-color: var(--primary); color: var(--primary-strong); }
+.fw-actions button.fw-again { border-color: var(--primary); background: var(--primary); color: #fff; font-weight: 600; }
+.fw-actions button.fw-again:hover { background: var(--primary-strong); }
+.fw-actions .fw-spacer { flex: 1; }
+.fw-actions button.fw-skip { color: var(--text-3); }
+/* 顶栏今日格数：极小、无背景，降低存在感 */
+.topbar-focus-count { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+/* 任务详情里的番茄时间线 */
+.focus-timeline { display: flex; flex-direction: column; gap: 6px; }
+.ft-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+.ft-mark { font-size: 12px; flex: none; }
+.ft-mark.ft-full { color: var(--primary); }
+.ft-mark.ft-half { color: #f59e0b; }
+.ft-time { color: var(--text-3); font-variant-numeric: tabular-nums; flex: none; }
+.ft-note { color: var(--text); }
+.ft-dur { color: var(--text-3); font-size: 11px; flex: none; }
 
 .empty {
   text-align: center; color: var(--text-3); padding: 60px 0; font-size: 14px;
@@ -2474,61 +2561,48 @@ body.nt-fs-open { overflow: hidden; }
 .tool-win-grip:hover::after { opacity: 1; }
 
 /* ---------------- 实用工具：公共小控件 ---------------- */
-.fmt-wrap, .df-wrap {
+.df-wrap {
   flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px;
   padding: 10px 12px 12px; overflow: hidden;
 }
-.fmt-bar, .df-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.fmt-field, .df-field { display: flex; align-items: center; gap: 4px; }
-.fmt-label, .df-label { font-size: 12px; color: var(--text-2); white-space: nowrap; }
-.fmt-ctl, .df-ctl {
+.df-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.df-field { display: flex; align-items: center; gap: 4px; }
+.df-label { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.df-ctl {
   padding: 4px 8px; font: inherit; font-size: 12.5px; outline: none; cursor: pointer;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-panel); color: var(--text);
 }
-.fmt-ctl:focus, .df-ctl:focus { border-color: var(--primary); }
-.fmt-check, .df-check {
+.df-ctl:focus { border-color: var(--primary); }
+.df-check {
   display: flex; align-items: center; gap: 4px; font-size: 12.5px;
   color: var(--text-2); cursor: pointer; user-select: none;
 }
-.fmt-check input, .df-check input { cursor: pointer; accent-color: var(--primary); }
-.fmt-spacer, .df-spacer { flex: 1 1 auto; min-width: 0; }
-.fmt-hint { font-size: 11.5px; color: var(--text-3); }
-.fmt-panes, .df-panes {
+.df-check input { cursor: pointer; accent-color: var(--primary); }
+.df-spacer { flex: 1 1 auto; min-width: 0; }
+.df-panes {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; min-height: 0;
 }
-.fmt-pane, .df-pane {
+.df-pane {
   display: flex; flex-direction: column; min-width: 0; min-height: 0;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg); overflow: hidden;
 }
-.fmt-pane-head, .df-pane-head {
+.df-pane-head {
   flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
   padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar);
 }
-.fmt-pane-title, .df-pane-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
-.fmt-count, .df-count {
+.df-pane-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.df-count {
   margin-left: auto; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums;
 }
-.fmt-area, .df-area {
+.df-area {
   flex: 1 1 auto; min-height: 0; width: 100%; resize: none; border: none; outline: none;
   padding: 8px 10px; background: transparent; color: var(--text);
   font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
   font-size: 12.5px; line-height: 1.65; tab-size: 2;
 }
-.fmt-area:focus, .df-area:focus { background: color-mix(in srgb, var(--primary) 4%, transparent); }
-
-/* ---------------- 实用工具：代码格式化 ---------------- */
-.fmt-panes { flex: 1 1 auto; }
-.fmt-status {
-  flex: 0 0 auto; padding: 5px 9px; border-radius: var(--radius-sm);
-  font-size: 12px; line-height: 1.5; color: var(--text-2); background: var(--bg);
-  max-height: 92px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
-}
-.fmt-status[data-state="ok"] { color: var(--green); background: color-mix(in srgb, var(--green) 10%, var(--bg)); }
-.fmt-status[data-state="err"] { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--bg)); }
-.fmt-foot { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
-.fmt-foot .fmt-spacer { flex: 1 1 auto; }
+.df-area:focus { background: color-mix(in srgb, var(--primary) 4%, transparent); }
 
 /* ---------------- 实用工具：文本对比 ---------------- */
 .df-panes { flex: 0 0 34%; min-height: 120px; }
@@ -2579,29 +2653,29 @@ body.nt-fs-open { overflow: hidden; }
 .df-w.del { background: color-mix(in srgb, var(--danger) 30%, transparent); border-radius: 2px; }
 .df-w.add { background: color-mix(in srgb, var(--green) 30%, transparent); border-radius: 2px; }
 @media (max-width: 720px) {
-  .fmt-panes, .df-panes { grid-template-columns: minmax(0, 1fr); }
+  .df-panes { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ---------------- 语法高亮（highlight.js token 配色，跟着应用主题走） ---------------- */
 /* 编辑区与高亮层必须共用同一套字体度量，否则两层文字会逐行错位 */
-.fmt-editor, .jv-editor {
+.jv-editor {
   position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden;
   font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
   font-size: 12.5px; line-height: 1.65; tab-size: 2;
 }
-.fmt-hl, .jv-hl {
+.jv-hl {
   position: absolute; inset: 0; margin: 0; padding: 8px 10px;
   overflow: hidden; pointer-events: none; white-space: pre;
   font: inherit; color: var(--text); background: transparent;
 }
 /* textarea 只留光标：文字透明，看到的是下面 <pre> 里着色后的内容 */
-.fmt-editor .fmt-area, .jv-editor .jv-area {
+.jv-editor .jv-area {
   position: relative; background: transparent; color: transparent; caret-color: var(--text);
 }
-.fmt-editor .fmt-area::placeholder, .jv-editor .jv-area::placeholder { color: var(--text-3); }
+.jv-editor .jv-area::placeholder { color: var(--text-3); }
 /* 聚焦反馈改画在容器上：直接给 textarea 上色会盖住高亮层 */
-.fmt-editor .fmt-area:focus, .jv-editor .jv-area:focus { background: transparent; }
-.fmt-editor:focus-within, .jv-editor:focus-within {
+.jv-editor .jv-area:focus { background: transparent; }
+.jv-editor:focus-within {
   background: color-mix(in srgb, var(--primary) 5%, transparent);
 }
 /* token 配色（浅色：偏 One Light 的观感） */
