@@ -38,10 +38,11 @@ export async function openNoteExportModal(preset = {}) {
     api.noteTags.list().catch(() => []),
   ]);
   await openPanelModal({
-    title: '导出笔记',
+    title: '批量导出笔记',
     className: 'modal-sync modal-note-export',
     html: `<div class="sync-wrap">${noteSectionHtml({ folders, tags, preset })}
-      <p class="sync-foot">导出的 .md 保留正文与格式（第三方 Markdown 编辑器可直接打开）；压缩包额外带上插入过的本地图片。</p>
+      <p class="sync-foot">导出的 .md 保留正文与格式，图片以 base64 直接嵌在 Markdown 里（不额外附带图片文件），
+      换台电脑或直接发给别人打开都能正常显示。</p>
     </div>`,
     okText: '关闭',
     showClose: true,
@@ -140,8 +141,8 @@ function noteSectionHtml({ folders, tags, preset = {} } = { folders: [], tags: [
           <label class="sync-field">
             <span class="sync-label">打包方式</span>
             <select class="modal-input sync-note-pack">
-              <option value="zip">每篇一个 .md（压缩包，含图片）</option>
-              <option value="single">合并成单个 Markdown</option>
+              <option value="single" selected>单个 Markdown（.md，图片内嵌）</option>
+              <option value="zip">每篇一个 .md（压缩包）</option>
             </select>
           </label>
           <label class="sync-field">
@@ -158,7 +159,7 @@ function noteSectionHtml({ folders, tags, preset = {} } = { folders: [], tags: [
         </label>
         <div class="sync-actions">
           <button type="button" class="primary-btn sync-btn-notes">导出笔记</button>
-          <span class="sync-hint">压缩包里的 .md 可批量上传到 ima 知识库；单文件合集适合整篇粘贴。</span>
+          <span class="sync-hint">只筛到一篇时直接导出为这篇的 .md；图片以 base64 内嵌，单个文件即可分享。</span>
         </div>
       </section>`;
 }

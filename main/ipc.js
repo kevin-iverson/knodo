@@ -998,18 +998,21 @@ function registerIpc() {
     fs.writeFileSync(filePath, content, 'utf8');
     return { ok: true, filePath, count: rows.length };
   }));
-  // 笔记 → 单个 Markdown 合集 / 每篇一个 .md 的压缩包（可直接上传 ima 知识库）
+  // 笔记 → 单个 Markdown（单篇就是一篇 .md）/ 每篇一个 .md 的压缩包（可直接上传 ima 知识库）
+  // 图片一律以 base64 内嵌在正文里，不再单独导出附件：.md 自包含，发给别人也能看到图。
   ipcMain.handle('sync:exportNotes', withDb(async (opts = {}) => {
     const entries = sync.collectNotes(opts);
     if (!entries.length) return { ok: false, empty: true };
-    const pack = opts.pack === 'single' ? 'single' : 'zip';
+    // 只匹配到一篇 = 单文档导出：强制 .md，不再打压缩包（压缩包里放一个 .md 对用户毫无意义）
+    const single = entries.length === 1;
+    const pack = single || opts.pack === 'single' ? 'single' : 'zip';
     const ext = pack === 'single' ? 'md' : 'zip';
     const payload = pack === 'single'
       ? Buffer.from(sync.notesToSingleMarkdown(entries, opts), 'utf8')
       : sync.notesToZip(entries, opts);
     const { canceled, filePath } = await dialog.showSaveDialog({
       title: '导出笔记',
-      defaultPath: sync.defaultName('笔记', ext),
+      defaultPath: single ? entries[0].fileName : sync.defaultName('笔记', ext),
       filters: [
         { name: pack === 'single' ? 'Markdown' : 'ZIP 压缩包', extensions: [ext] },
         { name: '所有文件', extensions: ['*'] },
@@ -1017,7 +1020,7 @@ function registerIpc() {
     });
     if (canceled || !filePath) return { ok: false, canceled: true };
     fs.writeFileSync(filePath, payload);
-    return { ok: true, filePath, count: entries.length };
+    return { ok: true, filePath, count: entries.length, pack };
   }));
 
   /* ---------- 数据导入 / 导出 ---------- */

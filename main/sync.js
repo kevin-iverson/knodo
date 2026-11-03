@@ -4,14 +4,16 @@
  *
  *  - 任务 → Markdown 表格 / CSV：CSV 可直接导入腾讯文档（智能表格 / 在线表格），
  *    Markdown 可贴进腾讯文档或作为文本素材喂给 ima。
- *  - 笔记 → 单文件 Markdown 合集 / 按篇拆分的 .md 压缩包（zip）：
+ *  - 笔记 → 单文件 Markdown（单篇就是一篇 .md）/ 按篇拆分的 .md 压缩包（zip）：
  *    散文件形式可直接批量上传到 ima 知识库。
+ *
+ * 图片一律**内嵌**：笔记里的 todo-media:/// 链接会被换成 data:image/...;base64，
+ * 导出的 .md 是自包含的 —— 发给别人、换台机器打开都能看到图，不再附带 attachments/ 目录。
  *
  * 这里只做「读数据 + 拼装文本」，落盘（保存对话框 + 写文件）在 ipc.js 里做，
  * 好处是这些拼装函数不依赖 Electron，可以直接在 npm run test:db 下断言。
  */
 const fs = require('fs');
-const path = require('path');
 const db = require('./db');
 const attachments = require('./attachments');
 const { zip } = require('./docx');
@@ -186,91 +188,171 @@ function folderIndex() {
 
 /**
  * 取待导出的笔记正文（去掉颜色 / 高亮标记，外部工具不认这种私有语法）。
- * @param {{folderId?:number|null, tagId?:number|null, includeArchived?:boolean}} opts
- * @returns {Array<{title:string, folderPath:string, tags:string[], createdAt:string, updatedAt:string, md:string, attachments:Array}>}
+ * @param {{noteId?:number|null, folderId?:number|null, tagId?:number|null, includeArchived?:boolean}} opts
+ * @returns {Array<{id:number, title:string, fileName:string, folderPath:string, tags:string[], createdAt:string, updatedAt:string, md:string, attachments:Array}>}
  */
 function collectNotes(opts = {}) {
   const pathOf = folderIndex();
+  // 指定单篇：只看这一篇，目录 / 标签筛选不参与（「导出当前这篇」的唯一入口）
+  if (opts.noteId != null) {
+    const one = db.getNote(Number(opts.noteId));
+    if (!one || one.deleted_at) return [];
+    return [noteEntry(one, one, pathOf)];
+  }
   const filter = { limit: EXPORT_LIMIT, archived: opts.includeArchived ? 'include' : 'exclude' };
   if (opts.folderId != null) { filter.folderId = opts.folderId; filter.includeSubfolders = true; }
   if (opts.tagId != null) filter.tagId = opts.tagId;
   const list = db.listNotes(filter);
-  return list.map((n) => {
-    const full = db.getNote(n.id) || n;
-    const md = db.stripStyleMarks(full.content_md || '');
-    return {
-      title: n.title || '未命名笔记',
-      folderPath: n.folder_id != null ? pathOf(n.folder_id) : '',
-      tags: (n.tags || []).map((t) => t.name),
-      createdAt: (n.created_at || '').slice(0, 10),
-      updatedAt: (n.updated_at || '').slice(0, 10),
-      md,
-      attachments: Array.isArray(n.attachments) ? n.attachments : [],
-    };
-  });
+  return list.map((n) => noteEntry(n, db.getNote(n.id) || n, pathOf));
 }
 
-/** 笔记 → 单个 Markdown 文件（多篇顺序拼接，每篇带标题与元信息） */
+/** 列表行 + 完整行 → 一条导出记录（附件优先取完整行） */
+function noteEntry(n, full, pathOf) {
+  const atts = Array.isArray(full.attachments) ? full.attachments : (Array.isArray(n.attachments) ? n.attachments : []);
+  return {
+    id: n.id,
+    title: n.title || '未命名笔记',
+    fileName: `${safeFileName(n.title || '未命名笔记')}.md`,
+    folderPath: n.folder_id != null ? pathOf(n.folder_id) : '',
+    tags: (n.tags || []).map((t) => t.name),
+    createdAt: (n.created_at || '').slice(0, 10),
+    updatedAt: (n.updated_at || '').slice(0, 10),
+    md: db.stripStyleMarks(full.content_md || ''),
+    attachments: atts,
+  };
+}
+
+/* ------------------ 图片内嵌（导出为自包含 Markdown） ------------------ */
+
+const MEDIA_PREFIX = 'todo-media:///';
+/** 单张图内嵌上限：base64 再涨 1/3，太大会把 .md 撑到几百兆 */
+const MAX_INLINE_BYTES = 20 * 1024 * 1024;
+
+/** 附件 → data: URL；非图片 / 文件缺失 / 超限返回空串（保持原链接不动） */
+function inlineDataUrl(entry) {
+  let mime = String((entry && entry.mime) || '');
+  if (!mime) {
+    try { mime = attachments.mimeOf(entry && entry.name); } catch (e) { mime = ''; }
+  }
+  if (!/^image\//i.test(mime)) return '';
+  try {
+    const abs = attachments.absPath(entry);
+    if (!abs || !fs.existsSync(abs)) return '';
+    const st = fs.statSync(abs);
+    if (!st.isFile() || !st.size || st.size > MAX_INLINE_BYTES) return '';
+    return `data:${mime};base64,${fs.readFileSync(abs).toString('base64')}`;
+  } catch (e) {
+    return ''; // 单个附件读失败不阻断整篇导出
+  }
+}
+
+/** 正文里可能出现的两种写法：逐段编码的（现行）与裸路径（早期 / 手写） */
+function mediaUrlVariants(entry) {
+  const rel = String((entry && entry.path) || '').replace(/^\/+/, '');
+  if (!rel) return [];
+  return [
+    `${MEDIA_PREFIX}${rel.split('/').map(encodeURIComponent).join('/')}`,
+    `${MEDIA_PREFIX}${rel}`,
+  ];
+}
+
+/** alt 文本里不能出现方括号，否则会把图片语法截断 */
+function altText(name) {
+  return String(name || 'image')
+    .replace(/\.[a-z0-9]{2,5}$/i, '')
+    .replace(/[[\]]/g, ' ')
+    .trim() || 'image';
+}
+
+/**
+ * 把正文里的 todo-media:/// 图片链接换成 data: URL —— 导出的 .md 不再依赖附件目录。
+ * 正文没引用到的图片附件追加在文末，避免「传了却看不见」的内容被静默丢掉。
+ * @param {string} md 已去掉样式标记的正文
+ * @param {Array} atts 笔记附件元数据
+ */
+function inlineNoteImages(md, atts = []) {
+  let out = String(md || '');
+  const list = Array.isArray(atts) ? atts : [];
+  const used = new Set();
+  list.forEach((att) => {
+    const data = inlineDataUrl(att);
+    if (!data) return;
+    let hit = false;
+    mediaUrlVariants(att).forEach((url) => {
+      if (!url || !out.includes(url)) return;
+      out = out.split(url).join(data);
+      hit = true;
+    });
+    if (hit) used.add(String(att.id));
+  });
+
+  const rest = list
+    .filter((att) => !used.has(String(att.id)))
+    .map((att) => ({ att, data: inlineDataUrl(att) }))
+    .filter((x) => x.data);
+  if (rest.length) {
+    const block = rest.map(({ att, data }) => `![${altText(att.name)}](${data})`).join('\n\n');
+    out = `${out.replace(/\s+$/, '')}\n\n${block}\n`;
+  }
+  return out;
+}
+
+/** 一篇笔记 → 自包含 Markdown（标题 + 元信息 + 正文） */
+function noteToMarkdown(e) {
+  const meta = [
+    e.folderPath ? `目录：${e.folderPath}` : '',
+    e.tags.length ? `标签：${e.tags.join('、')}` : '',
+    `创建：${e.createdAt} · 更新：${e.updatedAt}`,
+  ].filter(Boolean).join(' · ');
+  const body = inlineNoteImages(e.md, e.attachments);
+  return `# ${e.title}\n\n> ${meta}\n\n${body || '（空笔记）'}\n`;
+}
+
+/** 笔记 → 单个 Markdown 文件（单篇 = 这篇笔记本身；多篇顺序拼接，每篇带标题与元信息） */
 function notesToSingleMarkdown(entries, opts = {}) {
+  if (!entries.length) {
+    return `# 笔记导出\n\n> 共 0 篇 · ${opts.scopeText || '全部笔记'} · 导出时间：${humanNow()}\n\n（没有符合条件的笔记）\n`;
+  }
+  // 只导一篇时不要「合集」外壳：用户拿到的就是这篇文档，标题即 H1
+  if (entries.length === 1) return noteToMarkdown(entries[0]);
+
   const head = [
     '# 笔记导出',
     '',
     `> 共 ${entries.length} 篇 · ${opts.scopeText || '全部笔记'} · 导出时间：${humanNow()}`,
     '',
   ];
-  if (!entries.length) return `${head.join('\n')}（没有符合条件的笔记）\n`;
   const body = entries.map((e) => {
     const meta = [
       e.folderPath ? `目录：${e.folderPath}` : '',
       e.tags.length ? `标签：${e.tags.join('、')}` : '',
       `更新：${e.updatedAt}`,
     ].filter(Boolean).join(' · ');
-    return `## ${e.title}\n\n> ${meta}\n\n${e.md || '（空笔记）'}\n\n---\n`;
+    const md = inlineNoteImages(e.md, e.attachments);
+    return `## ${e.title}\n\n> ${meta}\n\n${md || '（空笔记）'}\n\n---\n`;
   });
   return `${head.join('\n')}\n${body.join('\n')}`;
 }
 
 /**
- * 笔记 → zip：每篇一个 .md（放在对应目录层级下），图片附件一起打包，
- * 正文里的 todo-media:/// 链接改写成压缩包内的相对路径，解压后能正常预览。
+ * 笔记 → zip：每篇一个 .md（放在对应目录层级下）。
+ * 图片同样以 data: URL 内嵌，包里只有 .md —— 单篇解压出来也能看到图，不配 attachments/。
  */
 function notesToZip(entries, opts = {}) {
   const used = new Set();
   const files = [];
   entries.forEach((e) => {
     const dir = e.folderPath ? e.folderPath.split(' / ').map((s) => safeFileName(s)).join('/') : '';
-    let base = `${dir ? `${dir}/` : ''}${safeFileName(e.title)}.md`;
+    const base = `${dir ? `${dir}/` : ''}${safeFileName(e.title)}.md`;
     let name = base;
     let n = 2;
     while (used.has(name.toLowerCase())) name = base.replace(/\.md$/, `-${n++}.md`);
     used.add(name.toLowerCase());
-
-    // 图片链接改写：todo-media:///attachments/note-3/x_y.png → attachments/x_y.png
-    let md = e.md || '';
-    (e.attachments || []).forEach((att) => {
-      const rel = String((att && att.path) || '').replace(/^\/+/, '');
-      if (!rel) return;
-      const target = safeFileName(path.basename(rel));
-      const url = `todo-media:///${rel.split('/').map(encodeURIComponent).join('/')}`;
-      md = md.split(url).join(`attachments/${target}`);
-      try {
-        const abs = attachments.absPath(att);
-        if (abs && fs.existsSync(abs)) {
-          files.push({ name: `attachments/${target}`, data: fs.readFileSync(abs) });
-        }
-      } catch (err) { /* 附件缺失不阻断导出 */ }
-    });
-
-    const meta = [
-      e.folderPath ? `目录：${e.folderPath}` : '',
-      e.tags.length ? `标签：${e.tags.join('、')}` : '',
-      `创建：${e.createdAt} · 更新：${e.updatedAt}`,
-    ].filter(Boolean).join(' · ');
-    files.push({ name, data: `# ${e.title}\n\n> ${meta}\n\n${md || '（空笔记）'}\n` });
+    files.push({ name, data: noteToMarkdown(e) });
   });
 
   const readme = `# 笔记导出\n\n共 ${entries.length} 篇 · ${opts.scopeText || '全部笔记'} · 导出时间：${humanNow()}\n`
-    + '\n每个 .md 对应一篇笔记，按原目录层级放置；图片在 attachments/ 下。\n'
+    + '\n每个 .md 对应一篇笔记，按原目录层级放置；图片已以 base64 内嵌在各自的 .md 里，单独拷走也能正常显示。\n'
     + '可直接把 .md 批量上传到 ima 知识库，或导入其它支持 Markdown 的产品。\n';
   files.push({ name: 'README.md', data: readme });
   return zip(files);
@@ -289,6 +371,8 @@ module.exports = {
   tasksToMarkdown,
   tasksToCsv,
   collectNotes,
+  noteToMarkdown,
+  inlineNoteImages,
   notesToSingleMarkdown,
   notesToZip,
   defaultName,

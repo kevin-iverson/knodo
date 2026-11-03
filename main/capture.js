@@ -30,6 +30,15 @@ const TOP = 96;
 const RECENT_MAX = 3;
 /** 撤销窗口（与主窗口共用同一套 5 秒语义） */
 const UNDO_MS = 5000;
+/**
+ * 下拉面板几何：必须和 capture.css 里的 .cap-picker / .cap-pick 完全对齐，
+ * 否则窗口高度不够，最后一项会被裁掉（滚动条又是全局隐藏的，用户根本不知道还能滚）。
+ */
+const PICK_TOP = 56; // .cap-picker 的 top
+const PICK_ROW = 30; // .cap-pick 的 height
+const PICK_PAD = 12; // 面板上下 padding 5*2 + 边框 1*2
+const PICK_SHADOW = 8; // 底部留白给投影
+const PICK_MAX = 8; // 最多展开 8 行，再多就滚动
 
 let win = null;
 let getMainWindow = () => null;
@@ -104,7 +113,47 @@ function candidates() {
   readCfg().recents.forEach(push);
   push(lastAddGroupId());
   db.listGroups().forEach((g) => push(g.id));
-  return out.slice(0, 12);
+  // 上限 20：Tab 是"快速切"，不追求全集（全集在下拉里），但也不能比常见的分组数还少
+  return out.slice(0, 20);
+}
+
+/**
+ * 下拉里的全部清单：树形扁平化（子分组紧跟父分组），带 depth 用于缩进、
+ * 带完整 path（「父 / 子」）用于跨级同名时区分 —— 分组名只在同一 parent 下唯一。
+ * Tab 候选只有 12 个，下拉必须是全集，否则分组一多就"选不全"。
+ */
+function groupList() {
+  const rows = db.listGroups();
+  const byParent = new Map();
+  rows.forEach((g) => {
+    const key = g.parent_id == null ? 'root' : Number(g.parent_id);
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(g);
+  });
+  const out = [];
+  const seen = new Set();
+  const walk = (key, depth, path) => {
+    (byParent.get(key) || []).forEach((g) => {
+      if (seen.has(g.id)) return; // 数据异常（父子成环）时兜底，绝不让递归炸掉
+      seen.add(g.id);
+      const full = path ? `${path} / ${g.name}` : g.name;
+      out.push({ id: g.id, name: g.name, parentId: g.parent_id == null ? null : Number(g.parent_id), depth, path: full });
+      walk(g.id, depth + 1, full);
+    });
+  };
+  walk('root', 0, '');
+  // 环里的孤儿（父级已不存在）兜底追加，避免清单"消失"
+  rows.forEach((g) => {
+    if (!seen.has(g.id)) out.push({ id: g.id, name: g.name, parentId: g.parent_id == null ? null : Number(g.parent_id), depth: 0, path: g.name });
+  });
+  return out;
+}
+
+/** 本地日期 YYYY-MM-DD（plan_start / plan_end 就是这个格式，不能用 toISOString） */
+function todayStr() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 /** 决定本次打开的目标：优先沿用上次落点，其次候选第一个 */
@@ -122,6 +171,7 @@ function snapshot() {
   return {
     target: { id: t.id, name: t.name },
     targets: t.groups,
+    groups: groupList(),
     hasGroups: t.groups.length > 0,
     count: sessionCount,
     theme: db.getSetting('theme', 'system'),
@@ -204,8 +254,11 @@ function toggle(opts = {}) {
   }
   if (opts.contextGroupId !== undefined) contextGroupId = opts.contextGroupId;
   const state = snapshot();
+  applyContentHeight(H); // 上次可能停在下拉展开的高度，先收回 52px
   placeWindow();
   w.show();
+  // 隐藏态量到的 contentSize 有 1~2px 偏差，显示后按真实尺寸再收敛一次
+  applyContentHeight(H);
   w.focus();
   if (w.webContents.isLoading()) w.webContents.once('did-finish-load', sendState);
   else sendState();
@@ -224,6 +277,48 @@ function isVisible() {
   return !!(win && !win.isDestroyed() && win.isVisible());
 }
 
+/* ------------------------------ 下拉面板 ------------------------------ */
+
+/**
+ * 清单下拉要临时加高窗口：条本身只有 52px，列表放不下。
+ * 顶部位置固定（placeWindow 用 workArea.y + TOP），所以只改高度，不用重定位。
+ * @param {{open?:boolean, count?:number}} opts
+ */
+function picker(opts = {}) {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const rows = Math.max(1, Math.min(Number(opts.count) || 1, PICK_MAX));
+  const h = opts.open ? PICK_TOP + rows * PICK_ROW + PICK_PAD + PICK_SHADOW : H;
+  applyContentHeight(h);
+  return { ok: true, height: h };
+}
+
+/**
+ * 透明无边框窗在 Windows 上的内容尺寸和请求值有常量偏差（desktop-window 踩过同样的坑），
+ * 所以设完量一次、按差值补一次。
+ */
+function applyContentHeight(h) {
+  if (!win || win.isDestroyed()) return;
+  const target = Math.max(H, Math.min(420, Math.round(h)));
+  const [, cur] = win.getContentSize();
+  if (cur === target) return;
+  win.setContentSize(W, target);
+  const [, got] = win.getContentSize();
+  if (got !== target) win.setContentSize(W, target - (got - target));
+}
+
+/** 下拉里点选清单：写盘并同步最近清单，Tab 的候选顺序随之更新 */
+function setTarget(id) {
+  const n = Number(id);
+  const g = db.getGroup(n);
+  if (!g) throw userError('这个清单已经被删除了');
+  targetId = n;
+  writeCfg({ lastGroupId: n, recents: [n, ...readCfg().recents.filter((x) => x !== n)] });
+  return {
+    target: { id: n, name: g.name },
+    targets: candidates().map((cid) => ({ id: cid, name: groupName(cid) })),
+  };
+}
+
 /* ------------------------------ 保存 / 撤销 ------------------------------ */
 
 /** 保存一条：落库 → 记住落点与最近清单 → 通知其它窗口刷新 */
@@ -240,7 +335,10 @@ function save(rawTitle) {
     e.code = 'NO_GROUP';
     throw e;
   }
-  const task = db.createTask({ title, groupId: t.id });
+  // 捕捉条记的都是「当下要处理的事」：默认计划今天，加完立刻出现在「今天」视图，
+  // 不会出现"记了却找不到"。要改期去主窗口改，这里不弹任何选择框。
+  const today = todayStr();
+  const task = db.createTask({ title, groupId: t.id, planStart: today, planEnd: today });
   sessionCount += 1;
   lastSaved = { id: task.id, title: task.title, at: Date.now() };
   const cfg = writeCfg({
@@ -335,6 +433,8 @@ function registerIpc() {
   ipcMain.handle('capture:undo', wrap(() => undo()));
   ipcMain.handle('capture:cycle', wrap(() => cycle()));
   ipcMain.handle('capture:setContext', wrap((_e, groupId) => setContext(groupId)));
+  ipcMain.handle('capture:setTarget', wrap((_e, id) => setTarget(id)));
+  ipcMain.handle('capture:picker', wrap((_e, opts) => picker(opts || {})));
   ipcMain.handle('capture:openMain', wrap(() => ({ ok: openMain() })));
 }
 
@@ -361,5 +461,5 @@ function destroy() {
 
 module.exports = {
   init, destroy, toggle, hide, isVisible, save, undo, cycle, setContext, openMain,
-  candidates, KEY,
+  setTarget, picker, candidates, groupList, KEY,
 };

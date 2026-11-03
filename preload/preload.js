@@ -299,6 +299,8 @@ contextBridge.exposeInMainWorld('api', {
     save: (title) => call('capture:save', title),
     undo: () => call('capture:undo'),
     cycle: () => call('capture:cycle'),
+    setTarget: (id) => call('capture:setTarget', id),
+    picker: (opts) => call('capture:picker', opts || {}),
     hide: () => call('capture:hide'),
     toggle: (opts) => call('capture:toggle', opts || {}),
     setContext: (groupId) => call('capture:setContext', groupId),

@@ -23,7 +23,7 @@ const VERSION = 1;
  * 筛选标准是「每天至少用 10 次」——键位泛滥等于没有键位，所以这里只有 11 条。
  */
 const ACTIONS = [
-  { id: 'app.show', label: '唤起主窗口', hint: '看', def: 'Control+Alt+B' },
+  { id: 'app.show', label: '显示 / 隐藏主窗口', hint: '按一次唤起，再按一次收起', def: 'Control+Alt+B' },
   { id: 'app.quickAdd', label: '快速添加任务', hint: '做', def: 'Control+Alt+N' },
   { id: 'app.capture', label: '快速捕捉', hint: '记', def: 'Control+Alt+C' },
   { id: 'app.toggleDesktop', label: '显示 / 隐藏桌面浮窗', hint: '演示 / 共享屏幕前一键收起', def: 'Control+Alt+H' },
@@ -443,5 +443,8 @@ function destroy() {
 
 module.exports = {
   init, destroy, list, apply, clear, resetAll, clearAll, healthCheck,
+  // 暴露触发入口：与 globalShortcut 注册时走的是同一个 fire()，
+  // 便于自动化验证（真实按键注入在部分环境里不可用）与故障排查时手动触发一次动作。
+  fire,
   displayAccel, normalizeAccel, ACTIONS,
 };

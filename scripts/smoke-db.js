@@ -965,12 +965,37 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
     && nEntries.every((e) => e.folderPath === '同步-目录')
     && !nEntries.some((e) => e.md.includes('{c:#e5484d')));
   const singleMd = sync.notesToSingleMarkdown(nEntries);
-  check('单文件笔记导出含每篇标题', singleMd.includes('## 同步笔记/含斜杠') && singleMd.includes('## 另一篇'));
-  const zipBuf = sync.notesToZip(nEntries);
+  check('多篇导出（单个 .md）仍带每篇标题',
+    singleMd.startsWith('# 笔记导出') && singleMd.includes('## 同步笔记/含斜杠') && singleMd.includes('## 另一篇'));
+  // 单篇 = 单文档：不要「合集」外壳，标题就是这篇笔记的 H1
+  const oneEntry = sync.collectNotes({ noteId: nEntries.find((e) => e.title === '另一篇').id });
+  const oneMd = sync.notesToSingleMarkdown(oneEntry);
+  check('单篇直接导出成一篇 .md（无合集外壳、文件名取标题）',
+    oneEntry.length === 1 && oneMd.startsWith('# 另一篇')
+    && !oneMd.includes('# 笔记导出') && oneEntry[0].fileName === '另一篇.md');
+
+  // 图片不再单独打包：正文里的 todo-media:/// 被换成 data: URL，.md 自包含
+  attachments.init(path.join(tmpDir, 'attachments'));
+  const imgNote = db.createNote({ title: '图文笔记', contentMd: '占位', folderId: syncFolder.id });
+  const imgAtt = attachments.importDataUrl('note', imgNote.id, png1x1, '示意图.png');
+  db.setNoteAttachments(imgNote.id, [imgAtt]);
+  const imgUrl = `todo-media:///${imgAtt.path.split('/').map(encodeURIComponent).join('/')}`;
+  db.updateNote(imgNote.id, { content_md: `前文\n\n![示意图](${imgUrl})\n\n后文` });
+  const imgMd = sync.notesToSingleMarkdown(sync.collectNotes({ noteId: imgNote.id }));
+  check('图片以 Markdown 图片语法内嵌（base64 data URL，纯 .md 即可显示）',
+    /!\[示意图\]\(data:image\/png;base64,[A-Za-z0-9+/=]+\)/.test(imgMd)
+    && !imgMd.includes('todo-media:///'));
+
+  const zipBuf = sync.notesToZip(sync.collectNotes({ folderId: syncFolder.id }));
   // 文件名在 ZIP 头里是明文（UTF-8），直接按字节找，别用 latin1 比中文
   const hasName = zipBuf.indexOf(Buffer.from('同步笔记_含斜杠.md', 'utf8')) > 0;
   check('笔记压缩包是合法 ZIP 且文件名已清洗',
     zipBuf.slice(0, 2).toString('latin1') === 'PK' && hasName && zipBuf.length > 200);
+  check('压缩包内不再单独带图片附件（图片已内嵌）',
+    zipBuf.indexOf(Buffer.from('attachments/', 'utf8')) < 0);
+  // [22] 按全库附件数做断言：这条测试图用完就摘掉，别污染后面的备份统计
+  db.setNoteAttachments(imgNote.id, []);
+  try { attachments.removeFile(imgAtt); } catch (e) { /* 清理失败不影响断言 */ }
   check('导出文件名带时间戳', /^Knodo-任务-\d{8}-\d{4}\.csv$/.test(sync.defaultName('任务', 'csv')));
 
   /* ---------- [22] 完整备份包：导出 → 换数据目录 → 导入 ---------- */

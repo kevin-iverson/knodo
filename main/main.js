@@ -134,10 +134,26 @@ function dirDialog(opts) {
   return mainWindow ? dialog.showOpenDialog(mainWindow, opts) : dialog.showOpenDialog(opts);
 }
 
+/**
+ * 主窗口显隐切换：唤起键 / 托盘单击共用的唯一实现（两处各写一遍迟早漂移）。
+ *
+ * 「已可见且聚焦」才收起，其余一律唤起：
+ *  - 窗口被别的应用盖住 / 被最小化时，用户按这键的意图是「把它调出来」，不是「关掉」；
+ *  - 最小化时 isVisible() 仍是 true，所以必须先判 isMinimized()，否则会出现
+ *    「按一下没反应（其实被 hide 了）」这种最让人困惑的行为。
+ */
 function toggleWindow() {
-  if (!mainWindow) return showWindow();
-  if (mainWindow.isVisible() && mainWindow.isFocused()) mainWindow.hide();
-  else showWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) return showWindow();
+  if (!mainWindow.isMinimized() && mainWindow.isVisible() && mainWindow.isFocused()) {
+    // 主窗口上挂着可见的模态子窗口（导出 / 选择目录 / 备份恢复）时不收起：
+    // 藏掉父窗口会把对话框一起带走，用户会以为程序卡死
+    const hasModal = BrowserWindow.getAllWindows().some(
+      (w) => w !== mainWindow && !w.isDestroyed() && w.isVisible() && w.getParentWindow() === mainWindow,
+    );
+    if (!hasModal) mainWindow.hide();
+    return;
+  }
+  showWindow();
 }
 
 function quickAdd() {
@@ -182,7 +198,8 @@ function dispatchShortcut(actionId) {
   if (!db.isReady()) return;
   switch (actionId) {
     case 'app.show':
-      showWindow();
+      // 显隐切换：按一次出现，再按一次收起（与托盘单击同一套语义）
+      toggleWindow();
       return;
     case 'app.quickAdd':
       quickAdd();
@@ -340,7 +357,7 @@ function buildAppMenu() {
       ],
     },
     {
-      // 桌面浮窗：主路径是「分组 / 今天」右键 → 钉到桌面，这里是次要入口 ——
+      // 桌面浮窗：主路径是「分组 / 今天 / 即将到期」右键 → 钉到桌面，这里是次要入口 ——
       // 钉了三四个之后，从菜单里找窗比在桌面上翻快，也是位置跑偏后的兜底（见 E-08）
       label: '桌面浮窗',
       submenu: desktopMenuTemplate(),
@@ -367,7 +384,7 @@ function desktopMenuTemplate() {
         else desktopWindow.show(p.id);
       },
     }))
-    : [{ label: '（还没有钉住的清单）', enabled: false }];
+    : [{ label: '（还没有钉住的清单 / 视图）', enabled: false }];
   return [
     ...listItems,
     { type: 'separator' },
@@ -382,7 +399,7 @@ function desktopMenuTemplate() {
       click: () => items.forEach((p) => desktopWindow.hide(p.id)),
     },
     { type: 'separator' },
-    { label: '在分组 / 「今天」上右键即可钉到桌面', enabled: false },
+    { label: '在分组 / 「今天」/「即将到期」上右键即可钉到桌面', enabled: false },
   ];
 }
 
@@ -795,6 +812,7 @@ app.whenReady().then(async () => {
   setupTray({
     getWindow: () => mainWindow,
     onShow: showWindow,
+    onToggle: toggleWindow,
     onQuickAdd: quickAdd,
     onCapture: () => {
       // 托盘入口与 Ctrl+Alt+C 走同一条链路（没有前台浮窗，落点沿用主窗口上下文）

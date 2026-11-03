@@ -111,7 +111,7 @@ function isCollapsed() {
 
 function signature() {
   if (!view) return 'none';
-  const t = (view.tasks || []).map((x) => `${x.id}:${x.completed ? 1 : 0}:${x.title}:${x.parent_id || ''}`).join('|');
+  const t = (view.tasks || []).map((x) => `${x.id}:${x.completed ? 1 : 0}:${x.title}:${x.parent_id || ''}:${x.plan_end || ''}`).join('|');
   return `${view.title}|${view.counts ? view.counts.done : 0}/${view.counts ? view.counts.total : 0}|${view.error || ''}|${view.missing ? 1 : 0}|${isCollapsed() ? 1 : 0}|${t}|${highlightId || ''}`;
 }
 
@@ -168,6 +168,24 @@ function render() {
   fit();
 }
 
+/**
+ * 到期日小标签（「即将到期」投影专用）：
+ * 这个视图里「什么时候到期」就是主要信息，只给标题等于看不出来；
+ * 近三天用相对说法（今天 / 明天 / 后天），更远的用 M/D 省宽度。
+ */
+function dueLabel(planEnd) {
+  if (!planEnd) return '';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const d = new Date(`${planEnd}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return '';
+  const days = Math.round((d - today) / 86_400_000);
+  if (days === 0) return '今天';
+  if (days === 1) return '明天';
+  if (days === 2) return '后天';
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
 function renderList() {
   const scrollTop = el.list.scrollTop;
   const tasks = Array.isArray(view.tasks) ? view.tasks : [];
@@ -175,6 +193,8 @@ function renderList() {
     el.list.innerHTML = '';
     return;
   }
+  const kind = (view.projection && view.projection.kind) || 'group';
+  const showDue = kind === 'upcoming';
   el.list.innerHTML = tasks.map((t) => {
     const done = !!t.completed;
     const cls = [
@@ -184,9 +204,11 @@ function renderList() {
       t.id === selId ? 'is-sel' : '',
       t.id === highlightId ? 'is-new' : '',
     ].filter(Boolean).join(' ');
+    const due = showDue ? dueLabel(t.plan_end) : '';
     return `<div class="${cls}" data-id="${t.id}" role="checkbox" aria-checked="${done}" title="${esc(t.title)}">
       <span class="dw-check${done ? ' on' : ''}"></span>
       <span class="dw-text">${esc(t.title)}</span>
+      ${due ? `<span class="dw-due${due === '今天' || due === '明天' ? ' is-soon' : ''}">${esc(due)}</span>` : ''}
       <span class="dw-row-acts">
         <button type="button" class="dw-row-btn" data-act="open" title="在主窗口打开">↗</button>
         <button type="button" class="dw-row-btn" data-act="del" title="删除任务">✕</button>
@@ -218,10 +240,14 @@ function renderHint() {
     return;
   }
   if (!tasks.length) {
-    // 空态直接告诉用户下一步，不写「暂无数据」
+    // 空态直接告诉用户下一步，不写「暂无数据」。
+    // 视图投影（今天 / 即将到期）用「这里」，分组投影用「这个清单」——文案跟着宿主走。
+    const kind = (view.projection && view.projection.kind) || 'group';
+    const where = kind === 'group' ? '这个清单' : '这里';
+    const tip = kind === 'upcoming' ? '在下方输入框添加，默认排在今天' : '在下方输入框直接添加';
     el.hint.hidden = false;
     el.hint.className = 'dw-hint';
-    el.hint.innerHTML = '这个清单还没有待办<br><b>在下方输入框直接添加</b>';
+    el.hint.innerHTML = `${where}还没有待办<br><b>${tip}</b>`;
     return;
   }
   el.hint.hidden = true;

@@ -1627,8 +1627,10 @@ html.is-resizing .detail-foot { pointer-events: none; }
 /* 工具栏允许换行：窗口窄 / 侧边栏被拖宽时，右侧的「知识库问答 / 共 N 篇」不会被挤出可视区 */
 .nt-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .nt-toolbar .nt-spacer { flex: 1 1 auto; min-width: 12px; }
+/* flex-basis 给得小一点：工具栏改成「批量导入 / 批量导出」后一行所需的自然宽度变宽，
+   basis 太大（220）会让整条工具栏在 1080 就换行——换行判定看的是 basis 而不是可压缩量 */
 .nt-search {
-  flex: 1 1 220px; min-width: 150px; max-width: 360px;
+  flex: 1 1 160px; min-width: 140px; max-width: 360px;
   padding: 7px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-panel); color: var(--text); font: inherit; font-size: 13px; outline: none;
   transition: border-color 0.12s, box-shadow 0.12s;
@@ -2773,6 +2775,12 @@ body.nt-fs-open { overflow: hidden; }
 /* 侧边栏里标出「已钉在桌面」的分组（右键菜单里也能看到同一个状态） */
 .group-pin {
   flex: none; font-size: 10px; line-height: 1;
+  opacity: 0.75; filter: grayscale(0.2);
+}
+/* 导航项（今天 / 即将到期）上的同一个标记：靠右，不挤占文字 */
+.nav-pin {
+  margin-left: auto; flex: none;
+  font-size: 10px; line-height: 1;
   opacity: 0.75; filter: grayscale(0.2);
 }
 

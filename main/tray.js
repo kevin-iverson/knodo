@@ -35,7 +35,7 @@ function buildMenu() {
 }
 
 function setupTray({
-  getWindow, onShow, onQuickAdd, onQuit, desktopItems, onCapture, onSettings,
+  getWindow, onShow, onToggle, onQuickAdd, onQuit, desktopItems, onCapture, onSettings,
 }) {
   const iconPath = path.join(__dirname, '..', 'assets', 'tray.png');
   const image = nativeImage.createFromPath(iconPath);
@@ -52,8 +52,10 @@ function setupTray({
     if (!tray) return;
     tray.popUpContextMenu(buildMenu());
   });
-  // 单击托盘图标切换显示/隐藏
+  // 单击托盘图标切换显示/隐藏：与唤起快捷键共用主进程里的同一份判断（onToggle），
+  // 这里只留一条兜底，避免两处逻辑各走各的
   tray.on('click', () => {
+    if (typeof onToggle === 'function') return onToggle();
     const win = getWindow();
     if (!win) return onShow();
     if (win.isVisible() && win.isFocused()) win.hide();

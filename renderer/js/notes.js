@@ -167,8 +167,8 @@ function shellHtml() {
         <button class="chip" data-nt="toggle-trash">🗑 回收站</button>
         <span class="nt-spacer"></span>
         <button class="ghost-btn" data-nt="kb" title="以笔记为知识库向 AI 提问">🧠 知识库问答</button>
-        <button class="ghost-btn" data-nt="import" title="把本地 .md 文件 / 文件夹导入成笔记">📥 导入</button>
-        <button class="ghost-btn" data-nt="export" title="把笔记导出成 Markdown / 压缩包（目录、标签按当前筛选预置）">📤 导出</button>
+        <button class="ghost-btn" data-nt="import" title="批量导入：选择本地 .md 文件或整个文件夹（可多选 / 递归）">📥 批量导入</button>
+        <button class="ghost-btn" data-nt="export" title="批量导出：按目录 / 标签批量导出笔记（单篇请用右栏的「⬇ 导出」）">📤 批量导出</button>
         <span class="nt-count"></span>
       </div>
       <div class="nt-layout">
@@ -454,6 +454,7 @@ function detailHtml(note) {
       </div>
       <div class="nt-dp-foot">
         <button class="ghost-btn" data-nt-act="dp-pin">${note.pinned ? '取消置顶' : '📌 置顶'}</button>
+        <button class="ghost-btn" data-nt-act="dp-export" title="把这篇笔记直接导出为 .md（图片以 base64 内嵌，单文件即可分享）">⬇ 导出</button>
         <button class="ghost-btn" data-nt-act="dp-archive">${note.archived ? '取消归档' : '🗄 归档'}</button>
         <button class="danger-btn" data-nt-act="dp-delete">删除</button>
         <span class="nt-spacer"></span>
@@ -1404,6 +1405,7 @@ function bindEvents(root) {
     else if (act === 'dp-save') { await flushNow(); notify('已保存'); }
     else if (act === 'dp-cancel') { await cancelEdit(); }
     else if (act === 'dp-pin') { await togglePin(); }
+    else if (act === 'dp-export') { await exportCurrentNote(); }
     else if (act === 'dp-archive') { await toggleArchive(); }
     else if (act === 'dp-delete') { await deleteFromDetail(); }
   });
@@ -1576,6 +1578,24 @@ async function onToolbar(act) {
 }
 
 /**
+ * 导出「正在看的这一篇」：不弹筛选面板，直接落成单个 .md（图片 base64 内嵌）。
+ * 先 flush 再导 —— 否则用户刚打的字还没落库，导出的会是上一版。
+ */
+async function exportCurrentNote() {
+  const id = currentNote && currentNote.id;
+  if (!id) { notify('没有打开的笔记'); return; }
+  await flushNow();
+  try {
+    const r = await api.sync.exportNotes({ noteId: id, pack: 'single' });
+    if (r && r.canceled) return;
+    if (!r || !r.ok) { notify('导出失败'); return; }
+    notify(`已导出：${r.filePath}`);
+  } catch (e) {
+    notify(`导出失败：${(e && e.message) || e}`);
+  }
+}
+
+/**
  * 导出笔记：拉起只含「笔记导出」的面板，出口就在旁边的「导入」旁边 ——
  * 以前它藏在顶栏「☁ 同步」里，对「想把笔记拷给同事 / 传到 ima」的人等于没有入口。
  * 目录 / 标签按当前筛选预置：正在看某个目录就默认导这个目录。
@@ -1610,7 +1630,7 @@ async function importMarkdown() {
   const current = folderId === 'all' || folderId === UNFILED ? UNFILED : Number(folderId);
   let picked = null;
   const res = await openFormModal({
-    title: '导入 Markdown 笔记',
+    title: '批量导入 Markdown 笔记',
     okText: '选择文件…',
     grid: false,
     fields: [

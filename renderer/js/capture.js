@@ -19,11 +19,17 @@ const el = {
   flash: document.getElementById('cap-flash'),
   empty: document.getElementById('cap-empty'),
   openMain: document.getElementById('cap-open-main'),
+  picker: document.getElementById('cap-picker'),
 };
 
 /** 目标清单候选（Tab 循环）：[{ id, name }] */
 let targets = [];
+/** 下拉里的全部清单（含子分组）：[{ id, name, depth, path }] */
+let groups = [];
 let targetId = null;
+/** 下拉是否展开；pickIndex 是键盘高亮项（不是"已选中"） */
+let pickerOpen = false;
+let pickIndex = 0;
 /** 未提交草稿：Esc 收起后仍留在内存里，下次按 C 还在（零丢失、零弹窗） */
 let draft = '';
 /** IME 组合态：compositionstart/end 与 isComposing 双保险 */
@@ -47,10 +53,13 @@ function setTarget(name, color) {
 function render(state = {}) {
   if (state.theme) applyTheme(state.theme);
   if (Array.isArray(state.targets)) targets = state.targets;
+  if (Array.isArray(state.groups)) groups = state.groups;
   if (state.target) {
     targetId = state.target.id == null ? null : Number(state.target.id);
     setTarget(state.target.name);
   }
+  // 每次显示都从收起态开始：主进程已经先把窗口高度还原成 52px，这里只清 DOM 状态
+  resetPicker(true);
   const has = state.hasGroups !== false && targets.length > 0;
   el.empty.hidden = has;
   el.input.hidden = !has;
@@ -78,6 +87,94 @@ function flash(text, isError = false) {
   el.flash.classList.toggle('is-error', !!isError);
   el.flash.hidden = false;
   flashTimer = setTimeout(() => { el.flash.hidden = true; }, 1200);
+}
+
+/* ------------------------------ 清单下拉 ------------------------------ */
+
+const escHtml = (s) =>
+  String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+function paintPicker() {
+  if (!pickerOpen) return;
+  el.picker.innerHTML = groups
+    .map((g, i) => {
+      const on = g.id === targetId;
+      return `<div class="cap-pick${on ? ' is-on' : ''}${i === pickIndex ? ' is-focus' : ''}"
+                   role="option" aria-selected="${on}" data-idx="${i}"
+                   title="${escHtml(g.path || g.name)}"
+                   style="padding-left:${8 + (g.depth || 0) * 14}px">
+                <span class="cap-pick-dot"></span>
+                <span class="cap-pick-name">${escHtml(g.name)}</span>
+                ${on ? '<span class="cap-pick-check">✓</span>' : ''}
+              </div>`;
+    })
+    .join('');
+}
+
+/**
+ * @param {boolean} [silent] 窗口马上要隐藏时传 true：主进程的 toggle 已经把高度还原，不必再发 IPC
+ */
+function resetPicker(silent) {
+  pickerOpen = false;
+  el.picker.innerHTML = '';
+  el.picker.hidden = true;
+  if (!silent) api.capture.picker({ open: false }).catch(() => {});
+}
+
+async function openPicker() {
+  // 打开前拉一次最新清单：条可能是十几分钟前就打开的，期间用户在主窗口建/删过分组，
+  // 只用打开时那份快照就会出现"刚建的清单在这里看不到"
+  try {
+    const s = await api.capture.state();
+    if (s && Array.isArray(s.groups)) groups = s.groups;
+  } catch (e) {
+    /* 拉不到就退回上一次的快照，至少还能选 */
+  }
+  if (!groups.length) return;
+  pickerOpen = true;
+  pickIndex = Math.max(0, groups.findIndex((g) => g.id === targetId));
+  el.picker.hidden = false;
+  paintPicker();
+  // 先加高窗口再滚动高亮行：顺序反了会按旧的 52px 高度算裁剪范围
+  try {
+    await api.capture.picker({ open: true, count: Math.min(groups.length, 8) });
+  } catch (e) {
+    /* 加高失败也能选，只是列表被窗口裁掉下半截 */
+  }
+  scrollPickIntoView();
+  el.input.focus(); // 焦点留在输入框：可以边看清单边继续打字
+}
+
+function scrollPickIntoView() {
+  const on = el.picker.querySelector('.is-focus');
+  if (on) on.scrollIntoView({ block: 'nearest' });
+}
+
+function movePick(d) {
+  if (!groups.length) return;
+  pickIndex = (pickIndex + d + groups.length) % groups.length;
+  paintPicker();
+  scrollPickIntoView();
+}
+
+async function commitPick() {
+  const g = groups[pickIndex];
+  resetPicker();
+  el.input.focus();
+  if (!g || g.id === targetId) return;
+  try {
+    const r = await api.capture.setTarget(g.id);
+    targetId = r.target.id;
+    setTarget(r.target.name);
+    if (Array.isArray(r.targets)) targets = r.targets;
+  } catch (e) {
+    flash((e && e.message) || '切换清单失败', true);
+  }
 }
 
 /* ------------------------------ 交互 ------------------------------ */
@@ -127,6 +224,7 @@ async function cycle() {
 function hide() {
   // 收起前把当前内容留在内存：下次打开还在（带「未提交」标），不弹任何确认框
   draft = el.input.value;
+  resetPicker(true);
   api.capture.hide().catch(() => {});
 }
 
@@ -139,6 +237,15 @@ function onInput() {
 function onKeydown(e) {
   // IME 组词中：Enter / 方向键都交给输入法，绝不提交
   if (composing || e.isComposing || e.keyCode === 229) return;
+
+  // 下拉展开时，方向键/回车归下拉用（这是显式打开的状态，Enter = 选清单而不是存任务）
+  if (pickerOpen) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); movePick(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); movePick(-1); return; }
+    if (e.key === 'Enter') { e.preventDefault(); commitPick(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); resetPicker(); el.input.focus(); return; }
+    if (e.key === 'Tab') { e.preventDefault(); resetPicker(); cycle(); return; }
+  }
 
   if (e.key === 'Enter') {
     if (e.shiftKey) { e.preventDefault(); return; } // 单行待办：不做换行
@@ -168,16 +275,33 @@ function onKeydown(e) {
 
 el.input.addEventListener('input', onInput);
 el.input.addEventListener('keydown', onKeydown);
-el.target.addEventListener('click', (e) => { e.preventDefault(); cycle(); });
+// 点清单名 = 展开完整清单（Tab 仍保留"快速切下一个"的老手感）
+el.target.addEventListener('click', (e) => {
+  e.preventDefault();
+  if (pickerOpen) resetPicker();
+  else openPicker();
+});
+el.picker.addEventListener('click', (e) => {
+  const row = e.target.closest('.cap-pick');
+  if (!row) return;
+  pickIndex = Number(row.dataset.idx) || 0;
+  commitPick();
+});
 el.openMain.addEventListener('click', () => { api.capture.openMain().catch(() => {}); });
 el.input.addEventListener('compositionstart', () => { composing = true; });
 el.input.addEventListener('compositionend', () => { composing = false; });
 // 点条上任何空白处都把焦点还给输入框（否则点一下标题就丢了光标）
 el.root.addEventListener('mousedown', (e) => {
-  if (e.target.closest('button')) return;
+  if (e.target.closest('button') || e.target.closest('#cap-picker')) return;
   e.preventDefault();
   el.input.focus();
 });
+// 点到下拉外面就收起下拉（但不收起整条），键盘用户则靠 Esc
+document.addEventListener('mousedown', (e) => {
+  if (!pickerOpen) return;
+  if (e.target.closest('#cap-picker') || e.target.closest('#cap-target')) return;
+  resetPicker();
+}, true);
 
 api.on('capture:show', (state) => render(state || {}));
 

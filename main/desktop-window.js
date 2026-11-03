@@ -1,16 +1,17 @@
 'use strict';
 /**
- * 桌面浮窗（单清单钉到桌面）。
+ * 桌面浮窗（把清单或视图钉到桌面）。
  *
  * 设计原则（见《桌面浮窗-设计方案》一节的三条判断）：
  *  1. 浮窗是「投影」不是「容器」—— 只记 { kind, refId }，内容每次从库里实时读，
  *     关掉浮窗 = 取消投射，任务一条不删；
- *  2. 一个分组一个窗（窗口粒度 = 清单），上限 6 个；
+ *  2. 一个分组一个窗、一个视图一个窗，上限 6 个；
  *  3. 浮窗只负责「看」和「勾」，结构操作（改分组 / 父子 / 排序）全部回主窗口。
  *
  * 存储：settings['tool.desktopWindows'] = Projection[]（不新增数据表），
- * 天然支持多窗、顺序、几何记忆；窗口层与内容层解耦，将来接 today / note / stats
- * 只需要在 buildView() 里多一个分支，chrome（拖动 / 吸附 / 折叠 / 置顶）一行不用改。
+ * 天然支持多窗、顺序、几何记忆；窗口层与内容层解耦，多接一种投影（today / upcoming /
+ * 将来的 note / stats）只需要在 buildView() 里多一个分支，chrome（拖动 / 吸附 / 折叠 /
+ * 置顶）一行不用改。
  */
 const {
   BrowserWindow, ipcMain, screen, Menu, dialog,
@@ -34,8 +35,11 @@ const SNAP_EDGE = 12;
 const SNAP_ALIGN = 8;
 const SNAP_GAP = 8;
 const SNAP_INSET = 12;
-/** 支持的投影类型（本期只实现 group / today，其余枚举预留） */
-const KINDS = ['group', 'today'];
+/**
+ * 支持的投影类型：group（单清单）/ today（今天）/ upcoming（即将到期）。
+ * 后两者是「视图投影」，不带 refId —— 内容由视图口径实时算出，不需要指向任何分组。
+ */
+const KINDS = ['group', 'today', 'upcoming'];
 
 let getMainWindow = () => null;
 let onChanged = () => {};
@@ -164,6 +168,25 @@ function sortKeepPlace(list) {
   });
 }
 
+/** 浮窗只显示「进行中 + 今天完成的」：历史已完成堆进 286px 的窗口只会变成噪音，
+ *  而刚勾掉的那条要留在原位变灰（判断一：勾选不动位置）。 */
+function keepInList(t) {
+  const since = startOfTodayIso();
+  return !t.completed || !t.completed_at || t.completed_at >= since;
+}
+
+/** 合并「进行中」与「今天完成」两组任务（同一 id 只留一条），按勾选不动位置的规则排序 */
+function mergeVisible(active, doneToday) {
+  const merged = new Map();
+  active.forEach((t) => merged.set(t.id, t));
+  doneToday.forEach((t) => { if (!merged.has(t.id)) merged.set(t.id, t); });
+  return sortKeepPlace([...merged.values()].filter(keepInList));
+}
+
+function countsOf(tasks) {
+  return { done: tasks.filter((t) => t.completed).length, total: tasks.length };
+}
+
 /** 取投影对应的数据：标题 + 任务 + 计数（不缓存，永远读实时的库） */
 function safeView(p) {
   try {
@@ -177,24 +200,35 @@ function buildView(p) {
   if (!db.isReady()) {
     return { title: '数据未就绪', error: db.getInitError() || '数据库未就绪', tasks: [], counts: { done: 0, total: 0 } };
   }
-  // 只显示「进行中 + 今天完成的」：把历史已完成任务也堆进 286px 的窗口只会变成噪音，
-  // 而刚勾掉的那条要留在原位变灰（判断一：勾选不动位置）。
   const since = startOfTodayIso();
-  const keep = (t) => !t.completed || !t.completed_at || t.completed_at >= since;
 
   if (p.kind === 'today') {
     const today = todayStr();
-    const active = db.listTasks({ status: 'active', planEndTo: today });
-    const doneToday = db.listTasks({ status: 'completed', completedFrom: since });
-    const merged = new Map();
-    active.forEach((t) => merged.set(t.id, t));
-    doneToday.forEach((t) => { if (!merged.has(t.id)) merged.set(t.id, t); });
-    const tasks = sortKeepPlace([...merged.values()].filter(keep));
+    const tasks = mergeVisible(
+      db.listTasks({ status: 'active', planEndTo: today }),
+      db.listTasks({ status: 'completed', completedFrom: since }),
+    );
     return {
       title: '今天',
       kindLabel: '今日清单',
       tasks,
-      counts: { done: tasks.filter((t) => t.completed).length, total: tasks.length },
+      counts: countsOf(tasks),
+    };
+  }
+
+  if (p.kind === 'upcoming') {
+    // 与主窗口「即将到期」同一口径：进行中 + 计划完成日期在今天或之后（没有日期的任务不在其中）。
+    // 刚勾掉的那条按同一到期口径再取一次，让它留在原位变灰，而不是整行消失。
+    const today = todayStr();
+    const tasks = mergeVisible(
+      db.listTasks({ status: 'active', planEndFrom: today, sort: 'due' }),
+      db.listTasks({ status: 'completed', completedFrom: since, planEndFrom: today, sort: 'due' }),
+    );
+    return {
+      title: '即将到期',
+      kindLabel: '将来任务',
+      tasks,
+      counts: countsOf(tasks),
     };
   }
 
@@ -202,12 +236,12 @@ function buildView(p) {
   if (!g) {
     return { title: '该清单已删除', missing: true, tasks: [], counts: { done: 0, total: 0 } };
   }
-  const tasks = sortKeepPlace(db.listTasks({ groupId: g.id, status: 'all' }).filter(keep));
+  const tasks = mergeVisible(db.listTasks({ groupId: g.id, status: 'all' }), []);
   return {
     title: g.name,
     color: g.color,
     tasks,
-    counts: { done: tasks.filter((t) => t.completed).length, total: tasks.length },
+    counts: countsOf(tasks),
   };
 }
 
@@ -782,8 +816,10 @@ function registerIpc() {
     const text = String(title || '').trim();
     if (!text) throw new Error('任务标题不能为空');
     if (text.length > 200) throw new Error('任务标题过长（最多 200 字）');
-    const t = db.createTask(p.kind === 'today'
-      // 今日清单里新增的任务默认挂在今天（与主窗口「今天」视图的计划完成日期口径一致）
+    // 视图投影（今天 / 即将到期）里新增的任务默认挂在今天：
+    // 与主窗口「今天」的计划完成日期口径一致，也让它在「即将到期」（今天或之后）里立刻看得见 ——
+    // 留空日期的任务根本不会出现在「即将到期」里，加了等于没加。
+    const t = db.createTask(p.kind === 'today' || p.kind === 'upcoming'
       ? { title: text, planEnd: todayStr() }
       : { title: text, groupId: p.refId });
     notifyChange(event.sender, { created: t.id });

@@ -245,6 +245,16 @@ body {
 /* 已完成：同字号、只降色，不加删除线（密排列表里删除线会让整屏发脏） */
 .dw-row.is-done .dw-text { color: var(--dw-text-2); }
 
+/* 「即将到期」浮窗里的到期日：常显小字，标题让位（不换行、超出省略） */
+.dw-due {
+  flex: none; max-width: 64px;
+  font-size: 11px; line-height: 1;
+  color: var(--dw-text-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dw-due.is-soon { color: var(--dw-primary); font-weight: 500; }
+.dw-row.is-done .dw-due { color: var(--dw-text-3); font-weight: 400; }
+
 /* 行尾图标只在悬停出现，常态界面保持干净 */
 .dw-row-acts {
   display: flex;

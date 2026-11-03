@@ -71,6 +71,12 @@ const VIEW_META = {
 const TASK_VIEWS = ['today', 'upcoming', 'all', 'completed', 'archived'];
 
 /**
+ * 可以钉到桌面的「视图投影」。
+ * 共同点：不需要 refId（内容按视图口径实时算），与分组投影共用同一套窗口 chrome。
+ */
+const PINNABLE_VIEWS = ['today', 'upcoming'];
+
+/**
  * 时间筛选的三组日期范围。
  * 使用与「添加任务」完全相同的 flatpickr 范围控件（controls.js 的 dateRangeFieldHtml）：
  * 两次点选成范围、快捷按钮（今天/明天/本周末/清除）、中文日历、面板定位逻辑全部复用，
@@ -144,7 +150,7 @@ export async function init() {
   await initRecentlyDone();
   // 恢复任务列表里被折叠的分组
   await initCollapsedTaskGroups();
-  // 已钉到桌面上的清单：右键菜单与侧边栏标记都要用
+  // 已钉到桌面上的清单 / 视图：右键菜单与侧边栏标记都要用
   await refreshDesktopPins(false);
   await renderSidebar();
   await render();
@@ -211,7 +217,7 @@ function bindStaticEvents() {
   });
   // 全局键 Ctrl+Alt+1~6 / H 在"还没钉浮窗"时的明确反馈：不静默失败
   api.on('ui:no-desktop-pins', () => {
-    toast('还没有钉到桌面的清单：在侧边栏右键清单 →「钉到桌面」');
+    toast('还没有钉到桌面的清单：在侧边栏右键清单 /「今天」/「即将到期」→「钉到桌面」');
   });
   // 应用内快捷键（固定，不开放自定义）
   bindInAppKeys();
@@ -305,18 +311,19 @@ function bindStaticEvents() {
   // 已钉清单变化（钉 / 取消钉住 / 主进程还原）：刷新侧边栏的 📌 标记
   api.on('desktop:projection-changed', () => { refreshDesktopPins(); });
 
-  // 右键：分组项自己绑（见 renderSidebarList），这里管「今天」导航项与今天列表空白处
+  // 右键：分组项自己绑（见 renderSidebarList），这里管「今天 / 即将到期」导航项与它们的任务区
   document.addEventListener('contextmenu', (e) => {
     if (e.target.closest('#group-list')) return;
-    if (e.target.closest('.nav-item[data-view="today"]')) {
+    const nav = e.target.closest('.nav-item[data-view]');
+    if (nav && PINNABLE_VIEWS.includes(nav.dataset.view)) {
       e.preventDefault();
-      showTodayContextMenu(e);
+      showViewContextMenu(nav.dataset.view, e);
       return;
     }
-    // 今天视图的任务区：右键任意空白 / 行都能钉「今天」（行内的输入框除外）
-    if (state.view === 'today' && e.target.closest('#view') && !e.target.closest('input, textarea')) {
+    // 视图的任务区：右键任意空白 / 行都能钉当前视图（行内的输入框除外）
+    if (PINNABLE_VIEWS.includes(state.view) && e.target.closest('#view') && !e.target.closest('input, textarea')) {
       e.preventDefault();
-      showTodayContextMenu(e);
+      showViewContextMenu(state.view, e);
     }
   });
 }
@@ -422,6 +429,7 @@ async function renderSidebar() {
   document.querySelectorAll('.nav-item').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === state.view);
   });
+  paintNavPins();
   await loadGroups();
   await loadTags();
   // 标签可能已被删除：持久化下来的 id 失效时要静默清掉，避免筛选结果为空却看不出原因
@@ -459,14 +467,38 @@ async function refreshDesktopPins(rerender = true) {
   }
   if (rerender) {
     renderSidebarList();
-    // 菜单里的 📌 状态变了，顶栏无需变动，但侧边栏要重画（已在上面做了）
+    // 导航项（今天 / 即将到期）上的 📌 不随分组列表重绘，单独刷一次
+    paintNavPins();
   }
 }
 
-/** 某个分组 / 今天是否已钉在桌面 */
+/**
+ * 导航项上的 📌 标记。
+ * 侧边栏导航是静态 HTML，这里只增删那个小标记，不重建整个按钮
+ * （重建会把上面绑好的点击事件冲掉）。
+ */
+function paintNavPins() {
+  document.querySelectorAll('.nav-item').forEach((b) => {
+    const view = b.dataset.view;
+    const pin = PINNABLE_VIEWS.includes(view) ? pinnedOf(view, null) : null;
+    const old = b.querySelector('.nav-pin');
+    if (pin && !old) {
+      const sp = document.createElement('span');
+      sp.className = 'nav-pin';
+      sp.title = '已钉在桌面上';
+      sp.textContent = '📌';
+      b.appendChild(sp);
+    } else if (!pin && old) {
+      old.remove();
+    }
+  });
+}
+
+/** 某个分组 / 视图（今天、即将到期）是否已钉在桌面 */
 function pinnedOf(kind, refId) {
   return desktopPins.find(
-    (p) => p.kind === kind && (kind === 'today' || Number(p.refId) === Number(refId)),
+    // 视图投影没有 refId（今天与即将到期都存 null），按 kind 认；分组投影按 refId 认
+    (p) => p.kind === kind && (kind !== 'group' || Number(p.refId) === Number(refId)),
   ) || null;
 }
 
@@ -490,7 +522,7 @@ async function unpinFromDesktop(pin, label) {
   await refreshDesktopPins();
 }
 
-/** 「钉到桌面 / 取消钉住」这一组（分组与今天共用的那几项） */
+/** 「钉到桌面 / 取消钉住」这一组（分组与视图投影共用的那几项） */
 function pinMenuItems(kind, refId, label) {
   const pin = pinnedOf(kind, refId);
   const items = [];
@@ -508,7 +540,7 @@ function pinMenuItems(kind, refId, label) {
       label: '钉到桌面',
       icon: '📌',
       disabled: full,
-      hint: full ? '已钉满 6 个，请先在「桌面浮窗」菜单里收起一个' : '把它常驻在桌面上，一个清单一个窗',
+      hint: full ? '已钉满 6 个，请先在「桌面浮窗」菜单里收起一个' : '在桌面上单独开一个小窗，常驻显示',
       onClick: () => pinToDesktop(kind, refId, label),
     });
   }
@@ -770,16 +802,17 @@ async function promptMoveGroup(g) {
   });
 }
 
-/** 「今天」右键菜单（导航项与今天列表空白处共用） */
-function showTodayContextMenu(e) {
+/** 「今天」/「即将到期」右键菜单（导航项与对应视图的任务区空白处共用） */
+function showViewContextMenu(view, e) {
+  const label = (VIEW_META[view] && VIEW_META[view].title) || view;
   openContextMenu([
-    ...pinMenuItems('today', null, '今天'),
+    ...pinMenuItems(view, null, label),
     { type: 'sep' },
     {
-      label: '在「今天」里新建任务',
+      label: `在「${label}」里新建任务`,
       icon: '＋',
       onClick: () => {
-        state.view = 'today';
+        state.view = view;
         state.currentGroup = 'all';
         renderSidebar();
         render();
