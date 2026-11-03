@@ -14,7 +14,7 @@
 ![SQLite](https://img.shields.io/badge/storage-SQLite%20%28local%29-003B57)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-[为什么是 Knodo](#为什么是-knodo) · [功能亮点](#功能亮点) · [快捷键](#快捷键不用切回主窗口) · [快速开始](#快速开始) · [文档](docs/README.md)
+[为什么是 Knodo](#为什么是-knodo) · [功能亮点](#功能亮点) · [番茄钟](#番茄钟每一格留下一句话) · [快捷键](#快捷键不用切回主窗口) · [快速开始](#快速开始) · [文档](docs/README.md)
 
 <a href="https://gitee.com/kiverson/todo-task/releases/latest"><b>⬇ 下载最新版 · 免安装包（约 90 MB）</b></a>
 
