@@ -493,9 +493,25 @@ function mountData(pane) {
 
 /* ------------------------------ 分区：关于 ------------------------------ */
 
+/** 爱发电主页。留空时「支持」入口整块不渲染，避免出现点了没反应的死链接。 */
+const SPONSOR_URL = '';
+
 function aboutHtml() {
   const st = S.storage || {};
   const bk = S.backup || {};
+  const sponsor = SPONSOR_URL
+    ? sectionHtml({
+        title: '支持 Knodo',
+        rows: [
+          rowHtml({
+            title: '爱发电',
+            desc: 'Knodo 由一个人维护，开源、没有订阅制。捐赠只用于覆盖 Windows 代码签名证书——不签的话，安装时会弹“未知发布者”警告，很多人到这一步就关了。不捐完全不影响使用，提 issue 同样是支持。',
+            ctl: ctlButton('sponsor', '去支持'),
+            search: '捐赠 赞助 打赏 支持 donate sponsor 爱发电 afdian',
+          }),
+        ],
+      })
+    : '';
   return [
     sectionHtml({
       rows: [
@@ -505,8 +521,22 @@ function aboutHtml() {
         rowHtml({ title: '备份目录', desc: pathLine(bk.dir), search: '路径 snapshot' }),
       ],
     }),
+    sponsor,
     `<div class="st-foot-note">所有任务、笔记与附件都保存在本机数据目录，不上传服务器；AI 功能只在你主动触发时把必要内容发给你配置的接口。</div>`,
   ].join('');
+}
+
+function mountAbout(pane) {
+  if (!SPONSOR_URL) return;
+  pane.addEventListener('click', async (e) => {
+    if (!e.target.closest('[data-act="sponsor"]')) return;
+    try {
+      const r = await api.app.openExternal(SPONSOR_URL);
+      if (r && !r.ok) toast(r.reason || '无法打开链接');
+    } catch (err) {
+      toast(`操作失败：${(err && err.message) || err}`);
+    }
+  });
 }
 
 /* ------------------------------ 分区注册表 ------------------------------ */
@@ -528,7 +558,7 @@ const PANES = [
   { id: 'ai', group: 'feature', label: 'AI 与语音', icon: ICON.ai, build: aiHtml, mount: mountAi },
   { id: 'tools', group: 'feature', label: '实用工具', icon: ICON.tools, build: toolsHtml, mount: mountTools },
   { id: 'data', group: 'data', label: '数据与备份', icon: ICON.data, build: dataHtml, mount: mountData },
-  { id: 'about', group: 'data', label: '关于', icon: ICON.about, build: aboutHtml, mount: null },
+  { id: 'about', group: 'data', label: '关于', icon: ICON.about, build: aboutHtml, mount: mountAbout },
 ];
 
 const PANE_IDS = PANES.map((p) => p.id);

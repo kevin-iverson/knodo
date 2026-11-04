@@ -230,6 +230,8 @@ contextBridge.exposeInMainWorld('api', {
     // 换数据目录 / 备份恢复：都是带确认与进度的主进程对话框，这里只负责把它叫起来
     openStorageDialog: () => call('app:openStorageDialog'),
     openBackupDialog: () => call('app:openBackupDialog'),
+    // 渲染层生成的图片（Mermaid 图导出）另存为：只接受 data:image/png
+    saveImage: (p) => call('app:saveImage', p),
   },
   /**
    * 设置中心用的只读环境信息（数据目录在哪、备份有几份）。
@@ -263,6 +265,8 @@ contextBridge.exposeInMainWorld('api', {
     show: (id) => call('desktop:show', id),
     hide: (id) => call('desktop:hide', id),
     resetPosition: (id) => call('desktop:resetPosition', id),
+    // 贴桌面诊断（是否真的挂进桌面层 / 是否压在图标之上 / 原生能力是否可用），只读不改状态
+    diagnostics: () => call('desktop:diagnostics'),
   },
   /**
    * 拖拽进来的 File 对象在 Electron 32+ 已没有 .path，必须用 webUtils 换绝对路径。
@@ -326,6 +330,8 @@ contextBridge.exposeInMainWorld('api', {
     const allowed = [
       'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary',
       'ui:text-diff', 'ui:json-viewer', 'ui:import-md',
+      // 全局快捷键 Ctrl+Shift+H：唤起主窗口并打开「笔记」弹窗
+      'ui:notes-dock',
       // 顶部菜单栏入口：同步面板 / 主题（主进程已改好 nativeTheme，推一份当前值让界面跟进）
       'ui:sync', 'ui:theme-changed',
       // 全局快捷键：设置面板入口 / 快捷键变更（多条浮窗时同步刷新）/ 没有钉住清单时的提示

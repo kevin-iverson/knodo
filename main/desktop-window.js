@@ -20,6 +20,7 @@ const path = require('path');
 const db = require('./db');
 const attachments = require('./attachments');
 const focus = require('./focus');
+const desktopLevel = require('./desktop-level');
 
 /** 设置键（projection 列表） */
 const KEY = 'tool.desktopWindows';
@@ -31,6 +32,8 @@ const MIN_W = 240;
 const MAX_W = 460;
 const MAX_H = 520;
 const HEAD_H = 42;
+/** 圆角半径，必须与 renderer/css/desktop.css 的 --dw-r 一致（DIP） */
+const WINDOW_RADIUS = 14;
 /** 吸附：贴屏幕边 12px / 与其它浮窗左边界差 8px 对齐、垂直间距 8px 贴合 */
 const SNAP_EDGE = 12;
 const SNAP_ALIGN = 8;
@@ -286,10 +289,85 @@ function defaultGeometry(height) {
   return { x, y, w, h, displayId: d.id };
 }
 
+/**
+ * 置顶三档（pinMode）：
+ *  always  → 常在最前（默认）
+ *  hover   → 平时随普通窗口，鼠标移入时临时置前（渲染层 desktop:hover）
+ *  desktop → 贴桌面：把窗口挂进桌面层（Progman / WorkerW），显示桌面时可见、被应用窗口盖住；
+ *            系统拿不到原生能力时退回「不置前」，菜单里会把可用性标出来。
+ */
 function applyPinMode(win, p) {
   if (!win || win.isDestroyed()) return;
-  if (p.pinMode === 'always') win.setAlwaysOnTop(true, 'floating');
-  else win.setAlwaysOnTop(false); // hover 由鼠标进出切换；desktop 档不置前（Windows 支持有限）
+  const mode = p.pinMode || 'always';
+  // 渲染层与各处回调都靠它判断「这一窗是不是贴桌面档」，避免每次都去读一遍 settings
+  win.__dwPinMode = mode;
+  if (mode === 'desktop') {
+    // topmost 必须先摘掉：带 WS_EX_TOPMOST 的子窗会浮到桌面层之上，等于没贴
+    win.setAlwaysOnTop(false);
+    // 挂成桌面层子窗后透明通道失效，圆角外的透明区会变成纯黑 —— 用窗口区域把圆角裁出来
+    if (!desktopLevel.attach(win, { radiusPx: desktopClipRadius(win) })) {
+      // 挂不上（非 Windows / FFI 不可用 / 找不到桌面层）：保持「不置前」，别把窗口弄丢
+      console.warn('[desktop] 贴桌面不可用，窗口退回「不置前」');
+    }
+    return;
+  }
+  // 从贴桌面切走：先摘出桌面层，再由下面的分支决定置顶方式。
+  // 摘出来后窗口在普通层里是最靠后的，setAlwaysOnTop 会把它重新摆回正确位置。
+  desktopLevel.detach(win);
+  if (mode === 'always') win.setAlwaysOnTop(true, 'floating');
+  else win.setAlwaysOnTop(false);
+}
+
+/**
+ * 贴桌面档的「再确认一次」。
+ * show / 拖拽结束 / 失焦之后都调一下：窗口可能被桌面层重建摘成顶层窗，或落到图标视图后面。
+ * attach() 自己会先判断「已经在桌面层且位于图标之上」，是幂等的，不产生多余的原生调用。
+ */
+function keepOnDesktop(win) {
+  if (!win || win.isDestroyed()) return;
+  if (win.__dwPinMode !== 'desktop') return;
+  const radius = desktopClipRadius(win);
+  if (!desktopLevel.attach(win, { radiusPx: radius })) return;
+  // 换显示器（缩放不同）后半径要跟着变；clipRounded 内部按键值去重，尺寸没变不会重建区域
+  if (desktopLevel.isAttached(win)) desktopLevel.clipRounded(win, radius);
+}
+
+/** 贴桌面档的圆角半径（物理像素）：CSS 是 DIP，要按当前显示器的缩放换算 */
+function desktopClipRadius(win) {
+  try {
+    const d = screen.getDisplayMatching(win.getBounds());
+    return Math.round(WINDOW_RADIUS * (d.scaleFactor || 1));
+  } catch (e) {
+    return WINDOW_RADIUS;
+  }
+}
+
+/**
+ * 贴桌面窗被系统销毁后的重建。
+ * 桌面层是 Explorer 的窗口，重建时子窗会跟着没了；不重建就等于「贴桌面的浮窗会自己消失」。
+ * 次数上限防止「一挂就死 → 重建 → 再死」的死循环拖住主进程。
+ */
+const REVIVE_MAX = 3;
+const reviveCount = new Map();
+
+function scheduleRevive(id) {
+  const n = (reviveCount.get(id) || 0) + 1;
+  reviveCount.set(id, n);
+  if (n > REVIVE_MAX) {
+    console.warn(`[desktop] 浮窗 ${id} 反复被系统销毁，停止重建（贴桌面可能不被当前环境支持）`);
+    return;
+  }
+  setTimeout(() => {
+    const cur = findProjection(id);
+    if (!cur || cur.pinMode !== 'desktop') return;
+    if (windowOf(id)) return;
+    try {
+      openWindow(cur);
+      notifyProjections(); // 主窗口菜单 / 托盘里的「已钉清单」要跟着回来
+    } catch (e) {
+      console.error('[desktop] 重建贴桌面浮窗失败', e && e.message);
+    }
+  }, 800);
 }
 
 function openWindow(p) {
@@ -352,6 +430,7 @@ function openWindow(p) {
     if (shown || win.isDestroyed()) return;
     shown = true;
     win.showInactive(); // 不抢焦点：正在打字不被打断
+    keepOnDesktop(win); // 贴桌面档：确认它还挂在桌面层里（窗口刚建出来时可能还没挂上）
   };
   win.__dwShow = showOnce;
   setTimeout(showOnce, 1200);
@@ -361,17 +440,27 @@ function openWindow(p) {
     if (win.isDestroyed()) return;
     if (p.pinMode === 'hover') win.setAlwaysOnTop(true, 'floating');
     snapWindow(win, p);
+    keepOnDesktop(win); // 拖拽后重新确认：位置变了，仍要留在桌面层
     schedulePersist(p.id, win);
   });
   win.on('resized', () => {
     if (win.isDestroyed()) return;
+    // 窗口尺寸变了，圆角区域要跟着重算（否则边缘会露出直的窗口边界）
+    if (win.__dwPinMode === 'desktop') desktopLevel.clipRounded(win, desktopClipRadius(win));
     schedulePersist(p.id, win);
   });
+  // 贴桌面档：被点过之后随失焦回到底层（守护还会兜一次，这里只是让回位更即时）
+  win.on('blur', () => keepOnDesktop(win));
   win.on('closed', () => {
     wins.delete(p.id);
     const t = persistTimers.get(p.id);
     if (t) { clearTimeout(t); persistTimers.delete(p.id); }
     notifyProjections();
+    // 贴桌面档的窗口是桌面层的子窗：桌面层被重建（Explorer 重启）时它可能被系统带着销毁。
+    // 那不是用户关掉的，按投影重建一次 —— 否则用户会看到「浮窗自己消失了」。
+    // 用户主动取消钉住走 destroyWin()（先打 __dwClosing 标记），不在此列。
+    const cur = findProjection(p.id);
+    if (!win.__dwClosing && cur && cur.pinMode === 'desktop') scheduleRevive(p.id);
   });
   // 改透明度 / 置顶这类系统级调整后无需重建窗口，统一走 pinMode 即可
   win.webContents.on('did-finish-load', () => {
@@ -472,6 +561,7 @@ function show(id) {
   if (!win) return false;
   if (win.isMinimized()) win.restore();
   win.showInactive();
+  keepOnDesktop(win);
   return true;
 }
 
@@ -485,7 +575,9 @@ function hideWin(id) {
 function destroyWin(id) {
   const win = windowOf(id);
   if (!win) return false;
+  win.__dwClosing = true; // 我们自己关的，不算「被系统带走」
   wins.delete(id);
+  desktopLevel.detach(win);
   win.destroy();
   return true;
 }
@@ -586,6 +678,7 @@ function pin(kind, refId) {
   p.geometry.y = geo.y;
   p.geometry.displayId = geo.displayId;
   writeAll([...list0, p]);
+  reviveCount.delete(p.id);
   openWindow(p);
   notifyProjections();
   return { ok: true, projection: p, existed: false };
@@ -628,6 +721,7 @@ function update(id, patch = {}) {
     next.geometry = { ...cur.geometry, ...patch.geometry };
   }
   const saved = patchProjection(id, next);
+  if (patch.pinMode) reviveCount.delete(id); // 用户重新选过档位，重建额度重置
   const win = windowOf(id);
   if (win && patch.pinMode) applyPinMode(win, saved);
   // 折叠状态被主进程侧改掉时（例如菜单里点「折叠」），要让渲染层跟着收 / 展，
@@ -696,13 +790,22 @@ function printMenu(id) {
   const win = windowOf(id);
   if (!p || !win) return false;
   const mode = p.pinMode;
+  // 贴桌面靠原生挂载（Windows SetParent 到桌面层）。拿不到能力就别给一个「选了但没效果」的选项，
+  // 这是这一档原来被标成「实验性」的由来 —— 现在改成如实标注可用性。
+  const canDesktop = desktopLevel.available();
   const template = [
     {
       label: '置顶方式',
       submenu: [
         { label: '始终置顶', type: 'radio', checked: mode === 'always', click: () => update(id, { pinMode: 'always' }) },
         { label: '仅悬停置顶', type: 'radio', checked: mode === 'hover', click: () => update(id, { pinMode: 'hover' }) },
-        { label: '贴桌面（实验性）', type: 'radio', checked: mode === 'desktop', click: () => update(id, { pinMode: 'desktop' }) },
+        {
+          label: canDesktop ? '贴桌面（随桌面一起显示）' : '贴桌面（当前系统不支持）',
+          type: 'radio',
+          enabled: canDesktop,
+          checked: mode === 'desktop',
+          click: () => update(id, { pinMode: 'desktop' }),
+        },
       ],
     },
     { type: 'separator' },
@@ -850,6 +953,28 @@ function registerIpc() {
   }));
 
   ipcMain.handle('desktop:menu', wrap((_e, id) => printMenu(id)));
+  // 诊断：贴桌面到底挂上没有（用户报「没效果」时先看这里，不用远程连桌面）
+  ipcMain.handle('desktop:diagnostics', wrap(() => ({
+    level: desktopLevel.status(),
+    windows: [...wins].map(([id, w]) => {
+      const dead = w.isDestroyed();
+      const info = dead ? { attached: false, hwnd: null, parent: null, parentClass: null, aboveIcons: false } : desktopLevel.inspect(w);
+      return {
+        id,
+        pinMode: w.__dwPinMode || null,
+        hwnd: info.hwnd,
+        visible: dead ? false : w.isVisible(),
+        focused: dead ? false : w.isFocused(),
+        // 贴桌面档：attached=是否挂在桌面层，aboveIcons=是否压在图标视图之上（点击能否命中）
+        attached: info.attached,
+        parent: info.parent,
+        parentClass: info.parentClass,
+        aboveIcons: info.aboveIcons,
+        topmost: info.topmost === true,
+        bounds: dead ? null : w.getBounds(),
+      };
+    }),
+  })));
   ipcMain.handle('desktop:show', wrap((_e, id) => show(id)));
   ipcMain.handle('desktop:hide', wrap((_e, id) => hideWin(id)));
   ipcMain.handle('desktop:resetPosition', wrap((_e, id) => resetPosition(id)));
@@ -879,7 +1004,11 @@ function init(opts = {}) {
 
   // 显示器拔插 / 分辨率变化：把窗口夹回可视区
   const onDisplayChange = () => {
-    for (const w of wins.values()) ensureVisible(w);
+    for (const w of wins.values()) {
+      ensureVisible(w);
+      // 换屏 / 改缩放后圆角半径的物理像素值会变，重新裁一次
+      keepOnDesktop(w);
+    }
   };
   screen.on('display-removed', onDisplayChange);
   screen.on('display-added', onDisplayChange);
@@ -897,15 +1026,25 @@ function restoreAll() {
   alive.slice(0, MAX_WINDOWS).forEach((p) => {
     try { openWindow(p); } catch (e) { console.error('[desktop] 还原浮窗失败', e && e.message); }
   });
+  // 开机自启时 Explorer / 桌面层可能比我们晚就绪，第一次挂不上；给一次延迟补挂
+  setTimeout(() => {
+    for (const p of alive) {
+      const w = windowOf(p.id);
+      if (w && w.__dwPinMode === 'desktop') keepOnDesktop(w);
+    }
+  }, 2500);
   return alive.length;
 }
 
 /** 退出前销毁（不再回写任何状态） */
 function destroyAll() {
+  desktopLevel.detachAll();
   for (const w of wins.values()) {
+    w.__dwClosing = true;
     if (!w.isDestroyed()) w.destroy();
   }
   wins.clear();
+  reviveCount.clear();
 }
 
 module.exports = {

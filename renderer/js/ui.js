@@ -130,6 +130,10 @@ export async function init() {
     switchView: async () => { state.view = 'notes'; renderSidebar(); await render(); },
   });
   api.on('ui:new-note', () => { openNewNote(); });
+  // 全局快捷键 Ctrl+Shift+H：主进程已把窗口唤起，这里打开「笔记」弹窗（不切视图）
+  api.on('ui:notes-dock', () => {
+    openNotesDock().catch((e) => toast(`打开笔记失败：${(e && e.message) || e}`));
+  });
   // 菜单栏「导入 Markdown 笔记…」：切到笔记视图后由 notes.js 接管导入流程
   api.on('ui:import-md', async () => {
     state.view = 'notes';

@@ -926,6 +926,31 @@ function registerIpc() {
     return { ok: true, filePath };
   }));
 
+  /**
+   * 渲染层生成的图片（Mermaid 图导出 PNG）另存到用户指定位置。
+   * 只收 data:image/png 的 base64：别的类型（SVG 源码、任意 data URL）一律拒绝，
+   * 避免渲染层把「写任意字节到任意路径」当通用文件写口子用。
+   */
+  ipcMain.handle('app:saveImage', async (_e, payload = {}) => {
+    const dataUrl = String(payload.dataUrl || '');
+    const m = /^data:image\/png;base64,([A-Za-z0-9+/=\s]+)$/.exec(dataUrl);
+    if (!m) throw new Error('图片数据无效');
+    const buf = Buffer.from(m[1], 'base64');
+    if (!buf.length) throw new Error('图片数据为空');
+    const base = String(payload.name || '图表').replace(/[\\/:*?"<>|\r\n\t]/g, '_').trim().slice(0, 80) || '图表';
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: '保存图片',
+      defaultPath: `${base}.png`,
+      filters: [
+        { name: 'PNG 图片', extensions: ['png'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+    fs.writeFileSync(filePath, buf);
+    return { ok: true, filePath, size: buf.length };
+  });
+
   ipcMain.handle('noteFolders:list', withDb(() => db.listNoteFolders()));
   ipcMain.handle('noteFolders:create', withDb((p) => db.createNoteFolder(p || {})));
   ipcMain.handle('noteFolders:update', withDb((id, p) => db.updateNoteFolder(id, p || {})));

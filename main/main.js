@@ -142,19 +142,40 @@ function dirDialog(opts) {
  *  - 窗口被别的应用盖住 / 被最小化时，用户按这键的意图是「把它调出来」，不是「关掉」；
  *  - 最小化时 isVisible() 仍是 true，所以必须先判 isMinimized()，否则会出现
  *    「按一下没反应（其实被 hide 了）」这种最让人困惑的行为。
+ *
+ * @returns {boolean} 这次是否真的把窗口收起了 —— 「显示笔记」要用它区分
+ *   「唤起」与「收起」两种语义（收起时不该再往渲染层推打开事件）。
  */
 function toggleWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) return showWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    showWindow();
+    return false;
+  }
   if (!mainWindow.isMinimized() && mainWindow.isVisible() && mainWindow.isFocused()) {
     // 主窗口上挂着可见的模态子窗口（导出 / 选择目录 / 备份恢复）时不收起：
     // 藏掉父窗口会把对话框一起带走，用户会以为程序卡死
     const hasModal = BrowserWindow.getAllWindows().some(
       (w) => w !== mainWindow && !w.isDestroyed() && w.isVisible() && w.getParentWindow() === mainWindow,
     );
-    if (!hasModal) mainWindow.hide();
-    return;
+    if (!hasModal) {
+      mainWindow.hide();
+      return true;
+    }
+    return false;
   }
   showWindow();
+  return false;
+}
+
+/**
+ * 全局键「显示 / 隐藏笔记」：唤起时打开「笔记」弹窗（不切视图，任务列表留在原地可见），
+ * 收起时只收窗口。面板不跟着关——里面可能正开着某篇笔记，关掉等于清空上下文；
+ * 窗口隐藏后 DOM 原样留着，下次唤起还是那篇。
+ */
+function toggleNotesDock() {
+  if (toggleWindow()) return; // 已收起，不再推打开事件
+  showWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ui:notes-dock');
 }
 
 function quickAdd() {
@@ -201,6 +222,9 @@ function dispatchShortcut(actionId) {
     case 'app.show':
       // 显隐切换：按一次出现，再按一次收起（与托盘单击同一套语义）
       toggleWindow();
+      return;
+    case 'app.notes':
+      toggleNotesDock();
       return;
     case 'app.quickAdd':
       quickAdd();

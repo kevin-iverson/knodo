@@ -2295,18 +2295,28 @@ body.nt-fs-open { overflow: hidden; }
 .md-mermaid-view { overflow-x: auto; overflow-y: hidden; }
 .md-mermaid svg { max-width: 100%; height: auto; }
 
-/* 「放大」按钮：默认隐形，鼠标移到图上才出来，避免每张图都挂个方块 */
-.md-mermaid-zoom {
-  position: absolute; top: 6px; right: 6px;
+/* 右上角操作组（放大 / 下载图片）：默认隐形，鼠标移到图上才出来，避免每张图都挂一排方块 */
+.md-mermaid-ops {
+  position: absolute; top: 6px; right: 6px; z-index: 1;
+  display: flex; gap: 4px;
+  opacity: 0; transition: opacity 0.12s;
+}
+.md-mermaid:hover .md-mermaid-ops, .md-mermaid-ops:focus-within { opacity: 1; }
+.md-mermaid-zoom, .md-mermaid-dl {
   min-width: 26px; height: 26px; padding: 0 6px;
   display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-panel); color: var(--text-2);
-  font: inherit; font-size: 13px; line-height: 1; cursor: zoom-in;
-  opacity: 0; transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+  font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
 }
-.md-mermaid:hover .md-mermaid-zoom, .md-mermaid-zoom:focus-visible { opacity: 1; }
-.md-mermaid-zoom:hover { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.md-mermaid-zoom { cursor: zoom-in; }
+.md-mermaid-zoom:focus-visible, .md-mermaid-dl:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 45%, transparent); outline-offset: 1px;
+}
+.md-mermaid-zoom:hover, .md-mermaid-dl:hover {
+  color: var(--primary); border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+}
 .md-mermaid .md-mermaid-src {
   margin: 0; padding: 8px 10px; text-align: left; white-space: pre-wrap; word-break: break-word;
   font-family: Consolas, monospace; font-size: 12.5px; color: var(--text-2); background: transparent;
@@ -2492,9 +2502,20 @@ body.nt-fs-open { overflow: hidden; }
 }
 .modal.modal-note-editor .modal-foot { flex: 0 0 auto; }
 .modal.modal-note-editor > .modal-error { margin: 0 18px; }
+/*
+ * 高度链必须从 #nt-detail 一路「确定」到 .nt-dp-scroll，否则正文区会长成内容高度：
+ * .modal-body 是 overflow:hidden，超出的部分被直接裁掉、内部滚动区又量不到上限
+ * （scrollHeight === clientHeight），表现为「长笔记看不到底部又滚不动」。
+ * 这里让 #nt-detail 当 flex 容器吃满 body，.nt-dp 再吃满 #nt-detail，
+ * 剩下 .nt-dp-scroll（flex:1 1 auto + min-height:0 + overflow-y:auto）才真的有滚动条。
+ */
+.modal.modal-note-editor .modal-body > #nt-detail {
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+}
 /* 弹窗里的详情面板：吃满弹窗，去掉自带边框 / 限高（限高交给弹窗 + 内部滚动区） */
 .modal.modal-note-editor .nt-dp {
-  max-height: none; height: 100%; min-height: 0;
+  flex: 1 1 auto; max-height: none; height: auto; min-height: 0;
   border: none; border-radius: 0; background: transparent; padding: 10px 16px 12px;
 }
 .modal.modal-note-editor .nt-dp-body, .modal.modal-note-editor .nt-dp-mid { min-height: 200px; }

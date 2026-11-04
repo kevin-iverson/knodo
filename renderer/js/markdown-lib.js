@@ -427,19 +427,41 @@ function mermaidFail(el, src, msg, title) {
 }
 
 /**
- * 渲染好的图右上角挂一个「放大」按钮（hover 才显形，不打扰阅读）。
+ * 渲染好的图右上角挂「放大 / 下载图片」两个按钮（hover 才显形，不打扰阅读）。
  * 按钮本身不带数据，点击时由事件委托读同块的 SVG —— mermaid 是异步渲染的，
  * 绑定在按钮上的闭包会挂在「随时可能被重绘替换掉」的节点上，委托才不会失效。
  */
 function addZoomButton(el) {
-  if (!el || el.querySelector('.md-mermaid-zoom')) return;
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'md-mermaid-zoom';
-  btn.title = '放大查看（滚轮缩放 / 按住拖动平移；双击图也可以；✕ 或 Esc 关闭）';
-  btn.setAttribute('aria-label', '放大查看');
-  btn.textContent = '⤢';
-  el.appendChild(btn);
+  if (!el || el.querySelector('.md-mermaid-ops')) return;
+  const ops = document.createElement('div');
+  ops.className = 'md-mermaid-ops';
+
+  const zoom = document.createElement('button');
+  zoom.type = 'button';
+  zoom.className = 'md-mermaid-zoom';
+  zoom.title = '放大查看（滚轮缩放 / 按住拖动平移；双击图也可以；✕ 或 Esc 关闭）';
+  zoom.setAttribute('aria-label', '放大查看');
+  zoom.textContent = '⤢';
+
+  const dl = document.createElement('button');
+  dl.type = 'button';
+  dl.className = 'md-mermaid-dl';
+  dl.title = '下载为图片（PNG，2 倍分辨率）';
+  dl.setAttribute('aria-label', '下载为图片');
+  dl.textContent = '⬇';
+
+  ops.appendChild(zoom);
+  ops.appendChild(dl);
+  el.appendChild(ops);
+}
+
+/** 导出文件名：优先用笔记标题 / 区块邻近标题，退化成「图表-时间戳」 */
+function exportNameOf(box) {
+  const doc = box.ownerDocument || document;
+  const noteTitle = doc.querySelector('.nt-dp-title');
+  const base = (noteTitle && noteTitle.value) ? noteTitle.value.trim() : '';
+  const stamp = new Date().toISOString().slice(0, 10);
+  return base ? `${base}-${stamp}` : `图表-${stamp}`;
 }
 
 /** 取图所属的类型名（流程图 / 时序图…）用于放大层标题；认不出来就统称「图表」 */
@@ -468,6 +490,33 @@ if (typeof document !== 'undefined') {
     e.preventDefault();
     e.stopPropagation();
     openZoomFor(box);
+  });
+  // 点「下载图片」：导出成 PNG（原生「另存为」对话框，成功后提示落地路径）
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('.md-mermaid-dl') : null;
+    if (!btn) return;
+    const box = btn.closest('.md-mermaid');
+    if (!box) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (btn.dataset.busy === '1') return; // 连点不叠对话框
+    btn.dataset.busy = '1';
+    const name = exportNameOf(box);
+    import('./mermaid-export.js')
+      .then((m) => m.exportMermaidPng(box, { name }))
+      .then((res) => {
+        if (!res || res.canceled) return;
+        // ui.js 是笔记模块的上层，动态 import 拿已加载的实例，不构成循环依赖
+        return import('./ui.js').then((ui) => {
+          if (res.ok && res.filePath) ui.toast(`图片已保存：${res.filePath}`);
+        }).catch(() => {});
+      })
+      .catch((err) => {
+        import('./ui.js')
+          .then((ui) => ui.toast(`导出失败：${(err && err.message) || err}`))
+          .catch(() => {});
+      })
+      .finally(() => { btn.dataset.busy = ''; });
   });
   // 双击图也能放大。用捕获阶段 + stopPropagation：宿主（笔记预览 / 详情等）可能自己也监听双击，
   // 冒泡过去会出现「放大层开了、底下的界面也跟着跳」的叠加反应。

@@ -20,13 +20,16 @@ const VERSION = 1;
 
 /**
  * 动作清单。
- * 筛选标准是「每天至少用 10 次」——键位泛滥等于没有键位，所以这里只有 11 条。
+ * 筛选标准是「每天至少用 10 次」——键位泛滥等于没有键位，所以这里只留少量高频动作。
  */
 const ACTIONS = [
   { id: 'app.show', label: '显示 / 隐藏主窗口', hint: '按一次唤起，再按一次收起', def: 'Control+Alt+B' },
+  { id: 'app.notes', label: '显示 / 隐藏笔记', hint: '按一次唤起并打开笔记，再按一次收起', def: 'Control+Shift+H' },
   { id: 'app.quickAdd', label: '快速添加任务', hint: '做', def: 'Control+Alt+N' },
   { id: 'app.capture', label: '快速捕捉', hint: '记', def: 'Control+Alt+C' },
-  { id: 'app.toggleDesktop', label: '显示 / 隐藏桌面浮窗', hint: '演示 / 共享屏幕前一键收起', def: 'Control+Alt+H' },
+  // 桌面浮窗用 D（Desktop）而不是原来的 H：H 与「显示 / 隐藏笔记」的 Ctrl+Shift+H
+  // 只差一个修饰键，实机上很容易按混、也会被输入法/键盘宏串到一起
+  { id: 'app.toggleDesktop', label: '显示 / 隐藏桌面浮窗', hint: '演示 / 共享屏幕前一键收起', def: 'Control+Alt+D' },
   ...[1, 2, 3, 4, 5, 6].map((n) => ({
     id: `desktop.focus.${n}`,
     label: `唤起第 ${n} 个桌面浮窗`,
@@ -205,12 +208,22 @@ function unregisterFor(actionId) {
 
 /**
  * 注册单个动作。若该键正被本应用注册着（理论上只在回滚时出现），先摘掉再注册。
+ *
+ * 关键：若同一个组合已经被**本应用另一个动作**占着（默认值撞车，或用户手动把两个动作
+ * 设成同一个键），这里必须放弃，不能像以前那样先 unregister 再抢注 —— 那会让两个动作
+ * 轮流把对方摘掉，而且 `registered` 里旧 id 的记录不会清，`list()` 里两边都显示"已注册"，
+ * 表现就是「按 A 的键却触发了 B 的动作」这种极难排查的串台。
  * @returns {boolean}
  */
 function registerOne(actionId) {
   const accel = effective(actionId);
   unregisterFor(actionId);
   if (!accel) return false;
+  const holder = ACTION_IDS.find((id) => id !== actionId && registered.get(id) === accel);
+  if (holder) {
+    console.warn(`[shortcuts] ${actionId} 与 ${holder} 撞键（${accel}），后者保持生效，请在设置里改键`);
+    return false;
+  }
   try {
     if (globalShortcut.isRegistered(accel)) globalShortcut.unregister(accel);
     const ok = globalShortcut.register(accel, () => fire(actionId));

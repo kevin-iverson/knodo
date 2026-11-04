@@ -15,6 +15,7 @@ data/
 .workbuddy/
 .vscode/
 marketing/*
+canvas/*
 .tmp/
 
 docs/*

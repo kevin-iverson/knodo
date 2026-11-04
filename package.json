@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": "WorkBuddy",
@@ -11,13 +11,15 @@
     "gen-icon": "node scripts/gen-icon.js",
     "build:tools": "node scripts/build-tools.js",
     "test:db": "node scripts/smoke-db.js",
+    "verify:desktop": "node scripts/verify-desktop-level.js",
     "dist": "node scripts/gen-icon.js && node scripts/build-tools.js && node scripts/build-win.js",
     "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --target portable",
     "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis",
     "release": "node scripts/release-gitee.js"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3"
+    "better-sqlite3": "^13.0.3",
+    "koffi": "^3.3.6"
   },
   "devDependencies": {
     "@alenaksu/json-viewer": "^2.1.2",
@@ -59,7 +61,9 @@
     ],
     "asar": true,
     "asarUnpack": [
-      "node_modules/better-sqlite3/**/*"
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/koffi/**/*",
+      "node_modules/@koromix/**/*"
     ],
     "npmRebuild": false,
     "electronDownload": {
