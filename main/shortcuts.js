@@ -37,6 +37,7 @@ const ACTIONS = [
     def: `Control+Alt+${n}`,
   })),
   { id: 'util.salary', label: '实时薪资', hint: '打开 / 关闭浮窗', def: 'Control+Alt+L' },
+  { id: 'app.calendar', label: '日历视图', hint: '打开侧栏「日历」（再按一次回列表）', def: 'Control+Alt+M' },
 ];
 
 const ACTION_IDS = ACTIONS.map((a) => a.id);

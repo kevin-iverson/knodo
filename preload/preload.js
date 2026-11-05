@@ -224,6 +224,9 @@ contextBridge.exposeInMainWorld('api', {
     quit: () => call('app:quit'),
     openExternal: (url) => call('app:openExternal', url),
     getVersion: () => call('app:getVersion'),
+    // 「用了 N 天了」的一次性提示：天数与「是否已问过」都由主进程判定，
+    // 渲染层只在「今天全部做完」时叫它一次
+    sponsorPrompt: () => call('app:sponsorPrompt'),
     // 开机自启动：读的是系统里实际登记的启动项，写会走主进程同一套 setLoginItemSettings
     getAutoStart: () => call('app:getAutoStart'),
     setAutoStart: (enabled) => call('app:setAutoStart', enabled),
@@ -341,6 +344,8 @@ contextBridge.exposeInMainWorld('api', {
       // 桌面浮窗：浮窗重拉自己的投影 / 主窗口重绘 / 菜单里的已钉列表变化 / 清单被删除
       'desktop:invalidate', 'desktop:missing', 'desktop:collapsed', 'desktop:projection-changed',
       'ui:data-changed',
+      // 日历：全局键 Ctrl+Alt+M / File 菜单「归档已完成任务」
+      'ui:calendar', 'ui:archive-done',
       // 番茄钟：计时状态变化（开钟 / 暂停 / 结算 / 被打断）
       'focus:changed',
     ];

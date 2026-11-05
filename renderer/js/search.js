@@ -22,12 +22,13 @@ function fmtTime(iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export function renderSearch() {
+export function renderSearch(initialKeyword = '') {
   const viewEl = document.getElementById('view');
   viewEl.innerHTML = `
     <div class="search-panel">
       <div class="search-hero">
-        <input id="ai-search-input" type="text" placeholder="输入关键词，检索任务并由 AI 生成总结…" />
+        <input id="ai-search-input" type="text" placeholder="输入关键词，检索任务并由 AI 生成总结…"
+               value="${esc(initialKeyword)}" />
         <button id="ai-search-btn" class="primary-btn">🤖 AI 检索</button>
       </div>
       <div class="search-note" id="ai-search-note"></div>
@@ -45,6 +46,8 @@ export function renderSearch() {
   btn.addEventListener('click', run);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
   input.focus();
+  // 关键词从顶栏带过来时把光标放到末尾，直接回车即可检索（不自动发起，AI 调用有成本）
+  if (initialKeyword) input.setSelectionRange(input.value.length, input.value.length);
 
   bindHistoryEvents();
   loadHistory();

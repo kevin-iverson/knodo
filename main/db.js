@@ -1422,6 +1422,16 @@ function setSetting(key, value) {
   ).run(key, value);
 }
 
+/**
+ * 最早一条任务的创建时间（UTC ISO 8601）。没有任务时返回 null。
+ * 用途：老的 settings 里没有首次启动时间，拿它兜底算「已经用了多少天」，
+ * 免得老用户升级后要从今天重新起算。
+ */
+function earliestTaskAt() {
+  const row = db.prepare('SELECT MIN(created_at) AS t FROM tasks').get();
+  return row && row.t ? row.t : null;
+}
+
 /* ------------------------------ 会议录制 / 纪要 ------------------------------ */
 
 /** meetings 表允许写入的字段白名单（防 SQL 拼接注入） */
@@ -3084,6 +3094,7 @@ module.exports = {
   // settings
   getSetting,
   setSetting,
+  earliestTaskAt,
   // 会议录制 / 纪要
   createMeeting,
   listMeetings,

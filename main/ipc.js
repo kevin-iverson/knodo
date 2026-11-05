@@ -1247,7 +1247,8 @@ function registerIpc() {
   // 实用工具（文本对比 / JSON 查看器）的选项：语言 / 对比模式 / 缩进等。
   // 同样是纯搬运——格式化与对比都在渲染层做（要按需加载第三方库、实时响应输入，没必要过主进程）。
   // key 白名单：避免渲染层拿它当任意键值存储使用。
-  const TOOL_PREF_KEYS = ['diff', 'json'];
+  // calendar：日历视图的容量 / 周起始 / 显示已完成 / 上次视图 / 首启提示（见设计方案 6.3）
+  const TOOL_PREF_KEYS = ['diff', 'json', 'calendar'];
   ipcMain.handle('ui:getToolPref', (_e, key) => {
     const k = TOOL_PREF_KEYS.includes(String(key || '')) ? String(key) : '';
     if (!k) return null;
@@ -1280,6 +1281,38 @@ function registerIpc() {
     }
   });
   ipcMain.handle('app:getVersion', () => app.getVersion());
+
+  /**
+   * 「用了 N 天了」的提示阈值（天）。
+   * 本地想立刻看效果：把它临时改成 0，然后在「今天」把任务全部勾完即可。
+   */
+  const SPONSOR_ASK_MIN_DAYS = 15;
+
+  /**
+   * 「用了 N 天了」的一次性提示。
+   *
+   * 天数与「是否已经问过」都只在主进程判定，渲染层只负责汇报
+   * 「今天是不是真的全部做完了」——那是渲染层唯一知道的事。
+   *
+   * 首次启动时间缺失时用最早任务的创建时间兜底，否则老用户升级后
+   * 要从今天重新起算 15 天，等于永远看不到。
+   */
+  ipcMain.handle('app:sponsorPrompt', () => {
+    try {
+      if (db.getSetting('sponsorPrompted')) return { show: false };
+      const first = db.getSetting('firstLaunchAt') || db.earliestTaskAt();
+      if (!first) return { show: false };
+      const ms = Date.now() - new Date(first).getTime();
+      if (!Number.isFinite(ms)) return { show: false };
+      const days = Math.floor(ms / 86400000);
+      if (days < SPONSOR_ASK_MIN_DAYS) return { show: false };
+      // 先记账再返回：这次没弹出来也认了，宁可少问一次，也不要天天问
+      db.setSetting('sponsorPrompted', new Date().toISOString());
+      return { show: true, days };
+    } catch (e) {
+      return { show: false };
+    }
+  });
 
   /* ---------- 番茄钟（专注计时） ---------- */
   ipcMain.handle('focus:state', () => focus.getState());

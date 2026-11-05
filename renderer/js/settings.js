@@ -17,14 +17,16 @@
 import { api } from './api.js';
 import { openPanelModal } from './modal.js';
 import { keysPaneHtml, mountKeysPane, disposeKeysPane } from './settings-keys.js';
+import { openSponsorQr } from './sponsor.js';
 
 let toast = (msg) => console.warn('[settings]', msg);
 /** 需要壳层配合的外部动作（主题切换要同步 ui.js 里的 state.theme，否则顶栏按钮会打架） */
-const ext = { onTheme: null };
+const ext = { onTheme: null, onCalendarPrefs: null };
 
-export function setSettingsHandlers({ toast: t, onTheme } = {}) {
+export function setSettingsHandlers({ toast: t, onTheme, onCalendarPrefs } = {}) {
   if (typeof t === 'function') toast = t;
   if (typeof onTheme === 'function') ext.onTheme = onTheme;
+  if (typeof onCalendarPrefs === 'function') ext.onCalendarPrefs = onCalendarPrefs;
 }
 
 /* ------------------------------ 状态 ------------------------------ */
@@ -38,6 +40,7 @@ const S = {
   backup: null,
   salary: null,
   ai: null,
+  calendar: null,
 };
 
 /** 当前搜索词（列表重绘后要重跑过滤，所以留在模块级） */
@@ -124,7 +127,7 @@ function generalHtml() {
       rows: [
         rowHtml({
           title: '界面主题',
-          desc: '「跟随系统」会随 Windows 深浅色自动切换，修改后立即生效',
+          desc: '「跟随系统」会随 Windows 深浅色自动切换，修改后立即生效；也可用 Ctrl + , 打开设置',
           ctl: ctlSelect('st-theme', S.theme, [['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']]),
           search: '深色 浅色 暗色 外观 配色 theme',
           id: 'theme',
@@ -355,6 +358,7 @@ function mountAi(pane) {
 
 function toolsHtml() {
   const s = S.salary || {};
+  const cal = S.calendar || {};
   const hasCfg = !!(s.monthly || s.start || s.end);
   return [
     sectionHtml({
@@ -378,9 +382,32 @@ function toolsHtml() {
         }),
       ],
     }),
+    sectionHtml({
+      title: '日历视图',
+      desc: '格子显示的是「负载」：按优先级加权，默认容量 6 相当于一天能扛 6 个中等任务。',
+      rows: [
+        rowHtml({
+          title: '每日容量',
+          desc: '4 – 10 之间可调，超载只在 ≥100% 变色',
+          ctl: ctlInput('st-cal-capacity', String(cal.capacity ?? 6), { type: 'number', placeholder: '6' }),
+          search: '负载 容量 权重 calendar',
+        }),
+        rowHtml({
+          title: '每周起始日',
+          ctl: ctlSelect('st-cal-weekstart', String(cal.weekStart ?? 1), [['1', '周一'], ['0', '周日']]),
+          search: '周视图 星期 calendar',
+        }),
+        rowHtml({
+          title: '显示已完成任务',
+          desc: '显示时降为 40% 透明度，且不计入负载',
+          ctl: ctlSwitch('st-cal-showdone', !!cal.showCompleted),
+          search: '完成态 calendar',
+        }),
+      ],
+    }),
     `<div class="st-foot-note">${hasCfg
       ? '薪资浮窗：按 Ctrl + Alt + L，或走菜单「实用工具 → 实时薪资」。'
-      : '填好上面三项后，用 Ctrl + Alt + L 或菜单「实用工具 → 实时薪资」打开浮窗。'}</div>`,
+      : '填好上面三项后，用 Ctrl + Alt + L 或菜单「实用工具 → 实时薪资」打开浮窗。'}<br>日历：点侧栏「今天」下面的「🗓 日历」，或按 Ctrl + Alt + M；月 / 周在日历里切换。AI 检索：顶栏搜索框右侧「🔍 AI 检索」。</div>`,
   ].join('');
 }
 
@@ -406,6 +433,30 @@ function mountTools(pane) {
     if (!el) return;
     el.addEventListener('input', () => save(true));
     el.addEventListener('change', () => save(false));
+  });
+
+  // 日历设置与「调整每日容量」弹窗同源：都写 tool.calendar，改完立刻通知日历重绘
+  const saveCal = async (silent) => {
+    const cap = Math.max(4, Math.min(10, Number(pane.querySelector('#st-cal-capacity')?.value) || 6));
+    const next = {
+      ...(S.calendar || {}),
+      capacity: cap,
+      weekStart: Number(pane.querySelector('#st-cal-weekstart')?.value ?? 1) ? 1 : 0,
+      showCompleted: !!pane.querySelector('#st-cal-showdone')?.checked,
+    };
+    try {
+      await api.ui.setToolPref('calendar', next);
+      S.calendar = next;
+      if (ext.onCalendarPrefs) ext.onCalendarPrefs(next);
+      if (!silent) toast('日历设置已保存');
+    } catch (e) {
+      toast(`保存失败：${(e && e.message) || e}`);
+    }
+  };
+  ['#st-cal-capacity', '#st-cal-weekstart', '#st-cal-showdone'].forEach((sel) => {
+    const el = pane.querySelector(sel);
+    if (!el) return;
+    el.addEventListener('change', () => saveCal(false));
   });
 }
 
@@ -499,19 +550,23 @@ const SPONSOR_URL = '';
 function aboutHtml() {
   const st = S.storage || {};
   const bk = S.backup || {};
-  const sponsor = SPONSOR_URL
-    ? sectionHtml({
-        title: '支持 Knodo',
-        rows: [
-          rowHtml({
-            title: '爱发电',
-            desc: 'Knodo 由一个人维护，开源、没有订阅制。捐赠只用于覆盖 Windows 代码签名证书——不签的话，安装时会弹“未知发布者”警告，很多人到这一步就关了。不捐完全不影响使用，提 issue 同样是支持。',
-            ctl: ctlButton('sponsor', '去支持'),
-            search: '捐赠 赞助 打赏 支持 donate sponsor 爱发电 afdian',
-          }),
-        ],
-      })
-    : '';
+  // 支持分区：赞赏码始终在；爱发电等 SPONSOR_URL 填了才多一行，避免出现打不开的按钮
+  const sponsorRows = [];
+  if (SPONSOR_URL) {
+    sponsorRows.push(rowHtml({
+      title: '爱发电',
+      desc: '按月或单次赞助都可以。捐赠只用于覆盖 Windows 代码签名证书——不签的话，安装时会弹“未知发布者”警告。',
+      ctl: ctlButton('sponsor', '去支持'),
+      search: '捐赠 赞助 打赏 支持 donate sponsor 爱发电 afdian',
+    }));
+  }
+  sponsorRows.push(rowHtml({
+    title: '微信赞赏码',
+    desc: '扫码金额随意。不捐也完全不影响使用。',
+    ctl: ctlButton('qr', '扫码支持', 'is-accent'),
+    search: '捐赠 赞助 打赏 支持 donate sponsor 微信 赞赏 收款码 二维码 qr',
+  }));
+  const sponsor = sectionHtml({ title: '支持 Knodo', rows: sponsorRows });
   return [
     sectionHtml({
       rows: [
@@ -527,12 +582,16 @@ function aboutHtml() {
 }
 
 function mountAbout(pane) {
-  if (!SPONSOR_URL) return;
   pane.addEventListener('click', async (e) => {
-    if (!e.target.closest('[data-act="sponsor"]')) return;
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
     try {
-      const r = await api.app.openExternal(SPONSOR_URL);
-      if (r && !r.ok) toast(r.reason || '无法打开链接');
+      if (btn.dataset.act === 'sponsor' && SPONSOR_URL) {
+        const r = await api.app.openExternal(SPONSOR_URL);
+        if (r && !r.ok) toast(r.reason || '无法打开链接');
+      } else if (btn.dataset.act === 'qr') {
+        openSponsorQr();
+      }
     } catch (err) {
       toast(`操作失败：${(err && err.message) || err}`);
     }
@@ -654,7 +713,7 @@ function applyFilter(root) {
 
 async function loadState() {
   const soft = async (p, fb) => { try { return await p; } catch (e) { return fb; } };
-  const [theme, autoStart, version, storage, backup, salary, ai] = await Promise.all([
+  const [theme, autoStart, version, storage, backup, salary, ai, calendar] = await Promise.all([
     soft(api.theme.get(), 'system'),
     soft(api.app.getAutoStart(), { enabled: false, supported: false, reason: '读取开机自启动状态失败' }),
     soft(api.app.getVersion(), ''),
@@ -662,8 +721,9 @@ async function loadState() {
     soft(api.env.getBackupInfo(), null),
     soft(api.ui.getSalary(), null),
     soft(api.ai.getConfig(), null),
+    soft(api.ui.getToolPref('calendar'), null),
   ]);
-  Object.assign(S, { theme, autoStart, version, storage, backup, salary, ai });
+  Object.assign(S, { theme, autoStart, version, storage, backup, salary, ai, calendar });
 }
 
 /* ------------------------------ 入口 ------------------------------ */

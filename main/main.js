@@ -241,6 +241,11 @@ function dispatchShortcut(actionId) {
       showWindow();
       if (mainWindow) mainWindow.webContents.send('ui:salary');
       return;
+    case 'app.calendar':
+      // Ctrl+Alt+M：直接打开侧栏「日历」（渲染层再按一次会退回进入前的任务列表）
+      showWindow();
+      if (mainWindow) mainWindow.webContents.send('ui:calendar');
+      return;
     default:
       if (actionId.startsWith('desktop.focus.')) {
         const n = Number(actionId.split('.')[2]);
@@ -278,10 +283,6 @@ function applyTheme() {
  */
 function buildAppMenu() {
   const auto = autostart.getState();
-  // 「主题」菜单的勾选状态读库（与设置中心同源）；库还没就绪时按默认「跟随系统」画
-  const themeMode = (() => {
-    try { return db.getSetting('theme', 'system'); } catch (e) { return 'system'; }
-  })();
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     {
@@ -303,6 +304,15 @@ function buildAppMenu() {
           click: () => {
             showWindow();
             openBackupDialog();
+          },
+        },
+        {
+          // 低频维护动作：原顶栏「🗂 归档」撤下后收进 File，和「备份与恢复」同族。
+          // 与菜单其它项一样只发事件，实际动作仍由渲染层 archiveCompleted() 执行
+          label: '归档已完成任务',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:archive-done');
           },
         },
         {
@@ -394,22 +404,15 @@ function buildAppMenu() {
         },
       ],
     },
-    {
-      // 主题：radio 三项（跟随系统 / 浅色 / 深色），与设置中心共用同一个 db 键与 nativeTheme，
-      // 点一下即生效；点击后重建菜单让勾选状态跟上
-      label: '主题',
-      submenu: [
-        { label: '跟随系统', type: 'radio', checked: themeMode === 'system', click: () => setThemeMode('system') },
-        { label: '浅色', type: 'radio', checked: themeMode === 'light', click: () => setThemeMode('light') },
-        { label: '深色', type: 'radio', checked: themeMode === 'dark', click: () => setThemeMode('dark') },
-      ],
-    },
+    // 「主题」顶格菜单已删除：它与设置中心「界面主题」写同一个 settings.theme 键，
+    // 是重复入口。唯一入口收敛到 设置 → 通用 → 界面主题（Ctrl+,）。
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 /**
- * 切换主题（菜单栏「主题」/ 设置中心两个入口）。
+ * 切换主题：唯一的用户入口是设置中心（ipc.js 的 theme:set 走同一套写库 + nativeTheme 逻辑），
+ * 这里保留给托盘等主进程内调用方。
  * 三件事必须一起做：写库（下次启动仍生效）、改 nativeTheme（标题栏 / 原生菜单 / 桌面浮窗跟着变）、
  * 推给渲染层（主界面配色读的是它自己的 state.theme）。
  */
@@ -983,7 +986,11 @@ app.whenReady().then(async () => {
               out.titleFocused = !!(ed && document.activeElement === ed.querySelector('.editor-title'));
               out.planFields = !!(ed && ed.querySelector('.date-range-field'));
               out.detailDrawer = !!document.querySelector('#detail-drawer');
-              out.searchNav = !!document.querySelector('.nav-item[data-view="search"]');
+              // 入口改版：日历进侧栏（今天下面），AI 检索从侧栏上移到顶栏搜索框旁
+              const navViews = [...document.querySelectorAll('.nav-item')].map((b) => b.dataset.view);
+              out.aiSearchTopbar = !!document.getElementById('btn-ai-search');
+              out.searchNavGone = !navViews.includes('search');
+              out.calendarAfterToday = navViews.indexOf('calendar') === navViews.indexOf('today') + 1;
               if (ed) {
                 // 日期范围控件（flatpickr range 模式）：点一次只弹一个日历，
                 // 两次点选 → 起点写入开始日期、终点写入完成日期，并自动关闭
@@ -1221,17 +1228,20 @@ app.whenReady().then(async () => {
           `);
           if (dom.__fatal) console.log('[SMOKE][dom fatal]', dom.__fatal);
 
-          /* ---- 非任务视图隐藏顶部工具区：统计 / AI 报告 / AI 检索 / 会议纪要 ---- */
+          /* ---- 非任务视图：筛选栏一律隐藏；AI 检索独留顶栏工具行（入口已上移到顶栏） ---- */
           const tbVis = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const out = {};
               const right = document.querySelector('.topbar-right');
               const bar = document.getElementById('filter-bar');
-              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              const nav = (v) => (v === 'search'
+                ? document.getElementById('btn-ai-search')
+                : document.querySelector('.nav-item[data-view="' + v + '"]')).click();
               for (const v of ['stats', 'reports', 'search', 'meetings']) {
                 nav(v);
                 await new Promise(r => setTimeout(r, 600));
-                out[v + 'Hidden'] = right.hidden && bar.hidden;
+                // 统计 / 报告 / 纪要连工具行一起收起；检索要保留，否则顶栏入口会点一下就消失
+                out[v + 'Hidden'] = bar.hidden && (v === 'search' ? !right.hidden : right.hidden);
               }
               nav('all');
               await new Promise(r => setTimeout(r, 600));
@@ -1239,7 +1249,7 @@ app.whenReady().then(async () => {
               return out;
             })()
           `);
-          console.log(`[SMOKE] 非任务视图工具区隐藏 = 统计${tbVis.statsHidden ? '✓' : '✗'} 报告${tbVis.reportsHidden ? '✓' : '✗'} 检索${tbVis.searchHidden ? '✓' : '✗'} 纪要${tbVis.meetingsHidden ? '✓' : '✗'}；回到任务视图恢复=${tbVis.taskShown ? '是' : '否'}`);
+          console.log(`[SMOKE] 非任务视图工具区 = 统计${tbVis.statsHidden ? '✓' : '✗'} 报告${tbVis.reportsHidden ? '✓' : '✗'} 检索(顶栏保留)${tbVis.searchHidden ? '✓' : '✗'} 纪要${tbVis.meetingsHidden ? '✓' : '✗'}；回到任务视图恢复=${tbVis.taskShown ? '是' : '否'}`);
 
           /* ---- 分组自定义颜色：预设色 + 取色器自由取色 → 落库 → 视觉标识同步 ---- */
           const gcOut = await mainWindow.webContents.executeJavaScript(`
@@ -1356,7 +1366,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 点击后编辑器展开 = ${dom.editorShown ? '成功' : '失败'}`);
           console.log(`[SMOKE] 编辑器含日期范围控件 = ${dom.planFields ? '是' : '否'}`);
           console.log(`[SMOKE] 详情抽屉容器 = ${dom.detailDrawer ? '存在' : '缺失'}`);
-          console.log(`[SMOKE] AI 检索导航 = ${dom.searchNav ? '存在' : '缺失'}`);
+          console.log(`[SMOKE] 导航入口 = 顶栏 AI 检索=${dom.aiSearchTopbar ? '存在' : '缺失'}；侧栏旧项已移除=${dom.searchNavGone ? '是' : '否'}；日历紧随今天=${dom.calendarAfterToday ? '是' : '否'}`);
           console.log(`[SMOKE] 标题输入框聚焦 = ${dom.titleFocused ? '成功' : '失败'}`);
           console.log(`[SMOKE] 日期范围两次点选回填 = ${dom.rangeStart || '-'} ~ ${dom.rangeEnd || '-'}（文案：${dom.rangeLabel}）；期望 ${dom.expectStart} ~ ${dom.expectEnd} → ${dom.autoFilled ? '一致' : '不一致'}`);
           console.log(`[SMOKE] 日期范围弹窗自动关闭 = ${dom.rangePopClosed ? '是' : '否'}`);
@@ -1380,18 +1390,24 @@ app.whenReady().then(async () => {
           const toolsItem = appMenu ? appMenu.items.find((i) => i.label === '实用工具') : null;
           const toolsLabels = toolsItem ? toolsItem.submenu.items.map((i) => i.label) : [];
           const themeItem = appMenu ? appMenu.items.find((i) => i.label === '主题') : null;
-          console.log(`[SMOKE] 菜单栏结构 = 顶格「${topLabels.join(' / ')}」；同步项在 File=${fileLabels.some((l) => l.startsWith('同步')) ? '是' : '否'}；桌面浮窗已并入实用工具=${toolsLabels.includes('桌面浮窗') ? '是' : '否'}（顶格已移除=${topLabels.includes('桌面浮窗') ? '否' : '是'}）；主题顶格=${themeItem ? '有' : '无'}（${themeItem ? themeItem.submenu.items.map((i) => `${i.label}${i.checked ? '✓' : ''}`).join(' / ') : '-'}）`);
+          console.log(`[SMOKE] 菜单栏结构 = 顶格「${topLabels.join(' / ')}」；同步项在 File=${fileLabels.some((l) => l.startsWith('同步')) ? '是' : '否'}；归档项在 File=${fileLabels.includes('归档已完成任务') ? '是' : '否'}；桌面浮窗已并入实用工具=${toolsLabels.includes('桌面浮窗') ? '是' : '否'}（顶格已移除=${topLabels.includes('桌面浮窗') ? '否' : '是'}）；重复「主题」顶格已删除=${themeItem ? '否（仍在）' : '是'}`);
           const topbarOut = await mainWindow.webContents.executeJavaScript(`(() => {
             const nb = document.getElementById('btn-notes-dock');
+            const ai = document.getElementById('btn-ai-search');
+            const sb = document.querySelector('.search-box');
             return {
               noteOutside: !!nb && !nb.closest('.search-box'),
               noteText: nb ? (nb.textContent || '').trim() : '',
               noteVisible: !!nb && nb.offsetWidth > 0,
+              aiVisible: !!ai && ai.offsetWidth > 0,
+              aiBesideSearch: !!ai && !!sb && ai.previousElementSibling === sb,
+              aiText: ai ? (ai.textContent || '').trim() : '',
+              zoomChipGone: !document.getElementById('view-zoom'),
               syncGone: !document.getElementById('btn-sync'),
               themeGone: !document.getElementById('btn-theme'),
             };
           })()`);
-          console.log(`[SMOKE] 顶栏入口 = 「${topbarOut.noteText || '-'}」在搜索栏外=${topbarOut.noteOutside ? '是' : '否'}；可见=${topbarOut.noteVisible ? '是' : '否'}；同步按钮已移除=${topbarOut.syncGone ? '是' : '否'}；主题按钮已移除=${topbarOut.themeGone ? '是' : '否'}`);
+          console.log(`[SMOKE] 顶栏入口 = 「${topbarOut.noteText || '-'}」在搜索栏外=${topbarOut.noteOutside ? '是' : '否'}；可见=${topbarOut.noteVisible ? '是' : '否'}；「${topbarOut.aiText || '-'}」可见=${topbarOut.aiVisible ? '是' : '否'}；紧贴搜索栏=${topbarOut.aiBesideSearch ? '是' : '否'}；缩放 chip 已移除=${topbarOut.zoomChipGone ? '是' : '否'}；同步按钮已移除=${topbarOut.syncGone ? '是' : '否'}；主题按钮已移除=${topbarOut.themeGone ? '是' : '否'}`);
           mainWindow.webContents.send('ui:sync');
           const syncOut = await mainWindow.webContents.executeJavaScript(`
             (async () => {
@@ -1939,7 +1955,10 @@ app.whenReady().then(async () => {
           const r9 = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              // AI 检索已从侧栏移到顶栏按钮，冒烟里的视图切换统一走这里
+              const nav = (v) => (v === 'search'
+                ? document.getElementById('btn-ai-search')
+                : document.querySelector('.nav-item[data-view="' + v + '"]')).click();
               const out = {};
 
               /* ---- 1) 标签选中态 ---- */
@@ -2088,7 +2107,10 @@ app.whenReady().then(async () => {
           const r10 = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              // AI 检索已从侧栏移到顶栏按钮，冒烟里的视图切换统一走这里
+              const nav = (v) => (v === 'search'
+                ? document.getElementById('btn-ai-search')
+                : document.querySelector('.nav-item[data-view="' + v + '"]')).click();
               const pad = (n) => String(n).padStart(2, '0');
               const d = new Date();
               const today = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
@@ -2292,7 +2314,10 @@ app.whenReady().then(async () => {
           const r11 = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              // AI 检索已从侧栏移到顶栏按钮，冒烟里的视图切换统一走这里
+              const nav = (v) => (v === 'search'
+                ? document.getElementById('btn-ai-search')
+                : document.querySelector('.nav-item[data-view="' + v + '"]')).click();
               const out = {};
 
               /* ---- 1) 行内改标题：点标题就地编辑，失焦自动保存 ---- */
@@ -2548,7 +2573,10 @@ app.whenReady().then(async () => {
           const r14 = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              // AI 检索已从侧栏移到顶栏按钮，冒烟里的视图切换统一走这里
+              const nav = (v) => (v === 'search'
+                ? document.getElementById('btn-ai-search')
+                : document.querySelector('.nav-item[data-view="' + v + '"]')).click();
               const out = {};
               nav('all'); await wait(700);
 
@@ -2626,7 +2654,10 @@ app.whenReady().then(async () => {
           const r15 = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              // AI 检索已从侧栏移到顶栏按钮，冒烟里的视图切换统一走这里
+              const nav = (v) => (v === 'search'
+                ? document.getElementById('btn-ai-search')
+                : document.querySelector('.nav-item[data-view="' + v + '"]')).click();
               const out = {};
 
               /* 1) 创建时间：列表行与详情都要能看到 */
@@ -2737,7 +2768,10 @@ app.whenReady().then(async () => {
           const r16 = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              // AI 检索已从侧栏移到顶栏按钮，冒烟里的视图切换统一走这里
+              const nav = (v) => (v === 'search'
+                ? document.getElementById('btn-ai-search')
+                : document.querySelector('.nav-item[data-view="' + v + '"]')).click();
               const out = {};
               try {
               nav('all'); await wait(800);
@@ -2971,7 +3005,10 @@ app.whenReady().then(async () => {
               out.topHasScore = r4.tasks.every((t) => t.match && typeof t.match.score === 'number');
 
               // 5) 界面渲染：走真实点击，检查三态各自的 DOM 与"命中依据"是否可见
-              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              // AI 检索已从侧栏移到顶栏按钮，冒烟里的视图切换统一走这里
+              const nav = (v) => (v === 'search'
+                ? document.getElementById('btn-ai-search')
+                : document.querySelector('.nav-item[data-view="' + v + '"]')).click();
               const searchIn = () => document.getElementById('ai-search-input');
               nav('all'); await wait(300); nav('search'); await wait(500);
               const runUi = async (kw) => {
@@ -3187,8 +3224,45 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 实用工具·高亮 = 差异行 token ${r18.diffHl} 个；开关=${r18.diffHlToggle ? '有' : '无'}；关掉后无 token=${r18.diffHlOff ? '是' : '否'}`);
           console.log(`[SMOKE] 实用工具·JSON 查看器 = 开窗=${r18.jvOpened ? '是' : '否'}；解析=${r18.jvParsed ? '成功' : '失败'}；树节点 ${r18.jvTree} 个；搜索「ada」=${r18.jvHits || '-'}；JSONPath 结果「${r18.jvQuery || '-'}」`);
 
+          // 日历视图：侧栏「今天」下的「日历」→ 月视图骨架 / 格子 / 负载条 / 待安排池 / 图例
+          // → 日历内部切周（月 / 周不再占顶栏）→ 回任务列表；顺带验证顶栏「AI 检索」
+          const calOut = await mainWindow.webContents.executeJavaScript(`(async () => {
+            const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+            const out = {};
+            try {
+              const nav = document.querySelector('.nav-item[data-view="calendar"]');
+              out.navExists = !!nav;
+              out.chipGone = !document.getElementById('view-zoom');
+              if (nav) { nav.click(); await wait(700); }
+              out.navActive = !!nav && nav.classList.contains('active');
+              out.title = (document.getElementById('view-title') || {}).textContent || '';
+              out.wrap = !!document.querySelector('.cal-wrap');
+              out.cells = document.querySelectorAll('.cal-cell').length;
+              out.loadBars = document.querySelectorAll('.cal-load').length;
+              out.pool = !!document.querySelector('.cal-pool');
+              out.legend = !!document.querySelector('.cal-legend');
+              out.segCount = document.querySelectorAll('[data-cal-view]').length;
+              out.desc = (document.getElementById('view-desc') || {}).textContent || '';
+              const wk = document.querySelector('[data-cal-view="week"]');
+              if (wk) { wk.click(); await wait(500); }
+              out.weekCols = document.querySelectorAll('.cal-week-col').length;
+              const back = document.querySelector('.nav-item[data-view="today"]');
+              if (back) { back.click(); await wait(500); }
+              out.backToList = !document.querySelector('.cal-wrap');
+              const ai = document.getElementById('btn-ai-search');
+              if (ai) { ai.click(); await wait(400); }
+              out.aiPanel = !!document.querySelector('.search-panel');
+              out.aiActive = !!ai && ai.classList.contains('is-active');
+              if (ai) { ai.click(); await wait(400); }
+              out.aiBack = !document.querySelector('.search-panel');
+            } catch (e) { out.err = String((e && e.message) || e); }
+            return out;
+          })()`);
+          console.log(`[SMOKE] 日历视图 = 侧栏项=${calOut.navExists ? '有' : '无'}；chip已移除=${calOut.chipGone ? '是' : '否'}；高亮=${calOut.navActive ? '是' : '否'}；标题「${calOut.title || '-'}」；骨架=${calOut.wrap ? '有' : '无'}；格子 ${calOut.cells} 个；负载条 ${calOut.loadBars} 条；待安排池=${calOut.pool ? '有' : '无'}；图例=${calOut.legend ? '有' : '无'}；月/周控件 ${calOut.segCount} 个；周视图 ${calOut.weekCols} 列；回列表=${calOut.backToList ? '成功' : '失败'}；描述「${calOut.desc || '-'}」${calOut.err ? '；异常=' + calOut.err : ''}`);
+          console.log(`[SMOKE] 顶栏 AI 检索 = 进检索视图=${calOut.aiPanel ? '成功' : '失败'}；按钮选中态=${calOut.aiActive ? '有' : '无'}；再点回列表=${calOut.aiBack ? '成功' : '失败'}`);
+
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
-            && dom.editorShown && dom.planFields && dom.detailDrawer && dom.searchNav && dom.titleFocused
+            && dom.editorShown && dom.planFields && dom.detailDrawer && dom.aiSearchTopbar && dom.searchNavGone && dom.calendarAfterToday && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
             && dom.pickingOpen && dom.autoFilled && dom.rangePopClosed
             && dom.rangeStart <= dom.rangeEnd
@@ -3197,6 +3271,13 @@ app.whenReady().then(async () => {
             && dom.tagModalOpened && dom.tagAdded
             // 对外同步面板（菜单栏 File → 同步）+ 顶栏入口整理（笔记按钮外置、同步/主题收进菜单）
             && topbarOut.noteOutside && topbarOut.noteVisible && topbarOut.syncGone && topbarOut.themeGone
+            && topbarOut.aiVisible && topbarOut.aiBesideSearch && topbarOut.zoomChipGone
+            // 重复「主题」顶格菜单已删除；归档从顶栏收进 File；日历 / AI 检索走新入口
+            && !themeItem && fileLabels.includes('归档已完成任务')
+            && calOut.navExists && calOut.chipGone && calOut.navActive && calOut.wrap && calOut.segCount === 2
+            && calOut.cells >= 28 && calOut.loadBars > 0
+            && calOut.pool && calOut.legend && calOut.weekCols === 7 && calOut.backToList
+            && calOut.aiPanel && calOut.aiActive && calOut.aiBack
             && syncOut.opened && syncOut.taskFields && syncOut.noteFields
             && syncOut.groupOptions >= 2 && syncOut.exportBtns === 2 && syncOut.closed && syncOut.noMask
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
@@ -3382,7 +3463,7 @@ app.whenReady().then(async () => {
           app.quit();
         } catch (e) {
           console.error('[SMOKE] 检测失败:', e.message);
-          console.error('[SMOKE] 堆栈:', e && e.stack ? String(e.stack).split('\n').slice(0, 6).join(' | ') : '');
+          console.error('[SMOKE] 堆栈:', e && e.stack ? String(e.stack).split('\n').slice(0, 20).join(' | ') : '');
           isQuitting = true;
           app.quit();
         }

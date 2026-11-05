@@ -203,20 +203,61 @@ body {
 
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 24px 10px; gap: 16px; flex-wrap: wrap;
+  padding: 16px 24px 10px; gap: 16px; flex-wrap: nowrap;
 }
+/* 窄视口（1080）下按钮已经很挤：不允许整排换行，改由搜索框收缩 + 描述省略号让位 */
+.topbar-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 0 1 auto; }
 .topbar-left h1 { font-size: 20px; font-weight: 700; }
-.view-desc { color: var(--text-3); font-size: 12.5px; }
-.topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-
-/* 搜索框：右侧不再塞图标按钮（笔记已挪成框外的独立按钮） */
-.search-box { position: relative; display: inline-flex; align-items: center; }
-.search-box input {
-  width: 200px; padding: 8px 12px; border: 1px solid var(--border);
-  border-radius: 8px; background: var(--bg-panel); color: var(--text);
-  font-size: 13px; outline: none; transition: width 0.2s;
+.view-desc {
+  color: var(--text-3); font-size: 12.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px;
 }
-.search-box input:focus { width: 260px; border-color: var(--primary); }
+.topbar-right {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  flex: 1 1 auto; min-width: 0; flex-wrap: nowrap;
+}
+/* 搜索框除外：其余按钮保持固有宽度，只有搜索框可以收缩让位 */
+.topbar-right > *:not(.search-box) { flex: none; }
+
+/* 侧栏「日历」首启提示：新功能不藏在标题旁的 chip 里，只在第一次进来时轻微脉冲一次 */
+.nav-item.is-hint { animation: nav-pulse 2s ease-in-out 1; }
+@keyframes nav-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(79, 124, 255, 0); }
+  30%, 70% { box-shadow: inset 0 0 0 2px rgba(79, 124, 255, .35); }
+}
+
+/* 顶栏「🔍 AI 检索」：紧贴搜索框，视图与「过滤列表」区分开，选中态用主色实心 */
+.text-btn.ai-search-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 8px 10px; font-size: 12.5px; white-space: nowrap;
+  border-color: var(--primary); color: var(--primary-strong); font-weight: 600;
+}
+.text-btn.ai-search-btn:hover { background: var(--bg-active); border-color: var(--primary-strong); }
+.text-btn.ai-search-btn.is-active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* 1080 左右的窗口：新增「AI 检索」后按钮更多，收紧内边距与描述上限换取一整行 */
+@media (max-width: 1250px) {
+  .topbar { gap: 10px; padding-left: 18px; padding-right: 18px; }
+  .topbar-right { gap: 6px; }
+  .view-desc { max-width: 180px; }
+  .text-btn { padding: 8px 9px; font-size: 12px; }
+  .primary-btn { padding: 8px 10px; font-size: 12px; }
+  .search-box { flex-basis: 210px; }
+}
+
+/* 搜索框：宽视口给足 260px，窄视口自动收缩（最低 110px），保证顶栏始终一行。
+   聚焦时在宽视口再展到 320px；窄视口放不下就自然收回，不会把按钮挤到第二行。 */
+.search-box {
+  position: relative; display: inline-flex; align-items: center;
+  flex: 0 1 260px; min-width: 110px;
+}
+.search-box:focus-within { flex-basis: 320px; }
+.search-box input {
+  width: 100%; padding: 8px 12px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--bg-panel); color: var(--text);
+  font-size: 13px; outline: none; transition: border-color .2s, box-shadow .2s;
+}
+.search-box input:focus { border-color: var(--primary); }
 /* 顶栏「📝 笔记」：紧贴搜索框的高亮按钮 —— 笔记是最容易被新用户忽略的核心功能，
    用主色描边 + 主色文字让它从一排灰按钮里跳出来，悬停转实心 */
 .text-btn.note-btn {
@@ -3145,3 +3186,65 @@ body.nt-fs-open { overflow: hidden; }
 .st-loading, .st-error { padding: 18px; text-align: center; font-size: 12.5px; color: var(--text-3); }
 .st-error { color: var(--danger); }
 .st-empty { padding: 48px 0; text-align: center; font-size: 13px; color: var(--text-3); }
+
+/* ---------- 赞赏码弹窗 ---------- */
+.modal.modal-sponsor .modal-body {
+  padding: 22px 28px 6px;
+}
+.sponsor-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.sponsor-box img {
+  display: block;
+  width: 300px;
+  height: 300px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(16, 24, 40, 0.08), 0 2px 6px rgba(16, 24, 40, 0.08);
+}
+.sponsor-tip {
+  margin: 0;
+  max-width: 360px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-3);
+  text-align: center;
+}
+
+/* 设置页里需要「被看见」的动作按钮：主色描边，hover 转实心 */
+.st-btn.is-accent {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.st-btn.is-accent:hover {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+/* ---------- 「用了 N 天了」 ---------- */
+.modal.modal-sponsor-ask .modal-body {
+  padding: 22px 28px 10px;
+}
+.sponsor-ask {
+  max-width: 440px;
+}
+.sponsor-ask p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text-2);
+}
+.sponsor-ask p:last-child {
+  margin-bottom: 0;
+}
+.sponsor-ask .sponsor-ask-lead {
+  margin-bottom: 14px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}

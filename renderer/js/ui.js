@@ -18,6 +18,7 @@ import { openPromptModal, openFormModal, openPanelModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOptionsHtml } from './group-tree.js';
 import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
+import { openSponsorAsk } from './sponsor.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
 import {
   renderNotes, setNotesHandlers, createNote, disposeNotes, importNotesFromDisk, openNotesDock,
@@ -31,6 +32,7 @@ import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
 import { openContextMenu, closeContextMenu } from './ctx-menu.js';
 import { openSettings, setSettingsHandlers } from './settings.js';
+import { renderCalendar, setCalendarHandlers, openCalendar, backToList, disposeCalendar } from './calendar.js';
 
 /** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
 const AUTO_SAVE_DELAY = 700;
@@ -54,7 +56,9 @@ const esc = (s) =>
     .replace(/'/g, '&#39;');
 
 const VIEW_META = {
-  today: { title: '今天', desc: '今天或已逾期的进行中任务（按计划完成日期）' },
+  today: { title: '今天', desc: '今天 + 已逾期', long: '今天或已逾期的进行中任务（按计划完成日期）' },
+  // 一级视图：侧栏「今天」下面的「日历」；描述由 calendar.js 按当月 / 当周统计动态写入
+  calendar: { title: '日历', desc: '', long: '按日负载排布任务，月 / 周缩放，拖拽即可改期' },
   upcoming: { title: '即将到期', desc: '计划完成日期在今天或之后的任务' },
   all: { title: '全部任务', desc: '所有进行中与已完成任务' },
   completed: { title: '已完成', desc: '已完成但未归档的任务' },
@@ -154,6 +158,14 @@ export async function init() {
       }
     },
   });
+  // 日历视图：把「切视图 / 重绘 / 提示 / 打开详情」作为回调注入，避免 calendar.js 反向 import ui.js
+  setCalendarHandlers({
+    toast,
+    render: () => render(),
+    renderSidebar: () => renderSidebar(),
+    refresh: () => { renderSidebar(); render(); },
+    openTaskDetail: (id) => openDetail(id),
+  });
   bindStaticEvents();
   // 番茄钟：订阅主进程计时状态 + 初始快照 + 500ms 本地重算（进度环/剩余时间）
   initFocus();
@@ -178,8 +190,12 @@ function bindStaticEvents() {
   // 导航
   document.querySelectorAll('.nav-item').forEach((btn) => {
     btn.addEventListener('click', () => {
+      // 记住最近的任务列表视图：从「日历 / AI 检索」这类非列表视图返回时回到原来那一项
+      const target = btn.dataset.view;
+      if (TASK_VIEWS.includes(target)) lastListView = target;
+      else if (TASK_VIEWS.includes(state.view)) lastListView = state.view;
       // 「今日已完成」是持久化的：切换视图不清除，回到「今天」时列表依然完整
-      state.view = btn.dataset.view;
+      state.view = target;
       state.currentGroup = 'all';
       state.editingTaskId = null;
       state.addingTask = false;
@@ -225,6 +241,8 @@ function bindStaticEvents() {
     // 设置面板里改主题后要同步回主界面：界面配色读的是 state.theme，
     // 两边各自持有一份状态的话，改完就会出现「设置说浅色、界面是深色」
     onTheme: (mode) => { state.theme = mode; applyTheme(); },
+    // 设置中心的日历项与日历视图内的「调整每日容量」写同一个 tool.calendar 键
+    onCalendarPrefs: () => { if (state.view === 'calendar') render(); },
   });
   api.on('ui:settings', () => {
     openSettings().catch((e) => toast(`打开设置失败：${(e && e.message) || e}`));
@@ -250,8 +268,27 @@ function bindStaticEvents() {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       state.search = searchInput.value.trim();
-      renderTasks();
+      // 搜索是「任务列表」的能力：在日历态输入就退回列表，别让日历静默失效
+      if (state.view === 'calendar') {
+        state.view = 'today';
+        renderSidebar();
+        render();
+      } else renderTasks();
     }, 200);
+  });
+
+  // 顶栏「🔍 AI 检索」：原侧栏导航项上移，紧贴搜索框；再点一次回到任务列表。
+  // 顶栏搜索框里已经敲过的关键词会带进检索框，省得重打一遍。
+  document.getElementById('btn-ai-search')?.addEventListener('click', () => {
+    if (state.view === 'search') state.view = lastListView || 'today';
+    else {
+      state.view = 'search';
+      state.currentGroup = 'all';
+      state.editingTaskId = null;
+      state.addingTask = false;
+    }
+    renderSidebar();
+    render();
   });
 
   // 笔记弹窗：不离开当前任务视图就能看 / 改笔记（弹窗里是同一套笔记界面）
@@ -296,9 +333,21 @@ function bindStaticEvents() {
     ensureTaskView();
     startAdd();
   });
-  document.getElementById('btn-archive-done').addEventListener('click', archiveCompleted);
+  // 「🗂 归档」已移入 File 菜单：元素不存在时不能抛错（可选链）
+  document.getElementById('btn-archive-done')?.addEventListener('click', archiveCompleted);
+  api.on('ui:archive-done', () => archiveCompleted());
 
-  // 主题：入口在顶部菜单栏「主题」与设置中心（顶栏不再放按钮）
+  // 全局快捷键 Ctrl+Alt+M：与 Ctrl+Alt+B/N/C 同族，直接进侧栏「日历」（再按一次回列表）。
+  // 不传模式 → calendar.js 恢复上次使用的月 / 周缩放级别。
+  api.on('ui:calendar', () => {
+    if (state.view === 'calendar') backToList(lastListView);
+    else {
+      if (TASK_VIEWS.includes(state.view)) lastListView = state.view;
+      openCalendar();
+    }
+  });
+
+  // 主题：唯一入口在设置中心（也可用 Ctrl+, 打开），菜单栏重复项已删除
 
   // 主进程事件：托盘菜单“快速添加” → 展开底部编辑器
   api.on('ui:quick-add', () => {
@@ -323,6 +372,7 @@ function bindStaticEvents() {
     await refreshAll();
     renderSidebarList();
     if (TASK_VIEWS.includes(state.view)) await renderTasks();
+    else if (state.view === 'calendar') await render();
   });
   // 已钉清单变化（钉 / 取消钉住 / 主进程还原）：刷新侧边栏的 📌 标记
   api.on('desktop:projection-changed', () => { refreshDesktopPins(); });
@@ -414,6 +464,8 @@ function ensureTaskView() {
 /* ---------------- 渲染入口 ---------------- */
 
 let lastView = null;
+/** 最近停留的任务列表视图：从日历 / AI 检索返回时用它，而不是一律跳回「今天」 */
+let lastListView = 'today';
 /** 任务 id → 关联笔记数（renderTasks 批量拉取，列表徽标用） */
 let noteCounts = {};
 
@@ -422,23 +474,54 @@ async function render() {
   closeContextMenu();
   // 离开笔记视图时销毁编辑器：整页 innerHTML 重建后，旧的自动保存器会继续写库
   if (lastView === 'notes' && state.view !== 'notes') disposeNotes();
+  if (lastView === 'calendar' && state.view !== 'calendar') disposeCalendar();
   lastView = state.view;
   const meta = VIEW_META[state.view] || VIEW_META.all;
   document.getElementById('view-title').textContent = meta.title;
-  document.getElementById('view-desc').textContent = meta.desc;
-  // 统计 / AI 报告 / AI 检索 / 会议纪要不是任务列表：搜索框、工具按钮与筛选栏都用不上，
-  // 整排隐藏（[hidden] 已有 display:none !important），把纵向空间还给内容区
+  const descEl = document.getElementById('view-desc');
+  descEl.textContent = meta.desc;
+  descEl.title = meta.long || meta.desc;
+  // 统计 / AI 报告 / 会议纪要不是任务列表：顶栏工具整排隐藏。
+  // 日历保留工具行但收起筛选栏（有自己的负载图例与控件）；AI 检索保留工具行，
+  // 这样顶栏那个「🔍 AI 检索」按钮不会点一下就消失，选中态也能看见。
   const isTaskView = TASK_VIEWS.includes(state.view);
-  document.querySelector('.topbar-right').hidden = !isTaskView;
+  const isCalendar = state.view === 'calendar';
+  const isSearch = state.view === 'search';
+  document.querySelector('.topbar-right').hidden = !(isTaskView || isCalendar || isSearch);
   document.getElementById('filter-bar').hidden = !isTaskView;
   if (!isTaskView) document.getElementById('time-filter').hidden = true;
+  // AI 检索视图里自带检索框：顶栏那个过滤列表的输入框先收起，避免两个输入框抢注意力
+  const searchBox = document.querySelector('.search-box');
+  if (searchBox) searchBox.hidden = isSearch;
+  const aiBtn = document.getElementById('btn-ai-search');
+  if (aiBtn) {
+    aiBtn.classList.toggle('is-active', isSearch);
+    aiBtn.title = isSearch ? '返回任务列表' : 'AI 检索：关键词检索全部任务并生成 AI 总结（再点一次返回任务列表）';
+  }
+  syncNavHint();
   renderTagFilterChip();
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
-  if (state.view === 'search') { renderSearch(); return; }
+  // 顶栏搜索框里已输入的关键词带进 AI 检索框，省得重打一遍（不自动发起检索）
+  if (isSearch) { renderSearch(document.getElementById('search-input')?.value.trim() || ''); return; }
   if (state.view === 'meetings') { await renderMeetings(); return; }
   if (state.view === 'notes') { await renderNotes(); return; }
+  if (isCalendar) { await renderCalendar(); return; }
   await renderTasks();
+}
+
+/** 侧栏「日历」首启提示：新功能不做成标题旁的小 chip，只在第一次进来时轻微脉冲一次 */
+let navHintChecked = false;
+function syncNavHint() {
+  const nav = document.querySelector('.nav-item[data-view="calendar"]');
+  if (!nav || navHintChecked) return;
+  navHintChecked = true;
+  api.ui.getToolPref('calendar').then((p) => {
+    if (p && p.seenHint) return;
+    nav.classList.add('is-hint');
+    setTimeout(() => nav.classList.remove('is-hint'), 2100);
+    api.ui.setToolPref('calendar', { ...(p || {}), seenHint: true }).catch(() => {});
+  }).catch(() => {});
 }
 
 async function renderSidebar() {
@@ -1338,6 +1421,8 @@ function hasTimeFilter() {
 }
 
 async function renderTasks() {
+  // #view 是共享容器：日历态下任何误调（应用内快捷键、外部刷新）都不能把日历整块冲成列表
+  if (state.view === 'calendar') { await renderCalendar(); return; }
   const tasks = await loadTasks();
   // 展开的子节点可能被当前视图 / 筛选条件过滤掉（例如「今天」视图要求 plan_end <= 今天，
   // 而子任务往往没有日期）。为保证"点得开、看得见"，显式补拉已展开任务的子任务。
@@ -1437,6 +1522,35 @@ async function renderTasks() {
   updateTopbarFocusCount();
   // 当前清单同步给主进程：捕捉条从主窗口按 C 时落到这里
   syncCaptureContext();
+  // 「用了 N 天了」：只在今天真正清空时问一次，天数与去重都在主进程判定
+  maybeAskSponsor(tasks);
+}
+
+/**
+ * 「用了 N 天了」的一次性提示。
+ *
+ * 三个条件都满足才叫主进程：
+ *   1. 在「今天」视图 —— 别的视图的"全部完成"不算数
+ *   2. 今天确实勾过东西 —— 空列表不是"清空"
+ *   3. 列表里没有未完成的 —— 真做完了
+ *
+ * 天数够不够、是不是已经问过，由 app:sponsorPrompt 判断。
+ * 这里任何异常都吞掉：一个可选提示不值得打断任何一次渲染。
+ */
+let sponsorAsking = false;
+async function maybeAskSponsor(tasks) {
+  if (sponsorAsking || state.view !== 'today') return;
+  if (!tasks.length || !state.recentlyDone.size) return;
+  if (tasks.some((t) => !t.completed)) return;
+  sponsorAsking = true;
+  try {
+    const r = await api.app.sponsorPrompt();
+    if (r && r.show) openSponsorAsk(r.days);
+  } catch (_e) {
+    /* 静默 */
+  } finally {
+    sponsorAsking = false;
+  }
 }
 
 /**
@@ -2230,7 +2344,8 @@ async function archiveCompleted() {
   toast(`已归档 ${n} 个已完成任务`);
   await refreshAll();
   renderSidebarList();
-  renderTasks();
+  if (state.view === 'calendar') render();
+  else renderTasks();
 }
 
 async function unarchiveTask(id) {

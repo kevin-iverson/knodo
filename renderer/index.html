@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="vendor/tom-select/tom-select.min.css" />
   <link rel="stylesheet" href="vendor/easymde/easymde.min.css" />
   <link rel="stylesheet" href="css/styles.css" />
+  <link rel="stylesheet" href="css/calendar.css" />
 </head>
 <body>
   <div class="app">
@@ -47,6 +48,8 @@
 
       <nav class="nav">
         <button class="nav-item" data-view="today"><span class="nav-ico">📅</span>今天</button>
+        <!-- 日历紧挨「今天」：同一批任务的时间维度，月 / 周缩放放到日历内部的分段控件里 -->
+        <button class="nav-item" data-view="calendar" title="日历视图：月 / 周负载总览（Ctrl+Alt+M）"><span class="nav-ico">🗓</span>日历</button>
         <button class="nav-item" data-view="upcoming"><span class="nav-ico">⏰</span>即将到期</button>
         <button class="nav-item" data-view="all"><span class="nav-ico">📋</span>全部任务</button>
         <button class="nav-item" data-view="completed"><span class="nav-ico">✅</span>已完成</button>
@@ -54,7 +57,6 @@
         <button class="nav-item" data-view="notes"><span class="nav-ico">📝</span>笔记</button>
         <button class="nav-item" data-view="stats"><span class="nav-ico">📊</span>统计</button>
         <button class="nav-item" data-view="reports"><span class="nav-ico">🤖</span>AI 报告</button>
-        <button class="nav-item" data-view="search"><span class="nav-ico">🔍</span>AI 检索</button>
         <button class="nav-item" data-view="meetings"><span class="nav-ico">🎙</span>会议纪要</button>
       </nav>
 
@@ -89,17 +91,19 @@
         <div class="topbar-right">
           <!-- 番茄钟今日格数：常驻、极小、无背景（不显示目标值，避免制造压力） -->
           <span class="topbar-focus-count" id="topbar-focus-count" title="今天已完成的番茄格数"></span>
-          <!-- 搜索框 + 笔记按钮：笔记做成搜索框右侧一个带文字的按钮（不是藏在框里的图标），
-               新用户一眼就能看到入口；点开是完整笔记界面（弹窗），不切换视图。
+          <!-- 搜索框 + AI 检索 + 笔记按钮：普通关键词过滤留在输入框，AI 检索是独立视图，
+               两个入口都紧贴搜索框（原侧栏「AI 检索」已上移）；笔记点开是弹窗，不切视图。
                「同步」「主题」两个低频入口已收进顶部菜单栏，腾出的行宽给这里。 -->
           <div class="search-box">
             <input type="text" id="search-input" placeholder="搜索任务 / 标签…" />
           </div>
+          <button type="button" class="text-btn ai-search-btn" id="btn-ai-search"
+                  title="AI 检索：关键词检索全部任务并生成 AI 总结（再点一次返回任务列表）">🔍 AI 检索</button>
           <button type="button" class="text-btn note-btn" id="btn-notes-dock"
                   title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）">📝 笔记</button>
           <button class="text-btn" id="btn-import" title="从完整备份包（.zip）或旧版 JSON 恢复">📥 导入</button>
           <button class="text-btn" id="btn-export" title="导出完整备份包（任务 / 笔记 / 附件 / 录音都在里面）">📤 备份</button>
-          <button class="text-btn" id="btn-archive-done" title="归档已完成任务">🗂 归档</button>
+          <!-- 「🗂 归档」已移入 File 菜单（低频维护动作），腾出的行宽给搜索框与 AI 检索 -->
           <button class="text-btn" id="btn-record" title="录制会议音频（或屏幕），结束后转文字并生成纪要">⏺ 录制</button>
           <!-- AI 设置 / 开机自启动 / 同步 / 主题 都在顶部菜单栏（主进程应用菜单） -->
           <button class="primary-btn" id="btn-new-task">＋ 新建任务</button>
