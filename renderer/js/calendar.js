@@ -249,6 +249,104 @@ function shellHtml() {
   </div>`;
 }
 
+/* ---------------- 长标题浮层 ---------------- */
+
+let tipEl = null;
+let tipHost = null;
+
+function tipNode() {
+  if (!tipEl) {
+    tipEl = document.createElement('div');
+    tipEl.className = 'cal-hover-tip';
+    tipEl.hidden = true;
+    document.body.appendChild(tipEl);
+  }
+  return tipEl;
+}
+function hideTitleTip() {
+  if (tipEl) tipEl.hidden = true;
+  tipHost = null;
+}
+
+let probeEl = null;
+/** -webkit-line-clamp 下 scrollHeight 不反映被裁掉的行，必须用同宽离屏探子量全文高度 */
+function isTitleElided(el) {
+  if (el.scrollWidth > el.clientWidth + 1) return true;
+  const cs = window.getComputedStyle(el);
+  if (!probeEl) {
+    probeEl = document.createElement('span');
+    probeEl.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;pointer-events:none;'
+      + 'box-sizing:border-box;display:block;padding:0;border:0;white-space:normal;overflow:visible;';
+  }
+  probeEl.style.width = `${el.clientWidth}px`;
+  probeEl.style.font = cs.font;
+  probeEl.style.fontSize = cs.fontSize;
+  probeEl.style.fontFamily = cs.fontFamily;
+  probeEl.style.fontWeight = cs.fontWeight;
+  probeEl.style.lineHeight = cs.lineHeight;
+  probeEl.style.letterSpacing = cs.letterSpacing;
+  probeEl.style.wordBreak = cs.wordBreak;
+  probeEl.style.overflowWrap = cs.overflowWrap;
+  probeEl.textContent = el.textContent;
+  document.body.appendChild(probeEl);
+  const full = probeEl.getBoundingClientRect().height;
+  probeEl.remove();
+  return full > el.clientHeight + 2;
+}
+
+/**
+ * 只在标题确实被裁掉时弹：短名字不打扰，长名字悬停即见全称。
+ * 浮层挂 body 而非格内 —— .cal-cell / .cal-task 都是 overflow:hidden，
+ * 绝对定位在里面的气泡会被直接裁掉。
+ */
+function onTitleHover(e) {
+  if (!(e.target instanceof Element)) return;
+  const label = e.target.closest('.cal-task-title, .cal-pool-title, .cal-panel-title, .cal-backlog-title');
+  if (!label) return;
+  const host = label.closest('[data-task-id]');
+  if (!host) return;
+  const tip = tipNode();
+  if (tipHost === host) return;                 // 同一条不重复测量，也避免拖动时抖动
+  tipHost = host;
+  if (cfg.drag) { tip.hidden = true; return; }  // 拖拽中不弹
+  const elided = isTitleElided(label);
+  const t = cfg.tasks.find((x) => x.id === Number(host.dataset.taskId));
+  if (!elided || !t) { tip.hidden = true; return; }
+  const pri = priorityOf(t);
+  const range = taskRange(t);
+  const when = range ? (range[0] === range[1] ? range[0] : `${range[0]} → ${range[1]}`) : '待安排';
+  const bits = [
+    `<span class="cal-tip-dot" style="background:${PRIORITY_COLOR[pri]}"></span>${PRIORITY_TEXT[pri]}`,
+    t.group_name ? esc(t.group_name) : '',
+    esc(when),
+    Number(t.subtask_count) ? `${Number(t.subtask_count)} 个子任务` : '',
+    host.classList.contains('is-cont') ? '跨天延续' : '',
+    t.completed ? '已完成' : '',
+    isOverdue(t, todayStr()) ? '<span class="cal-tip-bad">已超期</span>' : '',
+  ].filter(Boolean);
+  const canOpen = host.matches('.cal-task, .cal-pool-item');
+  tip.innerHTML = `<div class="cal-tip-title">${esc(t.title || '未命名任务')}</div>
+    <div class="cal-tip-meta">${bits.join('<i>·</i>')}</div>
+    ${canOpen ? '<div class="cal-tip-hint">双击打开详情</div>' : ''}`;
+  tip.hidden = false;
+  const r = label.getBoundingClientRect();
+  const w = tip.offsetWidth;
+  const h = tip.offsetHeight;
+  const left = clamp(r.left, 8, Math.max(8, window.innerWidth - w - 8));
+  let top = r.bottom + 8;
+  if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 8);
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+}
+
+function onTitleHoverOut(e) {
+  if (!(e.target instanceof Element)) return;
+  const label = e.target.closest('.cal-task-title, .cal-pool-title, .cal-panel-title, .cal-backlog-title');
+  if (!label) return;
+  if (e.relatedTarget instanceof Node && label.contains(e.relatedTarget)) return;
+  hideTitleTip();
+}
+
 /* ---------------- 渲染：组件 ---------------- */
 
 function loadBarHtml(load, cap) {
@@ -277,14 +375,15 @@ function taskCardHtml(entry, opts = {}) {
     title="${t.completed ? '取消完成' : '标记完成'}">${t.completed ? '✓' : ''}</button>`;
   const flag = pri === 3 ? '<span class="cal-flag" title="紧急">⚑</span>' : '';
   const dot = safeColor(t.group_color) ? `<span class="cal-gdot" style="background:${safeColor(t.group_color)}" title="${esc(t.group_name || '')}"></span>` : '';
+  // 月视图格子只有 ~65px：长串「含 N 个子任务」会把标题挤到只剩一个字，只留 +N 角标。
+  // 完整标题 / 子任务数交给悬停浮层与右栏面板承载。
   const kids = Number(t.subtask_count || 0)
-    ? `<span class="cal-kids">含 ${Number(t.subtask_count)} 个子任务</span>` : '';
+    ? `<span class="cal-kids" aria-label="${Number(t.subtask_count)} 个子任务">+${Number(t.subtask_count)}</span>` : '';
   const lateDot = late ? '<span class="cal-late-dot" title="已超期"></span>' : '';
   // 跨天延续的格子里照样显示任务标题：只写「续」等于白占一个卡片位，看不出在做什么
   const title = esc(t.title || '未命名任务');
   return `<div class="${cls}" draggable="true" data-task-id="${t.id}" data-priority="${pri}"
-    style="--cal-pri:${PRIORITY_COLOR[pri]};--cal-soft:${PRIORITY_SOFT[pri]}"
-    title="${esc(t.title || '未命名任务')}${entry.continuation ? '（跨天延续）' : ''}">
+    style="--cal-pri:${PRIORITY_COLOR[pri]};--cal-soft:${PRIORITY_SOFT[pri]}">
     <span class="cal-task-bar"></span>${check}
     ${entry.continuation ? '<span class="cal-cont-mark">↳</span>' : ''}
     <span class="cal-task-title">${title}</span>
@@ -296,7 +395,7 @@ function poolCardHtml() {
   const items = cfg.pool.slice(0, 20).map((t) => {
     const pri = priorityOf(t);
     return `<div class="cal-pool-item" draggable="true" data-task-id="${t.id}"
-      style="--cal-pri:${PRIORITY_COLOR[pri]}" title="${esc(t.title || '')}">
+      style="--cal-pri:${PRIORITY_COLOR[pri]}">
       <span class="cal-pool-bar"></span>
       <span class="cal-pool-title">${esc(t.title || '未命名任务')}</span>
       ${isOverdue(t, todayStr()) ? '<span class="cal-late-dot" title="已超期"></span>' : ''}
@@ -462,9 +561,9 @@ function backlogListHtml() {
   const today = todayStr();
   const rows = cfg.overdue.slice(0, 30).map((t) => {
     const days = Math.max(1, diffDays(t.plan_end, today));
-    return `<div class="cal-backlog-row">
+    return `<div class="cal-backlog-row" data-task-id="${t.id}">
       <span class="cal-backlog-dot" style="background:${PRIORITY_COLOR[priorityOf(t)]}"></span>
-      <span class="cal-backlog-title" title="${esc(t.title || '')}">${esc(t.title || '未命名任务')}</span>
+      <span class="cal-backlog-title">${esc(t.title || '未命名任务')}</span>
       <span class="cal-backlog-days" title="${t.plan_end}">已超期 ${days} 天</span>
       <button type="button" data-cal-act="backlog-one" data-task-id="${t.id}">改到今天</button>
     </div>`;
@@ -485,7 +584,7 @@ function panelRowHtml(entry) {
   return `<div class="cal-panel-row ${t.completed ? 'is-done' : ''}" data-task-id="${t.id}">
     <button type="button" class="cal-check" data-cal-act="toggle" data-task-id="${t.id}">${t.completed ? '✓' : ''}</button>
     <div class="cal-panel-main">
-      <div class="cal-panel-title" title="${esc(t.title || '')}">${entry.continuation ? '↳ ' : ''}${esc(t.title || '未命名任务')}</div>
+      <div class="cal-panel-title">${entry.continuation ? '↳ ' : ''}${esc(t.title || '未命名任务')}</div>
       <div class="cal-panel-meta">
         ${t.group_name ? `<span class="cal-gdot" style="background:${safeColor(t.group_color) || PRIORITY_COLOR[pri]}"></span>${esc(t.group_name)} · ` : ''}
         ${isOverdue(t, todayStr()) ? '<span class="is-bad">已超期</span>' : PRIORITY_TEXT[pri]}
@@ -554,6 +653,7 @@ function isEmptyMonth() {
 }
 
 function paint() {
+  hideTitleTip();
   const wrap = document.querySelector('.cal-wrap');
   if (!wrap) return;
   const isWeek = cfg.mode === 'week';
@@ -623,6 +723,7 @@ export function backToList(view = 'today') {
 }
 
 export function disposeCalendar() {
+  hideTitleTip();
   clearEdgeTimer();
   clearPreview();
   endDrag();
@@ -770,7 +871,7 @@ function openCapacityDialog() {
         </select></div>
       <div class="cal-set-row"><label>显示已完成任务 <small>降为 40% 透明度，不计入负载</small></label>
         <input id="cal-set-done" type="checkbox"${p.showCompleted ? ' checked' : ''}></div>
-      <div class="cal-set-note">6 是这天能扛的量，超过就该挪 —— 容量是你自己的校准口。也可以在 设置 → 实用工具 → 日历视图 里改。</div>
+      <div class="cal-set-note">6 是这天能扛的量，超过就该挪 —— 容量是你自己的校准口。也可以在 设置 → 日历 里改。</div>
     </div>`,
     onSubmit: async (mask) => {
       const cap = clamp(Number(mask.querySelector('#cal-set-cap').value) || 6, 4, 10);
@@ -829,6 +930,9 @@ function bindDelegates(root) {
   root.addEventListener('dblclick', onDblClick);
   root.addEventListener('contextmenu', onContextMenu);
   root.addEventListener('change', onChange);
+  root.addEventListener('mousemove', onTitleHover);
+  root.addEventListener('mouseout', onTitleHoverOut);
+  root.addEventListener('scroll', hideTitleTip, true);
   root.addEventListener('dragstart', onDragStart);
   root.addEventListener('dragover', onDragOver);
   root.addEventListener('drop', onDrop);
@@ -954,6 +1058,7 @@ function selectDate(d, backlog = false) {
 }
 
 function paintPanel() {
+  hideTitleTip();
   const slot = document.querySelector('.cal-right-slot');
   if (slot) slot.innerHTML = rightSlotHtml();
 }
@@ -963,6 +1068,7 @@ function paintPanel() {
 function onDragStart(e) {
   const card = e.target.closest('.cal-task[draggable], .cal-pool-item[draggable]');
   if (!card || !e.currentTarget.querySelector('.cal-wrap')) return;
+  hideTitleTip();
   const id = Number(card.dataset.taskId);
   const task = cfg.tasks.find((t) => t.id === id);
   if (!task) return;

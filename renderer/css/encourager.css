@@ -1,0 +1,342 @@
+/**
+ * 上班鼓励器 · 主浮窗双主题样式。
+ *
+ * 跟随应用明暗，不新增主题 IPC：主窗口由 ui.js 写 document.documentElement[data-theme]，
+ * 这里只消费。浅色态三个强调色一律压深（荧光绿 / 亮黄 / 亮红在浅底上对比度不足，RK-12）。
+ *
+ * 尺寸：640×720（按视口收敛）。加宽后内容区改为两栏 / 两列，五个页签在常见视口下
+ * 都能一屏看全；.enc-panes 的 overflow-y:auto 只作为极小视口的兜底，常态不应出现滚动条。
+ *
+ * 只有 --enc-* 是新变量，不改 styles.css 既有的 --bg / --text / --primary。
+ * 类名全部带 enc- 前缀，不与项目既有工具类复用。
+ */
+
+:root {
+  --enc-bg: #F5F6F8;
+  --enc-panel: #FFFFFF;
+  --enc-panel2: #EEF1F5;
+  --enc-text: #1F2430;
+  --enc-text2: #6B7280;
+  --enc-text3: #9AA1AD;
+  --enc-green: #0F8A5C;
+  --enc-red: #D93A3D;
+  --enc-yellow: #8A6100;
+  --enc-purple: #6D4BC7;
+  --enc-line: #E2E6EC;
+  --enc-shadow: 0 8px 30px rgba(20, 30, 60, 0.10);
+}
+
+[data-theme='dark'] {
+  --enc-bg: #0B1714;
+  --enc-panel: #16241F;
+  --enc-panel2: #1E322A;
+  --enc-text: #F2F5F3;
+  --enc-text2: #8A9A93;
+  --enc-text3: #5C6E65;
+  --enc-green: #3EE08F;
+  --enc-red: #FF4D4F;
+  --enc-yellow: #F5B301;
+  --enc-purple: #A78BFA;
+  --enc-line: #2A3C34;
+  --enc-shadow: 0 8px 30px rgba(0, 0, 0, 0.40);
+}
+
+/* 页签 / 引导卡 / 预览图大量用 hidden 切显隐，这里自带一份，避免依赖 styles.css 的全局规则 */
+[hidden] { display: none !important; }
+
+/* ---------------- 主浮窗容器 ---------------- */
+
+.modal-mask .modal.modal-encourager {
+  width: min(92vw, 640px);
+  max-width: min(92vw, 640px);
+  height: min(92vh, 720px);
+  max-height: calc(100vh - 48px);
+  background: var(--enc-bg);
+  border-color: var(--enc-line);
+  box-shadow: var(--enc-shadow);
+  transition: background-color .18s ease, border-color .18s ease;
+}
+.modal-encourager .modal-head {
+  padding: 10px 14px;
+  background: var(--enc-panel);
+  border-color: var(--enc-line);
+  color: var(--enc-text);
+  font-size: 13px;
+}
+.modal-encourager .modal-body {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;         /* 确定高度链：body → .enc → .enc-panes 逐层 min-height:0 */
+  background: var(--enc-bg);
+}
+.modal-encourager .modal-foot {
+  padding: 8px 14px;
+  background: var(--enc-panel);
+  border-color: var(--enc-line);
+}
+.modal-encourager .modal-foot .primary-btn { padding: 5px 16px; font-size: 12px; }
+.enc-head-btn {
+  flex: 0 0 auto; width: 26px; height: 26px; display: inline-flex;
+  align-items: center; justify-content: center; border: 1px solid var(--enc-line);
+  border-radius: 6px; background: transparent; color: var(--enc-text2);
+  font-size: 13px; cursor: pointer;
+}
+.enc-head-btn:hover { background: var(--enc-panel2); color: var(--enc-text); }
+
+.enc {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--enc-text);
+  font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+
+/* ---------------- 上半区：真钱主视觉（唯一红） ---------------- */
+
+.enc-hero { flex: 0 0 auto; padding: 14px 22px 12px; background: var(--enc-bg); }
+.enc-hero-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.enc-badge {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+  color: var(--enc-red); background: var(--enc-panel2);
+}
+.enc-badge[data-state='after'] { color: var(--enc-green); }
+.enc-badge[data-state='before'], .enc-badge[data-state='weekend'] { color: var(--enc-text2); }
+.enc-date { font-size: 11px; color: var(--enc-text2); font-variant-numeric: tabular-nums; }
+.enc-amount-label { font-size: 12px; color: var(--enc-text2); }
+.enc-amount {
+  display: flex; align-items: baseline; gap: 3px; margin: 2px 0 4px;
+  color: var(--enc-red);                       /* 全窗唯一红：今日已赚 */
+  font-variant-numeric: tabular-nums;
+}
+.enc-cny { font-size: 24px; font-weight: 700; }
+.enc-today { font-size: 46px; font-weight: 800; letter-spacing: -1px; line-height: 1.1; }
+.enc-hero-sub { font-size: 11px; color: var(--enc-text2); font-variant-numeric: tabular-nums; min-height: 15px; }
+.enc-sep { margin: 0 8px; color: var(--enc-text3); }
+.enc-progress {
+  height: 6px; border-radius: 4px; background: var(--enc-panel2);
+  overflow: hidden; margin: 10px 0 5px;
+}
+.enc-progress-fill { height: 100%; width: 0; border-radius: 4px; background: var(--enc-green); transition: width .9s linear; }
+.enc-progress-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--enc-text2); }
+/* 首次使用引导：未配置薪资时顶在 hero 里，配置好由 paintLive() 自动收起。
+   加宽后改成横向一行（说明 | 按钮+路径），高度压到 48px 左右：引导卡出现时 hero
+   不能比金额区更高，否则下面五个页签会被挤出滚动条。 */
+.enc-guide {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 8px; padding: 7px 12px; border-radius: 9px;
+  background: var(--enc-panel); border: 1px dashed var(--enc-green);
+}
+.enc-guide-main { flex: 1 1 auto; min-width: 0; }
+.enc-guide-k { font-size: 12px; font-weight: 700; color: var(--enc-green); }
+.enc-guide-txt { margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--enc-text2); }
+.enc-guide-actions {
+  flex: 0 0 auto; display: flex; flex-direction: column;
+  align-items: flex-start; gap: 3px;
+}
+.enc-guide-path { font-size: 10px; line-height: 1.4; color: var(--enc-text3); white-space: nowrap; }
+
+/* ---------------- 下半区 HUD：牛马币与真钱完全分离（FR-18） ---------------- */
+
+.enc-hud {
+  flex: 0 0 auto; display: flex; gap: 8px; padding: 0 22px 6px;
+}
+.enc-hud-cell {
+  flex: 1 1 0; min-width: 0; padding: 7px 8px; border-radius: 8px;
+  background: var(--enc-panel); border: 1px solid var(--enc-line);
+  display: flex; align-items: baseline; gap: 4px; white-space: nowrap;
+}
+.enc-hud-k { font-size: 10px; color: var(--enc-text2); }
+.enc-hud-v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--enc-text); }
+.enc-hud-unit { font-size: 10px; color: var(--enc-text2); }
+.enc-hud-coin { border-color: var(--enc-purple); }
+.enc-hud-coin .enc-hud-k, .enc-hud-coin .enc-hud-v, .enc-hud-coin .enc-hud-unit { color: var(--enc-purple); }
+.enc-hud-coin.is-bump { animation: enc-bump .45s ease; }
+.enc-coin-note { flex: 0 0 auto; padding: 0 22px 8px; font-size: 10px; color: var(--enc-text3); }
+.enc-coin-note.is-hint { color: var(--enc-purple); }
+
+@keyframes enc-bump { 0% { transform: scale(1); } 45% { transform: scale(1.07); } 100% { transform: scale(1); } }
+
+/* ---------------- 页签与内容区 ---------------- */
+
+.enc-tabs {
+  flex: 0 0 auto; display: flex; border-top: 1px solid var(--enc-line);
+  border-bottom: 1px solid var(--enc-line); background: var(--enc-panel);
+}
+.enc-tab {
+  flex: 1 1 0; padding: 7px 0; border: none; background: transparent;
+  color: var(--enc-text2); font-size: 12px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.enc-tab:hover { color: var(--enc-text); }
+.enc-tab.is-active { color: var(--enc-green); border-bottom-color: var(--enc-green); font-weight: 600; }
+/* 确定高度链：.modal-body(overflow:hidden) → .enc(height:100%) → .enc-panes(flex:1, min-height:0)。
+   内容在 640px 宽下用两栏 / 两列排布，常态一屏装得下；auto 只是极小视口的兜底。 */
+.enc-panes { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 22px; }
+.enc-pane-note { margin-top: 8px; font-size: 10px; line-height: 1.55; color: var(--enc-text3); }
+.enc-mini-label { font-size: 10px; color: var(--enc-text2); }
+
+.enc-btn {
+  border: 1px solid var(--enc-line); border-radius: 6px; background: var(--enc-panel);
+  color: var(--enc-text); font-size: 11px; padding: 5px 12px; cursor: pointer;
+}
+.enc-btn:hover { border-color: var(--enc-green); }
+.enc-btn-primary { background: var(--enc-green); border-color: var(--enc-green); color: #fff; }
+.enc-check { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--enc-text); margin-top: 7px; }
+.enc-check input { accent-color: var(--enc-green); }
+
+/* 设置页：薪资表单内嵌在浮窗里，不跳设置中心（避免双模态叠加） */
+.enc-setup { max-width: 480px; }
+.enc-setup-head { font-size: 13px; font-weight: 700; color: var(--enc-green); }
+.enc-setup-desc { margin: 4px 0 10px; font-size: 11px; line-height: 1.55; color: var(--enc-text2); }
+.enc-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 9px; min-width: 0; }
+.enc-field > span { font-size: 11px; color: var(--enc-text2); }
+.enc-field input {
+  width: 100%; box-sizing: border-box; padding: 6px 9px;
+  border: 1px solid var(--enc-line); border-radius: 7px;
+  background: var(--enc-panel); color: var(--enc-text);
+  font-size: 13px; font-family: inherit; font-variant-numeric: tabular-nums;
+}
+.enc-field input:focus { outline: none; border-color: var(--enc-green); }
+.enc-field input[type='time'] { cursor: pointer; }
+[data-theme='dark'] .enc-field input { color-scheme: dark; }
+.enc-field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.enc-setup .enc-pane-note { margin-top: 6px; line-height: 1.45; }
+.enc-setup-state {
+  margin-top: 2px; padding: 6px 9px; border-radius: 7px;
+  font-size: 11px; line-height: 1.5;
+  background: var(--enc-panel2); color: var(--enc-text2);
+}
+.enc-setup-state[data-state='ok'] { color: var(--enc-green); }
+.enc-setup-state[data-state='warn'] { color: var(--enc-red); }
+
+/* 搭子页：加宽后左右两栏，小牛马与台词在左，实时数字在右，纵向压到一屏内 */
+.enc-buddy {
+  display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  gap: 18px; align-items: start; text-align: left;
+}
+.enc-buddy-left { text-align: center; min-width: 0; }
+.enc-buddy-right { min-width: 0; }
+.enc-moo-btn {
+  border: none; background: transparent; cursor: pointer; padding: 0;
+  color: var(--enc-text); display: inline-block;
+}
+.enc-moo-btn.is-poked { animation: enc-bump .4s ease; }
+.enc-moo { width: 112px; height: 100px; display: block; margin: 0 auto; }
+.enc-speech {
+  display: inline-block; max-width: 100%; margin: 6px 0 12px; padding: 7px 12px;
+  border-radius: 10px; background: var(--enc-panel2); color: var(--enc-text);
+  font-size: 12px; line-height: 1.5;
+}
+.enc-speech.is-fresh { border: 1px solid var(--enc-green); }
+.enc-tone-row { display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 10px; }
+.enc-tone {
+  border: 1px solid var(--enc-line); border-radius: 12px; background: transparent;
+  color: var(--enc-text2); font-size: 10px; padding: 3px 10px; cursor: pointer;
+}
+.enc-tone.is-active { color: var(--enc-green); border-color: var(--enc-green); font-weight: 600; }
+.enc-facts { display: flex; flex-direction: column; gap: 5px; text-align: left; }
+.enc-fact {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 9px; border-radius: 7px; background: var(--enc-panel); border: 1px solid var(--enc-line);
+  font-size: 11px; color: var(--enc-text2); font-variant-numeric: tabular-nums;
+}
+.enc-fact b { color: var(--enc-text); font-weight: 600; }
+.enc-fact-btn {
+  border: none; background: none; color: var(--enc-yellow); font-size: 11px;
+  cursor: pointer; font-variant-numeric: tabular-nums; padding: 0;
+}
+
+/* 抽签页 */
+.enc-fortune { text-align: center; }
+.enc-fortune-card {
+  max-width: 420px; margin: 0 auto 10px;
+  border-radius: 10px; padding: 16px 14px; background: var(--enc-panel);
+  border: 1px solid var(--enc-yellow); box-shadow: inset 0 0 0 4px var(--enc-panel2);
+}
+.enc-fortune-card.is-flip { animation: enc-flip .36s ease; }
+@keyframes enc-flip { 0% { transform: rotateY(0); } 50% { transform: rotateY(12deg); } 100% { transform: rotateY(0); } }
+.enc-fortune-level { font-size: 12px; font-weight: 700; color: var(--enc-yellow); letter-spacing: 4px; }
+.enc-fortune-main { margin-top: 10px; font-size: 17px; font-weight: 700; color: var(--enc-text); }
+.enc-fortune-main i {
+  display: inline-block; font-style: normal; font-size: 11px; color: var(--enc-green);
+  border: 1px solid var(--enc-green); border-radius: 4px; padding: 1px 5px; margin-right: 8px;
+}
+.enc-fortune-main.enc-ji i { color: var(--enc-red); border-color: var(--enc-red); }
+.enc-fortune-note { margin-top: 12px; font-size: 12px; color: var(--enc-text2); line-height: 1.6; }
+.enc-fortune-id { margin-top: 10px; font-size: 10px; color: var(--enc-text3); letter-spacing: 1px; }
+
+/* 抱团页：六条留言排成 2×3，加宽后既不纵向拉出滚动条、也填满内容区 */
+.enc-crowd-head { font-size: 13px; font-weight: 700; color: var(--enc-green); margin-bottom: 4px; }
+.enc-crowd-list {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px; margin-top: 10px;
+}
+.enc-crowd-item {
+  min-width: 0; padding: 9px 11px; border-radius: 8px; background: var(--enc-panel);
+  border: 1px solid var(--enc-line); font-size: 11px; line-height: 1.5;
+}
+.enc-crowd-who { color: var(--enc-purple); font-weight: 600; margin-right: 8px; }
+.enc-crowd-text { color: var(--enc-text2); }
+
+/* 卡片页：左侧 3:4 预览，右侧是勾选项与操作。预览宽度按视口高度收敛
+   （clamp 27vh），矮屏自动变小，避免为了看清整张卡把内容区顶出滚动条。 */
+.enc-card {
+  display: grid; grid-template-columns: minmax(0, clamp(180px, 27vh, 220px)) minmax(0, 1fr);
+  gap: 18px; align-items: start;
+}
+.enc-card-side { min-width: 0; }
+.enc-card-preview {
+  width: 100%; aspect-ratio: 3 / 4; border-radius: 8px; overflow: hidden;
+  background: var(--enc-panel2); border: 1px solid var(--enc-line);
+  display: flex; align-items: center; justify-content: center; color: var(--enc-text3); font-size: 11px;
+}
+.enc-card-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.enc-card-theme { margin: 0 0 6px; font-size: 10px; color: var(--enc-text2); }
+/* 用户主动展开的长列表只在自己这块小区域里滚，不把整个内容区顶出滚动条 */
+.enc-title-picker {
+  margin-top: 6px; padding: 7px 9px; border-radius: 7px;
+  background: var(--enc-panel); border: 1px solid var(--enc-line);
+  max-height: 116px; overflow-y: auto;
+}
+.enc-card-confirm {
+  margin-top: 9px; padding: 10px; border-radius: 8px;
+  background: var(--enc-panel2); border: 1px solid var(--enc-yellow);
+  max-height: 150px; overflow-y: auto;
+}
+.enc-confirm-title { font-size: 12px; font-weight: 700; color: var(--enc-yellow); }
+.enc-confirm-body { margin-top: 5px; font-size: 11px; color: var(--enc-text); line-height: 1.5; }
+.enc-confirm-list { margin: 6px 0 0 18px; font-size: 11px; color: var(--enc-text2); line-height: 1.6; }
+.enc-card-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.enc-card-msg { margin-top: 7px; font-size: 10px; color: var(--enc-text2); word-break: break-all; }
+
+/* 矮屏：再收紧一档固定间距，700px 高的笔记本也能一屏看全（不靠隐藏 overflow） */
+@media (max-height: 780px) {
+  .enc-hero { padding: 10px 22px 8px; }
+  .enc-hero-head { margin-bottom: 4px; }
+  .enc-amount { margin: 1px 0 3px; }
+  .enc-progress { margin: 7px 0 4px; }
+  .enc-hud { padding-bottom: 4px; }
+  .enc-hud-cell { padding: 5px 8px; }
+  .enc-coin-note { padding-bottom: 5px; }
+  .enc-tab { padding: 5px 0; }
+  .enc-panes { padding: 8px 22px; }
+  .enc-setup-desc { margin: 3px 0 7px; line-height: 1.45; }
+  .enc-field { margin-bottom: 7px; }
+  .enc-setup .enc-pane-note { margin-top: 4px; line-height: 1.4; }
+  .enc-pane-note { margin-top: 6px; }
+}
+/* 窄屏：引导卡改回纵向、两栏改单栏，此时 .enc-panes 的 auto 才作为兜底生效 */
+@media (max-width: 560px) {
+  .enc-guide { flex-direction: column; align-items: stretch; }
+  .enc-guide-actions { flex-direction: row; align-items: center; flex-wrap: wrap; }
+  .enc-guide-path { white-space: normal; }
+  .enc-buddy, .enc-card { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .enc-card-preview { max-width: 220px; }
+  .enc-crowd-list { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 动效尊重系统设置 */
+@media (prefers-reduced-motion: reduce) {
+  .enc * { animation: none !important; transition: none !important; }
+}

@@ -1898,47 +1898,10 @@ html.is-resizing .detail-foot { pointer-events: none; }
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* ---------------- 实用工具：实时薪资（菜单「实用工具 → 实时薪资」） ---------------- */
-.modal.modal-salary { width: 520px; max-width: 92vw; }
-.sal-wrap { display: flex; flex-direction: column; gap: 12px; }
-/* 三个输入一行排开：月薪宽一些，上下班时间是 time 控件（宽度随浏览器，给个固定下限免得太窄） */
-.sal-form { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
-.sal-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.sal-field input[type="time"] { cursor: pointer; }
-.sal-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.sal-card {
-  display: flex; flex-direction: column; gap: 4px;
-  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--bg);
-}
-/* 「今日已获得」用主色描边强调：它是打开这个弹窗时最想看的那个数 */
-.sal-card-today {
-  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
-  background: color-mix(in srgb, var(--primary) 6%, var(--bg));
-}
-.sal-card-label { font-size: 12px; color: var(--text-2); }
-.sal-card-value {
-  display: flex; align-items: baseline; gap: 2px;
-  color: var(--text); font-weight: 600; font-size: 26px; line-height: 1.2;
-  font-variant-numeric: tabular-nums; word-break: break-all;
-}
-.sal-card-today .sal-card-value { color: var(--primary); }
-.sal-currency { font-size: 15px; font-weight: 500; opacity: 0.8; }
-.sal-card-sub { font-size: 11.5px; color: var(--text-3); line-height: 1.4; }
-.sal-hint {
-  font-size: 11.5px; color: var(--text-3); line-height: 1.5;
-  border-top: 1px dashed var(--border); padding-top: 8px;
-}
-@media (max-width: 560px) {
-  .sal-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .sal-field-money { grid-column: span 2; }
-  .sal-cards { grid-template-columns: minmax(0, 1fr); }
-}
 
-/* ---------------- 对外同步：导出到其它产品（顶栏「☁ 同步」） ---------------- */
-.modal.modal-sync { width: 640px; max-width: 94vw; }
-/* 只有「笔记导出」一节的独立面板：三个字段一行排得下，不需要那么宽 */
-.modal.modal-sync.modal-note-export { width: 580px; }
+/* ---------------- 笔记导出面板（笔记视图工具栏「📤 导出」） ---------------- */
+/* 三个字段一行排得下，不需要更宽 */
+.modal.modal-note-export { width: 580px; max-width: 94vw; }
 .sync-wrap { display: flex; flex-direction: column; gap: 14px; }
 .sync-sec {
   display: flex; flex-direction: column; gap: 10px;

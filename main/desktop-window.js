@@ -42,6 +42,7 @@ const SNAP_INSET = 12;
 /**
  * 支持的投影类型：group（单清单）/ today（今天）/ upcoming（即将到期）。
  * 后两者是「视图投影」，不带 refId —— 内容由视图口径实时算出，不需要指向任何分组。
+ * 漏加 kind 会被 readAll() 的 KINDS.includes(p.kind) 过滤掉，表现为「贴了但重启就没了」。
  */
 const KINDS = ['group', 'today', 'upcoming'];
 
@@ -664,6 +665,8 @@ function pin(kind, refId) {
     if (!db.getGroup(rid)) throw new Error('分组不存在（可能已被删除）');
   }
   const list0 = readAll();
+  // 非 group 的 kind 的 refId 恒为 null，这条判断天然就是单例约束：
+  // 再点一次「钉到桌面」只会 focus 已有窗口，不会贴出好几个一模一样的视图投影。
   const exist = list0.find((p) => p.kind === kind && p.refId === rid);
   if (exist) {
     openWindow(exist);
@@ -672,8 +675,12 @@ function pin(kind, refId) {
   if (list0.length >= MAX_WINDOWS) {
     throw new Error(`已钉满 ${MAX_WINDOWS} 个浮窗，请先收起一个再钉`);
   }
-  const p = normalizeProjection({ id: newId(), kind, refId: rid });
-  const geo = defaultGeometry(320);
+  const p = normalizeProjection({
+    id: newId(), kind, refId: rid,
+    pinMode: 'always',
+    geometry: { w: DEF_W, h: 320 },
+  });
+  const geo = defaultGeometry(p.geometry.h);
   p.geometry.x = geo.x;
   p.geometry.y = geo.y;
   p.geometry.displayId = geo.displayId;
@@ -988,6 +995,7 @@ function registerIpc() {
     mw.webContents.send('ui:focus-task', taskId);
     return true;
   }));
+
 }
 
 /* ------------------------------ 生命周期 ------------------------------ */

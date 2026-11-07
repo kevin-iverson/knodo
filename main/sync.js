@@ -1,24 +1,19 @@
 'use strict';
 /**
- * 对外同步 / 导出：把任务与笔记整理成第三方产品能直接吃下的通用格式。
+ * 笔记导出内核：把笔记整理成图片内嵌、自包含的 Markdown。
  *
- *  - 任务 → Markdown 表格 / CSV：CSV 可直接导入腾讯文档（智能表格 / 在线表格），
- *    Markdown 可贴进腾讯文档或作为文本素材喂给 ima。
- *  - 笔记 → 单文件 Markdown（单篇就是一篇 .md）/ 按篇拆分的 .md 压缩包（zip）：
- *    散文件形式可直接批量上传到 ima 知识库。
- *
- * 图片一律**内嵌**：笔记里的 todo-media:/// 链接会被换成 data:image/...;base64，
- * 导出的 .md 是自包含的 —— 发给别人、换台机器打开都能看到图，不再附带 attachments/ 目录。
+ *  - 单篇 → 一篇 .md（标题即 H1）；多篇 → 单个合集 .md，或每篇一个 .md 的 zip（按目录层级摆放）。
+ *  - 笔记里的 todo-media:/// 链接会被换成 data:image/...;base64，导出的 .md 不依赖 attachments/ 目录。
  *
  * 这里只做「读数据 + 拼装文本」，落盘（保存对话框 + 写文件）在 ipc.js 里做，
  * 好处是这些拼装函数不依赖 Electron，可以直接在 npm run test:db 下断言。
+ * 注：「File → 同步到腾讯文档 / ima…」与任务 CSV / Markdown 表格导出已撤掉，本模块只服务笔记导出。
  */
 const fs = require('fs');
 const db = require('./db');
 const attachments = require('./attachments');
 const { zip } = require('./docx');
 
-const PRIORITY_TEXT = ['低', '中', '高', '紧急'];
 const EXPORT_LIMIT = 1000000; // 导出不做分页，listNotes 的默认 500 上限在这里被顶掉
 
 /* ------------------------------ 通用小工具 ------------------------------ */
@@ -32,21 +27,6 @@ function safeFileName(name, fallback = '未命名') {
   return s || fallback;
 }
 
-/** 表格单元格里会破坏结构的字符：竖线转义、换行压成单行 */
-function cellText(v) {
-  return String(v == null ? '' : v)
-    .replace(/\|/g, '\\|')
-    .replace(/\r?\n+/g, ' / ')
-    .trim();
-}
-
-/** CSV 单元格：加引号 + 内部引号翻倍；前导 =+-@ 会被表格软件当公式，前缀 ' 规避 */
-function csvCell(v) {
-  let s = String(v == null ? '' : v).replace(/\r?\n+/g, ' / ');
-  if (/^[=+\-@]/.test(s)) s = `'${s}`;
-  return `"${s.replace(/"/g, '""')}"`;
-}
-
 function stamp() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
@@ -57,112 +37,6 @@ function humanNow() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-/* ------------------------------ 任务导出 ------------------------------ */
-
-/**
- * 分组树：导出按树形顺序排（父分组后紧跟它的子分组），路径写成「工作 / 前端」。
- * @returns {{order:Map<number,number>, pathOf:(id)=>string}}
- */
-function groupIndex() {
-  const groups = db.listGroups();
-  const byParent = new Map();
-  groups.forEach((g) => {
-    const k = g.parent_id == null ? null : g.parent_id;
-    if (!byParent.has(k)) byParent.set(k, []);
-    byParent.get(k).push(g);
-  });
-  const order = new Map();
-  const pathOf = new Map();
-  let seq = 0;
-  const walk = (pid, prefix) => {
-    (byParent.get(pid) || []).forEach((g) => {
-      if (order.has(g.id)) return; // 脏数据成环时兜底，避免无限递归
-      order.set(g.id, seq++);
-      const p = prefix ? `${prefix} / ${g.name}` : g.name;
-      pathOf.set(g.id, p);
-      walk(g.id, p);
-    });
-  };
-  walk(null, '');
-  groups.forEach((g) => {
-    if (!order.has(g.id)) { order.set(g.id, seq++); pathOf.set(g.id, g.name); }
-  });
-  return { order, pathOf };
-}
-
-/**
- * 取待导出的任务（已按分组树顺序排好）。
- * @param {{status?:'active'|'completed'|'all'|'any', groupId?:number|null, includeSubtasks?:boolean}} opts
- */
-function collectTasks(opts = {}) {
-  const status = opts.status || 'all';
-  const { order, pathOf } = groupIndex();
-  const filter = { status, sort: opts.sort };
-  if (opts.groupId != null && opts.groupId !== 'all') filter.groupId = opts.groupId;
-  if (!opts.includeSubtasks) filter.topLevel = true;
-  const tasks = db.listTasks(filter);
-  const sorted = tasks
-    .map((t, i) => ({ t, i }))
-    .sort((a, b) => {
-      const oa = order.get(a.t.group_id) ?? Number.MAX_SAFE_INTEGER;
-      const ob = order.get(b.t.group_id) ?? Number.MAX_SAFE_INTEGER;
-      return oa - ob || a.i - b.i; // 同分组内保持列表原有排序
-    })
-    .map((x) => x.t);
-
-  return sorted.map((t) => ({
-    title: t.title || '',
-    group: t.group_id != null ? (pathOf.get(t.group_id) || t.group_name || '') : '未分组',
-    priority: PRIORITY_TEXT[Number(t.priority) || 0] || '中',
-    status: t.archived ? '已归档' : t.completed ? '已完成' : '进行中',
-    planStart: t.plan_start || '',
-    planEnd: t.plan_end || '',
-    completedAt: t.completed_at ? t.completed_at.slice(0, 10) : '',
-    tags: (t.tag_names || []).join('、'),
-    subtasks: t.subtask_count ? `${t.subtask_done}/${t.subtask_count}` : '',
-    parent: t.parent_title || '',
-    notes: t.notes || '',
-  }));
-}
-
-function scopeText(scope = {}) {
-  const s = { active: '进行中', completed: '已完成', all: '未归档（进行中 + 已完成）', any: '全部（含归档）' };
-  return s[scope.status] || s.all;
-}
-
-/** 任务 → Markdown 表格 */
-function tasksToMarkdown(rows, scope = {}) {
-  const head = [
-    '# 任务导出',
-    '',
-    `> 共 ${rows.length} 条 · 范围：${scopeText(scope)} · 导出时间：${humanNow()}`,
-    '',
-    '| 标题 | 分组 | 优先级 | 状态 | 计划开始 | 截止 | 完成日期 | 标签 | 子任务 | 备注 |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-  ];
-  const body = rows.length
-    ? rows.map((r) => `| ${cellText(r.title)} | ${cellText(r.group)} | ${cellText(r.priority)} | `
-        + `${cellText(r.status)} | ${cellText(r.planStart)} | ${cellText(r.planEnd)} | `
-        + `${cellText(r.completedAt)} | ${cellText(r.tags)} | ${cellText(r.subtasks)} | ${cellText(r.notes)} |`)
-    : ['| （没有符合条件的任务） | | | | | | | | | |'];
-  return `${head.join('\n')}\n${body.join('\n')}\n`;
-}
-
-/** 任务 → CSV（带 BOM，Excel / 腾讯文档直接打开不乱码） */
-function tasksToCsv(rows, scope = {}) {
-  const cols = ['标题', '分组', '优先级', '状态', '计划开始', '截止', '完成日期', '标签', '子任务', '上级任务', '备注'];
-  const lines = [cols.map(csvCell).join(',')];
-  rows.forEach((r) => {
-    lines.push([
-      r.title, r.group, r.priority, r.status, r.planStart, r.planEnd,
-      r.completedAt, r.tags, r.subtasks, r.parent, r.notes,
-    ].map(csvCell).join(','));
-  });
-  // 首行注释说明范围，导入在线表格时可手动删掉；放在数据前不影响列对齐
-  const note = `# 范围：${scopeText(scope)} · 共 ${rows.length} 条 · 导出时间：${humanNow()}`;
-  return `﻿${note}\n${lines.join('\n')}\n`;
 }
 
 /* ------------------------------ 笔记导出 ------------------------------ */
@@ -353,23 +227,18 @@ function notesToZip(entries, opts = {}) {
 
   const readme = `# 笔记导出\n\n共 ${entries.length} 篇 · ${opts.scopeText || '全部笔记'} · 导出时间：${humanNow()}\n`
     + '\n每个 .md 对应一篇笔记，按原目录层级放置；图片已以 base64 内嵌在各自的 .md 里，单独拷走也能正常显示。\n'
-    + '可直接把 .md 批量上传到 ima 知识库，或导入其它支持 Markdown 的产品。\n';
+    + '可导入其它支持 Markdown 的产品，或按目录层级归档留存。\n';
   files.push({ name: 'README.md', data: readme });
   return zip(files);
 }
 
-/** 导出默认文件名：Knodo-任务-20261025-2330.csv */
+/** 导出默认文件名：Knodo-笔记-20261025-2330.md */
 function defaultName(kind, ext) {
   return `Knodo-${kind}-${stamp()}.${ext}`;
 }
 
 module.exports = {
   safeFileName,
-  cellText,
-  csvCell,
-  collectTasks,
-  tasksToMarkdown,
-  tasksToCsv,
   collectNotes,
   noteToMarkdown,
   inlineNoteImages,

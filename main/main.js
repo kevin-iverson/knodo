@@ -23,6 +23,7 @@ const { startReminderScheduler, stopReminderScheduler } = require('./reminders')
 const { markdownToDocx } = require('./docx');
 const reportMod = require('./report');
 const backup = require('./backup');
+const updater = require('./updater');
 
 const isSmoke = process.argv.includes('--smoke-test');
 
@@ -237,14 +238,14 @@ function dispatchShortcut(actionId) {
       if (!r.total) noDesktopPins();
       return;
     }
-    case 'util.salary':
-      showWindow();
-      if (mainWindow) mainWindow.webContents.send('ui:salary');
-      return;
     case 'app.calendar':
       // Ctrl+Alt+M：直接打开侧栏「日历」（渲染层再按一次会退回进入前的任务列表）
       showWindow();
       if (mainWindow) mainWindow.webContents.send('ui:calendar');
+      return;
+    case 'util.encourager':
+      showWindow();
+      if (mainWindow) mainWindow.webContents.send('ui:encourager');
       return;
     default:
       if (actionId.startsWith('desktop.focus.')) {
@@ -257,10 +258,122 @@ function dispatchShortcut(actionId) {
   }
 }
 
-/** 设置面板（Ctrl+, / 托盘 / 菜单三条入口都走这里） */
-function openSettings() {
+/* ------------------------------ 检查更新 ------------------------------ */
+/**
+ * 状态只放主进程：菜单项标签要随「检查中 / 发现新版」变化，渲染层不需要另存一份。
+ * 查的是 Gitee Release（updater.js），下载与替换由用户决定，不自动升级。
+ */
+const updateState = { checking: false, available: null };
+
+function updateMenuLabel() {
+  if (updateState.checking) return '正在检查更新…';
+  return updateState.available ? '检查更新…（发现新版本）' : '检查更新…';
+}
+
+/** 只放行 Gitee 的 https 链接：外部 API 返回的地址不能无条件交给系统浏览器。 */
+function openGiteeExternal(url) {
+  if (!/^https:\/\/gitee\.com\/[\w.\-/%?=&+]+$/i.test(String(url || ''))) return;
+  shell.openExternal(url).catch((e) => console.error('[updater] 打开链接失败', e && e.message));
+}
+
+/** 三种结果（失败 / 已是最新 / 发现新版）共用这一份对话框。 */
+async function showUpdateResult(res) {
+  const base = { title: '检查更新', noLink: true };
+  if (!res.ok) {
+    // repository 配置缺失时 releaseUrl 为空，此时不给「打开发布页」按钮，避免点了没反应
+    const canOpen = !!res.releaseUrl;
+    const buttons = canOpen ? ['打开发布页', '关闭'] : ['关闭'];
+    const last = buttons.length - 1;
+    const { response } = await msgBox({
+      ...base,
+      type: 'warning',
+      message: '检查更新失败',
+      detail: `${res.reason}${canOpen ? '\n\n也可以手动打开发布页查看最新版本。' : ''}`,
+      buttons,
+      defaultId: last,
+      cancelId: last,
+    });
+    if (canOpen && response === 0) openGiteeExternal(res.releaseUrl);
+    return;
+  }
+  if (!res.hasUpdate) {
+    await msgBox({
+      ...base,
+      type: 'info',
+      message: '已是最新版本',
+      detail: `当前版本：Knodo ${res.current}\n最新版本：${res.tag}${res.publishedAt ? `（${res.publishedAt}）` : ''}`,
+      buttons: ['好'],
+      defaultId: 0,
+      cancelId: 0,
+    });
+    return;
+  }
+  const buttons = res.downloadUrl ? ['下载便携版', '打开发布页', '稍后'] : ['打开发布页', '稍后'];
+  const detail = [
+    `当前版本：Knodo ${res.current}`,
+    `最新版本：${res.name}${res.publishedAt ? `（${res.publishedAt}）` : ''}`,
+    '',
+    res.summary,
+    '',
+    '更新不会改动本机任务与笔记数据；便携版请放回原目录，数据在同级的 data/ 文件夹。',
+  ].filter((l) => l != null).join('\n');
+  const { response } = await msgBox({
+    ...base,
+    type: 'info',
+    message: `发现新版本 ${res.tag}`,
+    detail,
+    buttons,
+    defaultId: 0,
+    cancelId: buttons.length - 1,
+  });
+  if (res.downloadUrl && response === 0) openGiteeExternal(res.downloadUrl);
+  else if (response === (res.downloadUrl ? 1 : 0)) openGiteeExternal(res.releaseUrl);
+}
+
+/** 手动检查（File 菜单 / 设置「关于」页）：结果用原生对话框展示。 */
+async function runUpdateCheck() {
+  if (updateState.checking) return false;
+  updateState.checking = true;
+  setTimeout(() => buildAppMenu(), 0); // 不在 menu click 回调里同步重建菜单
+  let res;
+  try {
+    res = await updater.checkUpdate(app.getVersion());
+  } catch (e) {
+    res = { ok: false, reason: (e && e.message) || '未知错误', releaseUrl: updater.releasePageUrl() };
+  } finally {
+    updateState.checking = false;
+  }
+  updateState.available = res.ok && res.hasUpdate ? res : null;
+  setTimeout(() => buildAppMenu(), 0);
+  showUpdateResult(res).catch((e) => console.error('[updater] 展示结果失败', e && e.message));
+  return res;
+}
+
+/**
+ * 启动后静默查一次：只更新菜单标记 + 推一条轻提示，绝不弹模态窗打断。
+ * 开机自启驻留托盘时主窗口是隐藏的，此时连 toast 也不推（避免没头没尾的提示）。
+ */
+async function silentUpdateCheck() {
+  let res;
+  try {
+    res = await updater.checkUpdate(app.getVersion());
+  } catch { return; }
+  if (!res.ok || !res.hasUpdate) return;
+  updateState.available = res;
+  buildAppMenu();
+  const visible = mainWindow && !mainWindow.isDestroyed()
+    && mainWindow.isVisible() && !mainWindow.isMinimized();
+  if (!visible) return;
+  const key = 'app.updatePromptedVersion';
+  if (db.isReady() && db.getSetting(key, '') === res.tag) return;
+  if (db.isReady()) db.setSetting(key, res.tag);
+  mainWindow.webContents.send('ui:update-available', { tag: res.tag, latest: res.latest });
+}
+
+/** 设置面板（Ctrl+, / 托盘 / 菜单三条入口都走这里）；paneId 可直接落到某个分区 */
+function openSettings(paneId = '') {
   showWindow();
-  if (mainWindow) mainWindow.webContents.send('ui:settings');
+  if (mainWindow) mainWindow.webContents.send('ui:settings', paneId);
 }
 
 function focusTask(taskId) {
@@ -275,10 +388,11 @@ function applyTheme() {
 
 /**
  * 应用菜单：保留系统默认的 File / Edit / View / Window（role 复用默认行为），
- * 末尾追加「AI 设置」「实用工具」「主题」——原来在顶部工具栏，挪到菜单栏后非任务视图才能整排隐藏工具区。
- * 与"应用级设置"同类的项（存储位置、开机自启动、对外同步）统一收进 File 菜单，其余菜单保持系统默认分组。
+ * 末尾追加「AI 设置」「实用工具」「趣味功能」——原来在顶部工具栏，挪到菜单栏后非任务视图才能整排隐藏工具区。
+ * 与"应用级设置"同类的项（存储位置、备份与恢复、开机自启动）统一收进 File 菜单，其余菜单保持系统默认分组。
  *
  * 注：笔记不再是独立菜单项（入口统一到左侧导航 + 顶栏搜索框旁的「📝 笔记」按钮）。
+ * 注：File 菜单不再有「同步到腾讯文档 / ima」；笔记导出的唯一入口是笔记视图工具栏「📤 导出」。
  * 全局快捷键 CmdOrCtrl+Shift+N（新建笔记）继续保留 —— 它是窗口级快捷键，不属于某个菜单的功能入口。
  */
 function buildAppMenu() {
@@ -288,7 +402,7 @@ function buildAppMenu() {
     {
       // 显式构建 File 菜单：不用 role: 'fileMenu'，以便在同一个子菜单里追加自定义项；
       // Exit 行为与默认一致。
-      // 分组：存储位置（数据层）｜ 备份 / 同步（数据进出）｜ 开机自启动（系统启动项）｜ Exit。
+      // 分组：存储位置（数据层）｜ 备份 / 导入（数据进出）｜ 设置 / 检查更新（应用维护）｜ 开机自启动（系统启动项）｜ Exit。
       label: 'File',
       submenu: [
         {
@@ -316,15 +430,6 @@ function buildAppMenu() {
           },
         },
         {
-          // 原本是顶栏「☁ 同步」按钮：导出任务 / 笔记到腾讯文档、ima 等第三方。
-          // 低频但常被找，收进菜单后顶栏腾出的行宽留给「📝 笔记」按钮
-          label: '同步到腾讯文档 / ima…',
-          click: () => {
-            showWindow();
-            if (mainWindow) mainWindow.webContents.send('ui:sync');
-          },
-        },
-        {
           // 从外部笔记工具 / 自己的 md 文件迁移：正文原样入库，本地图片一起搬进附件目录
           label: '导入 Markdown 笔记…',
           accelerator: 'CmdOrCtrl+Shift+I',
@@ -340,6 +445,16 @@ function buildAppMenu() {
           label: '设置…',
           accelerator: 'CmdOrCtrl+,',
           click: () => openSettings(),
+        },
+        {
+          // 检查更新：主进程直接查 Gitee Release，结果用原生对话框展示（不经过渲染层事件）。
+          // 菜单标签会随检查状态 / 是否有新版变化，见 updateMenuLabel()。
+          label: updateMenuLabel(),
+          enabled: !updateState.checking,
+          click: () => {
+            showWindow();
+            runUpdateCheck();
+          },
         },
         { type: 'separator' },
         {
@@ -386,14 +501,6 @@ function buildAppMenu() {
             if (mainWindow) mainWindow.webContents.send('ui:json-viewer');
           },
         },
-        {
-          label: '实时薪资',
-          accelerator: 'CmdOrCtrl+Shift+S',
-          click: () => {
-            showWindow();
-            if (mainWindow) mainWindow.webContents.send('ui:salary');
-          },
-        },
         { type: 'separator' },
         {
           // 桌面浮窗：主路径是「分组 / 今天 / 即将到期」右键 → 钉到桌面，这里是次要入口 ——
@@ -406,6 +513,31 @@ function buildAppMenu() {
     },
     // 「主题」顶格菜单已删除：它与设置中心「界面主题」写同一个 settings.theme 键，
     // 是重复入口。唯一入口收敛到 设置 → 通用 → 界面主题（Ctrl+,）。
+    {
+      // v1.3 独立新增的第 7 个顶格项：情绪位与效率位是两种心智，塞进「实用工具」
+      // 会被当成又一个计算器。不占顶栏宽度（1080 宽下顶栏已排满），发现性由
+      // 菜单 + 全局键 Ctrl+Alt+E + 首次引导承担。
+      // 菜单项刻意不设 accelerator：全局快捷键已注册同一组合，重复注册会双开。
+      label: '趣味功能',
+      submenu: [
+        {
+          label: '上班鼓励器…',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:encourager');
+          },
+        },
+        {
+          label: '今日牛马卡…',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:encourager-card');
+          },
+        },
+        { type: 'separator' },
+        { label: '工位搭子设置…', click: () => openSettings('fun') },
+      ],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -494,6 +626,8 @@ async function toggleAutoStart(next, { silent = false } = {}) {
  */
 function registerSettingsIpc() {
   ipcMain.handle('app:setAutoStart', (_e, enabled) => toggleAutoStart(!!enabled, { silent: true }));
+  // 设置中心「关于」页：与 File 菜单共用 runUpdateCheck()，对话框由主进程自己弹
+  ipcMain.handle('app:checkUpdate', () => { runUpdateCheck(); return true; });
   ipcMain.handle('app:openStorageDialog', () => {
     showWindow();
     openStorageDialog().catch((e) => console.error('[settings] 打开存储位置失败', e && e.message));
@@ -926,6 +1060,9 @@ app.whenReady().then(async () => {
   startReminderScheduler({ onFocusTask: focusTask });
   // 自动备份：启动 5 分钟后首次，之后每 24 小时一份（只含数据库，附件靠完整备份包）
   if (db.isReady()) backup.startAutoBackup();
+  // 启动 8 秒后静默查一次更新：失败静默、有新版只给一条轻提示 + 菜单标记，不弹窗打断。
+  // 冒烟测试跳过：跑的是干净环境，也不该引入网络请求。
+  if (!isSmoke && db.isReady()) setTimeout(() => { silentUpdateCheck().catch(() => {}); }, 8000);
 
   ipcMain.handle('app:quit', () => { isQuitting = true; app.quit(); });
   app.on('activate', () => showWindow());
@@ -1381,8 +1518,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] AI 设置排版 = ${dom.aiCols} 列；分区 ${dom.aiSections} 个；字段 ${dom.aiFieldCount} 个；弹窗高 ${dom.aiBox ? dom.aiBox.h : '-'}px / 视口 ${dom.aiBox ? dom.aiBox.vh : '-'}px；完整在视口内=${dom.aiInViewport ? '是' : '否'}；底部按钮可点=${dom.aiFootReachable ? '是' : '否'}；内容无需滚动=${dom.aiBodyScrolls ? '是' : '否'}；横向无溢出=${dom.aiNoHOverflow ? '是' : '否'}`);
           console.log(`[SMOKE] 标签新增弹窗 = ${dom.tagModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.tagAdded ? '是' : '否'}`);
 
-          // 对外同步面板（顶部菜单 File → 同步）：菜单项存在 → 打开 → 选项齐全 → 关闭无残留
-          // 顶栏按钮已收进菜单，这里不再点按钮，直接走菜单那条 IPC（等价于点菜单项）
+          // 菜单栏结构：File 里已无「同步到腾讯文档 / ima」；笔记导出只在笔记视图工具栏
           const appMenu = Menu.getApplicationMenu();
           const topLabels = (appMenu ? appMenu.items : []).map((i) => i.label);
           const fileItem = appMenu ? appMenu.items.find((i) => i.label === 'File') : null;
@@ -1390,7 +1526,7 @@ app.whenReady().then(async () => {
           const toolsItem = appMenu ? appMenu.items.find((i) => i.label === '实用工具') : null;
           const toolsLabels = toolsItem ? toolsItem.submenu.items.map((i) => i.label) : [];
           const themeItem = appMenu ? appMenu.items.find((i) => i.label === '主题') : null;
-          console.log(`[SMOKE] 菜单栏结构 = 顶格「${topLabels.join(' / ')}」；同步项在 File=${fileLabels.some((l) => l.startsWith('同步')) ? '是' : '否'}；归档项在 File=${fileLabels.includes('归档已完成任务') ? '是' : '否'}；桌面浮窗已并入实用工具=${toolsLabels.includes('桌面浮窗') ? '是' : '否'}（顶格已移除=${topLabels.includes('桌面浮窗') ? '否' : '是'}）；重复「主题」顶格已删除=${themeItem ? '否（仍在）' : '是'}`);
+          console.log(`[SMOKE] 菜单栏结构 = 顶格「${topLabels.join(' / ')}」；File 菜单同步项已移除=${fileLabels.some((l) => l.startsWith('同步')) ? '否（仍在）' : '是'}；归档项在 File=${fileLabels.includes('归档已完成任务') ? '是' : '否'}；桌面浮窗已并入实用工具=${toolsLabels.includes('桌面浮窗') ? '是' : '否'}（顶格已移除=${topLabels.includes('桌面浮窗') ? '否' : '是'}）；重复「主题」顶格已删除=${themeItem ? '否（仍在）' : '是'}`);
           const topbarOut = await mainWindow.webContents.executeJavaScript(`(() => {
             const nb = document.getElementById('btn-notes-dock');
             const ai = document.getElementById('btn-ai-search');
@@ -1408,40 +1544,7 @@ app.whenReady().then(async () => {
             };
           })()`);
           console.log(`[SMOKE] 顶栏入口 = 「${topbarOut.noteText || '-'}」在搜索栏外=${topbarOut.noteOutside ? '是' : '否'}；可见=${topbarOut.noteVisible ? '是' : '否'}；「${topbarOut.aiText || '-'}」可见=${topbarOut.aiVisible ? '是' : '否'}；紧贴搜索栏=${topbarOut.aiBesideSearch ? '是' : '否'}；缩放 chip 已移除=${topbarOut.zoomChipGone ? '是' : '否'}；同步按钮已移除=${topbarOut.syncGone ? '是' : '否'}；主题按钮已移除=${topbarOut.themeGone ? '是' : '否'}`);
-          mainWindow.webContents.send('ui:sync');
-          const syncOut = await mainWindow.webContents.executeJavaScript(`
-            (async () => {
-              const out = {};
-              const waitUntil = async (fn, timeout = 4000) => {
-                const t0 = Date.now();
-                for (;;) {
-                  if (fn()) return true;
-                  if (Date.now() - t0 > timeout) return false;
-                  await new Promise((r) => setTimeout(r, 50));
-                }
-              };
-              try {
-                out.opened = await waitUntil(() => !!document.querySelector('.modal-sync'));
-                const root = document.querySelector('.modal-sync');
-                out.taskFields = !!(root && root.querySelector('.sync-task-format')
-                  && root.querySelector('.sync-task-status') && root.querySelector('.sync-task-group'));
-                out.noteFields = !!(root && root.querySelector('.sync-note-pack')
-                  && root.querySelector('.sync-note-folder') && root.querySelector('.sync-note-tag'));
-                out.groupOptions = root ? root.querySelectorAll('.sync-task-group option').length : 0;
-                out.exportBtns = root ? root.querySelectorAll('.sync-btn-tasks, .sync-btn-notes').length : 0;
-                // 关闭：走弹窗自带的「关闭」按钮，确认不残留遮罩
-                const okBtn = root && root.querySelector('.modal-foot [data-modal="ok"]');
-                if (okBtn) okBtn.click();
-                out.closed = await waitUntil(() => !document.querySelector('.modal-sync'));
-                out.noMask = !document.querySelector('.modal-mask');
-              } catch (e) {
-                out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 3).join(' | ');
-              }
-              return out;
-            })()
-          `);
-          if (syncOut.__fatal) console.log('[SMOKE][sync fatal]', syncOut.__fatal);
-          console.log(`[SMOKE] 对外同步面板（菜单入口）= 打开=${syncOut.opened ? '成功' : '失败'}；任务字段=${syncOut.taskFields ? '齐全' : '缺失'}；笔记字段=${syncOut.noteFields ? '齐全' : '缺失'}；分组选项 ${syncOut.groupOptions} 个；导出按钮 ${syncOut.exportBtns} 个；关闭=${syncOut.closed ? '成功' : '失败'}；无残留遮罩=${syncOut.noMask ? '是' : '否'}`);
+          // 笔记导出面板由笔记视图工具栏「📤 导出」独立拉起，这里不再发 ui:sync。
 
           // 详情侧边栏：拖拽调宽 + 子任务添加（局部刷新，不重绘整页）
           const detail = await mainWindow.webContents.executeJavaScript(`
@@ -3269,17 +3372,16 @@ app.whenReady().then(async () => {
             && dom.reopened && dom.closedByTrigger && dom.calInViewport && dom.persistedMatches
             && dom.groupModalOpened && dom.groupAdded && dom.dupErrorShown
             && dom.tagModalOpened && dom.tagAdded
-            // 对外同步面板（菜单栏 File → 同步）+ 顶栏入口整理（笔记按钮外置、同步/主题收进菜单）
+            // 顶栏入口整理（笔记按钮外置、主题收进菜单）；File 菜单里的同步项已撤掉
             && topbarOut.noteOutside && topbarOut.noteVisible && topbarOut.syncGone && topbarOut.themeGone
             && topbarOut.aiVisible && topbarOut.aiBesideSearch && topbarOut.zoomChipGone
-            // 重复「主题」顶格菜单已删除；归档从顶栏收进 File；日历 / AI 检索走新入口
+            // 重复「主题」顶格菜单已删除；归档从顶栏收进 File；同步项不再出现；日历 / AI 检索走新入口
             && !themeItem && fileLabels.includes('归档已完成任务')
+            && !fileLabels.some((l) => l.startsWith('同步'))
             && calOut.navExists && calOut.chipGone && calOut.navActive && calOut.wrap && calOut.segCount === 2
             && calOut.cells >= 28 && calOut.loadBars > 0
             && calOut.pool && calOut.legend && calOut.weekCols === 7 && calOut.backToList
             && calOut.aiPanel && calOut.aiActive && calOut.aiBack
-            && syncOut.opened && syncOut.taskFields && syncOut.noteFields
-            && syncOut.groupOptions >= 2 && syncOut.exportBtns === 2 && syncOut.closed && syncOut.noMask
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
             && dom.aiToolbarBtnGone && dom.aiMenuItem && dom.aiModalOpened && dom.aiModalCount === 1
@@ -3436,7 +3538,7 @@ app.whenReady().then(async () => {
               }
             };
             dumpFalsy('dom', dom);
-            dumpFalsy('sync', syncOut);
+            dumpFalsy('topbar', topbarOut);
             dumpFalsy('detail', detail);
             dumpFalsy('feat', feat);
             dumpFalsy('r4', r4);

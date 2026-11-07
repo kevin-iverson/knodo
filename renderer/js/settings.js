@@ -18,6 +18,7 @@ import { api } from './api.js';
 import { openPanelModal } from './modal.js';
 import { keysPaneHtml, mountKeysPane, disposeKeysPane } from './settings-keys.js';
 import { openSponsorQr } from './sponsor.js';
+import { normalizeConfig } from './encourager-core.js';
 
 let toast = (msg) => console.warn('[settings]', msg);
 /** 需要壳层配合的外部动作（主题切换要同步 ui.js 里的 state.theme，否则顶栏按钮会打架） */
@@ -41,6 +42,7 @@ const S = {
   salary: null,
   ai: null,
   calendar: null,
+  encourager: null,
 };
 
 /** 当前搜索词（列表重绘后要重跑过滤，所以留在模块级） */
@@ -56,7 +58,8 @@ const ICON = {
   general: svg('<path d="M2.6 4.6h10.8M2.6 8h10.8M2.6 11.4h10.8"/><circle cx="6" cy="4.6" r="1.5"/><circle cx="10.2" cy="8" r="1.5"/><circle cx="5.2" cy="11.4" r="1.5"/>'),
   keys: svg('<rect x="1.8" y="4.2" width="12.4" height="7.6" rx="1.6"/><path d="M4.2 6.6h.01M6.4 6.6h.01M8.6 6.6h.01M10.8 6.6h.01M4.6 9.2h6.8"/>'),
   ai: svg('<path d="M8 2.2 9.3 5.7 12.8 7 9.3 8.3 8 11.8 6.7 8.3 3.2 7 6.7 5.7z"/><path d="M12.2 10.8l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z"/>'),
-  tools: svg('<path d="M2.4 5.6 8 2.6l5.6 3v4.8L8 13.4l-5.6-3z"/><path d="M2.4 5.6 8 8.6l5.6-3M8 8.6v4.8"/>'),
+  calendar: svg('<rect x="1.8" y="3" width="12.4" height="11" rx="1.6"/><path d="M1.8 6.2h12.4M5 1.8v2.4M11 1.8v2.4"/>'),
+  fun: svg('<circle cx="8" cy="8" r="6"/><path d="M5.6 7h.01M10.4 7h.01M5.8 10.2q2.2 1.6 4.4 0"/>'),
   data: svg('<ellipse cx="8" cy="4" rx="4.6" ry="1.9"/><path d="M3.4 4v8c0 1 2 1.9 4.6 1.9s4.6-.9 4.6-1.9V4"/><path d="M3.4 8c0 1 2 1.9 4.6 1.9S12.6 9 12.6 8"/>'),
   about: svg('<circle cx="8" cy="8" r="6"/><path d="M8 7.4v3.8M8 5.4h.01"/>'),
 };
@@ -354,34 +357,11 @@ function mountAi(pane) {
   });
 }
 
-/* ------------------------------ 分区：实用工具 ------------------------------ */
+/* ------------------------------ 分区：日历 ------------------------------ */
 
-function toolsHtml() {
-  const s = S.salary || {};
+function calendarHtml() {
   const cal = S.calendar || {};
-  const hasCfg = !!(s.monthly || s.start || s.end);
   return [
-    sectionHtml({
-      title: '实时薪资',
-      desc: '按「月薪 ÷ 当月工作日 ÷ 每日工时」换算，只统计上班到下班区间内的在岗时间。',
-      rows: [
-        rowHtml({
-          title: '月薪',
-          ctl: `${ctlInput('st-salary-monthly', s.monthly ? String(s.monthly) : '', { type: 'number', placeholder: '0' })}<span class="st-unit">元</span>`,
-          search: '工资 收入 salary',
-        }),
-        rowHtml({
-          title: '上班时间',
-          ctl: ctlInput('st-salary-start', s.start || '', { type: 'time' }),
-          search: '考勤 打卡 开始',
-        }),
-        rowHtml({
-          title: '下班时间',
-          ctl: ctlInput('st-salary-end', s.end || '', { type: 'time' }),
-          search: '考勤 打卡 结束',
-        }),
-      ],
-    }),
     sectionHtml({
       title: '日历视图',
       desc: '格子显示的是「负载」：按优先级加权，默认容量 6 相当于一天能扛 6 个中等任务。',
@@ -405,13 +385,37 @@ function toolsHtml() {
         }),
       ],
     }),
-    `<div class="st-foot-note">${hasCfg
-      ? '薪资浮窗：按 Ctrl + Alt + L，或走菜单「实用工具 → 实时薪资」。'
-      : '填好上面三项后，用 Ctrl + Alt + L 或菜单「实用工具 → 实时薪资」打开浮窗。'}<br>日历：点侧栏「今天」下面的「🗓 日历」，或按 Ctrl + Alt + M；月 / 周在日历里切换。AI 检索：顶栏搜索框右侧「🔍 AI 检索」。</div>`,
+    `<div class="st-foot-note">点侧栏「今天」下面的「🗓 日历」，或按 Ctrl + Alt + M 打开日历；月 / 周在日历里切换。这里的改动会立刻重绘当前日历。</div>`,
   ].join('');
 }
 
-function mountTools(pane) {
+function mountCalendar(pane) {
+  // 与日历视图内的「调整每日容量」弹窗同源：都写 tool.calendar，改完立刻通知日历重绘
+  const saveCal = async () => {
+    const cap = Math.max(4, Math.min(10, Number(pane.querySelector('#st-cal-capacity')?.value) || 6));
+    const next = {
+      ...(S.calendar || {}),
+      capacity: cap,
+      weekStart: Number(pane.querySelector('#st-cal-weekstart')?.value ?? 1) ? 1 : 0,
+      showCompleted: !!pane.querySelector('#st-cal-showdone')?.checked,
+    };
+    try {
+      await api.ui.setToolPref('calendar', next);
+      S.calendar = next;
+      if (ext.onCalendarPrefs) ext.onCalendarPrefs(next);
+      toast('日历设置已保存');
+    } catch (e) {
+      toast(`保存失败：${(e && e.message) || e}`);
+    }
+  };
+  ['#st-cal-capacity', '#st-cal-weekstart', '#st-cal-showdone'].forEach((sel) => {
+    const el = pane.querySelector(sel);
+    if (el) el.addEventListener('change', () => saveCal());
+  });
+}
+
+/** 薪资输入（趣味功能分区）：写完 tool.salary 后让已打开的主浮窗重算，不动牛马币 */
+function bindSalaryInputs(pane) {
   let timer = null;
   // silent：边打字边保存时不要每次弹提示（输入 5 位数字会弹 5 次），失焦那一次才给反馈
   const save = (silent) => {
@@ -422,6 +426,7 @@ function mountTools(pane) {
       const end = pane.querySelector('#st-salary-end')?.value || '';
       try {
         S.salary = await api.ui.setSalary({ monthly, start, end });
+        document.dispatchEvent(new CustomEvent('app:encourager-config'));
         if (!silent) toast('薪资设置已保存');
       } catch (e) {
         toast(`保存失败：${(e && e.message) || e}`);
@@ -434,30 +439,116 @@ function mountTools(pane) {
     el.addEventListener('input', () => save(true));
     el.addEventListener('change', () => save(false));
   });
+}
 
-  // 日历设置与「调整每日容量」弹窗同源：都写 tool.calendar，改完立刻通知日历重绘
-  const saveCal = async (silent) => {
-    const cap = Math.max(4, Math.min(10, Number(pane.querySelector('#st-cal-capacity')?.value) || 6));
-    const next = {
-      ...(S.calendar || {}),
-      capacity: cap,
-      weekStart: Number(pane.querySelector('#st-cal-weekstart')?.value ?? 1) ? 1 : 0,
-      showCompleted: !!pane.querySelector('#st-cal-showdone')?.checked,
-    };
+/* ------------------------------ 分区：趣味功能（上班鼓励器） ------------------------------ */
+
+function funHtml() {
+  const c = normalizeConfig(S.encourager);
+  const s = S.salary || {};
+  const buys = Object.entries(c.purchases).slice(0, 3);
+  return [
+    sectionHtml({
+      title: '薪资与班次',
+      desc: '按「月薪 ÷ 当月工作日 ÷ 每日工时」换算，只统计上班到下班区间内的在岗时间。填一次，进账数字立刻生效；上班鼓励器浮窗右上角的 ⚙ 或「设置」页签改的也是这三项。',
+      rows: [
+        rowHtml({
+          title: '月薪',
+          ctl: `${ctlInput('st-salary-monthly', s.monthly ? String(s.monthly) : '', { type: 'number', placeholder: '0' })}<span class="st-unit">元</span>`,
+          search: '工资 收入 salary 月薪',
+        }),
+        rowHtml({
+          title: '上班时间',
+          ctl: ctlInput('st-salary-start', s.start || '', { type: 'time' }),
+          search: '考勤 打卡 开始 班次',
+        }),
+        rowHtml({
+          title: '下班时间',
+          ctl: ctlInput('st-salary-end', s.end || '', { type: 'time' }),
+          search: '考勤 打卡 结束 班次',
+        }),
+      ],
+    }),
+    sectionHtml({
+      title: '工位搭子',
+      desc: '搭子说话的方式；完成一个任务时会按这个语气冒一句。',
+      rows: [
+        rowHtml({
+          title: '默认语气',
+          ctl: ctlSelect('st-enc-tone', c.buddy.tone, [['warm', '暖心'], ['salty', '阴阳'], ['sharp', '毒舌']]),
+          search: '语气 搭子 台词 暖心 阴阳 毒舌',
+        }),
+      ],
+    }),
+    sectionHtml({
+      title: '牛马币与隐私',
+      desc: '牛马币只换皮肤、不换钱，与真实金额在刷新节奏、数值形态、颜色与区块上完全分离。',
+      rows: [
+        rowHtml({
+          title: '显示牛马币',
+          desc: '关闭后隐藏 HUD 格子与发币提示，不清空已有币值',
+          ctl: ctlSwitch('st-enc-coins', c.coinsEnabled),
+          search: '牛马币 玩法货币 coins',
+        }),
+        rowHtml({
+          title: '分享卡默认显示真实金额',
+          desc: '默认关闭；即使在卡片页临时开启，导出前仍会二次确认',
+          ctl: ctlSwitch('st-enc-share-amount', c.privacy.shareAmount),
+          search: '分享卡 金额 隐私',
+        }),
+        rowHtml({
+          title: '分享卡默认包含任务标题',
+          desc: '默认关闭；开启后仍需逐条勾选，导出前二次确认',
+          ctl: ctlSwitch('st-enc-share-titles', c.share.includeTaskTitles),
+          search: '分享卡 任务标题 隐私',
+        }),
+      ],
+    }),
+    sectionHtml({
+      title: '购买力换算',
+      desc: '把「今日已赚」换算成生活里的东西。单价是虚构演示值，不是真实物价。',
+      rows: buys.map(([name, price], i) => rowHtml({
+        title: name,
+        ctl: `${ctlInput(`st-enc-buy-${i}`, String(price), { type: 'number' })}<span class="st-unit">元</span>`,
+        search: `购买力 单价 ${name}`,
+        id: `enc-buy-${i}`,
+      })),
+    }),
+    `<div class="st-foot-note">主浮窗：Ctrl + Alt + E 或菜单「趣味功能 → 上班鼓励器」；月薪与班次也能直接在主浮窗的「设置」页签里改。<br>主题跟随应用明暗，唯一入口在「通用 → 界面主题」，这里不另设开关。<br>牛马币与连续打卡是情绪数据，会被整体备份 / 恢复回滚，不参与导入校验，请不要当成资产；解锁项仅存本机，换设备或重装不继承。</div>`,
+  ].join('');
+}
+
+function mountFun(pane) {
+  // 每次保存前重读最新配置，只改自己负责的字段：
+  // 否则会把主浮窗刚发的牛马币 / 打卡记录覆盖成打开面板时的旧快照。
+  const saveEnc = async (mutate) => {
     try {
-      await api.ui.setToolPref('calendar', next);
-      S.calendar = next;
-      if (ext.onCalendarPrefs) ext.onCalendarPrefs(next);
-      if (!silent) toast('日历设置已保存');
+      const latest = normalizeConfig(await api.ui.getToolPref('encourager'));
+      mutate(latest);
+      await api.ui.setToolPref('encourager', latest);
+      S.encourager = latest;
+      document.dispatchEvent(new CustomEvent('app:encourager-config'));
+      toast('趣味功能设置已保存');
     } catch (e) {
       toast(`保存失败：${(e && e.message) || e}`);
     }
   };
-  ['#st-cal-capacity', '#st-cal-weekstart', '#st-cal-showdone'].forEach((sel) => {
+  const bindChange = (sel, mutate) => {
     const el = pane.querySelector(sel);
-    if (!el) return;
-    el.addEventListener('change', () => saveCal(false));
+    if (el) el.addEventListener('change', () => saveEnc((c) => mutate(c, pane)));
+  };
+  bindChange('#st-enc-tone', (c, p) => { c.buddy.tone = p.querySelector('#st-enc-tone').value; });
+  bindChange('#st-enc-coins', (c, p) => { c.coinsEnabled = !!p.querySelector('#st-enc-coins').checked; });
+  bindChange('#st-enc-share-amount', (c, p) => { c.privacy.shareAmount = !!p.querySelector('#st-enc-share-amount').checked; });
+  bindChange('#st-enc-share-titles', (c, p) => { c.share.includeTaskTitles = !!p.querySelector('#st-enc-share-titles').checked; });
+  [0, 1, 2].forEach((i) => {
+    bindChange(`#st-enc-buy-${i}`, (c, p) => {
+      const key = Object.keys(c.purchases)[i];
+      const v = Number(p.querySelector(`#st-enc-buy-${i}`).value);
+      if (key && v > 0) c.purchases[key] = v;
+    });
   });
+  bindSalaryInputs(pane);
 }
 
 /* ------------------------------ 分区：数据与备份 ------------------------------ */
@@ -571,6 +662,12 @@ function aboutHtml() {
     sectionHtml({
       rows: [
         rowHtml({ title: '版本', ctl: ctlInfo(S.version ? `Knodo ${S.version}` : '未知', { mono: false }), search: 'version 版本号' }),
+        rowHtml({
+          title: '检查更新',
+          desc: '从 Gitee 发布页查询最新版本；只提示，不自动下载或改动本机数据。',
+          ctl: ctlButton('check-update', '检查更新…'),
+          search: 'update 更新 升级 版本 检查更新 新版本',
+        }),
         rowHtml({ title: '开源许可', ctl: ctlInfo('MIT', { mono: false }), search: 'license 协议' }),
         rowHtml({ title: '数据目录', desc: pathLine(st.dir), search: '路径' }),
         rowHtml({ title: '备份目录', desc: pathLine(bk.dir), search: '路径 snapshot' }),
@@ -589,6 +686,8 @@ function mountAbout(pane) {
       if (btn.dataset.act === 'sponsor' && SPONSOR_URL) {
         const r = await api.app.openExternal(SPONSOR_URL);
         if (r && !r.ok) toast(r.reason || '无法打开链接');
+      } else if (btn.dataset.act === 'check-update') {
+        await api.app.checkUpdate();
       } else if (btn.dataset.act === 'qr') {
         openSponsorQr();
       }
@@ -615,7 +714,8 @@ const PANES = [
   { id: 'general', group: 'base', label: '通用', icon: ICON.general, build: generalHtml, mount: mountGeneral },
   { id: 'keys', group: 'base', label: '快捷键', icon: ICON.keys, build: keysPaneHtml, mount: null },
   { id: 'ai', group: 'feature', label: 'AI 与语音', icon: ICON.ai, build: aiHtml, mount: mountAi },
-  { id: 'tools', group: 'feature', label: '实用工具', icon: ICON.tools, build: toolsHtml, mount: mountTools },
+  { id: 'calendar', group: 'feature', label: '日历', icon: ICON.calendar, build: calendarHtml, mount: mountCalendar },
+  { id: 'fun', group: 'feature', label: '趣味功能', icon: ICON.fun, build: funHtml, mount: mountFun },
   { id: 'data', group: 'data', label: '数据与备份', icon: ICON.data, build: dataHtml, mount: mountData },
   { id: 'about', group: 'data', label: '关于', icon: ICON.about, build: aboutHtml, mount: mountAbout },
 ];
@@ -713,7 +813,7 @@ function applyFilter(root) {
 
 async function loadState() {
   const soft = async (p, fb) => { try { return await p; } catch (e) { return fb; } };
-  const [theme, autoStart, version, storage, backup, salary, ai, calendar] = await Promise.all([
+  const [theme, autoStart, version, storage, backup, salary, ai, calendar, encourager] = await Promise.all([
     soft(api.theme.get(), 'system'),
     soft(api.app.getAutoStart(), { enabled: false, supported: false, reason: '读取开机自启动状态失败' }),
     soft(api.app.getVersion(), ''),
@@ -722,8 +822,9 @@ async function loadState() {
     soft(api.ui.getSalary(), null),
     soft(api.ai.getConfig(), null),
     soft(api.ui.getToolPref('calendar'), null),
+    soft(api.ui.getToolPref('encourager'), null),
   ]);
-  Object.assign(S, { theme, autoStart, version, storage, backup, salary, ai, calendar });
+  Object.assign(S, { theme, autoStart, version, storage, backup, salary, ai, calendar, encourager });
 }
 
 /* ------------------------------ 入口 ------------------------------ */

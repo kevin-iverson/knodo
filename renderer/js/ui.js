@@ -24,9 +24,10 @@ import {
   renderNotes, setNotesHandlers, createNote, disposeNotes, importNotesFromDisk, openNotesDock,
 } from './notes.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
-import { openSalaryModal, setSalaryHandlers } from './salary.js';
+// 趣味功能 → 上班鼓励器（薪资进账主界面）；不反向 import ui.js，toast / 统计走依赖注入
+import { listenEncouragerMenu, setEncouragerHandlers } from './encourager.js';
 import { openDiffWindow, setDiffHandlers } from './text-diff.js';
-import { openSyncModal, setSyncHandlers } from './sync.js';
+import { setNoteExportHandlers } from './sync.js';
 import { openJsonViewWindow, setJsonViewHandlers } from './json-view.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
@@ -210,11 +211,23 @@ function bindStaticEvents() {
   // AI 配置（原在「AI 报告」页内的配置面板；现统一从顶部菜单栏「AI 设置」打开）
   setAiSettingsHandlers({ toast, onChanged: () => { renderSidebarList(); } });
   listenAiSettingsMenu();
-  // 实用工具 → 实时薪资（顶部菜单栏入口）
-  setSalaryHandlers({ toast });
-  api.on('ui:salary', () => {
-    openSalaryModal().catch((e) => toast(`打开实时薪资失败：${(e && e.message) || e}`));
+  // 趣味功能 → 上班鼓励器：注册菜单事件 / 任务完成发币 / 配置变更的监听。
+  // 监听是全局的，主浮窗没打开时完成任务也会发币并用应用内 toast 回应。
+  setEncouragerHandlers({
+    toast,
+    getStats: () => {
+      const done = state.recentlyDone.size;
+      const active = (state.tasks || []).filter((t) => !t.completed).length;
+      const byId = new Map((state.tasks || []).map((t) => [String(t.id), t]));
+      const titles = [...state.recentlyDone]
+        .map((id) => byId.get(String(id)))
+        .filter((t) => t && t.title)
+        .slice(0, 20)
+        .map((t) => ({ id: t.id, title: String(t.title).slice(0, 60) }));
+      return { done, total: done + active, titles };
+    },
   });
+  listenEncouragerMenu();
   // 实用工具 → 文本对比（非模态浮窗，开着也能继续操作主界面）
   setDiffHandlers({ toast });
   api.on('ui:text-diff', () => {
@@ -223,11 +236,8 @@ function bindStaticEvents() {
   // 会议录制（工具栏按钮）
   bindRecordButton();
 
-  // 对外同步（导出到腾讯文档 / ima 等第三方）：入口在顶部菜单栏 File → 同步
-  setSyncHandlers({ toast });
-  api.on('ui:sync', () => {
-    openSyncModal().catch((e) => toast(`打开导出面板失败：${(e && e.message) || e}`));
-  });
+  // 笔记导出面板的 toast 注入（入口在笔记视图工具栏「📤 导出」，见 notes.js）
+  setNoteExportHandlers({ toast });
 
   // 实用工具 → JSON 查看器（顶部菜单栏入口）
   setJsonViewHandlers({ toast });
@@ -244,12 +254,17 @@ function bindStaticEvents() {
     // 设置中心的日历项与日历视图内的「调整每日容量」写同一个 tool.calendar 键
     onCalendarPrefs: () => { if (state.view === 'calendar') render(); },
   });
-  api.on('ui:settings', () => {
-    openSettings().catch((e) => toast(`打开设置失败：${(e && e.message) || e}`));
+  api.on('ui:settings', (paneId) => {
+    // 主进程可带分区 id（菜单「趣味功能 → 工位搭子设置…」直接落到 fun 分区）
+    openSettings(paneId || '').catch((e) => toast(`打开设置失败：${(e && e.message) || e}`));
   });
   // 顶部菜单栏「主题」：主进程写库 + 改 nativeTheme 后推一份当前值，
   // 这里只管把 state.theme 与界面配色对齐（与设置面板的 onTheme 同一条路径）
   api.on('ui:theme-changed', (mode) => { state.theme = mode; applyTheme(); });
+  // 启动后的静默检查：有新版只轻提示，不弹窗打断；详情从 File 菜单 / 设置「关于」打开
+  api.on('ui:update-available', (info) => {
+    toast(`发现新版本 ${(info && info.tag) || ''}：菜单 File → 检查更新 可查看详情`);
+  });
   // 全局键 Ctrl+Alt+1~6 / H 在"还没钉浮窗"时的明确反馈：不静默失败
   api.on('ui:no-desktop-pins', () => {
     toast('还没有钉到桌面的清单：在侧边栏右键清单 /「今天」/「即将到期」→「钉到桌面」');

@@ -36,8 +36,10 @@ const ACTIONS = [
     hint: '置顶 2 秒便于定位',
     def: `Control+Alt+${n}`,
   })),
-  { id: 'util.salary', label: '实时薪资', hint: '打开 / 关闭浮窗', def: 'Control+Alt+L' },
   { id: 'app.calendar', label: '日历视图', hint: '打开侧栏「日历」（再按一次回列表）', def: 'Control+Alt+M' },
+  // 趣味功能：E（Encourager）打开主浮窗。
+  // 菜单加速键另用 CmdOrCtrl+Shift+* 前缀，不与全局键重复注册。
+  { id: 'util.encourager', label: '上班鼓励器', hint: '打开 / 聚焦主浮窗（薪资进账主界面）', def: 'Control+Alt+E' },
 ];
 
 const ACTION_IDS = ACTIONS.map((a) => a.id);

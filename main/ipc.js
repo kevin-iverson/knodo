@@ -1004,27 +1004,8 @@ function registerIpc() {
   ipcMain.handle('kb:qaGet', withDb((id) => db.getKbQa(id)));
   ipcMain.handle('kb:qaRemove', withDb((id) => ({ ok: !!db.deleteKbQa(id) })));
 
-  /* ---------- 对外同步（导出给腾讯文档 / ima 等第三方） ---------- */
-  // 任务 → Markdown 表格 / CSV（CSV 可直接导入腾讯文档表格）
-  ipcMain.handle('sync:exportTasks', withDb(async (opts = {}) => {
-    const format = opts.format === 'csv' ? 'csv' : 'md';
-    const rows = sync.collectTasks(opts);
-    if (!rows.length) return { ok: false, empty: true };
-    const content = format === 'csv' ? sync.tasksToCsv(rows, opts) : sync.tasksToMarkdown(rows, opts);
-    const ext = format === 'csv' ? 'csv' : 'md';
-    const { canceled, filePath } = await dialog.showSaveDialog({
-      title: '导出任务',
-      defaultPath: sync.defaultName('任务', ext),
-      filters: [
-        { name: format === 'csv' ? 'CSV 表格' : 'Markdown', extensions: [ext] },
-        { name: '所有文件', extensions: ['*'] },
-      ],
-    });
-    if (canceled || !filePath) return { ok: false, canceled: true };
-    fs.writeFileSync(filePath, content, 'utf8');
-    return { ok: true, filePath, count: rows.length };
-  }));
-  // 笔记 → 单个 Markdown（单篇就是一篇 .md）/ 每篇一个 .md 的压缩包（可直接上传 ima 知识库）
+  /* ---------- 笔记导出（笔记视图「📤 导出」/ 单篇「⬇ 导出」） ---------- */
+  // 笔记 → 单个 Markdown（单篇就是一篇 .md）/ 每篇一个 .md 的压缩包
   // 图片一律以 base64 内嵌在正文里，不再单独导出附件：.md 自包含，发给别人也能看到图。
   ipcMain.handle('sync:exportNotes', withDb(async (opts = {}) => {
     const entries = sync.collectNotes(opts);
@@ -1218,7 +1199,7 @@ function registerIpc() {
     db.setSetting('ui.collapsedGroups', list.length ? JSON.stringify(list) : '');
     return true;
   });
-  // 实用工具「实时薪资」的配置：月薪（元）+ 上班 / 下班时间（HH:MM）。
+  // 上班鼓励器的薪资配置：月薪（元）+ 上班 / 下班时间（HH:MM），入口在「设置 → 趣味功能」。
   // 只做「读得到 / 写回去了」的搬运，计算与校验都在渲染层（要按当前时间实时刷新，没必要过主进程）。
   ipcMain.handle('ui:getSalary', () => {
     const raw = db.getSetting('tool.salary', '');
@@ -1248,7 +1229,8 @@ function registerIpc() {
   // 同样是纯搬运——格式化与对比都在渲染层做（要按需加载第三方库、实时响应输入，没必要过主进程）。
   // key 白名单：避免渲染层拿它当任意键值存储使用。
   // calendar：日历视图的容量 / 周起始 / 显示已完成 / 上次视图 / 首启提示（见设计方案 6.3）
-  const TOOL_PREF_KEYS = ['diff', 'json', 'calendar'];
+  // encourager：上班鼓励器的玩法与隐私配置（不存月薪，月薪一律读 tool.salary）。零 DB 迁移。
+  const TOOL_PREF_KEYS = ['diff', 'json', 'calendar', 'encourager'];
   ipcMain.handle('ui:getToolPref', (_e, key) => {
     const k = TOOL_PREF_KEYS.includes(String(key || '')) ? String(key) : '';
     if (!k) return null;

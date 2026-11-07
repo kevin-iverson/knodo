@@ -1,10 +1,14 @@
 {
   "name": "todo-desktop",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": "WorkBuddy",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://gitee.com/kiverson/todo-task.git"
+  },
   "scripts": {
     "start": "electron .",
     "smoke": "electron . --smoke-test",
@@ -74,7 +78,13 @@
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+      }
     },
     "nsis": {
       "oneClick": false,

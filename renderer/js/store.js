@@ -154,6 +154,11 @@ function noteCompletionChange(id, completed, parentId) {
   state.recentlyDone.add(id);
   state.recentlyDoneDay = todayStr();
   persistRecentlyDone();
+  // 上班鼓励器：只广播「刚刚完成」这一刻（这里天然去重，取消再勾选不会重复进此分支）。
+  // 用 DOM 事件而不是反向 import，store.js 不依赖任何 UI 模块；鼓励器自己合并 3 秒内的批量完成。
+  try {
+    document.dispatchEvent(new CustomEvent('app:task-completed', { detail: { id } }));
+  } catch (e) { /* 情绪功能是旁路，派发失败不能影响任务系统 */ }
   if (parentId) rememberCompletedAncestors(parentId);
   return true;
 }

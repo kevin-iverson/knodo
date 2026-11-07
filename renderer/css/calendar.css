@@ -95,7 +95,8 @@
 }
 .cal-pool-title {
   flex: 1; min-width: 0; font-size: 12.5px; color: var(--cal-ink);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  white-space: normal; overflow: hidden; word-break: break-word;
 }
 .cal-pool-empty { padding: 12px 2px; font-size: 12px; color: var(--cal-ink3); }
 .cal-pool-more { padding: 6px 2px 2px; font-size: 11px; color: var(--cal-ink3); }
@@ -242,7 +243,8 @@
 .cal-drop-tip.is-bad { color: var(--cal-red); border-color: #f6c8ca; }
 
 /* 格内任务卡：最多 2 条 + 折叠；优先级色条 + 完成态双编码 */
-.cal-cards { display: flex; flex-direction: column; gap: 3px; min-height: 0; }
+/* 不被格内的 auto 间距压缩：两行标题靠格子自然增高来容纳，而不是把卡片裁掉 */
+.cal-cards { display: flex; flex-direction: column; gap: 3px; min-height: 0; flex: 0 0 auto; }
 .cal-task {
   position: relative; display: flex; align-items: center; gap: 4px;
   min-height: 20px; padding: 2px 4px 2px 7px;
@@ -266,12 +268,24 @@
    常驻勾选在右侧当日面板里，右键菜单也有「标记完成」，触屏用户不会丢能力。 */
 .cal-task .cal-check { display: none; }
 .cal-task:hover .cal-check { display: block; }
-.cal-task-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 标题优先：格内最多两行，长名至少能看出开头；附加图标一律定宽，不参与挤压 */
+.cal-task-title {
+  flex: 1 1 auto; min-width: 0;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  white-space: normal; overflow: hidden; word-break: break-word;
+}
+.cal-task .cal-cont-mark, .cal-task .cal-flag, .cal-task .cal-late-dot,
+.cal-task .cal-gdot, .cal-task .cal-kids { flex: 0 0 auto; }
 .cal-cont-mark { color: var(--cal-ink3); font-size: 10px; }
 .cal-flag { color: var(--cal-red); font-size: 10px; }
 .cal-late-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cal-red); flex: 0 0 6px; }
 .cal-gdot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; }
-.cal-kids { font-size: 9px; color: var(--cal-ink3); white-space: nowrap; }
+.cal-kids {
+  font-size: 9px; color: var(--cal-ink3); white-space: nowrap;
+  padding: 0 2px; border-radius: 3px; background: rgba(127, 140, 170, .14);
+}
+/* 月视图格子只有 ~65px，连 +N 都嫌占宽：子任务数交给悬停浮层 / 右栏面板 */
+.cal-cards .cal-kids { display: none; }
 .cal-task.is-dragging { opacity: .45; }
 .cal-more {
   align-self: flex-start; border: 0; background: transparent;
@@ -390,7 +404,12 @@
 .cal-panel-row { display: flex; align-items: center; gap: 6px; padding: 6px 2px; border-bottom: 1px solid var(--cal-line); }
 .cal-panel-row.is-done { opacity: .45; }
 .cal-panel-main { flex: 1; min-width: 0; }
-.cal-panel-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 右栏是「完整信息」的承载区，320px 宽不该把长名单行切掉 */
+.cal-panel-title {
+  font-size: 12px;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+  white-space: normal; overflow: hidden; word-break: break-word;
+}
 .cal-panel-meta { margin-top: 2px; font-size: 10px; color: var(--cal-ink3); display: flex; align-items: center; gap: 4px; }
 .cal-panel-priority {
   width: 58px; padding: 2px 3px; font-size: 10.5px;
@@ -405,7 +424,11 @@
 .cal-panel-backlog { margin-top: 4px; }
 .cal-backlog-row { display: flex; align-items: center; gap: 6px; padding: 5px 2px; border-bottom: 1px solid var(--cal-line); }
 .cal-backlog-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; }
-.cal-backlog-title { flex: 1; min-width: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-backlog-title {
+  flex: 1; min-width: 0; font-size: 11px;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  white-space: normal; overflow: hidden; word-break: break-word;
+}
 .cal-backlog-days { font-size: 10px; color: var(--cal-ink3); }
 .cal-backlog-row button {
   border: 1px solid #f6c8ca; border-radius: 5px; background: #fff6f6;
@@ -440,6 +463,30 @@
 .cal-set-note { font-size: 11.5px; line-height: 1.6; color: var(--text-3); border-top: 1px solid var(--border); padding-top: 10px; }
 .cal-overload { font-size: 13px; line-height: 1.8; min-width: 340px; }
 .cal-overload-tip { margin-top: 10px; font-size: 11.5px; color: var(--text-3); }
+
+/* ---------------- 长标题浮层：挂 body，避开格子 / 卡片的 overflow:hidden ---------------- */
+.cal-hover-tip {
+  position: fixed; z-index: 2147481000;
+  max-width: 300px; min-width: 150px;
+  padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-panel); color: var(--text);
+  box-shadow: 0 8px 26px rgba(20, 30, 60, .18);
+  font-size: 12px; line-height: 1.55; pointer-events: none;
+}
+.cal-hover-tip[hidden] { display: none; }
+.cal-tip-title { font-weight: 700; word-break: break-word; }
+.cal-tip-meta {
+  margin-top: 6px; display: flex; align-items: center; flex-wrap: wrap;
+  gap: 2px 5px; font-size: 11px; color: var(--text-3);
+}
+.cal-tip-meta i { font-style: normal; color: var(--border); }
+.cal-tip-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.cal-tip-bad { color: #e5484d; font-weight: 600; }
+.cal-tip-hint {
+  margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--border);
+  font-size: 10.5px; color: var(--text-3);
+}
+[data-theme="dark"] .cal-hover-tip { box-shadow: 0 8px 26px rgba(0, 0, 0, .45); }
 
 /* ---------------- 暗色主题：只重映射底色，优先级色保持与列表一致 ---------------- */
 [data-theme="dark"] .cal-wrap {

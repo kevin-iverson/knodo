@@ -176,9 +176,8 @@ contextBridge.exposeInMainWorld('api', {
     summarize: (id) => call('meeting:summarize', id),
     importTodos: (p) => call('meeting:importTodos', p),
   },
-  // 对外同步：导出成第三方产品可直接使用的格式（腾讯文档 CSV / ima Markdown）
+  // 笔记导出：笔记视图工具栏「📤 导出」与单篇「⬇ 导出」共用，产出图片内嵌的自包含 .md / .md 压缩包
   sync: {
-    exportTasks: (p) => call('sync:exportTasks', p),
     exportNotes: (p) => call('sync:exportNotes', p),
   },
   // 数据导入 / 导出
@@ -211,7 +210,7 @@ contextBridge.exposeInMainWorld('api', {
     setTagFilter: (id) => call('ui:setTagFilter', id),
     getTodayDone: () => call('ui:getTodayDone'),
     setTodayDone: (p) => call('ui:setTodayDone', p),
-    // 实用工具「实时薪资」：月薪 + 上下班时间的配置（存 settings，下次打开直接回填）
+    // 上班鼓励器的月薪 + 上下班时间（设置 → 趣味功能；存 settings，下次打开直接回填）
     getSalary: () => call('ui:getSalary'),
     setSalary: (p) => call('ui:setSalary', p),
     // 实用工具（代码格式化 / 文本对比）的选项：存 settings，下次打开直接回填
@@ -224,6 +223,8 @@ contextBridge.exposeInMainWorld('api', {
     quit: () => call('app:quit'),
     openExternal: (url) => call('app:openExternal', url),
     getVersion: () => call('app:getVersion'),
+    // 检查更新：结果由主进程用原生对话框展示，这里只负责把动作叫起来
+    checkUpdate: () => call('app:checkUpdate'),
     // 「用了 N 天了」的一次性提示：天数与「是否已问过」都由主进程判定，
     // 渲染层只在「今天全部做完」时叫它一次
     sponsorPrompt: () => call('app:sponsorPrompt'),
@@ -331,12 +332,12 @@ contextBridge.exposeInMainWorld('api', {
   // 主进程事件
   on: (channel, cb) => {
     const allowed = [
-      'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note', 'ui:salary',
+      'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note',
       'ui:text-diff', 'ui:json-viewer', 'ui:import-md',
       // 全局快捷键 Ctrl+Shift+H：唤起主窗口并打开「笔记」弹窗
       'ui:notes-dock',
-      // 顶部菜单栏入口：同步面板 / 主题（主进程已改好 nativeTheme，推一份当前值让界面跟进）
-      'ui:sync', 'ui:theme-changed',
+      // 主题（主进程已改好 nativeTheme，推一份当前值让界面跟进）
+      'ui:theme-changed',
       // 全局快捷键：设置面板入口 / 快捷键变更（多条浮窗时同步刷新）/ 没有钉住清单时的提示
       'ui:settings', 'keys:changed', 'ui:no-desktop-pins',
       // 捕捉条显示（主进程在 show 之后推一份目标清单 / 草稿状态）
@@ -346,8 +347,12 @@ contextBridge.exposeInMainWorld('api', {
       'ui:data-changed',
       // 日历：全局键 Ctrl+Alt+M / File 菜单「归档已完成任务」
       'ui:calendar', 'ui:archive-done',
+      // 启动时的静默检查更新：发现新版只推一条轻提示，详情由 File → 检查更新 打开
+      'ui:update-available',
       // 番茄钟：计时状态变化（开钟 / 暂停 / 结算 / 被打断）
       'focus:changed',
+      // 趣味功能 → 上班鼓励器：主浮窗 / 卡片页
+      'ui:encourager', 'ui:encourager-card',
     ];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));

@@ -41,6 +41,33 @@ const buildConfig = {
   compression: 'maximum',
 };
 delete buildConfig.electronLanguages;
+
+/* ---- 可选 Authenticode 代码签名（默认不启用，凭据一律走环境变量，不落盘） ----
+ * electron-builder 26 只在「找到证书或自定义签名钩子」时才签，否则整趟跳过；
+ * 因此下面这段不会改变没有证书时的打包行为（产物名、体积、压缩级别都不变）。
+ *
+ * A. PFX 文件：WIN_CSC_LINK=<pfx 路径 | base64 | https URL> + WIN_CSC_KEY_PASSWORD=<密码>
+ *    这两个变量由 electron-builder 自己读取，无需在此注入。
+ * B. Windows 证书库（UKey / 云签名客户端装好后证书可见，私钥不可导出）：
+ *    KNODO_CERT_SUBJECT="<证书主题片段>" 或 KNODO_CERT_SHA1=<SHA1 指纹>
+ * C. 自定义签名钩子（对接云签名 CLI）：KNODO_SIGN_HOOK=scripts/xxx.js
+ *    钩子导出 async function sign(configuration)，configuration.path 是待签文件；
+ *    每个签名算法调用一次，上面 signingHashAlgorithms 只留 sha256 保证只调一次。
+ * 注意：win.azureSignOptions 与 win.signtoolOptions 互斥，将来接 Azure 签名时
+ *       需要把 signtoolOptions 去掉，改用 azureSignOptions。
+ */
+const signOptions = { ...(buildConfig.win.signtoolOptions || {}) };
+if (process.env.KNODO_CERT_SUBJECT) signOptions.certificateSubjectName = process.env.KNODO_CERT_SUBJECT;
+if (process.env.KNODO_CERT_SHA1) signOptions.certificateSha1 = process.env.KNODO_CERT_SHA1;
+if (process.env.KNODO_SIGN_HOOK) signOptions.sign = process.env.KNODO_SIGN_HOOK;
+buildConfig.win = { ...buildConfig.win, signtoolOptions: signOptions };
+
+let signMode = '未配置 → 产物不签名';
+if (process.env.KNODO_SIGN_HOOK) signMode = `自定义钩子 ${process.env.KNODO_SIGN_HOOK}`;
+else if (process.env.WIN_CSC_LINK || process.env.CSC_LINK) signMode = 'PFX（WIN_CSC_LINK / CSC_LINK）';
+else if (process.env.KNODO_CERT_SUBJECT || process.env.KNODO_CERT_SHA1) signMode = 'Windows 证书库（主题 / 指纹）';
+console.log(`[build] 代码签名：${signMode}`);
+
 fs.writeFileSync(tmpConfig, `${JSON.stringify(buildConfig, null, 2)}\n`);
 
 const env = {
