@@ -47,7 +47,13 @@ if (process.env.PORTABLE_EXECUTABLE_DIR) {
 // Windows 任务栏 / 通知的身份标识（AppUserModelID）与通知中心显示名。
 // 不设的话，任务栏按钮会沿用宿主进程（开发期是 electron.exe）的身份，
 // 通知中心的发送者也会回落成「Electron」。详见 main/app-identity.js。
-require('./app-identity').registerWindowsIdentity();
+// 身份只影响「通知栏显示什么名字」，属于纯装饰性副作用：require 也包一层，
+// 任何失败都只记日志。v2.2.0 就是因为这里在模块顶层抛错而整包打不开。
+try {
+  require('./app-identity').registerWindowsIdentity();
+} catch (e) {
+  console.warn('[identity] 初始化应用身份失败（不影响启动）：', e && e.message ? e.message : e);
+}
 
 let mainWindow = null;
 let isQuitting = false;

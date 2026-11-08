@@ -19,12 +19,21 @@
  * 省掉 RegCreateKeyExW 的输出句柄参数。项目已有 koffi 依赖并已 asarUnpack。
  *
  * 任何一步失败都只警告，绝不阻断启动。
+ *
+ * ⚠️ 打包后 `build` 段不存在：electron-builder 写进 app.asar 的 package.json
+ * 只保留 name / version / description / main / author / license / repository /
+ * dependencies —— `build`（连同 devDependencies）会被整段剔掉。
+ * 所以在模块顶层直接 `pkg.build.appId` 在开发期正常、打包后必抛
+ * `TypeError: Cannot read properties of undefined (reading 'appId')`，
+ * 而这是 require 阶段就炸，主进程连窗口都来不及建（v2.2.0 安装版/便携版即此故障）。
+ * 结论：取值一律走下面的 BUILD 兜底，常量只是打包形态的备份来源。
  */
 const { app } = require('electron');
 
 const pkg = require('../package.json');
-const APP_USER_MODEL_ID = pkg.build.appId;
-const DISPLAY_NAME = pkg.build.productName;
+const BUILD = (pkg && pkg.build) || {}; // 打包后为 {}，字段回落到下面的常量
+const APP_USER_MODEL_ID = BUILD.appId || 'com.workbuddy.todo-desktop';
+const DISPLAY_NAME = BUILD.productName || 'Knodo';
 const REG_SUBKEY = `Software\\Classes\\AppUserModelId\\${APP_USER_MODEL_ID}`;
 const REG_KEY = `HKCU\\${REG_SUBKEY}`;
 

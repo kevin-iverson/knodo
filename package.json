@@ -12,6 +12,7 @@
   "scripts": {
     "start": "electron .",
     "smoke": "electron . --smoke-test",
+    "smoke:packaged": "node scripts/smoke-packaged.js",
     "gen-icon": "node scripts/gen-icon.js",
     "build:tools": "node scripts/build-tools.js",
     "test:db": "node scripts/smoke-db.js",

@@ -101,6 +101,25 @@ console.log('[build] electron-builder ' + args.slice(1).join(' '));
 const child = spawn(process.execPath, args, { cwd: root, env, stdio: 'inherit' });
 child.on('exit', (code) => {
   try { fs.unlinkSync(tmpConfig); } catch { /* 已清理 */ }
-  if (code === 0) report();
-  process.exit(code == null ? 1 : code);
+  if (code !== 0) process.exit(code == null ? 1 : code);
+  report();
+  /* 出包后必须再对 win-unpacked 跑一次**产物**冒烟。
+     `npm run smoke` 是 electron .（源码目录），读仓库 package.json；
+     而 asar 里的 package.json 被 electron-builder 剔掉了 build / devDependencies，
+     于是「源码能跑、装完就崩」的问题只有产物冒烟能拦住
+     —— v2.2.0（pkg.build.appId 崩溃）就是这样漏出去的。
+     想跳过（仅限调试打包参数时）：KNODO_SKIP_PACKAGED_SMOKE=1 */
+  if (process.env.KNODO_SKIP_PACKAGED_SMOKE === '1') {
+    console.log('\n[build] 已跳过产物冒烟（KNODO_SKIP_PACKAGED_SMOKE=1）——发布前务必手动补跑');
+    process.exit(0);
+  }
+  console.log('\n[build] 对打包产物跑冒烟（scripts/smoke-packaged.js）');
+  const smoke = spawn(process.execPath, [path.join(__dirname, 'smoke-packaged.js')], {
+    cwd: root,
+    stdio: 'inherit',
+  });
+  smoke.on('exit', (c) => {
+    if (c !== 0) console.error('\n[build] ✗ 产物冒烟失败，本次构建不可发布');
+    process.exit(c == null ? 1 : c);
+  });
 });
