@@ -391,6 +391,9 @@ async function main() {
     return res.ok ? await res.json() : [];
   };
   const existed = new Set((await listAttach()).map((a) => a.name));
+  /* 失败项单独记账：以前不管有没有传上去都打印「✅ 发布完成」并 exit 0，
+     2026-11-08 那次安装版 3 次全 fetch failed 却报成功，靠手动查才发现缺包。 */
+  const failed = [];
 
   for (const name of files) {
     if (existed.has(name)) {
@@ -401,6 +404,7 @@ async function main() {
     const size = fs.statSync(filePath).size;
     if (size > 100 * 1024 * 1024) {
       console.error(`✗ ${name} 超过 Gitee 单附件 100MB 上限（${(size / 1048576).toFixed(1)}MB），请先压缩或瘦身。`);
+      failed.push(`${name}（超 100MB）`);
       continue;
     }
     process.stdout.write(`③ 上传 ${name}（${(size / 1048576).toFixed(1)}MB）… `);
@@ -443,12 +447,22 @@ async function main() {
         lastErr = e.message;
       }
     }
-    if (!ok) console.log(`失败：${lastErr}（可重新运行本脚本续传）`);
+    if (!ok) {
+      console.log(`失败：${lastErr}（可重新运行本脚本续传）`);
+      failed.push(`${name}（${lastErr}）`);
+    }
   }
   const names = (await listAttach()).map((a) => a.name);
   const dups = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))];
   if (dups.length) {
     console.log(`⚠ 发现重复附件：${dups.join('、')}（多占配额，建议到发行版页面手动删掉一份）`);
+  }
+  if (failed.length) {
+    console.error(`\n✗ 发布未完成，以下附件没传上去：\n  - ${failed.join('\n  - ')}`);
+    console.error('  已成功的同名附件重跑会跳过；大文件建议改用 curl 单传：');
+    console.error(`  curl -X POST "${API}/repos/${owner}/${repo}/releases/${releaseId}/attach_files" \\`);
+    console.error('    -F "access_token=<token>" -F "file=@dist/release/<文件名>" --max-time 1800');
+    process.exit(1);
   }
   console.log(`\n✅ 发布完成：https://gitee.com/${owner}/${repo}/releases/tag/${tag}`);
 }
