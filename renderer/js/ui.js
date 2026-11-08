@@ -12,11 +12,14 @@ import {
   taskGroupKey, initCollapsedTaskGroups, toggleTaskGroup,
 } from './store.js';
 import { renderReports } from './reports.js';
-import { openDetail, setDetailHandlers } from './detail.js';
+import { openDetail, setDetailHandlers, refreshDetailIfIdle } from './detail.js';
 import { renderSearch, setSearchHandlers } from './search.js';
 import { openPromptModal, openFormModal, openPanelModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
-import { flattenGroupTree, childGroups, descendantGroupIds, groupPath, groupOptionsHtml } from './group-tree.js';
+import { flattenGroupTree, childGroups, descendantGroupIds, groupPath } from './group-tree.js';
+import {
+  groupPickerOptionsHtml, createGroupSelect, destroyGroupSelectsIn, destroyAllGroupSelects,
+} from './group-select.js';
 import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { openSponsorAsk } from './sponsor.js';
 import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
@@ -34,6 +37,11 @@ import { initSidebarResize } from './sidebar-resize.js';
 import { openContextMenu, closeContextMenu } from './ctx-menu.js';
 import { openSettings, setSettingsHandlers } from './settings.js';
 import { renderCalendar, setCalendarHandlers, openCalendar, backToList, disposeCalendar } from './calendar.js';
+import {
+  repeatEditorHtml, bindRepeatEditor, readRepeatConfig, isRepeatOn,
+  setRecurrenceHandlers, listenRecurrenceMenu, openRuleFromTask,
+  derivedScheduleHtml, recurStateBadgeHtml, recurState,
+} from './recurrence.js';
 
 /** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
 const AUTO_SAVE_DELAY = 700;
@@ -73,6 +81,12 @@ const VIEW_META = {
 
 /** 会展示任务列表、因而消费分组/标签筛选的视图 */
 const TASK_VIEWS = ['today', 'upcoming', 'all', 'completed', 'archived'];
+
+/** 重复规则缓存：任务行徽标要显示规则摘要 / 是否为习惯，renderTasks 每轮拉一次（规则表很小） */
+let recurringRules = [];
+let recurringRuleMap = new Map();
+/** 「今天」视图里「今天不发生」清单的展开态（只在本会话内记忆，不影响主列表折叠） */
+let pendingRecurringOpen = false;
 
 /**
  * 可以钉到桌面的「视图投影」。
@@ -228,6 +242,17 @@ function bindStaticEvents() {
     },
   });
   listenEncouragerMenu();
+  // 重复事项 / 习惯：菜单入口 + 后台跨天生成后的刷新；不反向 import ui.js，刷新能力走注入
+  setRecurrenceHandlers({
+    toast,
+    onChanged: async () => {
+      if (TASK_VIEWS.includes(state.view) || state.view === 'calendar') await render();
+    },
+  });
+  listenRecurrenceMenu();
+  // 后台跨天推进了重复事项：抽屉里那份「本次 / 截止 / 提醒」要跟着换；
+  // 用户正在输入时不动（refreshDetailIfIdle 内部判断），避免丢光标
+  api.on('ui:recurrence-generated', () => refreshDetailIfIdle());
   // 实用工具 → 文本对比（非模态浮窗，开着也能继续操作主界面）
   setDiffHandlers({ toast });
   api.on('ui:text-diff', () => {
@@ -485,6 +510,8 @@ let lastListView = 'today';
 let noteCounts = {};
 
 async function render() {
+  // #view 是共享容器：整块重绘前先回收挂在 body 上的 Tom Select 下拉，避免残留浮层
+  destroyAllGroupSelects();
   // 视图切换 / 重绘时先收起右键菜单：菜单里的操作带着旧上下文，留着容易点错
   closeContextMenu();
   // 离开笔记视图时销毁编辑器：整页 innerHTML 重建后，旧的自动保存器会继续写库
@@ -1439,13 +1466,18 @@ async function renderTasks() {
   // #view 是共享容器：日历态下任何误调（应用内快捷键、外部刷新）都不能把日历整块冲成列表
   if (state.view === 'calendar') { await renderCalendar(); return; }
   const tasks = await loadTasks();
+  // 重复规则摘要（任务行徽标的 title / 习惯图标）；一次批量查询，规则数量很小
+  recurringRules = api.recurrences ? await api.recurrences.list().catch(() => []) : [];
+  recurringRuleMap = new Map(recurringRules.map((r) => [Number(r.id), r]));
   // 展开的子节点可能被当前视图 / 筛选条件过滤掉（例如「今天」视图要求 plan_end <= 今天，
   // 而子任务往往没有日期）。为保证"点得开、看得见"，显式补拉已展开任务的子任务。
   await withExpandedChildren(tasks);
-  // 关联笔记数量：一次批量查询（避免每行一次 IPC）
-  noteCounts = await api.taskNotes.counts(tasks.map((t) => t.id)).catch(() => ({}));
+  // 关联笔记 / 番茄格数：一次批量查询（避免每行一次 IPC）。
+  // 「今天不发生」那几条不在 tasks 里，也要一起查，否则它们的角标会缺。
+  const allIds = tasks.map((t) => t.id).concat(state.recurringPending.map((t) => t.id));
+  noteCounts = await api.taskNotes.counts(allIds).catch(() => ({}));
   // 番茄格数 + 今日格数：同样批量拉取
-  focusCounts = await api.focus.counts(tasks.map((t) => t.id)).catch(() => ({}));
+  focusCounts = await api.focus.counts(allIds).catch(() => ({}));
   focusToday = await api.focus.today().catch(() => 0);
   // 收尾态下的连续专注格数（含当前这一格）：软提示用，只在该任务的番茄刚结束时算
   focusConsecutive = 0;
@@ -1506,6 +1538,13 @@ async function renderTasks() {
     }
   }
 
+  // 「今天」视图：今天不发生的重复事项单独收在可折叠区里（默认收起）。
+  // 按「每个法定工作日」的规则一到周末就没有发生日，任务会同时从「今天」和「即将到期」消失，
+  // 一句话都不说；这里给一条可展开的说明，顺带标出下次是几号（P-08 / P-09）。
+  if (state.view === 'today' && state.recurringPending.length) {
+    html += pendingRecurringHtml();
+  }
+
   // 列表底部：就地新增入口（归档视图不提供新增）
   if (!isArchived) {
     html += state.addingTask ? newEditorHtml() : addRowHtml();
@@ -1514,8 +1553,17 @@ async function renderTasks() {
   // 编辑器被整块替换前先回收它的自动保存器：换 innerHTML 不会取消已排队的防抖计时器，
   // 旧保存器会拿着已销毁的 DOM 继续写库（可能把别的任务刚改过的值覆盖回去）。
   disposeEditorSavers(viewEl);
+  // 直接调 renderTasks()（不经 render()）时也要回收编辑器里的 Tom Select 实例
+  destroyGroupSelectsIn(viewEl);
 
   viewEl.innerHTML = html;
+  const pendToggle = viewEl.querySelector('[data-act="toggle-recur-pending"]');
+  if (pendToggle) {
+    pendToggle.addEventListener('click', () => {
+      pendingRecurringOpen = !pendingRecurringOpen;
+      renderTasks();
+    });
+  }
   const hideDoneBtn = viewEl.querySelector('[data-act="hide-done"]');
   if (hideDoneBtn) {
     hideDoneBtn.addEventListener('click', () => {
@@ -1627,6 +1675,31 @@ async function withExpandedChildren(tasks) {
   return tasks;
 }
 
+/**
+ * 「今天不发生」的重复事项（暂停 / 已结束 / 下次在未来）：默认收起的一条说明区。
+ * 行内用任务行同一套渲染，但完成按钮禁用 —— 今天不是发生日，勾了会记成下一次的打卡。
+ */
+function pendingRecurringHtml() {
+  const items = state.recurringPending;
+  const open = pendingRecurringOpen;
+  // 这些行不在 state.tasks 里，buildTaskList 管不到；就地编辑要在这里单独接上，
+  // 否则点「✎ 编辑」只会把 editingTaskId 设上却不出现编辑器（看着像没反应）
+  const rows = items.map((t) => (state.editingTaskId === t.id
+    ? editEditorHtml(t)
+    : taskItemHtml(t, 0, true, { pending: true }))).join('');
+  return `<div class="recur-pending">
+    <button type="button" class="task-group-head recur-pending-head${open ? '' : ' is-collapsed'}"
+      data-act="toggle-recur-pending" aria-expanded="${open}"
+      title="${open ? '收起' : '展开'}这 ${items.length} 条今天不发生的重复事项">
+      <span class="group-toggle">${open ? '▾' : '▸'}</span>
+      <span class="tg-name">今天不发生</span>
+      <span class="tg-count">${items.length}</span>
+      <span class="recur-pending-hint">按重复规则今天没有发生 · 点开看下次是几号</span>
+    </button>
+    ${open ? `<ul class="task-list is-pending">${rows}</ul>` : ''}
+  </div>`;
+}
+
 /** 任务排序：与主列表 SQL 一致（未完成 → 有截止日期 → 截止日期 → 优先级降序 → 手动排序 → id） */
 function compareTasks(a, b) {
   // 手动排序：sort_order 优先，与 main/db.js 里 f.sort === 'manual' 的 ORDER BY 保持一致
@@ -1694,12 +1767,29 @@ function groupPathAt(id) {
   return g ? groupPath(g, state.groups) : '';
 }
 
-function taskItemHtml(t, depth = 0, parentVisible = true) {
+/** 重复事项徽标：只有一条任务，点开可改规则 / 停止 / 看打卡；习惯模式用 💪 区分 */
+function recurBadgeHtml(t) {
+  if (t.recurring_id == null) return '';
+  const r = recurringRuleMap.get(Number(t.recurring_id));
+  const label = r ? `${r.title}｜${r.summary || ''}` : '重复事项';
+  const ico = r && r.habit ? '💪' : '🔁';
+  const cls = ['recur-badge', r && r.habit ? 'is-habit' : '', t.completed ? 'is-done' : ''].filter(Boolean).join(' ');
+  const tip = `${label}｜累计打卡 ${r ? r.done_count : 0} 次${r && r.todayDone ? '（今日已完成）' : ''}｜点击改规则 / 看记录`;
+  return `<button type="button" class="${cls}" data-act="open-recur"
+    data-rule-id="${Number(t.recurring_id)}" title="${esc(tip)}"
+    >${ico}</button>`;
+}
+
+function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
   const done = t.completed ? ' done' : '';
   // 注意：判断"是不是子任务"必须看 t.parent_id，不能看 depth。
   // 父任务被筛选掉时，子任务会作为 roots 渲染、depth = 0，但它依然是子任务。
   const isSub = t.parent_id != null;
   const isOverdue = !t.completed && t.plan_end && t.plan_end < todayStr();
+  // 重复事项：日期是规则派生的「本次 / 截止」。pending = 「今天不发生」说明区里的行
+  const recurRule = t.recurring_id != null ? recurringRuleMap.get(Number(t.recurring_id)) : null;
+  const isRecur = t.recurring_id != null;
+  const pendingRow = !!opts.pending;
   // 该任务是否正在专注（running / paused；done 态走收尾条）
   const isFocusing = focusSnap.active && focusSnap.taskId === t.id
     && (focusSnap.mode === 'running' || focusSnap.mode === 'paused');
@@ -1717,11 +1807,27 @@ function taskItemHtml(t, depth = 0, parentVisible = true) {
            title="父任务不在当前列表，点击打开：${esc(t.parent_title)}">↳ 父任务：${esc(t.parent_title)}</span>`);
   }
   meta.push(`<span class="pri-badge pri-${t.priority}">${PRIORITY_TEXT[t.priority]}</span>`);
-  if (t.plan_start) meta.push(`<span class="meta-item">🗓 ${esc(t.plan_start)}</span>`);
-  if (t.plan_end) meta.push(`<span class="meta-item due ${isOverdue ? 'overdue' : ''}">📅 ${esc(t.plan_end)}</span>`);
+  if (isRecur) {
+    // 重复事项：plan_start 是「本次发生日」、plan_end 是「截止日」，直接当普通计划时间展示
+    // 会让人以为任务排到了未来几天。这里换成语义明确的写法（P-05）：
+    // 今天就是发生日 → 「本次 + 截止」；今天不是 → 只留状态角标（下次是几号由它来说）。
+    const st = recurState(t, recurRule);
+    if (st.state === 'today') {
+      meta.push(`<span class="meta-item recur-on">🔁 本次 ${esc(t.occurrence_date.slice(5))}</span>`);
+      if (t.plan_end && t.plan_end !== t.occurrence_date) {
+        meta.push(`<span class="meta-item due ${isOverdue ? 'overdue' : ''}">⏰ 截止 ${esc(t.plan_end.slice(5))}</span>`);
+      }
+    } else {
+      const stateBadge = recurStateBadgeHtml(t, recurRule);
+      if (stateBadge) meta.push(stateBadge);
+    }
+  } else {
+    if (t.plan_start) meta.push(`<span class="meta-item">🗓 ${esc(t.plan_start)}</span>`);
+    if (t.plan_end) meta.push(`<span class="meta-item due ${isOverdue ? 'overdue' : ''}">📅 ${esc(t.plan_end)}</span>`);
+  }
   // 子任务进度不放 meta 行了：跟标题同一行、紧挨着标题右侧，扫一眼就知道这个任务拆了几条
   if (t.completed && t.completed_at) meta.push(`<span class="meta-item done-at">✅ 完成于 ${fmtDateTime(t.completed_at)}</span>`);
-  if (t.reminder_at) meta.push(`<span class="meta-item">🔔 ${fmtDateTime(t.reminder_at)}</span>`);
+  if (t.reminder_at && !isRecur) meta.push(`<span class="meta-item">🔔 ${fmtDateTime(t.reminder_at)}</span>`);
   // 创建时间：行内只放日期（完整时间走 title），避免把 meta 行撑得太长
   if (t.created_at) meta.push(`<span class="meta-item created-at" title="创建于 ${esc(fmtDateTime(t.created_at))}">🕒 ${esc(t.created_at.slice(0, 10))}</span>`);
   for (const n of t.tag_names) meta.push(`<span class="tag-chip">${esc(n)}</span>`);
@@ -1737,14 +1843,16 @@ function taskItemHtml(t, depth = 0, parentVisible = true) {
     : '';
 
   return `
-  <li class="task-item${done}${isSub ? ' is-subtask' : ''}${isFocusing ? ' is-focus' : ''}${isPaused ? ' is-paused' : ''}" draggable="false" data-id="${t.id}" style="margin-left:${depth * 20}px">
+  <li class="task-item${done}${isSub ? ' is-subtask' : ''}${isFocusing ? ' is-focus' : ''}${isPaused ? ' is-paused' : ''}${pendingRow ? ' is-recur-pending' : ''}" draggable="false" data-id="${t.id}" style="margin-left:${depth * 20}px">
     <span class="task-gutter">${isSub ? '' : '<span class="drag-handle" data-act="drag" title="按住拖拽调整顺序">⠿</span>'}</span>
     <!-- 展开箭头固定在完成按钮左侧，两者成组、间距固定；无子任务时槽位仍占同宽，
          这样每一行的完成按钮都落在同一条竖线上 -->
     <span class="task-leading">
-      <span class="task-expand-slot">${t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" aria-expanded="${state.expandedTasks.has(t.id)}" title="${state.expandedTasks.has(t.id) ? '收起子任务' : '展开子任务'}">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}</span>
+      <span class="task-expand-slot">${!pendingRow && t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" aria-expanded="${state.expandedTasks.has(t.id)}" title="${state.expandedTasks.has(t.id) ? '收起子任务' : '展开子任务'}">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}</span>
       ${isFocusing ? focusRingHtml() : ''}
-      <button class="task-check" data-act="toggle" title="完成/取消">${t.completed ? '✓' : ''}</button>
+      ${pendingRow
+    ? `<button class="task-check" disabled title="今天不是发生日，不能打卡">${t.completed ? '✓' : ''}</button>`
+    : `<button class="task-check" data-act="toggle" title="完成/取消">${t.completed ? '✓' : ''}</button>`}
     </span>
     <div class="task-body">
       <div class="task-title">
@@ -1754,6 +1862,7 @@ function taskItemHtml(t, depth = 0, parentVisible = true) {
          aria-label="子任务 ${t.subtask_done}/${t.subtask_count}">☑ ${t.subtask_done}/${t.subtask_count}</span>`
     : ''}
         ${focusDotsHtml(t.id)}
+        ${recurBadgeHtml(t)}
       </div>
       <div class="task-meta">${groupLabel}${meta.join('')}</div>
     </div>
@@ -1817,6 +1926,7 @@ function bindTaskListEvents(container) {
       else if (act === 'focus-duration') cycleFocusDuration();
       else if (act === 'focus-pause') toggleFocusPause();
       else if (act === 'focus-end') endFocus();
+      else if (act === 'open-recur') openRuleFromTask(Number(btn.dataset.ruleId));
     });
     bindDrag(item);
   });
@@ -1935,6 +2045,17 @@ function priorityOptionsHtml(selected) {
     .join('');
 }
 
+/**
+ * 分组下拉换成与 AI 报告同款的 Tom Select（单选）。
+ * 组件隐藏原始 select 但会同步它的 value，并派发原生 input / change 事件，
+ * 所以 collectEditorPayload 的读取与编辑态自动保存都不用改。
+ */
+function initEditorGroupSelect(ed) {
+  const sel = ed.querySelector('.editor-group');
+  if (!sel) return;
+  createGroupSelect(sel, { multiple: false });
+}
+
 /** 编辑器内部结构（新增与编辑共用）。计划开始/完成日期、分组直接放在主行表单中 */
 function taskEditorHtml(task) {
   const isEdit = !!task;
@@ -1942,17 +2063,24 @@ function taskEditorHtml(task) {
   const detailsHidden = isEdit ? '' : ' hidden';
   const showCompletedAt = isEdit && t.completed;
   const defaultGroup = isEdit ? t.group_id : (state.currentGroup !== 'all' ? state.currentGroup : null);
+  // 重复事项：计划日期 / 提醒由规则派生，编辑器里给只读展示，不留可编辑入口（P-01/P-02）
+  const recurRule = isEdit && t.recurring_id != null
+    ? recurringRuleMap.get(Number(t.recurring_id))
+    : null;
+  const derived = isEdit && t.recurring_id != null;
   // 计划日期：开始 / 完成合并为单一范围控件；新建任务的默认值由 NEW_TASK_RANGE_MODE 决定，
   // 但「今天」视图下默认填今天（否则新建的任务 plan_end 为空，根本不会出现在今天列表里）
   const rangeOpts = { required: PLAN_DATE_REQUIRED, placeholder: '计划开始 ~ 完成' };
   const newRangeMode = state.view === 'today' ? 'today' : NEW_TASK_RANGE_MODE;
   const range = isEdit ? { start: t.plan_start, end: t.plan_end } : defaultDateRange(newRangeMode);
   return `
-  <div class="task-editor" data-editor="${isEdit ? t.id : 'new'}">
+  <div class="task-editor" data-editor="${isEdit ? t.id : 'new'}"${derived ? ' data-derived="1"' : ''}>
     <div class="editor-row">
       <input class="editor-title" type="text" placeholder="任务标题（回车保存，Esc 取消）" value="${esc(t.title || '')}" />
-      <select class="editor-group" title="分组" aria-label="分组">${groupOptionsHtml(state.groups, defaultGroup)}</select>
-      ${dateRangeFieldHtml(range.start, range.end, rangeOpts)}
+      <select class="editor-group" title="分组" aria-label="分组">${groupPickerOptionsHtml(state.groups, defaultGroup)}</select>
+      ${derived
+    ? '<span class="editor-derived" title="重复事项的计划时间与提醒由规则派生，下方有只读明细；要改请改重复规则">🔁 按规则排期</span>'
+    : dateRangeFieldHtml(range.start, range.end, rangeOpts)}
       <button class="ghost-btn" data-act="editor-more" title="展开更多字段（优先级 / 提醒 / 标签 / 备注）">⚙ 更多选项</button>
       ${isEdit ? '<button class="danger-btn" data-act="editor-delete" title="删除任务">删除</button>' : ''}
       <button class="ghost-btn" data-act="editor-cancel">取消</button>
@@ -1961,11 +2089,12 @@ function taskEditorHtml(task) {
     </div>
     <div class="editor-details"${detailsHidden}>
       <select class="editor-priority" title="优先级">${priorityOptionsHtml(t.priority)}</select>
-      ${reminderHtml(t.reminder_at, t.plan_end)}
+      ${derived ? '' : reminderHtml(t.reminder_at, t.plan_end)}
       <input class="editor-tags" type="text" placeholder="标签（逗号分隔）" value="${esc((t.tag_names || []).join(', '))}" />
       ${showCompletedAt ? `<input class="editor-completed-at" type="datetime-local" value="${isoToLocal(t.completed_at)}" title="实际完成时间" />` : ''}
       <textarea class="editor-notes" rows="2" placeholder="备注">${esc(t.notes || '')}</textarea>
     </div>
+    ${repeatEditorHtml(t, recurRule)}
   </div>`;
 }
 
@@ -1987,6 +2116,17 @@ function bindEditorEvents(container) {
   container.querySelectorAll('.task-editor').forEach((ed) => {
     bindDateRangeFields(ed);
     bindReminder(ed);
+    initEditorGroupSelect(ed);
+    bindRepeatEditor(ed, {
+      onInput: () => {
+        // 开启重复后，完成日与提醒改由规则接管；一次性字段只置灰、不隐藏
+        // （隐藏会让用户以为刚填的日期/提醒丢了，校验也还要能读到值）。
+        // 说明统一写在 .rpt-panel 顶部，不要在字段上挂溢出到控件外的提示文字。
+        const on = isRepeatOn(ed);
+        ed.querySelectorAll('.date-range-field, .reminder-field')
+          .forEach((el) => el.classList.toggle('is-rpt-muted', on));
+      },
+    });
     // 范围变化（含清除）后同步提醒预设，避免出现“依赖完成日期却没有日期”的提醒
     ed.addEventListener(DATE_RANGE_EVENT, (e) => syncReminderWithPlanEnd(ed, e.detail.planEnd));
     // 编辑既有任务 → 开启即时持久化（新建任务在“添加”时创建，无 id 可写）
@@ -1997,7 +2137,11 @@ function bindEditorEvents(container) {
       else if (e.key === 'Escape') cancelEditor();
     });
     ed.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') cancelEditor();
+      if (e.key !== 'Escape') return;
+      // 分组下拉展开时 Esc 只收起下拉，不能连带把整个任务编辑器关掉
+      const gWrap = ed.querySelector('.ts-wrapper');
+      if (gWrap && gWrap.classList.contains('dropdown-active')) return;
+      cancelEditor();
     });
     ed.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-act]');
@@ -2010,6 +2154,7 @@ function bindEditorEvents(container) {
         const d = ed.querySelector('.editor-details');
         d.hidden = !d.hidden;
       }
+      else if (act === 'open-recur-inline') openRuleFromTask(Number(btn.dataset.ruleId));
     });
   });
 }
@@ -2109,16 +2254,17 @@ function collectEditorPayload(ed, { quiet = false } = {}) {
     }
     return null;
   }
-  const range = validateDateRange(ed);
-  if (!range.ok) {
+  const range = ed.dataset.derived === '1' ? null : validateDateRange(ed);
+  if (range && !range.ok) {
     if (!quiet) {
       toast(range.message); // validateDateRange 已给控件加上 .invalid 态
       ed.querySelector('.date-range-trigger').focus();
     }
     return null;
   }
-  const { planStart, planEnd } = range;
-  if (reminderNeedsPlanEnd(ed) && !planEnd) {
+  const planStart = range ? range.planStart : null;
+  const planEnd = range ? range.planEnd : null;
+  if (range && reminderNeedsPlanEnd(ed) && !planEnd) {
     if (!quiet) toast('请先设置完成日期，再选择提醒时间');
     return null;
   }
@@ -2127,10 +2273,9 @@ function collectEditorPayload(ed, { quiet = false } = {}) {
     notes: ed.querySelector('.editor-notes').value,
     priority: Number(ed.querySelector('.editor-priority').value),
     groupId: ed.querySelector('.editor-group').value ? Number(ed.querySelector('.editor-group').value) : null,
-    planStart,
-    planEnd,
-    reminderAt: computeReminder(ed, planEnd),
   };
+  // 重复事项的计划时间 / 提醒由规则派生：不进 payload（库里也拒写），避免用"空控件"折成 null 写库
+  if (range) Object.assign(payload, { planStart, planEnd, reminderAt: computeReminder(ed, planEnd) });
   // 实际完成时间（仅编辑已完成任务时显示该字段）
   const catEl = ed.querySelector('.editor-completed-at');
   if (catEl) payload.completedAt = localToIso(catEl.value);
@@ -2186,17 +2331,20 @@ function bindEditorAutoSave(ed) {
     },
   });
 
-  // 基线 = 打开编辑器时的服务端数据，避免"没改也写库"
-  saver.setBaseline({
+  // 基线 = 打开编辑器时的服务端数据，避免"没改也写库"；派生字段不进表单，也就不进基线
+  const baseline = {
     title: task.title,
     notes: task.notes || '',
     priority: task.priority,
     groupId: task.group_id ?? null,
-    planStart: task.plan_start,
-    planEnd: task.plan_end,
-    reminderAt: task.reminder_at,
     tagIds: (task.tag_ids || []).map(Number),
-  });
+  };
+  if (ed.dataset.derived !== '1') {
+    baseline.planStart = task.plan_start;
+    baseline.planEnd = task.plan_end;
+    baseline.reminderAt = task.reminder_at;
+  }
+  saver.setBaseline(baseline);
 
   ed.addEventListener('input', () => saver.schedule());
   ed.addEventListener('change', () => saver.schedule());
@@ -2213,6 +2361,14 @@ async function saveEditor(ed) {
   const isEdit = ed.dataset.editor !== 'new';
   const payload = collectEditorPayload(ed);
   if (!payload) return;
+  // 重复配置与一次性字段一起收集：开启时走「建规则」，把这一条任务挂成重复事项。
+  // 不再预生成 N 条实例；日期 / 提醒 / 完成态由规则按当天推进。
+  const repeat = readRepeatConfig(ed);
+  if (repeat.invalid) { toast(repeat.invalid); return; }
+  const repeatPayload = (tagIds) => ({
+    ...payload, tagIds,
+    rule: repeat.rule, startDate: repeat.startDate, endDate: repeat.endDate, habit: repeat.habit,
+  });
 
   // 已进入自动保存的编辑器：立即 flush 并关闭；否则（新建）走创建流程
   const saver = ed.__autoSave;
@@ -2220,6 +2376,15 @@ async function saveEditor(ed) {
     await saver.flush();
     const ok = ed.querySelector('.editor-save-state').className.indexOf('s-error') === -1;
     if (!ok) return; // 保存失败时保持编辑器打开
+    if (repeat.enabled) {
+      // 把这条已有任务「就地」挂成规则的首个实例，附件 / 笔记关联 / 完成状态都不丢
+      const done = await guardAction(async () => {
+        const tagIds = await resolveTagIds(ed.querySelector('.editor-tags').value);
+        await api.recurrences.create({ ...repeatPayload(tagIds), originTaskId: Number(ed.dataset.editor) });
+      }, '创建重复规则失败');
+      if (!done) return;
+      toast('已转为重复事项，今后按规则出现在「今天」');
+    }
     state.editingTaskId = null;
     await refreshAll();
     renderSidebarList();
@@ -2229,14 +2394,23 @@ async function saveEditor(ed) {
 
   const ok = await guardAction(async () => {
     const tagIds = await resolveTagIds(ed.querySelector('.editor-tags').value);
-    if (isEdit) {
+    if (repeat.enabled) {
+      if (isEdit) {
+        await api.tasks.update(Number(ed.dataset.editor), { ...payload, tagIds });
+        await api.recurrences.create({ ...repeatPayload(tagIds), originTaskId: Number(ed.dataset.editor) });
+      } else {
+        await api.recurrences.create(repeatPayload(tagIds));
+      }
+    } else if (isEdit) {
       await api.tasks.update(Number(ed.dataset.editor), { ...payload, tagIds });
     } else {
       await api.tasks.create({ ...payload, tagIds });
     }
-  }, isEdit ? '更新任务失败' : '创建任务失败');
+  }, repeat.enabled ? '创建重复事项失败' : (isEdit ? '更新任务失败' : '创建任务失败'));
   if (!ok) return; // 失败时保留编辑器内容，用户可直接重试
-  toast(isEdit ? '任务已更新' : '任务已创建');
+  toast(repeat.enabled
+    ? (isEdit ? '已转为重复事项，今后按规则出现在「今天」' : '重复事项已创建，仍只是一条任务')
+    : (isEdit ? '任务已更新' : '任务已创建'));
 
   state.addingTask = false;
   state.editingTaskId = null;
@@ -2338,9 +2512,14 @@ async function dropReorder(item, fromIdStr) {
 /* ---------------- 任务操作 ---------------- */
 
 async function toggleTask(id) {
+  const before = state.tasks.find((x) => x.id === id);
   const t = await api.tasks.toggle(id);
   // 今天完成的任务保留在「今天」列表里：任何视图里勾的都要记（这里是列表勾选入口）
   noteCompletionChange(id, !!(t && t.completed), t && t.parent_id);
+  // 重复事项勾的是「这一天」的打卡：说明跨天会自动恢复，免得用户以为整条被勾完了
+  if (before && before.recurring_id != null && t) {
+    toast(t.completed ? '今日已打卡，下个发生日会自动恢复未完成' : '已撤销今日打卡');
+  }
   await refreshAll();
   renderSidebarList();
   renderTasks();

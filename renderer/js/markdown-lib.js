@@ -320,6 +320,53 @@ export function renderSafeMarkdown(text) {
   return renderMarkdown(text);
 }
 
+/**
+ * 按「顶层块」渲染 Markdown，返回每块的 HTML 与它在原文里对应的片段。
+ *
+ * 供所见即所得编辑器使用：读态 / 编辑态共用这一份渲染结果，序列化回 Markdown 时
+ * 没被改动的块直接复用 `sources[i]`（字节级不变），只把改动过的块交给 turndown
+ * 重新生成 —— 这样颜色高亮、Mermaid、代码块语言、图片协议这些自定义语法不会
+ * 因为「打开 → 编辑一个字 → 保存」而整篇被规范化掉。
+ *
+ * @param {string} text
+ * @returns {{html:string, sources:string[]}}
+ */
+export function renderMarkdownBlocks(text) {
+  const src = String(text || '');
+  const r = getRenderer();
+  if (!r) return { html: renderSafeMarkdown(src), sources: [] };
+
+  const env = {};
+  const tokens = r.parse(src, env);
+  const lines = src.split(/\r?\n/);
+  // markdown-it 的顶层块以 level===0 且不是 close 的 token 开始（paragraph_open /
+  // heading_open / fence / bullet_list_open …），到下一个同级开始 token 之前结束。
+  const groups = [];
+  let cur = null;
+  for (const tok of tokens) {
+    if (tok.level === 0 && tok.nesting !== -1) {
+      cur = { tokens: [tok], start: tok.map ? tok.map[0] : null, end: tok.map ? tok.map[1] : null };
+      groups.push(cur);
+    } else if (cur) {
+      cur.tokens.push(tok);
+      if (tok.map) {
+        if (cur.start == null) cur.start = tok.map[0];
+        cur.end = tok.map[1];
+      }
+    }
+  }
+
+  const sources = [];
+  const html = groups.map((g, i) => {
+    // 定位不到原文的块（少数无 map 的 token）不给 sources 条目，
+    // 序列化时会自动走 turndown，不会误写空串把内容抹掉。
+    sources.push(g.start != null && g.end != null ? lines.slice(g.start, g.end).join('\n') : null);
+    const body = r.renderer.render(g.tokens, r.options, env);
+    return `<div class="nt-blk" data-nt-blk="${i}" data-nt-clean>${body}</div>`;
+  }).join('');
+  return { html, sources };
+}
+
 /* ---------------- Mermaid 图（异步渲染） ---------------- */
 
 /**

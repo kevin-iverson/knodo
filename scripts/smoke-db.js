@@ -324,12 +324,14 @@ check('列表按创建时间倒序', list[0].title === '评审会' && list.some(
 check('数量正确', list.length === 3); // 含上面那个「未命名会议」
 
 const exportSnap = db.exportData();
-check('导出含 meetings 且 schema 升级到 12',
-  exportSnap.schemaVersion === 12 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
+check('导出含 meetings 且 schema 升级到 14',
+  exportSnap.schemaVersion === 14 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
   && Array.isArray(exportSnap.reports) && Array.isArray(exportSnap.ai_searches)
   && Array.isArray(exportSnap.kb_qa)
   && Array.isArray(exportSnap.notes) && Array.isArray(exportSnap.note_folders)
-  && Array.isArray(exportSnap.task_notes) && Array.isArray(exportSnap.knowledge_bases));
+  && Array.isArray(exportSnap.task_notes) && Array.isArray(exportSnap.knowledge_bases)
+  && Array.isArray(exportSnap.recurring_rules) && Array.isArray(exportSnap.recurrence_skips)
+  && Array.isArray(exportSnap.recurrence_completions));
 check('导出保留 todos 与 media_paths', (() => {
   const row = exportSnap.meetings.find((m) => m.id === m1.id);
   // 导出即规范化为数组（以前是 JSON 文本，导入时会被当成非数组清空，录音路径整段丢失）
@@ -1099,6 +1101,37 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
   db.deleteTask(orphan.id);
   check('删任务不连带删除番茄记录（记录保留，展示降级）',
     db.getFocusSession(f4.id) !== null && db.getFocusSession(f4.id).task_id === orphan.id);
+
+  console.log('\n[23] 重复待办 / 习惯（完整用例见 scripts/smoke-recurrence.js）');
+  const recurToday = '2026-11-09';
+  const plainBefore = db.createTask({ title: '不重复的一次性任务' });
+  const rr = db.createRecurringRule({
+    title: '抽盘仓库', startDate: '2026-11-02', habit: true,
+    rule: { freq: 'workday', reminderTime: '09:30' }, today: recurToday,
+  });
+  const rrTasks = db.listTasks({ recurringId: rr.id, status: 'any' });
+  check('一条重复事项只占一条任务', rrTasks.length === 1 && rr.task_id === rrTasks[0].id,
+    rrTasks.length);
+  check('任务行日期与提醒由规则给出', rrTasks[0].occurrence_date === recurToday
+    && rrTasks[0].plan_start === recurToday && !!rrTasks[0].reminder_at);
+  check('一次性任务没有被改成重复事项', db.getTask(plainBefore.id).recurring_id == null);
+  check('同步幂等', (() => {
+    const s = db.syncRecurrences({ today: recurToday });
+    return s.created === 0 && s.removed === 0;
+  })());
+  db.toggleTask(rrTasks[0].id);
+  check('勾选完成写入按日打卡', db.listCompletions(rr.id).length === 1);
+  db.syncRecurrences({ today: '2026-11-10' });
+  check('跨天仍是同一条且自动恢复未完成', (() => {
+    const t = db.getTask(rrTasks[0].id);
+    return !!t && t.occurrence_date === '2026-11-10' && !t.completed;
+  })());
+  const rrStat = db.habitStats(rr.id, { today: '2026-11-10' });
+  check('习惯统计可读（应发生次数 / 累计打卡 / 下一次）',
+    rrStat.expected > 0 && rrStat.doneInstances === 1 && !!rrStat.nextDate);
+  db.deleteRecurringRule(rr.id);
+  check('删除规则后任务脱钩保留且规则表为空', db.listRecurringRules().length === 0
+    && db.getTask(rrTasks[0].id).recurring_id == null);
 
   console.log('\n====================');
   console.log(`结果：${passed} 通过，${failed} 失败`);

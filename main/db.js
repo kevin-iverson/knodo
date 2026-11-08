@@ -12,6 +12,8 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 const nodeCrypto = require('crypto');
+const dateU = require('./date-utils');
+const recurRules = require('./recurrence-rules');
 
 let db = null;
 
@@ -411,6 +413,102 @@ const MIGRATIONS = [
       d.exec('ALTER TABLE tasks ADD COLUMN capture_during_focus INTEGER NOT NULL DEFAULT 0');
     }
   },
+  // v16：重复待办（模板 + 实例）。
+  // 设计要点：**每个发生日就是一条普通 tasks 行**，因此列表 / 日历 / 统计 / 提醒 / 完成状态
+  // 全部复用既有链路，一次性待办（recurring_id IS NULL）完全不受影响。
+  //  - recurring_rules：规则模板（标题/分组/优先级/标签/规则 JSON/生效区间/习惯标记）
+  //  - recurrence_skips：用户手动删掉的某次发生日，防止下一轮同步又把它生成回来
+  //  - (recurring_id, occurrence_date) 唯一索引 = 生成幂等的最后一道保险；
+  //    SQLite 唯一索引里 NULL 互不冲突，普通任务可以任意多行。
+  (d) => {
+    const cols = d.prepare('PRAGMA table_info(tasks)').all().map((c) => c.name);
+    if (!cols.includes('recurring_id')) {
+      d.exec('ALTER TABLE tasks ADD COLUMN recurring_id INTEGER');
+    }
+    if (!cols.includes('occurrence_date')) {
+      d.exec('ALTER TABLE tasks ADD COLUMN occurrence_date TEXT');
+    }
+    if (!cols.includes('recur_customized')) {
+      d.exec('ALTER TABLE tasks ADD COLUMN recur_customized INTEGER NOT NULL DEFAULT 0');
+    }
+    d.exec(`CREATE TABLE IF NOT EXISTS recurring_rules (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      title       TEXT    NOT NULL,
+      notes       TEXT    NOT NULL DEFAULT '',
+      group_id    INTEGER,
+      priority    INTEGER NOT NULL DEFAULT 1,
+      tag_ids     TEXT    NOT NULL DEFAULT '[]',
+      rule        TEXT    NOT NULL,
+      start_date  TEXT    NOT NULL,
+      end_date    TEXT,
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      habit       INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT    NOT NULL,
+      updated_at  TEXT    NOT NULL
+    )`);
+    d.exec(`CREATE TABLE IF NOT EXISTS recurrence_skips (
+      rule_id         INTEGER NOT NULL,
+      occurrence_date TEXT    NOT NULL,
+      PRIMARY KEY (rule_id, occurrence_date)
+    )`);
+    d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_recur_day ON tasks(recurring_id, occurrence_date)');
+    d.exec('CREATE INDEX IF NOT EXISTS idx_tasks_recur ON tasks(recurring_id)');
+  },
+  // v17：重复待办改版 —— 一条任务 + 按日打卡，不再为每个发生日预生成实例。
+  // 旧库里同一规则下可能已有 N 条实例（预生成 45 天），这里合并成唯一一条主任务：
+  //   已完成实例转成 recurrence_completions 打卡记录（历史不丢），其余实例删除；
+  //   主任务的日期 / 提醒 / 完成态交给启动后的 rollRecurringTask() 重算。
+  (d) => {
+    d.exec(`CREATE TABLE IF NOT EXISTS recurrence_completions (
+      rule_id         INTEGER NOT NULL,
+      occurrence_date TEXT    NOT NULL,
+      completed_at    TEXT    NOT NULL,
+      PRIMARY KEY (rule_id, occurrence_date)
+    )`);
+    const rc = d.prepare('PRAGMA table_info(recurring_rules)').all().map((c) => c.name);
+    if (!rc.includes('task_id')) d.exec('ALTER TABLE recurring_rules ADD COLUMN task_id INTEGER');
+    d.exec('DROP INDEX IF EXISTS idx_tasks_recur_day');
+
+    const t0 = nowIso();
+    const rowsOf = d.prepare(
+      'SELECT id, occurrence_date, completed, completed_at, created_at FROM tasks WHERE recurring_id = ? ORDER BY id'
+    );
+    const insCompletion = d.prepare(
+      'INSERT OR IGNORE INTO recurrence_completions (rule_id, occurrence_date, completed_at) VALUES (?, ?, ?)'
+    );
+    const insTask = d.prepare(
+      `INSERT INTO tasks (group_id, parent_id, title, notes, attachments, priority,
+         plan_start, plan_end, reminder_at, completed, completed_at, archived,
+         sort_order, created_at, updated_at, recurring_id, occurrence_date)
+       VALUES (?, NULL, ?, ?, '[]', ?, NULL, NULL, NULL, 0, NULL, 0, 0, ?, ?, ?, NULL)`
+    );
+    for (const r of d.prepare('SELECT * FROM recurring_rules').all()) {
+      const rows = rowsOf.all(r.id);
+      let keep = rows.length ? rows[0].id : null;
+      for (const row of rows) {
+        if (row.completed && row.occurrence_date) {
+          insCompletion.run(r.id, row.occurrence_date, row.completed_at || row.created_at || t0);
+        }
+      }
+      if (keep == null) {
+        keep = Number(insTask.run(
+          r.group_id ?? null, r.title, r.notes || '', r.priority ?? 1, t0, t0, r.id
+        ).lastInsertRowid);
+      }
+      // 被合并掉的实例若挂了子任务，改挂到保留的主任务上，不丢数据
+      for (const row of rows) {
+        if (row.id !== keep) {
+          d.prepare('UPDATE tasks SET parent_id = ? WHERE parent_id = ?').run(keep, row.id);
+        }
+      }
+      d.prepare('DELETE FROM tasks WHERE recurring_id = ? AND id <> ?').run(r.id, keep);
+      d.prepare(
+        `UPDATE tasks SET occurrence_date = NULL, completed = 0, completed_at = NULL,
+           archived = 0, reminder_fired = 0, recur_customized = 0 WHERE id = ?`
+      ).run(keep);
+      d.prepare('UPDATE recurring_rules SET task_id = ? WHERE id = ?').run(keep, r.id);
+    }
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -514,6 +612,10 @@ function normalizeTask(row) {
   t.tag_names = t.tag_names ? t.tag_names.split(',') : [];
   t.subtask_count = Number(t.subtask_count || 0);
   t.subtask_done = Number(t.subtask_done || 0);
+  // 重复事项：NULL = 一次性待办；occurrence_date 是当前这一次的发生日（YYYY-MM-DD）
+  t.recurring_id = t.recurring_id == null ? null : Number(t.recurring_id);
+  t.occurrence_date = t.occurrence_date || null;
+  t.recur_customized = !!t.recur_customized;
   // 创建时间兜底：v8 迁移已回填过一遍，这里再兜一层，避免 UI 出现空白
   t.created_at = t.created_at || t.updated_at || '';
   try { t.attachments = JSON.parse(t.attachments || '[]'); } catch (e) { t.attachments = []; }
@@ -812,6 +914,11 @@ function reorderGroups(ids) {
  *   planStartFrom / planStartTo（计划开始日期范围，YYYY-MM-DD）
  *   planEndFrom / planEndTo（计划完成日期范围，YYYY-MM-DD）
  *   completedFrom / completedTo（实际完成时间范围，UTC ISO）
+ *
+ * 重复事项的三个专用条件（都只在传值时生效，不影响任何既有调用）：
+ *   todayRecurring    与 planEndTo 配合：重复事项改判「本次发生日已到」（见下方注释）
+ *   excludeRecurringDue  排除「今天这一份」的重复事项（供「即将到期」用）
+ *   recurringPending  只看「今天不发生」的重复事项（暂停 / 已结束 / 下次在未来）
  */
 function listTasks(f = {}) {
   const where = [];
@@ -866,6 +973,11 @@ function listTasks(f = {}) {
     where.push('t.priority = ?');
     params.push(f.priority);
   }
+  // 重复规则：只看某条规则对应的那一条任务（管理面板 / 习惯记录用）
+  if (f.recurringId != null) {
+    where.push('t.recurring_id = ?');
+    params.push(f.recurringId);
+  }
   if (f.search) {
     const kw = `%${f.search}%`;
     where.push(
@@ -880,7 +992,33 @@ function listTasks(f = {}) {
   if (f.planStartFrom) { where.push('t.plan_start IS NOT NULL AND t.plan_start >= ?'); params.push(f.planStartFrom); }
   if (f.planStartTo) { where.push('t.plan_start IS NOT NULL AND t.plan_start <= ?'); params.push(f.planStartTo); }
   if (f.planEndFrom) { where.push('t.plan_end IS NOT NULL AND t.plan_end >= ?'); params.push(f.planEndFrom); }
-  if (f.planEndTo) { where.push('t.plan_end IS NOT NULL AND t.plan_end <= ?'); params.push(f.planEndTo); }
+  // 「今天」：一次性任务按截止日判定（截止 ≤ 今天，含已逾期）；
+  // 重复事项的 plan_end 是「发生日 + 完成日偏移」的**截止日**，用它当判据会让「今天该做的事」
+  // 一直等到截止日才进今天（本次发生日当天反而留在「即将到期」）。所以重复事项改判
+  // 「本次发生日已到」（occurrence_date <= 今天）—— 两者是 OR 关系，必须包成一组。
+  if (f.planEndTo) {
+    if (f.todayRecurring) {
+      where.push(
+        `((t.plan_end IS NOT NULL AND t.plan_end <= ?)
+          OR (t.recurring_id IS NOT NULL AND t.occurrence_date IS NOT NULL AND t.occurrence_date <= ?))`
+      );
+      params.push(f.planEndTo, f.todayRecurring);
+    } else {
+      where.push('t.plan_end IS NOT NULL AND t.plan_end <= ?');
+      params.push(f.planEndTo);
+    }
+  }
+  // 「即将到期」= 今天之后才要做：今天这一份已经在「今天」露面的重复事项不再重复出现在顶部
+  if (f.excludeRecurringDue) {
+    where.push('NOT (t.recurring_id IS NOT NULL AND t.occurrence_date IS NOT NULL AND t.occurrence_date <= ?)');
+    params.push(f.excludeRecurringDue);
+  }
+  // 今天不发生但确实存在的重复事项（规则暂停 / 已过结束日 / 下次在未来）：
+  // 给「今天」视图一个可展开的说明区，避免任务「凭空消失」（P-08 / P-09）
+  if (f.recurringPending) {
+    where.push('t.recurring_id IS NOT NULL AND (t.occurrence_date IS NULL OR t.occurrence_date > ?)');
+    params.push(f.recurringPending);
+  }
   if (f.completedFrom) { where.push('t.completed_at IS NOT NULL AND t.completed_at >= ?'); params.push(f.completedFrom); }
   if (f.completedTo) { where.push('t.completed_at IS NOT NULL AND t.completed_at <= ?'); params.push(f.completedTo); }
 
@@ -944,17 +1082,24 @@ function createTask({
 function updateTask(id, patch) {
   const cur = getTask(id);
   if (!cur) return null;
+  // 重复事项：计划开始 / 截止 / 提醒都是规则按发生日派生的（recurrence-rules.js#instanceFields，
+  // 日切由 rollRecurringTask 重算）。这里一律拒写这三个字段 —— 否则详情面板跨过零点还开着，
+  // 改个标题就会把已经推进的发生日连同旧日期一起写回去（P-02）；面板里也不该出现可编辑入口（P-01）。
+  // 规则是唯一权威：要改期就改规则（生效日 / 截止日偏移 / 提醒时间）。
+  const derived = cur.recurring_id != null;
+  const keep = (v, fallback) => (v !== undefined ? v : fallback);
   const fields = {
     title: patch.title ?? cur.title,
     notes: patch.notes ?? cur.notes,
     attachments: patch.attachments !== undefined ? patch.attachments : cur.attachments,
     priority: patch.priority ?? cur.priority,
     groupId: patch.groupId !== undefined ? patch.groupId : cur.group_id,
-    planStart: patch.planStart !== undefined ? patch.planStart : cur.plan_start,
-    planEnd: patch.planEnd !== undefined ? patch.planEnd : cur.plan_end,
-    reminderAt: patch.reminderAt !== undefined ? patch.reminderAt : cur.reminder_at,
+    planStart: derived ? cur.plan_start : keep(patch.planStart, cur.plan_start),
+    planEnd: derived ? cur.plan_end : keep(patch.planEnd, cur.plan_end),
+    reminderAt: derived ? cur.reminder_at : keep(patch.reminderAt, cur.reminder_at),
     completedAt: patch.completedAt !== undefined ? patch.completedAt : cur.completed_at,
   };
+  // recur_customized 已废弃：字段保留只为兼容旧库 / 旧备份，不再写入（日切从不读它）
   db.prepare(
     `UPDATE tasks SET title = ?, notes = ?, attachments = ?, priority = ?, group_id = ?, plan_start = ?, plan_end = ?,
        reminder_at = ?, reminder_fired = CASE WHEN ? <> reminder_at THEN 0 ELSE reminder_fired END,
@@ -974,10 +1119,21 @@ function updateTask(id, patch) {
     id
   );
   if (patch.tagIds) setTaskTags(id, patch.tagIds);
+  // 重复事项：内容字段同步回规则表，保证「详情里改标题」与「规则面板改标题」是同一份数据。
+  // 计划日期 / 提醒由规则按发生日推进，这里不回写。
+  if (cur.recurring_id != null) {
+    db.prepare(
+      `UPDATE recurring_rules SET title = ?, notes = ?, priority = ?, group_id = ?, tag_ids = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(fields.title, fields.notes, fields.priority, fields.groupId,
+      JSON.stringify(getTask(id).tag_ids || []), nowIso(), cur.recurring_id);
+  }
   return getTask(id);
 }
 
 function deleteTask(id) {
+  // 删除重复事项 = 连规则 / 打卡历史一起删；「跳过某一天」走 skipOccurrence()
+  const target = db.prepare('SELECT recurring_id, occurrence_date FROM tasks WHERE id = ?').get(id);
   // 级联删除子任务（迭代遍历所有后代）
   const run = db.transaction(() => {
     const stack = [id];
@@ -986,6 +1142,13 @@ function deleteTask(id) {
       const children = db.prepare('SELECT id FROM tasks WHERE parent_id = ?').all(pid);
       for (const c of children) stack.push(c.id);
       db.prepare('DELETE FROM tasks WHERE id = ?').run(pid);
+    }
+    if (target && target.recurring_id != null) {
+      db.prepare('UPDATE tasks SET recurring_id = NULL, occurrence_date = NULL WHERE recurring_id = ?')
+        .run(target.recurring_id);
+      db.prepare('DELETE FROM recurrence_completions WHERE rule_id = ?').run(target.recurring_id);
+      db.prepare('DELETE FROM recurrence_skips WHERE rule_id = ?').run(target.recurring_id);
+      db.prepare('DELETE FROM recurring_rules WHERE id = ?').run(target.recurring_id);
     }
   });
   run();
@@ -1059,13 +1222,30 @@ function searchTasks(keyword, limit = 20) {
 function toggleTask(id) {
   const cur = getTask(id);
   if (!cur) return null;
-  if (cur.completed) {
+  const t = nowIso();
+  if (cur.recurring_id != null && cur.occurrence_date) {
+    // 重复事项：完成记录落在「按日打卡表」，行上的 completed 只是当前发生日的显示态。
+    // 跨天由 rollRecurringTask() 换成新一天的状态，历史打卡不会被覆盖。
+    const day = cur.occurrence_date || dateU.todayLocal();
+    if (cur.completed) {
+      db.prepare('DELETE FROM recurrence_completions WHERE rule_id = ? AND occurrence_date = ?')
+        .run(cur.recurring_id, day);
+      db.prepare('UPDATE tasks SET completed = 0, completed_at = NULL, updated_at = ? WHERE id = ?')
+        .run(t, id);
+    } else {
+      db.prepare(
+        'INSERT OR REPLACE INTO recurrence_completions (rule_id, occurrence_date, completed_at) VALUES (?, ?, ?)'
+      ).run(cur.recurring_id, day, t);
+      db.prepare('UPDATE tasks SET completed = 1, completed_at = ?, updated_at = ? WHERE id = ?')
+        .run(t, t, id);
+    }
+  } else if (cur.completed) {
     db.prepare('UPDATE tasks SET completed = 0, completed_at = NULL, updated_at = ? WHERE id = ?')
-      .run(nowIso(), id);
+      .run(t, id);
   } else {
     // 完成任务时自动记录实际完成时间
     db.prepare('UPDATE tasks SET completed = 1, completed_at = ?, updated_at = ? WHERE id = ?')
-      .run(nowIso(), nowIso(), id);
+      .run(t, t, id);
   }
   // 同步父任务完成状态（所有子任务完成 → 父任务自动完成），并向上递归
   if (cur.parent_id) syncParentCompletion(cur.parent_id);
@@ -1104,8 +1284,8 @@ function archiveCompleted(groupId = null) {
   const ids = groupId != null ? expandGroupIds(groupId) : [];
   if (groupId != null && !ids.length) return 0;
   const sql = ids.length
-    ? `UPDATE tasks SET archived = 1, updated_at = ? WHERE completed = 1 AND archived = 0 AND group_id IN (${ids.map(() => '?').join(', ')})`
-    : 'UPDATE tasks SET archived = 1, updated_at = ? WHERE completed = 1 AND archived = 0';
+    ? `UPDATE tasks SET archived = 1, updated_at = ? WHERE completed = 1 AND archived = 0 AND recurring_id IS NULL AND group_id IN (${ids.map(() => '?').join(', ')})`
+    : 'UPDATE tasks SET archived = 1, updated_at = ? WHERE completed = 1 AND archived = 0 AND recurring_id IS NULL';
   const params = ids.length ? [nowIso(), ...ids] : [nowIso()];
   const info = db.prepare(sql).run(...params);
   return info.changes;
@@ -1154,6 +1334,365 @@ function setTaskTags(taskId, tagIds) {
   const ins = db.prepare('INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)');
   const tx = db.transaction((ids) => ids.forEach((tagId) => ins.run(taskId, tagId)));
   tx(tagIds);
+}
+
+/* ------------------------------ 重复待办 / 习惯 ------------------------------ */
+
+/**
+ * 模型（v17）：**一条重复事项 = 一条 tasks 行**，规则是这条任务的属性，不再按发生日预生成实例。
+ *
+ *  - tasks 行的 plan_start / plan_end / reminder_at / completed 始终表示「当前这一次发生」；
+ *    调度器在启动 / 定时 / 跨自然日时调 rollRecurringTask() 把它推进到下一次应发生日。
+ *    因此「今天 / 即将到期 / 全部任务 / 日历 / 统计 / 提醒」全部继续用原来的过滤条件，
+ *    不需要为重复任务做第二套查询。
+ *  - 每次完成单独记进 recurrence_completions(rule_id, occurrence_date)。跨天只是把行上的
+ *    completed 换成新一天的打卡状态，历史记录不受影响；习惯统计从这里算。
+ *  - 改规则只 UPDATE 一行 + 重算日期，不存在「重建 N 条实例」的问题，历史打卡也绝不改写。
+ *  - 一次性任务 recurring_id IS NULL，行为完全不变。
+ */
+const RECUR_AHEAD_DAYS = 60; // 只用于「找下一次发生日」的搜索窗口（足够覆盖每月一次），不落库
+
+function safeJson(raw, fallback) {
+  try {
+    const v = JSON.parse(raw == null ? '' : raw);
+    return v == null ? fallback : v;
+  } catch (e) { return fallback; }
+}
+
+function normalizeRuleRow(row) {
+  if (!row) return null;
+  const parsed = safeJson(row.rule, {});
+  const tags = safeJson(row.tag_ids, []);
+  return {
+    ...row,
+    rule: recurRules.normalizeRule(parsed && typeof parsed === 'object' ? parsed : {}),
+    tag_ids: Array.isArray(tags) ? tags.map(Number).filter(Number.isFinite) : [],
+    enabled: !!row.enabled,
+    habit: !!row.habit,
+    task_id: row.task_id == null ? null : Number(row.task_id),
+    skip_count: Number(row.skip_count || 0),
+    instance_count: Number(row.instance_count || 0), // 兼容旧字段：现为累计打卡次数
+    done_count: Number(row.done_count || 0),
+    today_done: !!row.today_done,
+  };
+}
+
+const RULE_SELECT = `SELECT r.*,
+  (SELECT COUNT(*) FROM recurrence_skips s WHERE s.rule_id = r.id) AS skip_count,
+  (SELECT COUNT(*) FROM recurrence_completions c WHERE c.rule_id = r.id) AS instance_count,
+  (SELECT COUNT(*) FROM recurrence_completions c WHERE c.rule_id = r.id) AS done_count,
+  EXISTS (SELECT 1 FROM recurrence_completions c
+          WHERE c.rule_id = r.id AND c.occurrence_date = ?) AS today_done
+FROM recurring_rules r`;
+
+function listRecurringRules(includeDisabled = true, today = dateU.todayLocal()) {
+  const sql = `${RULE_SELECT}${includeDisabled ? '' : ' WHERE r.enabled = 1'} ORDER BY r.enabled DESC, r.id ASC`;
+  return db.prepare(sql).all(today).map(normalizeRuleRow);
+}
+
+function getRecurringRule(id, today = dateU.todayLocal()) {
+  return normalizeRuleRow(db.prepare(`${RULE_SELECT} WHERE r.id = ?`).get(today, id));
+}
+
+/** 规则字段清洗：标题必填、规则校验、日期有序 */
+function ruleInput(p, base = {}) {
+  const title = String(p.title ?? base.title ?? '').trim();
+  if (!title) throw new Error('重复事项标题不能为空');
+  const baseRule = typeof base.rule === 'string' ? safeJson(base.rule, {}) : (base.rule || {});
+  const checked = recurRules.validateRule(p.rule !== undefined ? p.rule : baseRule);
+  if (!checked.ok) throw new Error(checked.message);
+  const baseTags = typeof base.tag_ids === 'string' ? safeJson(base.tag_ids, []) : (base.tag_ids || []);
+  const startDate = dateU.toDay(p.startDate !== undefined ? p.startDate : base.start_date) || dateU.todayLocal();
+  const endRaw = p.endDate !== undefined ? p.endDate : base.end_date;
+  const endDate = endRaw ? dateU.toDay(endRaw) : null;
+  if (endRaw && !endDate) throw new Error('结束日期格式不正确');
+  if (endDate && endDate < startDate) throw new Error('结束日期不能早于生效日期');
+  const tagIds = p.tagIds !== undefined
+    ? (Array.isArray(p.tagIds) ? p.tagIds.map(Number).filter(Number.isFinite) : [])
+    : (Array.isArray(baseTags) ? baseTags : []);
+  const baseEnabled = base.enabled === undefined ? 1 : Number(base.enabled);
+  const baseHabit = base.habit === undefined ? 0 : Number(base.habit);
+  return {
+    title,
+    notes: String(p.notes ?? base.notes ?? ''),
+    group_id: p.groupId !== undefined ? (p.groupId == null ? null : Number(p.groupId)) : (base.group_id ?? null),
+    priority: Number.isFinite(Number(p.priority)) ? Math.min(3, Math.max(0, Number(p.priority))) : (base.priority ?? 1),
+    tag_ids: JSON.stringify(tagIds),
+    rule: JSON.stringify(checked.rule),
+    start_date: startDate,
+    end_date: endDate,
+    enabled: p.enabled !== undefined ? (p.enabled ? 1 : 0) : (baseEnabled ? 1 : 0),
+    habit: p.habit !== undefined ? (p.habit ? 1 : 0) : (baseHabit ? 1 : 0),
+  };
+}
+
+/** 内容字段双向同步：规则改了就写回任务行，避免详情与规则面板各说各话 */
+function syncRuleFieldsToTask(taskId, f) {
+  if (taskId == null) return;
+  db.prepare(
+    'UPDATE tasks SET title = ?, notes = ?, priority = ?, group_id = ?, updated_at = ? WHERE id = ?'
+  ).run(f.title, f.notes, f.priority, f.group_id, nowIso(), taskId);
+  setTaskTags(taskId, safeJson(f.tag_ids, []));
+}
+
+/**
+ * 创建重复事项：一条任务 + 一条规则，1:1。
+ * originTaskId 存在时把已有的一次性任务就地转成重复事项（保留附件 / 关联笔记 / 子任务）。
+ */
+function createRecurringRule(p = {}) {
+  const f = ruleInput(p);
+  const t = nowIso();
+  const originId = p.originTaskId != null ? Number(p.originTaskId) : null;
+  const origin = originId ? db.prepare('SELECT * FROM tasks WHERE id = ?').get(originId) : null;
+  const run = db.transaction(() => {
+    let taskId;
+    if (origin) {
+      taskId = origin.id;
+      db.prepare('UPDATE tasks SET recurring_id = NULL, archived = 0, updated_at = ? WHERE id = ?').run(t, taskId);
+      syncRuleFieldsToTask(taskId, f);
+    } else {
+      const max = db.prepare(
+        'SELECT COALESCE(MAX(sort_order), -1) AS m FROM tasks WHERE group_id IS ? AND parent_id IS NULL'
+      ).get(f.group_id ?? null).m;
+      taskId = Number(db.prepare(
+        `INSERT INTO tasks (group_id, parent_id, title, notes, attachments, priority,
+           plan_start, plan_end, reminder_at, completed, completed_at, archived,
+           sort_order, created_at, updated_at)
+         VALUES (?, NULL, ?, ?, '[]', ?, NULL, NULL, NULL, 0, NULL, 0, ?, ?, ?)`
+      ).run(f.group_id ?? null, f.title, f.notes, f.priority, max + 1, t, t).lastInsertRowid);
+      setTaskTags(taskId, safeJson(f.tag_ids, []));
+    }
+    const info = db.prepare(
+      `INSERT INTO recurring_rules (title, notes, group_id, priority, tag_ids, rule, start_date, end_date,
+         enabled, habit, task_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(f.title, f.notes, f.group_id, f.priority, f.tag_ids, f.rule, f.start_date, f.end_date,
+      f.enabled, f.habit, taskId, t, t);
+    const ruleId = Number(info.lastInsertRowid);
+    db.prepare('UPDATE tasks SET recurring_id = ? WHERE id = ?').run(ruleId, taskId);
+    // 原任务若已完成，把这次完成记成今天的打卡，状态不会凭空消失
+    if (origin && origin.completed) {
+      const day = dateU.toDay(p.today) || dateU.todayLocal();
+      db.prepare(
+        'INSERT OR IGNORE INTO recurrence_completions (rule_id, occurrence_date, completed_at) VALUES (?, ?, ?)'
+      ).run(ruleId, day, origin.completed_at || t);
+    }
+    return ruleId;
+  });
+  const id = run();
+  rollRecurringTask(id, { today: p.today });
+  return getRecurringRule(id, dateU.toDay(p.today) || dateU.todayLocal());
+}
+
+/** 改规则：只动规则行 + 内容字段回写 + 重算这一条任务的下一次发生；历史打卡一律不动 */
+function updateRecurringRule(id, p = {}) {
+  const cur = db.prepare('SELECT * FROM recurring_rules WHERE id = ?').get(id);
+  if (!cur) return null;
+  const f = ruleInput(p, cur);
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE recurring_rules SET title = ?, notes = ?, group_id = ?, priority = ?, tag_ids = ?, rule = ?,
+         start_date = ?, end_date = ?, enabled = ?, habit = ?, updated_at = ? WHERE id = ?`
+    ).run(f.title, f.notes, f.group_id, f.priority, f.tag_ids, f.rule, f.start_date, f.end_date,
+      f.enabled, f.habit, nowIso(), id);
+    syncRuleFieldsToTask(cur.task_id, f);
+  })();
+  rollRecurringTask(id, { today: p.today });
+  return getRecurringRule(id, dateU.toDay(p.today) || dateU.todayLocal());
+}
+
+function setRecurringEnabled(id, enabled, opts = {}) {
+  const cur = db.prepare('SELECT * FROM recurring_rules WHERE id = ?').get(id);
+  if (!cur) return null;
+  db.prepare('UPDATE recurring_rules SET enabled = ?, updated_at = ? WHERE id = ?')
+    .run(enabled ? 1 : 0, nowIso(), id);
+  rollRecurringTask(id, { today: opts.today });
+  return getRecurringRule(id, dateU.toDay(opts.today) || dateU.todayLocal());
+}
+
+/**
+ * 删除规则：任务脱钩成普通待办保留（不删用户数据），打卡历史与跳过记录一并清掉。
+ * 从列表直接删除任务走 deleteTask()，那边是「整个事项都不要了」。
+ */
+function deleteRecurringRule(id) {
+  const cur = db.prepare('SELECT task_id FROM recurring_rules WHERE id = ?').get(id);
+  const run = db.transaction(() => {
+    if (cur && cur.task_id != null) {
+      db.prepare(
+        `UPDATE tasks SET recurring_id = NULL, occurrence_date = NULL, recur_customized = 0,
+           archived = 0, updated_at = ? WHERE id = ?`
+      ).run(nowIso(), cur.task_id);
+    }
+    db.prepare('DELETE FROM recurrence_completions WHERE rule_id = ?').run(id);
+    db.prepare('DELETE FROM recurrence_skips WHERE rule_id = ?').run(id);
+    db.prepare('DELETE FROM recurring_rules WHERE id = ?').run(id);
+  });
+  run();
+  return true;
+}
+
+function listSkips(ruleId) {
+  return db.prepare('SELECT occurrence_date FROM recurrence_skips WHERE rule_id = ? ORDER BY occurrence_date')
+    .all(ruleId).map((r) => r.occurrence_date);
+}
+
+function clearSkips(ruleId, opts = {}) {
+  db.prepare('DELETE FROM recurrence_skips WHERE rule_id = ?').run(ruleId);
+  rollRecurringTask(ruleId, { today: opts.today });
+  return getRecurringRule(ruleId, dateU.toDay(opts.today) || dateU.todayLocal());
+}
+
+/** 跳过某一次发生（不改变历史打卡，只是让这一天不再出现） */
+function skipOccurrence(ruleId, date, opts = {}) {
+  const day = dateU.toDay(date) || dateU.todayLocal();
+  db.prepare('INSERT OR IGNORE INTO recurrence_skips (rule_id, occurrence_date) VALUES (?, ?)').run(ruleId, day);
+  rollRecurringTask(ruleId, { today: opts.today });
+  return getRecurringRule(ruleId, dateU.toDay(opts.today) || dateU.todayLocal());
+}
+
+function listCompletions(ruleId) {
+  return db.prepare(
+    'SELECT occurrence_date, completed_at FROM recurrence_completions WHERE rule_id = ? ORDER BY occurrence_date'
+  ).all(ruleId);
+}
+
+/** 习惯面板补打卡 / 撤销：指定发生日，不依赖当前任务行显示的是哪一天 */
+function setCompletion(ruleId, date, done, opts = {}) {
+  const rule = db.prepare('SELECT task_id FROM recurring_rules WHERE id = ?').get(ruleId);
+  const day = dateU.toDay(date);
+  if (!rule || !day) return { ok: false };
+  if (done) {
+    db.prepare(
+      'INSERT OR REPLACE INTO recurrence_completions (rule_id, occurrence_date, completed_at) VALUES (?, ?, ?)'
+    ).run(ruleId, day, nowIso());
+  } else {
+    db.prepare('DELETE FROM recurrence_completions WHERE rule_id = ? AND occurrence_date = ?').run(ruleId, day);
+  }
+  if (rule.task_id != null) rollRecurringTask(ruleId, { today: opts.today });
+  return { ok: true, date: day, done: !!done };
+}
+
+/**
+ * 日切推进（替代旧的「批量生成实例」）：把唯一那条任务行刷新到「下一次应发生日」。
+ * 只有行的展示字段会变；标题/备注/分组/标签由用户编辑或规则面板双向同步，这里不覆盖。
+ */
+function rollRecurringTask(ruleId, opts = {}) {
+  const today = dateU.toDay(opts.today) || dateU.todayLocal();
+  const rule = normalizeRuleRow(db.prepare(`${RULE_SELECT} WHERE r.id = ?`).get(today, ruleId));
+  if (!rule || rule.task_id == null) return { changed: false, date: '', taskId: null };
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(rule.task_id);
+  if (!task) return { changed: false, date: '', taskId: null };
+
+  const start = dateU.toDay(rule.start_date) || today;
+  const end = dateU.toDay(rule.end_date) || '';
+  const skips = new Set(listSkips(ruleId));
+  let day = '';
+  if (rule.enabled && (!end || today <= end)) {
+    const from = today > start ? today : start;
+    const list = recurRules.occurrences(rule.rule, from, dateU.addDays(from, RECUR_AHEAD_DAYS), start);
+    day = list.find((d) => !skips.has(d)) || '';
+  }
+  const f = day
+    ? recurRules.instanceFields(rule.rule, day)
+    : { planStart: null, planEnd: null, reminderAt: null };
+  const done = day
+    ? db.prepare(
+      'SELECT completed_at FROM recurrence_completions WHERE rule_id = ? AND occurrence_date = ?'
+    ).get(ruleId, day)
+    : null;
+
+  const dayChanged = (task.occurrence_date || '') !== day;
+  // 改了规则导致提醒时间变化，也要允许新的提醒再弹一次；否则 reminder_fired 会一直挡着
+  const reminderChanged = (task.reminder_at || null) !== (f.reminderAt || null);
+  const nextFired = (dayChanged || reminderChanged) ? 0 : Number(task.reminder_fired || 0);
+  const before = [
+    task.plan_start, task.plan_end, task.reminder_at, Number(task.completed), task.completed_at,
+    Number(task.archived), task.occurrence_date, Number(task.reminder_fired || 0),
+  ];
+  const after = [
+    f.planStart, f.planEnd, f.reminderAt, done ? 1 : 0, done ? done.completed_at : null,
+    0, day || null, nextFired,
+  ];
+  const changed = before.some((v, i) => (v == null ? null : v) !== (after[i] == null ? null : after[i]));
+  if (changed) {
+    db.prepare(
+      `UPDATE tasks SET plan_start = ?, plan_end = ?, reminder_at = ?, completed = ?, completed_at = ?,
+         archived = 0, occurrence_date = ?, reminder_fired = ?, updated_at = ? WHERE id = ?`
+    ).run(f.planStart, f.planEnd, f.reminderAt, done ? 1 : 0, done ? done.completed_at : null,
+      day || null, nextFired, nowIso(), rule.task_id);
+  }
+  return { changed, date: day, taskId: rule.task_id };
+}
+
+/** 兼容旧调用名；调度器与测试都走这里 */
+function syncRule(ruleId, opts = {}) {
+  const r = rollRecurringTask(ruleId, opts);
+  return { created: 0, updated: r.changed ? 1 : 0, removed: 0 };
+}
+
+/** 全量日切（启动 / 定时 / 跨自然日）；单条规则失败不拖垮其它规则 */
+function syncRecurrences(opts = {}) {
+  const ids = db.prepare('SELECT id FROM recurring_rules').all().map((r) => r.id);
+  const out = { rules: ids.length, created: 0, updated: 0, removed: 0, errors: [] };
+  for (const id of ids) {
+    try {
+      const r = rollRecurringTask(id, opts);
+      if (r.changed) out.updated += 1;
+    } catch (e) {
+      out.errors.push(`规则 ${id}：${(e && e.message) || e}`);
+      console.error('[db] 重复规则日切失败', id, e);
+    }
+  }
+  return out;
+}
+
+/**
+ * 习惯统计：应发生次数 / 累计完成 / 完成率 / 连续天数 / 近 30 次明细。
+ * 「连续天数」按规则应发生日序列算（不是自然日），这样「每个法定工作日」跨周末也连续。
+ */
+function habitStats(ruleId, opts = {}) {
+  const today = dateU.toDay(opts.today) || dateU.todayLocal();
+  const rule = normalizeRuleRow(db.prepare(`${RULE_SELECT} WHERE r.id = ?`).get(today, ruleId));
+  if (!rule) return null;
+  const start = dateU.toDay(rule.start_date) || today;
+  const floor = dateU.addDays(today, -400);
+  const from = start > floor ? start : floor;
+  const expected = recurRules.occurrences(rule.rule, from, today, start);
+  const rows = listCompletions(ruleId);
+  const byDay = new Map(rows.map((r) => [r.occurrence_date, r]));
+  const isDone = (d) => byDay.has(d);
+  const completedExpected = expected.filter(isDone).length;
+
+  // 今天还没打卡不打断此前的连续记录：从最近一个「已过去的应发生日」往回数
+  let i = expected.length - 1;
+  if (i >= 0 && expected[i] === today && !isDone(today)) i -= 1;
+  let streak = 0;
+  for (; i >= 0; i -= 1) {
+    if (isDone(expected[i])) streak += 1;
+    else break;
+  }
+  const recent = expected.slice(-30).map((d) => ({
+    date: d,
+    expected: true,
+    done: isDone(d),
+    completedAt: (byDay.get(d) && byDay.get(d).completed_at) || null,
+  }));
+
+  return {
+    ruleId,
+    totalInstances: rows.length,
+    doneInstances: rows.length,
+    expected: expected.length,
+    completedExpected,
+    rate: expected.length ? Math.round((completedExpected * 100) / expected.length) : 0,
+    streak,
+    recent,
+    todayDone: isDone(today),
+    currentDate: rule.task_id == null
+      ? ''
+      : (db.prepare('SELECT occurrence_date FROM tasks WHERE id = ?').get(rule.task_id) || {}).occurrence_date || '',
+    nextDate: rule.enabled ? (recurRules.nextOccurrence(rule.rule, today, start) || '') : '',
+  };
 }
 
 /* ------------------------------ 提醒 ------------------------------ */
@@ -2608,12 +3147,16 @@ function kbStats(kbId = 1) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 12,
+    schemaVersion: 14,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
     tasks: db.prepare('SELECT * FROM tasks ORDER BY id').all(),
     task_tags: db.prepare('SELECT * FROM task_tags ORDER BY task_id').all(),
+    // 重复待办：规则 + 按日打卡 + 跳过的发生日；任务本体只有一条，就在 tasks 里
+    recurring_rules: db.prepare('SELECT * FROM recurring_rules ORDER BY id').all(),
+    recurrence_completions: db.prepare('SELECT * FROM recurrence_completions ORDER BY rule_id, occurrence_date').all(),
+    recurrence_skips: db.prepare('SELECT * FROM recurrence_skips ORDER BY rule_id').all(),
     // 会议必须过 rowToMeeting：库里 media_paths / todos 是 JSON 文本，
     // 直接导出原始行会让导入时被当成"非数组"清洗成 []，录音路径整段丢掉。
     meetings: db.prepare('SELECT * FROM meetings ORDER BY id').all().map(rowToMeeting),
@@ -2650,6 +3193,9 @@ function importData(data) {
   const run = db.transaction(() => {
     db.prepare('DELETE FROM task_tags').run();
     db.prepare('DELETE FROM tasks').run();
+    db.prepare('DELETE FROM recurrence_completions').run();
+    db.prepare('DELETE FROM recurrence_skips').run();
+    db.prepare('DELETE FROM recurring_rules').run();
     db.prepare('DELETE FROM tags').run();
     db.prepare('DELETE FROM groups').run();
     db.prepare('DELETE FROM meetings').run();
@@ -2688,10 +3234,18 @@ function importData(data) {
 
     const insTask = db.prepare(
       `INSERT INTO tasks (id, group_id, parent_id, title, notes, attachments, priority, plan_start, plan_end, reminder_at,
-         reminder_fired, completed, completed_at, archived, capture_during_focus, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         reminder_fired, completed, completed_at, archived, capture_during_focus, sort_order, created_at, updated_at,
+         recurring_id, occurrence_date, recur_customized)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
+    const seenRecur = new Set();
     for (const t of data.tasks) {
+      // v16 备份里同一规则预生成了 N 条实例；新模型只认第一条，其余丢弃（完成态在下面转打卡）
+      if (t.recurring_id != null) {
+        const rid = Number(t.recurring_id);
+        if (seenRecur.has(rid)) continue;
+        seenRecur.add(rid);
+      }
       // 兼容旧导出文件：优先 plan_end，回退到 due_at 的前 10 位
       const planEnd = t.plan_end ?? (t.due_at ? String(t.due_at).slice(0, 10) : null);
       const att = Array.isArray(t.attachments) ? JSON.stringify(t.attachments) : (t.attachments || '[]');
@@ -2699,8 +3253,45 @@ function importData(data) {
         t.id, t.group_id ?? null, t.parent_id ?? null, t.title, t.notes || '', att, t.priority ?? 1,
         t.plan_start ?? null, planEnd, t.reminder_at ?? null, t.reminder_fired ?? 0,
         t.completed ?? 0, t.completed_at ?? null, t.archived ?? 0, t.capture_during_focus ?? 0, t.sort_order ?? 0,
-        t.created_at || t0, t.updated_at || t0
+        t.created_at || t0, t.updated_at || t0,
+        t.recurring_id ?? null, t.occurrence_date ?? null, t.recur_customized ?? 0
       );
+    }
+
+    // 重复规则：旧备份没有 task_id / completions 时按 tasks.recurring_id 回填
+    const insRule = db.prepare(
+      `INSERT INTO recurring_rules (id, title, notes, group_id, priority, tag_ids, rule, start_date, end_date,
+         enabled, habit, task_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const ruleTaskOwner = new Map((data.tasks || [])
+      .filter((t) => t.recurring_id != null)
+      .map((t) => [Number(t.recurring_id), t.id]));
+    for (const r of data.recurring_rules || []) {
+      insRule.run(
+        r.id, r.title, r.notes || '', r.group_id ?? null, r.priority ?? 1,
+        r.tag_ids || '[]', r.rule || '{}', r.start_date || t0.slice(0, 10), r.end_date ?? null,
+        r.enabled ?? 1, r.habit ?? 0, r.task_id ?? ruleTaskOwner.get(Number(r.id)) ?? null,
+        r.created_at || t0, r.updated_at || t0
+      );
+    }
+    const insCompletion = db.prepare(
+      'INSERT OR IGNORE INTO recurrence_completions (rule_id, occurrence_date, completed_at) VALUES (?, ?, ?)'
+    );
+    for (const c of data.recurrence_completions || []) {
+      if (c.rule_id != null && c.occurrence_date) {
+        insCompletion.run(c.rule_id, c.occurrence_date, c.completed_at || t0);
+      }
+    }
+    // 旧备份里「已完成的历史实例」转成打卡记录，合并后不再保留多余任务行
+    for (const t of data.tasks || []) {
+      if (t.recurring_id != null && t.completed && t.occurrence_date) {
+        insCompletion.run(t.recurring_id, t.occurrence_date, t.completed_at || t0);
+      }
+    }
+    const insSkip = db.prepare('INSERT OR IGNORE INTO recurrence_skips (rule_id, occurrence_date) VALUES (?, ?)');
+    for (const s of data.recurrence_skips || []) {
+      if (s.rule_id != null && s.occurrence_date) insSkip.run(s.rule_id, s.occurrence_date);
     }
 
     const insTT = db.prepare('INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)');
@@ -2844,6 +3435,8 @@ function importData(data) {
   run();
   seedDefaults(); // 若文件不含分组，补默认分组
   ensureNotesKb(); // 备份里没有知识库记录时补回内置「笔记知识库」
+  // 导入的重复事项按今天的规则重算「下一次发生日」，旧备份里预生成的日期一概不认
+  syncRecurrences();
 
   return {
     groups: db.prepare('SELECT COUNT(*) c FROM groups').get().c,
@@ -3073,6 +3666,23 @@ module.exports = {
   // reminders
   dueReminders,
   markReminderFired,
+  // 重复待办 / 习惯
+  RECUR_AHEAD_DAYS,
+  listRecurringRules,
+  getRecurringRule,
+  createRecurringRule,
+  updateRecurringRule,
+  setRecurringEnabled,
+  deleteRecurringRule,
+  listSkips,
+  clearSkips,
+  skipOccurrence,
+  listCompletions,
+  setCompletion,
+  rollRecurringTask,
+  syncRule,
+  syncRecurrences,
+  habitStats,
   // stats
   overview,
   dailyTrend,

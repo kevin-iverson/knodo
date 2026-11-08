@@ -16,6 +16,7 @@ import {
 } from './controls.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { groupOptionsHtml } from './group-tree.js';
+import { detailRepeatHtml, bindDetailRepeat, derivedScheduleHtml } from './recurrence.js';
 
 // 详情页的计划日期是否必填（默认否，保持可创建“无期限”任务）
 const PLAN_DATE_REQUIRED = DATE_RANGE_DEFAULTS.required;
@@ -400,6 +401,25 @@ export function isDetailOpen() {
   return state.detailTaskId != null;
 }
 
+/**
+ * 日切 / 后台推进重复事项后刷新抽屉。
+ *
+ * 重复事项的计划时间与提醒是规则派生的只读展示，跨天会变；抽屉一直开着就会停在昨天那一份。
+ * 这里只在「没在输入」时重绘：旧保存器会先 flush 再 dispose（不丢数据），
+ * 但重绘会丢光标与撤销栈 —— 用户正在打字就留到下一次自然重绘。
+ */
+export function refreshDetailIfIdle() {
+  const drawer = document.getElementById('detail-drawer');
+  if (!drawer || drawer.hidden || state.detailTaskId == null) return;
+  const act = document.activeElement;
+  const editing = act && drawer.contains(act) && (
+    act.tagName === 'INPUT' || act.tagName === 'TEXTAREA'
+    || act.tagName === 'SELECT' || act.isContentEditable
+  );
+  if (editing) return;
+  renderDetail();
+}
+
 /** 描述内容 → HTML（兼容旧 Markdown 数据与新所见即所得 HTML） */
 function notesToHtml(notes) {
   if (!notes) return '';
@@ -481,6 +501,10 @@ async function renderDetail() {
   const linkedNotes = await api.taskNotes.list(id).catch(() => []);
   // 番茄时间线（该任务的专注日志，按开始时间倒序）
   const focusTimeline = await api.focus.timeline(id).catch(() => []);
+  // 重复规则：一条任务最多一条规则，详情里就地展示 / 修改「重复与提醒」
+  const recurRule = task.recurring_id != null
+    ? await api.recurrences.forTask(id).catch(() => null)
+    : null;
   // 期间若已切换到别的任务 / 被又一次渲染取代，直接放弃本次结果
   if (token !== renderToken) return;
   // 描述必须回填：之前这里一直是空编辑器，用户看到的永远是「没有描述」，
@@ -495,6 +519,10 @@ async function renderDetail() {
   // 只有「从关闭状态打开」才播入场动画；同一任务被重绘（保存、勾选子任务…）时不再滑入，
   // 否则每次重绘都会有 200ms 的位移 + 淡入，看着像界面在闪。
   const reopen = drawer.dataset.opened === '1';
+
+  // 重复事项的计划时间 / 提醒是规则派生值（本次 = 发生日，截止 = 发生日 + 偏移）：
+  // 不给可编辑入口，改为只读展示，避免「计划时间 11-08~11-10」与「有效期 / 结束日」互相打架（P-01）。
+  const derived = !!recurRule;
 
   drawer.innerHTML = `
     <div class="detail-mask" data-act="close"></div>
@@ -516,14 +544,18 @@ async function renderDetail() {
           </label>
         </div>
         <div class="detail-row">
-          ${dateRangeFieldHtml(task.plan_start, task.plan_end, { required: PLAN_DATE_REQUIRED, placeholder: '计划开始 ~ 完成' })}
+          ${derived
+    ? derivedScheduleHtml(task, recurRule)
+    : dateRangeFieldHtml(task.plan_start, task.plan_end, { required: PLAN_DATE_REQUIRED, placeholder: '计划开始 ~ 完成' })}
         </div>
         <div class="detail-row">
-          ${reminderHtml(task.reminder_at, task.plan_end)}
+          ${derived ? '' : reminderHtml(task.reminder_at, task.plan_end)}
           <label class="detail-field grow">标签（逗号分隔）
             <input class="detail-tags" placeholder="如：项目A, 紧急" value="${esc((task.tag_names || []).join(', '))}" />
           </label>
         </div>
+
+        ${detailRepeatHtml(task, recurRule)}
 
         <div class="detail-section">
           <div class="detail-section-head"><span>子任务</span></div>
@@ -584,9 +616,15 @@ async function renderDetail() {
   bindReminder(drawer);
   // 范围被清除/修改后同步提醒预设（依赖完成日期的预设会自动回到“不提醒”）
   drawer.addEventListener(DATE_RANGE_EVENT, (e) => syncReminderWithPlanEnd(drawer, e.detail.planEnd), { signal: renderAbort.signal });
+  // 重复与提醒：独立的「保存重复设置」按钮，改动不进抽屉级 autosave
+  bindDetailRepeat(drawer, task, recurRule, {
+    signal: renderAbort ? renderAbort.signal : undefined,
+    onSaved: async () => { await refreshAll(); handlers.refresh(); renderDetail(); },
+  });
   bindDetailEvents(drawer, task);
-  // 即时持久化：挂载在事件绑定之后，保证能监听到同一批事件
-  drawer.__autoSave = bindDetailAutoSave(drawer, task, notesHtml);
+  // 即时持久化：挂载在事件绑定之后，保证能监听到同一批事件。
+  // derived=true 时计划日期 / 提醒不在表单里，保存器只写内容字段（库里也会拒写那三个字段）。
+  drawer.__autoSave = bindDetailAutoSave(drawer, task, notesHtml, { derived });
 }
 
 /**
@@ -1489,33 +1527,41 @@ function collectDetailPayload(drawer, { quiet = false } = {}) {
     if (!quiet) handlers.toast('请输入任务标题');
     return null;
   }
-  const range = validateDateRange(drawer);
-  if (!range.ok) {
-    if (!quiet) {
-      handlers.toast(range.message);
-      drawer.querySelector('.date-range-trigger').focus();
+  // 重复事项：计划日期 / 提醒由规则派生，表单里没有这两个控件（也绝不能凭"空控件"折成 null 写库）
+  const derived = !!drawer.querySelector('[data-rpt-derived]');
+  let planStart = null;
+  let planEnd = null;
+  let reminderAt = null;
+  if (!derived) {
+    const range = validateDateRange(drawer);
+    if (!range.ok) {
+      if (!quiet) {
+        handlers.toast(range.message);
+        drawer.querySelector('.date-range-trigger').focus();
+      }
+      return null;
     }
-    return null;
-  }
-  const { planStart, planEnd } = range;
-  if (reminderNeedsPlanEnd(drawer) && !planEnd) {
-    if (!quiet) handlers.toast('请先设置完成日期，再选择提醒时间');
-    return null;
+    planStart = range.planStart;
+    planEnd = range.planEnd;
+    if (reminderNeedsPlanEnd(drawer) && !planEnd) {
+      if (!quiet) handlers.toast('请先设置完成日期，再选择提醒时间');
+      return null;
+    }
+    reminderAt = computeReminder(drawer, planEnd);
   }
   const editor = drawer.querySelector('.detail-notes-editor');
   const notes = (editor.textContent.trim() || editor.querySelector('img')) ? editor.innerHTML : '';
-  return {
+  const payload = {
     title,
     priority: Number(drawer.querySelector('.detail-priority').value),
     groupId: drawer.querySelector('.detail-group').value ? Number(drawer.querySelector('.detail-group').value) : null,
-    planStart,
-    planEnd,
-    reminderAt: computeReminder(drawer, planEnd),
     notes,
     // 标签必须参与基线比对：否则只改标签时 autosave 会判定「无变化」直接跳过写库，
     // 标签永远保存不上。这里存原始输入串（tagIds 在 save() 里异步解析）。
     tags: drawer.querySelector('.detail-tags').value,
   };
+  if (!derived) Object.assign(payload, { planStart, planEnd, reminderAt });
+  return payload;
 }
 
 /** 保存状态的时间戳（"已保存 14:03" 比干巴巴的"已保存"更有说服力） */
@@ -1539,7 +1585,7 @@ function setDetailSaveState(drawer, status, message) {
  * notesHtml 是渲染时实际写进编辑器的 HTML —— 基线必须用它（而不是库里的原始字符串），
  * 否则浏览器归一化后的 innerHTML 与库里的文本永远不相等，会出现"没改也写库"。
  */
-function bindDetailAutoSave(drawer, task, notesHtml) {
+function bindDetailAutoSave(drawer, task, notesHtml, { derived = false } = {}) {
   // 身份校验是最后一道闸：抽屉已经切到别的任务（或已关闭）时，read 直接返回 null，
   // 本次保存整个作废 —— 宁可少写一次，也绝不能把 B 的内容写进 A。
   const read = () => (isDrawerShowing(task.id) ? collectDetailPayload(drawer, { quiet: true }) : null);
@@ -1577,22 +1623,27 @@ function bindDetailAutoSave(drawer, task, notesHtml) {
     },
   }), 'main');
 
-  saver.setBaseline({
+  const baseline = {
     title: task.title,
     priority: task.priority,
     groupId: task.group_id ?? null,
-    planStart: task.plan_start,
-    planEnd: task.plan_end,
-    reminderAt: task.reminder_at,
     notes: baselineNotes,
     // 与 collectDetailPayload 的 tags 字段同构：初始渲染用的就是 join(', ')
     tags: (task.tag_names || []).join(', '),
-  });
+  };
+  // 基线必须与 payload 同构（samePayload 比 key 数量）：派生字段不进表单，也就不进基线
+  if (!derived) {
+    baseline.planStart = task.plan_start;
+    baseline.planEnd = task.plan_end;
+    baseline.reminderAt = task.reminder_at;
+  }
+  saver.setBaseline(baseline);
 
   const signal = renderAbort ? renderAbort.signal : undefined;
   // 子任务区有自己的保存器（bindSubtaskAutoSave），这里的抽屉级监听要避开它，
   // 否则动一个子任务标题会连带把父任务整体再写一遍。
-  const fromSubtask = (e) => !!e.target.closest('.subtask-item, .subtask-add');
+  // 重复配置区有自己的保存按钮，不能让抽屉级 autosave 抢着写库
+  const fromSubtask = (e) => !!e.target.closest('.subtask-item, .subtask-add, .detail-repeat');
   // 输入类字段
   drawer.addEventListener('input', (e) => { if (!fromSubtask(e)) saver.schedule(); }, { signal });
   // 下拉 / 日期等（change 不冒泡到 input，两类都监听）

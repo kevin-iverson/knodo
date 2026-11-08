@@ -10,10 +10,12 @@
   <!-- 第三方依赖：flatpickr（日期范围选择）、tom-select（分组多选）。先加载厂商样式，再用本项目样式覆盖主题 -->
   <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css" />
   <link rel="stylesheet" href="vendor/tom-select/tom-select.min.css" />
-  <link rel="stylesheet" href="vendor/easymde/easymde.min.css" />
   <link rel="stylesheet" href="css/styles.css" />
+  <!-- 所见即所得两态样式：加载在 styles.css 之后，覆盖旧的「预览 / 分栏 / 源码」三态规则 -->
+  <link rel="stylesheet" href="css/wysiwyg.css" />
   <link rel="stylesheet" href="css/calendar.css" />
   <link rel="stylesheet" href="css/encourager.css" />
+  <link rel="stylesheet" href="css/recurrence.css" />
 </head>
 <body>
   <div class="app">
@@ -154,7 +156,10 @@
   <!-- 代码高亮（highlight.js）：markdown-it 的 highlight 钩子是同步的，必须随页面一起就绪。
        mermaid 体积大且多数笔记用不到，走运行时动态 import（见 renderer/vendor/mermaid/mermaid.mjs） -->
   <script src="vendor/highlight/highlight.min.js"></script>
-  <script src="vendor/easymde/easymde.min.js"></script>
+  <!-- HTML → Markdown 序列化（所见即所得编辑器保存正文时用），UMD 单文件随仓库 vendor，离线可用。
+       升级来源见 package.json devDependencies：turndown / turndown-plugin-gfm。 -->
+  <script src="vendor/turndown/turndown.js"></script>
+  <script src="vendor/turndown/turndown-plugin-gfm.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

@@ -603,13 +603,49 @@ li.focus-wrapup {
 /* 分组下拉从「更多选项」提到主行（标题右侧、计划时间左侧）：
    新建任务时归属是最常用的字段之一，藏在折叠区里容易被忽略。
    宽度给上下限 + text-overflow：分组名很长时不能把后面的日期控件挤出可视区。 */
-.editor-row .editor-group {
+/* 只命中原生 <select>：Tom Select 会把 editor-group 这个 class 一并复制到 .ts-wrapper，
+   若写成 .editor-row .editor-group，padding/height/border 会同时套在外层和内层 .ts-control 上，
+   内层被挤窄并向下溢出，看起来像「框中框」。降级到原生 select 时这里仍能提供完整样式。 */
+.editor-row > select.editor-group {
   flex: 0 1 auto; min-width: 96px; max-width: 180px; padding: 7px 10px;
   border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
   color: var(--text); font-size: 13px; outline: none; cursor: pointer; height: 34px;
 }
-.editor-row .editor-group:hover { border-color: var(--primary); }
-.editor-row .editor-group:focus { border-color: var(--primary); }
+.editor-row > select.editor-group:hover { border-color: var(--primary); }
+.editor-row > select.editor-group:focus { border-color: var(--primary); }
+
+/* 分组单选：与 AI 报告共用 Tom Select 的色块 / 层级缩进 / 圆角面板，只是单选。
+   原生 select 被组件藏成 .ts-hidden-accessible，尺寸与配色要落在 .ts-wrapper 上。 */
+.editor-row .ts-wrapper {
+  position: relative; flex: 0 1 auto; min-width: 112px; max-width: 190px;
+  padding: 0; /* 与内层 .ts-control 完全重合，只留一层边框 */
+  --ts-pr-min: 26px; /* vendor 的 padding-right 带 !important，靠变量给箭头留位置 */
+}
+.editor-row .ts-wrapper .ts-control {
+  height: 34px; min-height: 34px; box-sizing: border-box; flex-wrap: nowrap;
+  padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); box-shadow: none;
+}
+.editor-row .ts-wrapper .ts-control, .editor-row .ts-wrapper .ts-control input { font-size: 13px; }
+.editor-row .ts-wrapper:hover .ts-control { border-color: var(--primary); }
+.editor-row .ts-wrapper.focus .ts-control {
+  border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.16);
+}
+/* 分组控件与右侧计划时间之间再留一点呼吸空间，避免两段文字连成一片 */
+.editor-row > .date-range-field { margin-left: 3px; }
+.editor-row .ts-wrapper.single::after {
+  content: '▾'; position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  z-index: 2; /* .ts-control 自带 z-index:1，箭头要盖在它上面 */
+  font-size: 10px; line-height: 1; color: var(--text-3); pointer-events: none;
+}
+.editor-row .ts-wrapper.single .ts-control > .item {
+  display: inline-flex; align-items: center; max-width: 100%; min-width: 0;
+  padding: 0; margin: 0; border: 0; background: none; color: inherit;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px;
+}
+.editor-row .ts-wrapper.single .ts-control > .item .ts-item {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .editor-details {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -819,6 +855,19 @@ li.focus-wrapup {
 .ts-dropdown .active { background: var(--bg-hover); color: var(--text); }
 .ts-dropdown .no-results { padding: 10px; color: var(--text-3); font-size: 12.5px; }
 .ts-dropdown .highlight { background: rgba(79, 124, 255, 0.18); }
+/* 挂到 body 的分组下拉：不能比控件还窄（树形名称会被挤断），也要盖住日期日历 */
+.group-picker-dropdown { min-width: 220px; z-index: 250; }
+/* 单选下拉自带的搜索框（dropdown_input 插件）跟着主题走 */
+.group-picker-dropdown .dropdown-input-wrap {
+  padding: 8px 8px 6px; border-bottom: 1px solid var(--border);
+}
+.group-picker-dropdown .dropdown-input {
+  box-sizing: border-box; width: 100%; padding: 6px 9px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font-size: 13px; outline: none;
+}
+.group-picker-dropdown .dropdown-input:focus { border-color: var(--primary); }
+.group-picker-dropdown .dropdown-input::placeholder { color: var(--text-3); }
 /* 已选条目上的 × 与整体清除按钮：跟随主题色 */
 .ts-wrapper .remove { color: var(--text-3); text-decoration: none; padding: 0 2px; font-size: 14px; line-height: 1; }
 .ts-wrapper .remove:hover { color: var(--danger); }

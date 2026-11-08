@@ -20,6 +20,7 @@ const capture = require('./capture');
 const focus = require('./focus');
 const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
+const { startRecurrenceScheduler, stopRecurrenceScheduler } = require('./recurrence');
 const { markdownToDocx } = require('./docx');
 const reportMod = require('./report');
 const backup = require('./backup');
@@ -43,11 +44,10 @@ if (process.env.PORTABLE_EXECUTABLE_DIR) {
   app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'));
 }
 
-// Windows 任务栏 / 通知的身份标识（AppUserModelID）。
+// Windows 任务栏 / 通知的身份标识（AppUserModelID）与通知中心显示名。
 // 不设的话，任务栏按钮会沿用宿主进程（开发期是 electron.exe）的身份，
-// 于是图标与通知标题都跟品牌对不上；改成自己的 ID 后，Windows 才会按本应用的
-// 窗口图标来画，也顺带避开了「同名 exe 的旧图标被系统缓存住」的问题。
-if (process.platform === 'win32') app.setAppUserModelId('com.workbuddy.knodo');
+// 通知中心的发送者也会回落成「Electron」。详见 main/app-identity.js。
+require('./app-identity').registerWindowsIdentity();
 
 let mainWindow = null;
 let isQuitting = false;
@@ -436,6 +436,15 @@ function buildAppMenu() {
           click: () => {
             showWindow();
             if (mainWindow) mainWindow.webContents.send('ui:import-md');
+          },
+        },
+        {
+          // 重复规则 / 习惯的总入口：调整、暂停、删除规则与查看打卡记录。
+          // 单条实例上的 🔁 徽标也能直接打开并定位到对应规则。
+          label: '重复事项与习惯…',
+          click: () => {
+            showWindow();
+            if (mainWindow) mainWindow.webContents.send('ui:recurrence-manager');
           },
         },
         { type: 'separator' },
@@ -951,6 +960,16 @@ app.whenReady().then(async () => {
 
   applyTheme();
   registerIpc();
+  // 重复事项：启动即按规则补齐今天的实例，之后定时 / 跨天增量同步。
+  // 生成的是普通 tasks 行，提醒仍由 reminders.js 的既有轮询触发，不另起一套通知。
+  startRecurrenceScheduler({
+    onDataChange: (info) => {
+      try { desktopWindow.notifyChange(null); } catch (e) { /* 浮窗刷新失败不影响数据 */ }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('ui:recurrence-generated', info);
+      }
+    },
+  });
   // 设置中心专用的三个动作（开机自启 / 换数据目录 / 备份恢复对话框）
   registerSettingsIpc();
   // 桌面浮窗：窗口层独立于主窗口，投影列表变化时重建应用菜单 / 托盘菜单
@@ -3577,6 +3596,7 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   isQuitting = true;
   stopReminderScheduler();
+  stopRecurrenceScheduler();
   backup.stopAutoBackup();
   destroyTray();
   // 浮窗随应用退出一起销毁（关主窗口不关它们：托盘常驻时浮窗要留着）

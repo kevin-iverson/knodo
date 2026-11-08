@@ -218,8 +218,9 @@ function buildView(p) {
 
   if (p.kind === 'today') {
     const today = todayStr();
+    // 与主窗口同一口径：一次性任务看截止日，重复事项看「本次发生日已到」
     const tasks = mergeVisible(
-      db.listTasks({ status: 'active', planEndTo: today }),
+      db.listTasks({ status: 'active', planEndTo: today, todayRecurring: today }),
       db.listTasks({ status: 'completed', completedFrom: since }),
     );
     return {
@@ -235,7 +236,7 @@ function buildView(p) {
     // 刚勾掉的那条按同一到期口径再取一次，让它留在原位变灰，而不是整行消失。
     const today = todayStr();
     const tasks = mergeVisible(
-      db.listTasks({ status: 'active', planEndFrom: today, sort: 'due' }),
+      db.listTasks({ status: 'active', planEndFrom: today, excludeRecurringDue: today, sort: 'due' }),
       db.listTasks({ status: 'completed', completedFrom: since, planEndFrom: today, sort: 'due' }),
     );
     return {

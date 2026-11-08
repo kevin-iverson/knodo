@@ -10,7 +10,10 @@ import { api } from './api.js';
 import { loadGroups } from './store.js';
 import { toast } from './ui.js';
 import { openAiSettingsModal } from './ai-settings.js';
-import { flattenGroupTree, descendantGroupIds } from './group-tree.js';
+import { descendantGroupIds } from './group-tree.js';
+import {
+  groupPickerOptionsHtml, createGroupSelect, destroyGroupSelect,
+} from './group-select.js';
 import { openPanelModal } from './modal.js';
 import { mdToDocHtml, docHtmlToMd } from './report-doc.js';
 
@@ -226,9 +229,8 @@ function collectContent() {
 /* ---------------- 分组多选（Tom Select） ---------------- */
 
 function groupOptionsHtml(groups) {
-  return flattenGroupTree(groups, { respectExpansion: false })
-    .map(({ g, depth }) => `<option value="${g.id}" data-depth="${depth}" data-color="${esc(g.color || '#c3cad6')}">${esc(g.name)}</option>`)
-    .join('');
+  // 多选筛选没有「无分组」这一项，其余选项与任务编辑器共用同一份渲染
+  return groupPickerOptionsHtml(groups, null, { empty: false });
 }
 
 /**
@@ -242,36 +244,15 @@ function initGroupSelect(groups = []) {
   const el = document.getElementById('rp-group');
   if (!el) return;
   groupList = Array.isArray(groups) ? groups : [];
-  if (groupSelect) { try { groupSelect.destroy(); } catch (e) { /* 已销毁 */ } groupSelect = null; }
+  if (groupSelect) { destroyGroupSelect(groupSelect); groupSelect = null; }
   if (typeof window.TomSelect !== 'function') return; // 依赖缺失时退回原生多选，不至于整页失效
 
-  const dot = (data, escapeHtml) =>
-    `<span class="ts-dot" style="background:${escapeHtml(data.color || '#c3cad6')}"></span>`;
-
-  groupSelect = new window.TomSelect(el, {
-    plugins: ['remove_button', 'clear_button'],
-    // 面板挂到 body：报告区在可滚动容器里，挂在本容器内会被下边缘裁掉
-    dropdownParent: 'body',
-    hideSelected: true,
+  // 与任务编辑器共用同一套选项渲染：色块 / 层级缩进 / 圆角搜索面板
+  groupSelect = createGroupSelect(el, {
+    multiple: true,
     placeholder: '全部分组（不选即全部）',
-    maxOptions: 300,
-    render: {
-      option: (data, escapeHtml) => {
-        const d = Number(data.depth) || 0;
-        // 父分组已选中时子孙置灰：右侧标「随父分组」，用户一眼知道为什么点不动
-        const locked = !!data.disabled;
-        return `<div class="ts-opt${locked ? ' is-locked' : ''}" style="padding-left:${6 + d * 14}px">`
-          + (d ? '<span class="ts-tree">└</span>' : '')
-          + dot(data, escapeHtml)
-          + `<span class="ts-name">${escapeHtml(data.text)}</span>`
-          + (locked ? '<span class="ts-lock">随父分组</span>' : '')
-          + '</div>';
-      },
-      item: (data, escapeHtml) =>
-        `<span class="ts-item">${dot(data, escapeHtml)}${escapeHtml(data.text)}</span>`,
-      no_results: () => '<div class="no-results">没有匹配的分组</div>',
-    },
   });
+  if (!groupSelect) return;
 
   if (selectedGroups.length) groupSelect.setValue(selectedGroups, true);
   groupSelect.on('change', () => {

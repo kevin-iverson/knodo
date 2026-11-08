@@ -1,0 +1,243 @@
+/* 重复事项 / 习惯：编辑器配置块、任务行徽标、管理面板。
+   颜色一律走 styles.css 的主题变量，light / dark 自动跟随，不写死底色。 */
+
+/* ---------------- 编辑器：🔁 设为重复 ---------------- */
+
+.rpt-block {
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
+}
+.rpt-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: 1px dashed var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text-2); font-size: 13px; cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.rpt-toggle:hover { border-color: var(--primary); color: var(--primary); }
+.rpt-toggle.is-on {
+  border-style: solid; border-color: var(--primary); color: var(--primary-strong);
+  background: var(--bg-active); font-weight: 600;
+}
+.rpt-panel { margin-top: 10px; }
+
+/* 开启重复后弱化一次性字段：完成日 / 提醒改由规则生成。
+   只用 opacity：一是 .editor-details 为网格，任何 border / 文档流内的提示文字都会把整行
+   select / input 一起 stretch 拉高（「中」下拉框突然变胖）；二是绝对定位的提示若挂在
+   控件下方，会溢出到备注框和虚线分隔线上，比不提示更难看。说明统一放在 .rpt-panel 顶部。 */
+.date-range-field.is-rpt-muted, .reminder-field.is-rpt-muted { opacity: .5; }
+
+.rpt-takeover-note {
+  margin: 0 0 10px; font-size: 12px; line-height: 1.5; color: var(--text-2);
+}
+
+.rpt-fields { display: flex; flex-direction: column; gap: 10px; }
+.rpt-quick { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rpt-quick-label { font-size: 12px; color: var(--text-3); margin-right: 2px; }
+.rpt-chip {
+  padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg); color: var(--text-2); font-size: 12px; cursor: pointer;
+}
+.rpt-chip:hover { border-color: var(--primary); color: var(--primary); background: var(--bg-hover); }
+
+.rpt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.rpt-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rpt-field > span:first-child, .rpt-field-label {
+  font-size: 12px; color: var(--text-2);
+}
+.rpt-fields input[type="text"], .rpt-fields input[type="number"],
+.rpt-fields input[type="date"], .rpt-fields input[type="time"], .rpt-fields select {
+  width: 100%; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font-size: 13px; outline: none;
+}
+.rpt-fields input:focus, .rpt-fields select:focus { border-color: var(--primary); }
+.rpt-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.rpt-inline input { width: 76px !important; }
+.rpt-unit { font-style: normal; color: var(--text-3); }
+.rpt-conditional {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; background: var(--bg);
+}
+.rpt-checks { display: flex; gap: 10px; flex-wrap: wrap; }
+.rpt-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
+.rpt-check input { width: auto !important; accent-color: var(--primary); }
+.rpt-habit-field { align-self: end; padding-bottom: 7px; }
+.rpt-tip { font-size: 11.5px; color: var(--text-3); }
+.rpt-conditional .rpt-field { flex: 0 1 220px; }
+
+.rpt-preview {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 7px 10px; border-radius: 8px; background: var(--bg-active); font-size: 12px;
+}
+.rpt-preview-label { color: var(--text-2); margin-right: 4px; }
+.rpt-preview-day {
+  padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-panel); color: var(--text); font-variant-numeric: tabular-nums;
+}
+.rpt-preview-more, .rpt-preview-empty { color: var(--text-3); }
+.rpt-note { font-size: 11.5px; color: var(--text-3); line-height: 1.6; }
+
+.rpt-instance-note {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; padding: 7px 10px; border: 1px dashed var(--primary);
+  border-radius: 8px; background: var(--bg-active); font-size: 12px; color: var(--text-2);
+}
+.rpt-instance-ico { font-size: 14px; }
+
+/* ---------------- 任务行徽标 ---------------- */
+.recur-badge {
+  display: inline-flex; align-items: center; gap: 2px; margin-left: 8px;
+  padding: 1px 6px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg); color: var(--text-2); font-size: 11px; line-height: 1.5;
+  cursor: pointer; vertical-align: middle;
+}
+.recur-badge:hover { border-color: var(--primary); color: var(--primary); background: var(--bg-hover); }
+.recur-badge.is-habit { border-color: var(--green); color: var(--green); }
+.recur-badge-edit { font-size: 10px; opacity: .7; }
+
+/* ---------------- 管理面板 ---------------- */
+.modal.modal-recurrence { max-width: min(92vw, 880px); }
+.rc-wrap { display: flex; flex-direction: column; gap: 12px; }
+.rc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.rc-head-text { font-size: 12.5px; color: var(--text-2); }
+.rc-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 10px; border-radius: 8px; background: var(--bg-hover);
+  font-size: 11.5px; color: var(--text-2);
+}
+.rc-meta-badge { color: var(--primary-strong); font-weight: 600; }
+.rc-list { display: flex; flex-direction: column; gap: 10px; }
+.rc-loading, .rc-empty {
+  padding: 32px 12px; text-align: center; color: var(--text-3); font-size: 13px;
+}
+.rc-card {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg); transition: border-color .15s, box-shadow .15s;
+}
+.rc-card:hover { border-color: var(--primary); }
+.rc-card.is-focused { border-color: var(--primary); box-shadow: var(--shadow-sm); }
+.rc-card.is-stopped { opacity: .72; }
+.rc-card-main { flex: 1; min-width: 0; }
+.rc-card-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rc-title-text { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.rc-state, .rc-habit-tag {
+  padding: 1px 8px; border-radius: 999px; font-size: 11px;
+  background: var(--bg-active); color: var(--primary-strong);
+}
+.rc-card.is-stopped .rc-state { background: var(--bg-hover); color: var(--text-3); }
+.rc-habit-tag { background: rgba(35, 176, 126, .12); color: var(--green); }
+.rc-card-summary { margin-top: 5px; font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+.rc-card-meta {
+  display: flex; flex-wrap: wrap; gap: 12px; margin-top: 7px;
+  font-size: 11.5px; color: var(--text-3);
+}
+.rc-card-actions { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
+.rc-card-actions .ghost-btn { min-width: 108px; font-size: 12px; }
+.rc-danger { color: var(--danger) !important; }
+
+/* 习惯打卡：连续天数 / 完成率 / 近 30 次格子 */
+.rc-habit { margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--border); }
+.rc-habit-top { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 7px; }
+.rc-habit-stat { font-size: 11.5px; color: var(--text-2); }
+.rc-habit-stat b { font-size: 15px; color: var(--primary-strong); }
+.rc-cells { display: flex; gap: 3px; flex-wrap: wrap; }
+.rc-cell {
+  width: 12px; height: 12px; border-radius: 3px; background: var(--bg-hover);
+  border: 1px solid var(--border);
+}
+.rc-cell.is-done { background: var(--green); border-color: var(--green); }
+.rc-cell-empty { font-size: 11.5px; color: var(--text-3); }
+
+/* 面板内联编辑区（不叠第二个 openPanelModal：Esc 会被两层同时接住） */
+.rc-editor {
+  border: 1px solid var(--primary); border-radius: var(--radius-sm);
+  background: var(--bg-panel); padding: 12px 14px;
+}
+.rc-editor-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px; font-size: 14px; font-weight: 600; color: var(--text);
+}
+.rc-editor-body { display: flex; flex-direction: column; gap: 10px; }
+.rc-title-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-2); }
+.rc-title-input {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font-size: 13.5px; outline: none;
+}
+.rc-title-input:focus { border-color: var(--primary); }
+.rc-editor-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.rc-editor-err { margin-right: auto; font-size: 12px; color: var(--danger); }
+
+@media (max-width: 700px) {
+  .rc-card { flex-direction: column; }
+  .rc-card-actions { flex-direction: row; flex-wrap: wrap; }
+  .rpt-grid { grid-template-columns: 1fr; }
+}
+
+
+/* 习惯格子：点击可补打卡 / 撤销（原先只是展示用 span） */
+.rc-cell { cursor: pointer; padding: 0; transition: transform .12s, box-shadow .12s; }
+.rc-cell:hover { transform: scale(1.25); box-shadow: 0 0 0 2px var(--primary); }
+.rc-cell:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.recur-badge.is-done { border-color: var(--green); color: var(--green); }
+
+/* 任务详情抽屉里的「重复与提醒」区：规则字段在窄抽屉里收敛为更细的网格 */
+.detail-repeat .detail-section-head { margin-bottom: 10px; }
+.detail-repeat .rpt-block { margin-bottom: 8px; }
+.detail-repeat .rpt-panel {
+  padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg);
+}
+.detail-repeat .rpt-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.detail-repeat .rpt-note { font-size: 11px; }
+.rpt-detail-summary { font-size: 12px; color: var(--text-2); margin: 2px 0 8px; }
+.rpt-detail-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.rpt-detail-hint { margin-right: auto; font-size: 11.5px; color: var(--text-3); }
+
+/* ---------------- 派生时间的只读展示 ---------------- */
+/* 计划时间 / 截止 / 提醒都是规则派生值：只读展示，没有输入框，也就不存在「改了被日切改回去」。
+   横向 flex + wrap：抽屉窄、编辑器行也窄，靠换行消化，不写 nowrap（否则会把标题挤成 1 个字）。 */
+
+.rpt-derived {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  grid-column: 1 / -1; width: 100%; min-width: 0;
+}
+.rpt-derived-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg); color: var(--text-2); font-size: 12px; line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+.rpt-derived-chip.is-strong { border-color: var(--primary); color: var(--primary-strong); font-weight: 600; }
+.rpt-derived-chip.is-weak { color: var(--text-3); border-style: dashed; }
+.rpt-derived-hint { font-size: 11.5px; color: var(--text-3); }
+
+/* 列表编辑器行里的紧凑替代：原「计划开始 ~ 完成」控件的位置 */
+.editor-derived {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 3px; padding: 6px 10px; border: 1px dashed var(--border); border-radius: 8px;
+  background: var(--bg-active); color: var(--text-2); font-size: 12.5px; white-space: nowrap;
+}
+
+/* 任务行里的重复状态角标：今天不发生 / 已暂停 / 已结束 */
+.recur-state {
+  padding: 1px 7px; border-radius: 999px; font-size: 11px; line-height: 1.6;
+  border: 1px dashed var(--border); color: var(--text-3); background: var(--bg);
+}
+.recur-state.is-next { border-color: var(--warning, #f59e0b); color: var(--warning, #f59e0b); }
+.recur-state.is-paused, .recur-state.is-ended, .recur-state.is-idle { border-style: solid; }
+
+/* 「今天」视图底部：今天不发生的重复事项（默认收起的一段说明） */
+.recur-pending { margin-top: 10px; }
+.recur-pending-head { margin: 0 0 6px; }
+.recur-pending-hint {
+  margin-left: auto; font-size: 11.5px; font-weight: 400; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task-list.is-pending .task-item {
+  background: transparent; border-style: dashed; opacity: .82;
+}
+.task-item.is-recur-pending .task-check,
+.task-item.is-recur-pending .task-check[disabled] {
+  cursor: not-allowed; opacity: .45;
+}
+.task-item.is-recur-pending .task-title-text { color: var(--text-2); }
+

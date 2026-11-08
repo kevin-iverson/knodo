@@ -43,6 +43,9 @@ const state = {
   // 任务列表里被折叠的分组（键为 String(分组 id)，未分组用 '__none'）
   // 存 settings：切视图 / 重启后依然是上次折叠的样子
   collapsedTaskGroups: new Set(),
+  // 「今天」视图里今天不发生的重复事项（暂停 / 已结束 / 下次在未来），
+  // 由 loadTasks 单独查询，渲染成可展开的说明区（默认折叠）
+  recurringPending: [],
 };
 
 /** 分组在任务列表里的折叠状态键 */
@@ -77,6 +80,23 @@ async function loadTags() {
 async function loadTasks() {
   const f = buildFilter();
   const list = await api.tasks.list(f);
+
+  // 「今天」视图额外拉一份「今天不发生」的重复事项（暂停 / 已结束 / 下次在未来）。
+  // 单独查而不是放宽主查询：主列表要保持「今天真有这件事」的语义，
+  // 这些行只作为可展开的说明区出现，避免任务静默消失（P-08）。
+  if (state.view === 'today') {
+    const pf = { ...f };
+    delete pf.planStartFrom;
+    delete pf.planStartTo;
+    delete pf.planEndFrom;
+    delete pf.planEndTo;
+    delete pf.todayRecurring;
+    delete pf.excludeRecurringDue;
+    pf.recurringPending = todayStr();
+    state.recurringPending = await api.tasks.list(pf).catch(() => []);
+  } else {
+    state.recurringPending = [];
+  }
 
   // 今天视图：刚勾选完成的任务要留在列表里。
   // 这里按 id 单独补拉（而不是放宽查询条件），避免把历史已完成任务一股脑捞回来；
@@ -222,10 +242,15 @@ function buildFilter() {
     case 'today':
       f.status = 'active';
       f.planEndTo = today;
+      // 重复事项的判据是「本次发生日已到」而不是截止日（plan_end = 发生日 + N 天），
+      // 由 db.listTasks 的 todayRecurring 分支处理；见「今天」不等于「截止日到了」的说明。
+      f.todayRecurring = today;
       break;
     case 'upcoming':
       f.status = 'active';
       f.planEndFrom = today;
+      // 今天这一份已经在「今天」里了，不在「即将到期」顶部再重复一次
+      f.excludeRecurringDue = today;
       f.sort = 'due';
       break;
     case 'completed':
@@ -254,6 +279,8 @@ function buildFilter() {
   if (tf.planEndTo) f.planEndTo = tf.planEndTo;
   if (tf.completedFrom) f.completedFrom = dateRangeIso(tf.completedFrom, false);
   if (tf.completedTo) f.completedTo = dateRangeIso(tf.completedTo, true);
+  // 用户手动设了「截止日上界」= 显式想要一个区间，此时不再套用重复事项的「今天」特例
+  if (f.todayRecurring && tf.planEndTo) delete f.todayRecurring;
 
   return f;
 }

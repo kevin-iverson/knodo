@@ -739,8 +739,20 @@ async function reloadAndPaint() {
   paint();
 }
 
+/**
+ * 重复事项的日期由规则派生（本次 = 发生日，截止 = 发生日 + 偏移），日历里的拖拽 / 延期 / 取消排期
+ * 一律不写库 —— 写了也会被日切改回去（db.updateTask 现在直接拒写这三个字段）。
+ * 这里提前拦下来并给出可操作的指路，而不是"拖了一下没反应"。
+ */
+function blockRecurringSchedule(t) {
+  if (!t || t.recurring_id == null) return false;
+  ext.toast('这是重复事项：日期由规则派生，请在「重复规则」里改生效日 / 截止日偏移');
+  return true;
+}
+
 async function writeSchedule(drag, date) {
   const t = drag.task;
+  if (blockRecurringSchedule(t)) return;
   const span = drag.span;
   let planStart = null;
   let planEnd = null;
@@ -759,6 +771,7 @@ async function writeSchedule(drag, date) {
 
 async function writeUnschedule(drag) {
   const t = drag.task;
+  if (blockRecurringSchedule(t)) return;
   try {
     await api.tasks.update(t.id, { planStart: null, planEnd: null });
     cfg.undo = { id: t.id, prev: { planStart: t.plan_start || null, planEnd: t.plan_end || null }, label: '已移回待安排池' };
@@ -772,6 +785,8 @@ async function writeUnschedule(drag) {
 async function patchTask(id, patch, label) {
   const t = cfg.tasks.find((x) => x.id === id);
   if (!t) return;
+  // 只改优先级等非派生字段时照常放行；一旦带计划日期就走上面的拦截
+  if ((patch.planStart !== undefined || patch.planEnd !== undefined) && blockRecurringSchedule(t)) return;
   try {
     await api.tasks.update(id, patch);
     if (label) cfg.undo = {
@@ -812,12 +827,18 @@ function setPriority(id, p) { patchTask(id, { priority: p }, ''); }
 
 async function batchToToday() {
   const today = todayStr();
+  // 重复事项由规则排期，不参与「欠账改到今天」
+  const targets = cfg.overdue.filter((t) => t.recurring_id == null);
+  if (!targets.length) {
+    ext.toast('没有需要改期的一次性任务');
+    return;
+  }
   try {
-    for (const t of cfg.overdue) {
+    for (const t of targets) {
       // 超期任务整段都在过去，直接改成今天单日
       await api.tasks.update(t.id, { planStart: null, planEnd: today });
     }
-    ext.toast(`已把 ${cfg.overdue.length} 条欠账改到今天`);
+    ext.toast(`已把 ${targets.length} 条欠账改到今天`);
     await reloadAndPaint();
   } catch (e) {
     ext.toast(`批量改期失败：${(e && e.message) || e}`);

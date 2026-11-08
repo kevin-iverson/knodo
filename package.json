@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": "WorkBuddy",
@@ -15,7 +15,11 @@
     "gen-icon": "node scripts/gen-icon.js",
     "build:tools": "node scripts/build-tools.js",
     "test:db": "node scripts/smoke-db.js",
+    "test:recur": "node scripts/smoke-recurrence.js",
+    "verify:recur": "node scripts/verify-recurrence-ui.js",
     "verify:desktop": "node scripts/verify-desktop-level.js",
+    "verify:identity": "node scripts/verify-notification-identity.js",
+    "verify:wys": "node scripts/verify-wysiwyg.js",
     "dist": "node scripts/gen-icon.js && node scripts/build-tools.js && node scripts/build-win.js",
     "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --target portable",
     "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis",
@@ -42,6 +46,8 @@
     "prettier-plugin-java": "2.6.6",
     "sql-formatter": "^15.9.0",
     "tom-select": "^2.4.3",
+    "turndown": "^7.2.5",
+    "turndown-plugin-gfm": "^1.0.2",
     "xml-formatter": "^3.7.0"
   },
   "build": {

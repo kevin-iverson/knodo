@@ -1,0 +1,240 @@
+/* ==========================================================================
+   笔记所见即所得（语雀式两态）
+   - 读态 / 编辑态共用同一个 #nt-preview 与同一套 .markdown-body 排版，
+     本文件只负责「工具条 / 状态开关 / 浮层」，不改正文任何字体、间距、颜色。
+   - 加载顺序在 styles.css 之后，用来覆盖旧的 EasyMDE 三态（预览 / 分栏 / 编辑）规则。
+   ========================================================================== */
+
+/* ---- 详情头部：唯一的编辑入口 ---- */
+.nt-edit-toggle {
+  flex: 0 0 auto;
+  padding: 5px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.nt-edit-toggle:hover {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+}
+.nt-edit-toggle.is-editing {
+  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.nt-edit-toggle.is-editing:hover { color: #fff; opacity: .9; }
+
+/* ---- 正文容器：工具条 + 同一份渲染结果 ---- */
+.nt-doc {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.nt-dp-body { grid-template-columns: minmax(0, 1fr); }
+.nt-dp[data-mode="preview"] .nt-preview,
+.nt-dp[data-mode="edit"] .nt-preview { display: block; }
+/* 编辑态把大纲收起来：右栏本来就不宽，腾出 190px 给正文与工具条，
+   工具条才不会被挤到横向滚动里（想看大纲可随时点标题栏「大纲」） */
+.nt-dp[data-mode="edit"] .nt-toc { display: none; }
+
+/* 块级包裹只用于「未改动块复用原始 Markdown 片段」，不引入任何视觉差异 */
+.nt-blk { position: relative; }
+
+/* 只读态：光标是普通箭头，工具条不存在；编辑态才出现文本光标 */
+.nt-preview { caret-color: transparent; }
+.nt-preview.is-editing { caret-color: var(--primary); outline: none; }
+.nt-preview.is-editing:focus { outline: none; }
+/* 复杂块（图 / 表 / 代码块工具条）整体原子化，避免编辑时把内部结构改坏 */
+.nt-preview [contenteditable="false"] { user-select: none; }
+.nt-preview .md-code pre,
+.nt-preview .md-code pre code { user-select: text; }
+
+/* 空笔记的只读提示（不写进正文 DOM，编辑态自动消失、可直接在空段落里打字） */
+.nt-preview.is-empty:not(.is-editing)::before {
+  content: '这篇笔记还没有内容，点右上角「✎ 编辑」开始写';
+  display: block;
+  padding: 24px 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.nt-preview.is-empty:not(.is-editing) .nt-blk { display: none; }
+
+/* ---- 工具条：只在编辑态出现 ---- */
+.nt-wys-bar {
+  flex: 0 0 auto;
+  /* 固定标题行：正文再长，工具条也吸在滚动区顶部（.nt-dp-scroll 是滚动容器，
+     sticky 相对它生效）。背景必须不透明，否则正文会从字缝里透出来。 */
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap; /* 顶部笔记列表工具栏叫 .nt-toolbar 且是 wrap，这里必须显式压住 */
+  gap: 2px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: var(--bg-panel);
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.nt-wys-bar[hidden] { display: none; }
+.nt-wys-bar::-webkit-scrollbar { height: 4px; }
+.nt-wys-bar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.nt-tb-btn {
+  flex: 0 0 auto;
+  min-width: 25px;
+  height: 26px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .12s, color .12s;
+}
+.nt-tb-btn:hover { background: var(--bg-hover); color: var(--text); }
+.nt-tb-btn.active {
+  background: color-mix(in srgb, var(--primary) 13%, transparent);
+  color: var(--primary);
+}
+.nt-tb-block { min-width: 56px; justify-content: space-between; gap: 4px; }
+.nt-tb-caret { font-size: 10px; opacity: .65; }
+.nt-tb-color { font-weight: 700; color: #e5484d; }
+.nt-tb-bg {
+  font-weight: 700; color: #1f2328; background: #fff3a3; border-radius: 3px;
+  height: 19px; padding: 0 5px; align-self: center;
+}
+.nt-tb-help { color: var(--text-3); }
+.nt-tb-sep {
+  flex: 0 0 auto; width: 1px; height: 16px; margin: 0 4px;
+  background: var(--border);
+}
+.nt-tb-spacer { flex: 1 1 auto; min-width: 8px; }
+/* 工具条出现后，正文边框上圆角收掉，视觉上连成一个编辑区 */
+.nt-wys-bar:not([hidden]) + .nt-preview { border-top-left-radius: 0; border-top-right-radius: 0; }
+
+/* ---- 工具条浮层（标题菜单 / 链接输入）：挂 body，别被编辑区裁剪 ---- */
+.nt-overlay {
+  position: fixed;
+  z-index: 430;
+  min-width: 196px;
+  padding: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .16);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.nt-overlay-title {
+  padding: 4px 8px 7px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.nt-overlay-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 6px 8px;
+  border: none; border-radius: 5px; background: transparent;
+  color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.nt-overlay-item:hover { background: var(--bg-hover); color: var(--primary); }
+.nt-overlay-item small { color: var(--text-3); font-size: 11px; }
+.nt-overlay-input {
+  width: 100%; box-sizing: border-box; padding: 6px 8px; margin-bottom: 6px;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px;
+  outline: none;
+}
+.nt-overlay-input:focus { border-color: var(--primary); }
+.nt-overlay-acts { display: flex; align-items: center; gap: 6px; }
+
+/* ---- 代码块语言选择 ---- */
+.nt-lang-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(74px, 1fr));
+  gap: 3px;
+  max-height: 268px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.nt-lang-item {
+  padding: 6px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.nt-lang-item:hover { background: var(--bg-hover); color: var(--primary); }
+.nt-lang-item.active {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  font-weight: 600;
+}
+
+/* 编辑态：语言标签可点换语言（只读态不给指针，避免"看着能点却没反应"） */
+.nt-preview.is-editing .md-code-lang {
+  padding: 0 4px;
+  margin-left: -4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.nt-preview.is-editing .md-code-lang::after {
+  content: '▾';
+  margin-left: 3px;
+  font-size: 9px;
+  opacity: .55;
+}
+.nt-preview.is-editing .md-code-lang:hover {
+  color: var(--primary);
+  background: var(--bg-hover);
+}
+/* 空代码块的输入提示：纯 CSS 占位，不会把"在这里输入代码"存进正文 */
+.nt-preview.is-editing .md-code pre > code:empty::before,
+.nt-preview.is-editing .md-code pre > code:has(> br:only-child)::before {
+  content: '在这里输入代码';
+  color: var(--text-3);
+  opacity: .7;
+  pointer-events: none;
+}
+
+/* ---- 快捷键速查 ---- */
+.nt-guide-keys { font-size: 13px; line-height: 1.8; color: var(--text-2); }
+.nt-guide-keys p { margin: 0 0 12px; }
+.nt-guide-keys table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+.nt-guide-keys th, .nt-guide-keys td {
+  padding: 6px 10px; border: 1px solid var(--border); text-align: left; font-size: 12.5px;
+}
+.nt-guide-keys th { background: var(--bg); color: var(--text); font-weight: 600; }
+.nt-guide-keys code {
+  padding: 1px 5px; border-radius: 4px; background: var(--bg-hover);
+  font-family: Consolas, monospace; font-size: 12px;
+}

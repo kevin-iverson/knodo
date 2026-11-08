@@ -23,6 +23,9 @@ const backup = require('./backup');
 const storage = require('./storage');
 const desktopWindow = require('./desktop-window');
 const focus = require('./focus');
+const recurRules = require('./recurrence-rules');
+const holidays = require('./holidays-cn');
+const dateU = require('./date-utils');
 
 /**
  * 附件相对路径 → 笔记正文里可引用的 todo-media:// URL。
@@ -193,6 +196,56 @@ function registerIpc() {
   ipcMain.handle('tasks:archive', withDb((id) => db.archiveTask(id), { notify: true }));
   ipcMain.handle('tasks:unarchive', withDb((id) => db.unarchiveTask(id), { notify: true }));
   ipcMain.handle('tasks:subtasks', withDb((parentId) => db.listSubtasks(parentId)));
+
+  /* ---------- 重复事项 / 习惯 ---------- */
+  // 规则摘要与「下一次发生日」在主进程算：文案口径只有 recurrence-rules.js 一份，
+  // 渲染层不重复实现一遍（否则改规则含义时两边必然对不上）。
+  const decorateRule = (r) => (r ? {
+    ...r,
+    summary: recurRules.describeRule(r.rule),
+    nextDate: r.enabled ? (recurRules.nextOccurrence(r.rule, dateU.todayLocal(), r.start_date) || '') : '',
+    taskId: r.task_id == null ? null : Number(r.task_id),
+    todayDone: !!r.today_done,
+    doneCount: Number(r.done_count || 0),
+  } : null);
+  ipcMain.handle('recur:list', withDb(() => db.listRecurringRules().map(decorateRule)));
+  ipcMain.handle('recur:get', withDb((id) => decorateRule(db.getRecurringRule(id))));
+  ipcMain.handle('recur:create', withDb((p) => decorateRule(db.createRecurringRule(p || {})), { notify: true }));
+  ipcMain.handle('recur:update', withDb((id, p) => decorateRule(db.updateRecurringRule(id, p || {})), { notify: true }));
+  ipcMain.handle('recur:setEnabled', withDb((id, on) => decorateRule(db.setRecurringEnabled(id, !!on)), { notify: true }));
+  ipcMain.handle('recur:remove', withDb((id) => db.deleteRecurringRule(id), { notify: true }));
+  ipcMain.handle('recur:skips', withDb((id) => db.listSkips(id)));
+  ipcMain.handle('recur:clearSkips', withDb((id) => decorateRule(db.clearSkips(id)), { notify: true }));
+  // 详情抽屉 / 习惯面板用：按任务查规则、读打卡历史、补打卡、跳过某一天
+  ipcMain.handle('recur:forTask', withDb((taskId) => {
+    const t = db.getTask(taskId);
+    if (!t || t.recurring_id == null) return null;
+    return decorateRule(db.getRecurringRule(t.recurring_id));
+  }));
+  ipcMain.handle('recur:completions', withDb((id) => db.listCompletions(id)));
+  ipcMain.handle('recur:setCompletion', withDb((id, date, done) => db.setCompletion(id, date, !!done), { notify: true }));
+  ipcMain.handle('recur:skipDay', withDb((id, date) => decorateRule(db.skipOccurrence(id, date)), { notify: true }));
+  ipcMain.handle('recur:stats', withDb((id) => db.habitStats(id)));
+  ipcMain.handle('recur:sync', withDb(() => db.syncRecurrences(), { notify: true }));
+  ipcMain.handle('recur:meta', withDb(() => ({
+    coverage: holidays.coverage(),
+    weekdayLabels: recurRules.WEEKDAY_LABELS,
+    today: dateU.todayLocal(),
+  })));
+  // 配置表单里的「接下来 12 次」预览：只算日期，不写库。
+  // 起止都要收敛：起点取 max(今天, 生效日)，终点取 min(起点+400, 结束日) ——
+  // 之前不传结束日、后端按 today+400 截断，于是「结束日 11/10」的规则也能一路排到 11/18。
+  ipcMain.handle('recur:preview', withDb((p = {}) => {
+    const rule = recurRules.normalizeRule(p.rule || {});
+    const today = dateU.todayLocal();
+    const start = dateU.toDay(p.startDate) || today;
+    const from = start > today ? start : today;
+    const end = dateU.toDay(p.endDate) || '';
+    const cap = dateU.addDays(from, 400);
+    const to = end && end < cap ? end : cap;
+    if (to < from) return [];
+    return recurRules.occurrences(rule, from, to, start).slice(0, 12);
+  }));
 
   /* ---------- 任务附件 ---------- */
   /** 取任务的附件数组（任务不存在时抛出可读错误） */

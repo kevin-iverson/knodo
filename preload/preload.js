@@ -54,6 +54,26 @@ contextBridge.exposeInMainWorld('api', {
     unarchive: (id) => call('tasks:unarchive', id),
     subtasks: (parentId) => call('tasks:subtasks', parentId),
   },
+  // 重复事项 / 习惯：规则模板 CRUD + 生成预览 + 打卡统计。
+  // 一条重复事项 = 一条普通任务；规则只是这条任务的属性，完成记录按发生日单独存。
+  recurrences: {
+    list: () => call('recur:list'),
+    get: (id) => call('recur:get', id),
+    create: (p) => call('recur:create', p),
+    update: (id, p) => call('recur:update', id, p),
+    setEnabled: (id, on) => call('recur:setEnabled', id, on),
+    remove: (id) => call('recur:remove', id),
+    skips: (id) => call('recur:skips', id),
+    clearSkips: (id) => call('recur:clearSkips', id),
+    stats: (id) => call('recur:stats', id),
+    sync: () => call('recur:sync'),
+    meta: () => call('recur:meta'),
+    preview: (p) => call('recur:preview', p),
+    forTask: (taskId) => call('recur:forTask', taskId),
+    completions: (id) => call('recur:completions', id),
+    setCompletion: (id, date, done) => call('recur:setCompletion', id, date, done),
+    skipDay: (id, date) => call('recur:skipDay', id, date),
+  },
   // 标签
   tags: {
     list: () => call('tags:list'),
@@ -345,6 +365,8 @@ contextBridge.exposeInMainWorld('api', {
       // 桌面浮窗：浮窗重拉自己的投影 / 主窗口重绘 / 菜单里的已钉列表变化 / 清单被删除
       'desktop:invalidate', 'desktop:missing', 'desktop:collapsed', 'desktop:projection-changed',
       'ui:data-changed',
+      // 重复事项：File 菜单打开管理面板 / 后台跨天生成后让列表跟上
+      'ui:recurrence-manager', 'ui:recurrence-generated',
       // 日历：全局键 Ctrl+Alt+M / File 菜单「归档已完成任务」
       'ui:calendar', 'ui:archive-done',
       // 启动时的静默检查更新：发现新版只推一条轻提示，详情由 File → 检查更新 打开

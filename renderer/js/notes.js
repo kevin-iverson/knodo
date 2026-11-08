@@ -14,8 +14,9 @@
  * - 依赖注入（toast / refresh / switchView）而不是直接 import ui.js：ui.js 会 import 本模块的
  *   renderNotes，反向依赖会形成环。项目里 meetings.js / recorder.js 已是同一套做法。
  *
- * 编辑器选型：EasyMDE（CodeMirror 5 内核）提供工具栏、快捷键、列表续行、撤销栈等编辑语义，
- * 预览交给 markdown-it（见 markdown-lib.js）——两者都是成熟库，vendor 进仓库后可离线运行。
+ * 编辑器选型：**自绘的所见即所得两态**（见 wysiwyg.js）。读态 / 编辑态共用同一份
+ * markdown-it 渲染结果与同一套样式，切态只开关 contenteditable 与工具条；
+ * 数据仍存 Markdown，写回用 turndown + 未改动块的原文片段保真。
  * 颜色 / 高亮用 `==文字=={c:#e5484d;bg:#fff3a3}` 内联标记持久化（不引入原始 HTML，
  * 避免给笔记内容开注入口子），在预览、列表卡片、摘要里由同一套渲染器翻译。
  */
@@ -24,10 +25,11 @@ import { openPanelModal, openFormModal, openPromptModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import {
   renderSafeMarkdown, renderStyledInline, highlightKeyword, markKeywordIn,
-  wrapStyledText, TEXT_COLORS, BG_COLORS, enhanceMarkdown,
+  TEXT_COLORS, BG_COLORS, enhanceMarkdown,
 } from './markdown-lib.js';
+import { TOOLBAR_HTML, createWysiwyg } from './wysiwyg.js';
 import { openDetail } from './detail.js';
-import { openFindBar, closeFindBar, isFindOpen, findQuery, refreshFind } from './note-find.js';
+import { openFindBar, closeFindBar, isFindOpen, refreshFind } from './note-find.js';
 
 let notify = () => {};
 let onChanged = () => {};
@@ -52,7 +54,7 @@ let tagId = null;
 let keyword = '';
 let showTrash = false;     // 回收站模式
 let showArchived = false;  // 归档模式
-let mode = 'preview';      // 右栏模式：preview（默认） | split | edit
+let mode = 'preview';      // 右栏模式：preview（默认只读展示） | edit（所见即所得编辑）
 let lastList = [];
 let folderList = [];
 let tagList = [];
@@ -62,15 +64,13 @@ const boundContainers = new WeakSet();
 
 /* ---------------- 右栏（详情）状态 ---------------- */
 let activeNoteId = null;   // 右栏当前笔记
-let editor = null;         // EasyMDE 实例
+let editor = null;         // wysiwyg.js 实例（value / setContent / setEditing）
 let saver = null;
 let currentNote = null;
 let currentTagIds = [];
 let baseline = null;       // 最近一次「已保存」的快照：「取消」据此回滚
 let dirty = false;         // 有未落库的改动
 let previewTimer = null;
-/** 监听编辑器区域尺寸变化（切换模式 / 窗口缩放后要重新测量 CodeMirror） */
-let editorObserver = null;
 /** 笔记已被删除：不要再 flush（否则会对着一条已删除的记录保存并报「保存失败」） */
 let discardSave = false;
 /** 打开笔记时要高亮 / 滚动到的词（搜索结果、知识库溯源） */
@@ -398,16 +398,18 @@ function updateListItem(note) {
 /* ---------------- 右栏：笔记详情（就地查看 / 编辑） ---------------- */
 
 function detailHtml(note) {
-  const segBtn = (m, label) =>
-    `<button type="button" class="nt-seg-btn${mode === m ? ' active' : ''}" data-nt-act="mode" data-mode="${m}">${label}</button>`;
+  // 只有一个入口：默认只读展示，点「编辑」才出现工具条 / 允许改内容。
+  // 「完成」（或 Esc）退出编辑，正文 DOM 不重建，所以内容 / 排版不会跳。
   return `
     <div class="nt-dp" data-id="${note.id}" data-mode="${mode}">
       <div class="nt-dp-head">
         <input class="nt-dp-title" type="text" maxlength="120" placeholder="未命名笔记"
                value="${esc(note.title || '')}" />
-        <div class="nt-seg" role="group" aria-label="显示模式">
-          ${segBtn('preview', '预览')}${segBtn('split', '分栏')}${segBtn('edit', '编辑')}
-        </div>
+        <button type="button" class="nt-edit-toggle${mode === 'edit' ? ' is-editing' : ''}"
+                data-nt-act="mode" data-mode="edit"
+                title="${mode === 'edit' ? '保存并回到只读展示（Esc）' : '进入编辑（显示工具条，可用快捷键排版）'}">
+          ${mode === 'edit' ? '✓ 完成' : '✎ 编辑'}
+        </button>
         <button type="button" class="nt-dp-toc${tocVisible ? ' active' : ''}" data-nt-act="toc-toggle"
                 title="显示 / 隐藏大纲（按标题生成，点击可跳转）">
           <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
@@ -442,10 +444,10 @@ function detailHtml(note) {
       <div class="nt-dp-scroll" tabindex="-1">
         <div class="nt-dp-mid">
           <div class="nt-dp-body">
-            <div class="nt-pane">
-              <textarea id="nt-md"></textarea>
+            <div class="nt-doc">
+              ${TOOLBAR_HTML}
+              <div class="nt-preview markdown-body" id="nt-preview"></div>
             </div>
-            <div class="nt-preview markdown-body" id="nt-preview"></div>
           </div>
           <aside class="nt-toc" id="nt-toc" aria-label="大纲"></aside>
         </div>
@@ -495,22 +497,21 @@ export async function openNote(id, opts = {}) {
   discardSave = false;
   dirty = false;
   focusTerm = opts.focusTerm || (keyword && !showTrash ? keyword : '');
-  mode = opts.mode || (opts.focusTitle ? 'edit' : 'preview'); // 默认预览可编辑
+  mode = opts.mode === 'edit' || opts.focusTitle ? 'edit' : 'preview'; // 默认只读展示
 
   const box = (() => {
     const scope = modalRoot || boundRoot;
     return scope && scope.querySelector ? scope.querySelector('#nt-detail') : null;
   })();
   if (!box) return null;
-  // 先销毁上一篇的编辑器 / 保存器，再换 DOM：
-  // 反过来的话 toTextArea() 要在已经脱离文档的 CodeMirror 上拆结构，容易抛错
+  // 先销毁上一篇的编辑器 / 保存器，再换 DOM（编辑器与保存器都是模块级单例）
   disposeEditor();
   box.innerHTML = detailHtml(note);
   const pane = box.querySelector('.nt-dp');
 
   mountEditor(pane, note);
   bindSaver(pane, note);
-  switchMode(mode);
+  setEditing(mode === 'edit', true);
   applyFullscreen(pane); // 全屏状态跨笔记沿用（新建 DOM 要按状态再铺一次）
   renderAttachments(pane, note);
   renderRefs(pane, note);
@@ -520,8 +521,6 @@ export async function openNote(id, opts = {}) {
   if (opts.focusTitle) {
     const titleEl = pane.querySelector('.nt-dp-title');
     if (titleEl) { titleEl.focus(); titleEl.select(); }
-  } else if (mode === 'edit') {
-    try { editor && editor.codemirror && editor.codemirror.focus(); } catch (e) { /* 忽略 */ }
   }
   return note;
 }
@@ -540,102 +539,41 @@ function updateDetailMeta(pane, note) {
 }
 
 function mountEditor(pane, note) {
-  const ta = pane.querySelector('#nt-md');
-  if (!ta) return;
-  const MDE = window.EasyMDE;
-
-  if (!MDE) {
-    // 库缺失时降级为纯 textarea，不让编辑器整个打不开
-    ta.value = note.content_md || '';
-    ta.className = 'nt-md-fallback';
-    ta.addEventListener('input', () => {
-      if (saver) saver.schedule();
-      schedulePreviewRefresh();
-    });
-    return;
-  }
-
-  editor = new MDE({
-    element: ta,
-    initialValue: note.content_md || '',
-    autoDownloadFontAwesome: false, // 离线运行：图标由 CSS ::after 提供文字/符号
-    spellChecker: false,
-    status: false,
-    // Tab 宽度与预览保持一致：预览侧 CSS 的 tab-size 也是 2（见 styles.css「代码块里的 Tab 宽度」）。
-    // 两边不一致时，同一段代码在编辑器里缩进 2 格、预览里缩进 8 格，看着就像「缩进多了一大截」。
-    tabSize: 2,
-    indentWithTabs: false,
-    // 关掉「分栏即全屏」的默认行为：EasyMDE 的分栏是给整页编辑器设计的，
-    // 在受限容器里会把编辑器变成 position:fixed 盖住整个应用。
-    sideBySideFullscreen: false,
-    placeholder: '支持 Markdown：# 标题、- 列表、```代码块```（自动着色）、```mermaid 图表、[链接](url)、| 表格 |；截图可直接粘贴',
-    previewRender: (plain) => renderSafeMarkdown(plain),
-    toolbar: toolbarConfig(MDE, note.id),
-  });
-  // Tab 键插入空格，而不是制表符。
-  // CodeMirror 的默认键表把 Tab 绑在 defaultTab → insertTab 上，塞进正文的是一个 \t：
-  // 库里存的是「一个制表符」，它有多宽完全取决于谁在显示（编辑器 2 格、预览/导出/别的编辑器 8 格），
-  // 「缩进按照实际情况」就无从谈起。改成 insertSoftTab 后存的就是看得见的空格。
-  editor.codemirror.addKeyMap({
-    Tab: (cm) => {
-      if (cm.somethingSelected()) cm.indentSelection('add');
-      else cm.execCommand('insertSoftTab');
+  const box = pane.querySelector('#nt-preview');
+  const bar = pane.querySelector('[data-nt-toolbar]');
+  if (!box) return;
+  editor = createWysiwyg({
+    root: box,
+    pane,
+    toolbar: bar,
+    notify,
+    onInput: () => { if (saver) saver.schedule(); schedulePreviewRefresh(); },
+    hooks: {
+      // 粘贴 / 拖入图片：落盘后直接把 <img> 插进所见即所得正文
+      pasteImage: (files) => files.forEach(async (f) => {
+        try {
+          const url = await uploadNoteImage(note.id, f);
+          editor.insertImage(url, f.name || '图片');
+          notify('图片已插入');
+        } catch (e) { notify((e && e.message) || '图片保存失败'); }
+      }),
+      pickImage: () => pickNoteImage(note.id),
+      palette: (kind) => openPalette(kind),
+      guide: () => showGuide(),
+      canExit: () => !isFindOpen() && !paletteEl,
+      exitEdit: () => setEditing(false),
+      enterEdit: () => setEditing(true),
     },
   });
-  // 图片粘贴 / 拖拽：自己接管插入。
-  // 不走 EasyMDE 的 uploadImage / imageUploadFunction —— 它内部的插入分支（P()/G()）在
-  // 某些光标状态下会把整行替换成自身，导致「图片存好了但正文没插入」；自己插更可控。
-  bindImagePaste(editor.codemirror, note.id);
-  // 正文变化：防抖落库 + 刷新预览（预览面板是我们自己的 DOM，EasyMDE 不会替我们更新）
-  editor.codemirror.on('change', () => {
-    if (saver) saver.schedule();
-    schedulePreviewRefresh();
-  });
-  if (typeof ResizeObserver === 'function') {
-    // 回调里 refresh() 又会改布局，直接同步处理会报「ResizeObserver loop」告警，
-    // 挪到下一帧再测量即可消除
-    const ro = new ResizeObserver(() => requestAnimationFrame(() => refreshEditorLayout()));
-    ro.observe(pane.querySelector('.nt-dp-body') || pane);
-    editorObserver = ro;
-  }
-  // 注：这里刻意不绑「双击预览进编辑」。
-  // 双击是最常用的选中词 /段落手势，顺手就把界面切成编辑态既不符合预期，
-  // 也容易让选中的字在重排后被改动误伤 —— 是否编辑交给标题栏的「编辑 / 分栏」按钮显式决定。
+  // 注：这里刻意不绑「双击预览进编辑」。双击是选词手势，是否编辑交给
+  // 标题栏的「编辑」按钮显式决定（Esc /「完成」退出）。
+  refreshPreview(note.content_md || '');
 }
 
-/** CodeMirror 的尺寸变了（切换模式 / 窗口缩放）后要重新测量一次 */
-function refreshEditorLayout() {
-  if (!editor) return;
-  try { editor.codemirror.refresh(); } catch (e) { /* 编辑器已销毁 */ }
-}
-
-function toolbarConfig(MDE, noteId) {
-  const t = (name, action, cls, title) => ({ name, action, className: cls, title });
-  // 按钮数量控制在「分栏时也能一行放下」：分栏后的编辑区只有一半宽，
-  // 多放两个图标就会横向滚动、右侧图标被切掉（视觉上像坏了）。
-  return [
-    t('bold', MDE.toggleBold, 'nt-ico-bold', '加粗 (Ctrl+B)'),
-    t('italic', MDE.toggleItalic, 'nt-ico-italic', '斜体 (Ctrl+I)'),
-    '|',
-    t('heading-1', MDE.toggleHeading1, 'nt-ico-h1', '一级标题'),
-    t('heading-2', MDE.toggleHeading2, 'nt-ico-h2', '二级标题'),
-    t('heading-3', MDE.toggleHeading3, 'nt-ico-h3', '三级标题'),
-    '|',
-    // 字体颜色 / 背景高亮：两种样式都写进 `==文字=={c:..;bg:..}` 标记，随正文一起持久化
-    t('text-color', () => openPalette('color'), 'nt-ico-color', '字体颜色'),
-    t('bg-color', () => openPalette('bg'), 'nt-ico-bg', '背景高亮（文字标记）'),
-    '|',
-    t('code', MDE.toggleCodeBlock, 'nt-ico-code', '代码块'),
-    t('quote', MDE.toggleBlockquote, 'nt-ico-quote', '引用'),
-    t('unordered-list', MDE.toggleUnorderedList, 'nt-ico-ul', '无序列表'),
-    t('ordered-list', MDE.toggleOrderedList, 'nt-ico-ol', '有序列表'),
-    '|',
-    t('link', MDE.drawLink, 'nt-ico-link', '链接'),
-    t('upload-image', () => pickNoteImage(noteId), 'nt-ico-image', '插入图片（本地文件）'),
-    t('table', MDE.drawTable, 'nt-ico-table', '表格'),
-    '|',
-    t('guide', () => showGuide(), 'nt-ico-help', 'Markdown 语法帮助'),
-  ];
+/** 所见即所得：编辑区本身就是渲染结果，打字时绝不重渲（会丢光标），只刷新大纲 */
+function schedulePreviewRefresh() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => renderToc(detailPane()), 220);
 }
 
 /* ---------------- 颜色 / 高亮（工具栏） ---------------- */
@@ -652,7 +590,7 @@ function closePalette() {
 function onPaletteOutside(e) {
   if (!paletteEl) return;
   const t = e.target;
-  const inBar = t && typeof t.closest === 'function' ? t.closest('.editor-toolbar') : null;
+  const inBar = t && typeof t.closest === 'function' ? t.closest('.nt-wys-bar') : null;
   if (!paletteEl.contains(t) && !inBar) closePalette();
 }
 function onPaletteKey(e) {
@@ -665,7 +603,7 @@ function onPaletteKey(e) {
  */
 function openPalette(kind) {
   if (paletteEl) { closePalette(); return; }
-  const anchor = document.querySelector(`.nt-dp .editor-toolbar button.nt-ico-${kind === 'color' ? 'color' : 'bg'}`);
+  const anchor = document.querySelector(`.nt-dp .nt-wys-bar button[data-nt-cmd="${kind === 'color' ? 'color' : 'bg'}"]`);
   const list = kind === 'color' ? TEXT_COLORS : BG_COLORS;
   paletteEl = document.createElement('div');
   paletteEl.className = 'nt-palette';
@@ -703,61 +641,11 @@ function openPalette(kind) {
  * @param {string} value #hex；空串 = 清除这一类样式
  */
 function applyTextStyle(kind, value) {
-  const cm = editor && editor.codemirror;
-  if (!cm) { notify('请先切到「编辑 / 分栏」模式'); return; }
-  if (!cm.getSelection()) {
-    // 没选内容就作用在光标所在的词上，省一步「先拖选」
-    try {
-      const w = cm.findWordAt(cm.getCursor());
-      cm.setSelection(w.anchor, w.head);
-    } catch (e) { /* 光标在空行：取不到词就算了 */ }
-  }
-  const sel = cm.getSelection();
-  if (!sel.trim()) { notify('请选中一段文字再设置颜色'); return; }
-  cm.replaceSelection(wrapStyledText(sel, kind, value));
-  if (saver) saver.schedule();
-  schedulePreviewRefresh();
-  try { cm.focus(); } catch (e) { /* 忽略 */ }
+  if (!editor) return;
+  editor.applyStyle(kind, value);
 }
 
 /* ---------------- 图片（复用 attachments.js 落盘规则） ---------------- */
-
-/**
- * 绑定「粘贴 / 拖拽图片」：落盘后把 Markdown 引用插到光标处。
- * 只处理 image/* 的条目，其它粘贴（文本、文件）交还给 CodeMirror 原样处理。
- */
-function bindImagePaste(cm, noteId) {
-  const takeFiles = (files) => {
-    const imgs = [...(files || [])].filter((f) => /^image\//i.test(f && f.type ? f.type : ''));
-    if (!imgs.length) return false;
-    imgs.forEach(async (f) => {
-      try {
-        const url = await uploadNoteImage(noteId, f);
-        insertImageMarkdown(cm, f.name || '图片', url);
-        schedulePreviewRefresh();
-        notify('图片已插入');
-      } catch (e) {
-        notify((e && e.message) || '图片保存失败');
-      }
-    });
-    return true;
-  };
-  cm.on('paste', (_cm, e) => {
-    if (e && e.clipboardData && takeFiles(e.clipboardData.files)) e.preventDefault();
-  });
-  cm.on('drop', (_cm, e) => {
-    if (e && e.dataTransfer && takeFiles(e.dataTransfer.files)) e.preventDefault();
-  });
-}
-
-/** 把 `![name](url)` 插到光标处：当前行有内容时先换行，避免把正文粘在行尾 */
-function insertImageMarkdown(cm, name, url) {
-  const cur = cm.getCursor();
-  const line = cm.getLine(cur.line) || '';
-  const prefix = cur.ch === 0 ? '' : (line.trim() ? '\n\n' : '\n');
-  cm.replaceSelection(`${prefix}![${String(name || '图片').replace(/[[\]]/g, '')}](${url})\n`);
-  if (saver) saver.schedule();
-}
 
 /**
  * 把剪贴板 / 拖入 / 选择的文件转成 dataURL 交给主进程落盘，返回可写进 Markdown 的 URL。
@@ -785,8 +673,8 @@ async function pickNoteImage(noteId) {
   try {
     const res = await api.noteAttachments.pick(noteId);
     if (!res || res.canceled || !res.entries) return;
-    const md = res.entries.map((e) => `![${e.name}](${mediaUrl(e)})`).join('\n\n');
-    insertAtCursor(`\n\n${md}\n\n`);
+    // 所见即所得：直接插 <img>，与只读态渲染出来的图片完全同一个节点
+    res.entries.forEach((e) => editor && editor.insertImage(mediaUrl(e), e.name));
     currentNote = { ...(currentNote || {}), attachments: res.attachments };
     renderAttachments(detailPane(), currentNote);
     notify(`已插入 ${res.entries.length} 张图片`);
@@ -798,19 +686,6 @@ async function pickNoteImage(noteId) {
 function mediaUrl(entry) {
   const rel = String((entry && entry.path) || '').replace(/^\/+/, '');
   return `todo-media:///${rel.split('/').map(encodeURIComponent).join('/')}`;
-}
-
-function insertAtCursor(text) {
-  if (editor && editor.codemirror) {
-    editor.codemirror.replaceSelection(text);
-    if (saver) saver.schedule();
-    return;
-  }
-  const ta = document.querySelector('#nt-md');
-  if (!ta) return;
-  const pos = ta.selectionStart || 0;
-  ta.value = `${ta.value.slice(0, pos)}${text}${ta.value.slice(pos)}`;
-  if (saver) saver.schedule();
 }
 
 /** 编辑器下方的图片条：直接看到已插入的图片，可打开 / 删除 */
@@ -831,6 +706,7 @@ async function renderAttachments(pane, note) {
            </span>
          </li>`).join('')}</ul>`
     : '';
+  syncReadonlyControls();
   if (!list.length) return;
 
   box.querySelectorAll('[data-att-act]').forEach((el) => {
@@ -868,51 +744,49 @@ function detailPane() {
   return scope && scope.querySelector ? scope.querySelector('.nt-dp') : null;
 }
 
-function switchMode(m) {
+/** 只读态连「删除附件」这类会改内容的操作也一起禁用（置顶 / 归档 / 导出不受影响） */
+function syncReadonlyControls() {
   const pane = detailPane();
   if (!pane) return;
-  // 浮条跟着模式换后端（预览 ↔ 源码），查询词与当前项都要接着用
-  const findWasOpen = isFindOpen();
-  const findSeed = findWasOpen ? findQuery() : '';
-  mode = m || 'preview';
-  pane.dataset.mode = mode;
-  pane.querySelectorAll('[data-nt-act="mode"]').forEach((b) => {
-    b.classList.toggle('active', b.dataset.mode === mode);
+  pane.querySelectorAll('#nt-att [data-att-act="del"]').forEach((b) => {
+    b.disabled = mode !== 'edit';
+    b.title = mode !== 'edit' ? '只读展示态不能改动内容，请先点「编辑」' : '删除图片文件';
   });
-  if (mode !== 'edit') refreshPreview();
-  else enhanceMarkdown(detailPane()); // 编辑态下预览是隐藏的，切回来时补画 mermaid
-  if (findWasOpen) openNoteFind({ seed: findSeed });
-  // 切换后编辑器宽度变了 → 重新测量（否则行号 / 光标的横向位置会错）
-  if (mode !== 'preview') {
-    setTimeout(() => {
-      refreshEditorLayout();
-      // 查找 / 替换浮条开着时不要抢焦点（Ctrl+F 会自动切到分栏，这时焦点该留在查找框里）
-      if (isFindOpen()) return;
-      try { editor && editor.codemirror.focus(); } catch (e) { /* 忽略 */ }
-    }, 20);
-  }
-}
-
-/** 预览刷新防抖（打字时不逐字符重渲 markdown） */
-function schedulePreviewRefresh() {
-  clearTimeout(previewTimer);
-  previewTimer = setTimeout(() => refreshPreview(), 220);
 }
 
 /**
- * 把当前正文渲染进预览面板。
- * 预览面板是自己渲染的（不是 EasyMDE 的 .editor-preview），所以样式与列表摘要、
- * 知识库答案完全一致，也不受 EasyMDE 全屏/分栏那套 fixed 布局影响。
+ * 两态切换：只读展示 ↔ 所见即所得编辑。
+ *
+ * 关键：**不重建正文 DOM、不重新渲染 Markdown**。切态只是开关 contenteditable、
+ * 工具条显隐和元数据字段的可写性，所以内容、格式、滚动位置在切换中零丢失、零跳动。
  */
-function refreshPreview() {
+function setEditing(on, initial = false) {
+  const pane = detailPane();
+  if (!pane) return;
+  const next = !!on;
+  mode = next ? 'edit' : 'preview';
+  pane.dataset.mode = mode;
+  if (editor) editor.setEditing(next, initial);
+  if (!next) {
+    closePalette();
+    // 退出编辑即落库；失败不阻断切态（内容仍在 DOM 上，自动保存会重试）
+    if (!initial) flushNow().catch(() => {});
+    refreshFind();
+  }
+  syncReadonlyControls();
+}
+
+/**
+ * 从库里加载一份新的正文（打开笔记 / 取消 / 外部更新）。
+ * 编辑态下打字**不会**走这里 —— 编辑区本身就是渲染结果，重渲会丢光标。
+ */
+function refreshPreview(md) {
   const pane = detailPane();
   if (!pane) return;
   const box = pane.querySelector('#nt-preview');
-  if (!box) return;
-  const text = editor ? editor.value() : (pane.querySelector('#nt-md')?.value || '');
-  box.innerHTML = String(text || '').trim()
-    ? renderSafeMarkdown(text)
-    : '<div class="nt-preview-empty">正文为空。切到「编辑」开始写，这里会实时渲染 Markdown。</div>';
+  if (!box || !editor) return;
+  const text = md != null ? String(md) : String((currentNote && currentNote.content_md) || '');
+  editor.setContent(text); // 内部按顶层块渲染 + 异步画 Mermaid
   // 搜索词 / 知识库溯源词：渲染完再把命中处标出来（含滚动定位）
   if (focusTerm) {
     markKeywordIn(box, focusTerm);
@@ -920,10 +794,8 @@ function refreshPreview() {
     if (first && typeof first.scrollIntoView === 'function') first.scrollIntoView({ block: 'center' });
   }
   renderToc(pane);
-  // 重渲会清掉预览里的命中标记：浮条开着就地按当前词重算一遍（不抢焦点、不滚走）
+  // 重渲会清掉命中标记：浮条开着就地按当前词重算一遍（不抢焦点、不滚走）
   refreshFind();
-  // ```mermaid → SVG（异步；隐藏容器里的块会留到切回预览时再画）
-  enhanceMarkdown(box);
 }
 
 /* ---------------- 大纲（目录，仿语雀） ---------------- */
@@ -978,10 +850,8 @@ function toggleToc() {
 /**
  * 全屏：`.nt-dp` 本身改成 `position: fixed; inset: 0`（右栏与弹窗两种宿主通用）。
  *
- * 为什么不动 EasyMDE 自带的 fullscreen：它的实现是 `position: fixed` 到整页，
- * 会把「目录 / 标签 / 大纲 / 保存状态 / 操作按钮」全部盖掉，只剩一个孤零零的编辑框，
- * 而且只覆盖编辑区 —— 预览态下点了没有任何反应。这里让**整个详情面板**铺满窗口，
- * 预览 / 分栏 / 编辑三种模式都能全屏，模式切换、保存、大纲全都照常可用。
+ * 全屏由详情面板自己铺满窗口（不是编辑器自带的 fullscreen）：正文、大纲、
+ * 工具条、保存状态、操作按钮全都跟着一起放大；Esc 退出。
  *
  * 铺满后要在下一帧重新测量 CodeMirror（宽度变了不 refresh 会让光标横向错位）——
  * mountEditor 里那个 ResizeObserver 也会兜住，这里补一次是为了切换当帧就准。
@@ -1000,7 +870,7 @@ function applyFullscreen(pane) {
   }
   setFsKeyBound(fullscreen);
   requestAnimationFrame(() => {
-    refreshEditorLayout();
+    if (editor) editor.syncToolbarState();
     // 全屏后正文宽度变了 → mermaid 图是按容器宽度画的，不重画会留着旧的（偏窄的）尺寸
     const box = p.querySelector('#nt-preview');
     if (box) enhanceMarkdown(box);
@@ -1032,7 +902,7 @@ function setFsKeyBound(on) {
  */
 function onFsKey(e) {
   if (!e || e.key !== 'Escape' || !fullscreen) return;
-  if (isFindOpen() || paletteEl) return;
+  if (isFindOpen() || paletteEl || document.querySelector('.nt-overlay')) return;
   e.preventDefault();
   e.stopPropagation();
   toggleFullscreen();
@@ -1047,7 +917,7 @@ function readPayload() {
   // 空标题在列表里统一显示为「未命名笔记」。
   return {
     title: (pane.querySelector('.nt-dp-title')?.value || '').trim(),
-    content_md: editor ? editor.value() : (pane.querySelector('#nt-md')?.value || ''),
+    content_md: editor ? editor.value() : '',
     folder_id: Number(pane.querySelector('.nt-folder-select')?.value) || null,
     tagIds: currentTagIds,
   };
@@ -1138,14 +1008,9 @@ async function cancelEdit() {
     pane.querySelector('.nt-tag-input').value = (updated.tags || []).map((t) => t.name).join('，');
     const sel = pane.querySelector('.nt-folder-select');
     if (sel) sel.value = String(updated.folder_id ?? UNFILED);
-    if (editor) editor.value(updated.content_md || '');
-    else {
-      const ta = pane.querySelector('#nt-md');
-      if (ta) ta.value = updated.content_md || '';
-    }
     updateDetailMeta(pane, updated);
   }
-  refreshPreview();
+  refreshPreview(updated.content_md || '');
   updateListItem(updated);
   setSaveState('idle');
   notify('已放弃未保存的改动');
@@ -1260,7 +1125,7 @@ function bindModalEvents(mask) {
     const el = e.target.closest('[data-nt-act]');
     if (!el) return;
     const act = el.dataset.ntAct;
-    if (act === 'mode') switchMode(el.dataset.mode);
+    if (act === 'mode') setEditing(mode !== 'edit');
     else if (act === 'toc-toggle') toggleToc();
     else if (act === 'fs-toggle') toggleFullscreen();
     else if (act === 'dp-close') { if (modalClose) modalClose(); }
@@ -1398,7 +1263,7 @@ function bindEvents(root) {
     else if (act === 'archive') { await toggleArchiveById(id); }
     else if (act === 'delete') { await confirmDeleteById(id); }
     // ---- 右栏 ----
-    else if (act === 'mode') { switchMode(el.dataset.mode); }
+    else if (act === 'mode') { setEditing(mode !== 'edit'); }
     else if (act === 'toc-toggle') { toggleToc(); }
     else if (act === 'fs-toggle') { toggleFullscreen(); }
     else if (act === 'dp-close') { await closeDetailPane(); }
@@ -1476,17 +1341,15 @@ async function runSearch(root = boundRoot, value = '') {
 /* ---------------- 正文查找 / 替换（Ctrl+F / Ctrl+H） ---------------- */
 
 /**
- * 找 / 替换的目标：编辑器可能还没挂好，所以传 getter 而不是直接传实例。
- * 预览态没有可见的源码区（编辑区是 display:none 的，打了标记也看不见），
- * 搜索直接作用在渲染结果上；分栏 / 编辑态才走 CodeMirror 的源码检索。
+ * 正文查找：所见即所得下只有一份渲染 DOM，读态 / 编辑态都走 dom 后端。
+ * 源码不复存在，所以 Ctrl+H 只开查找条；替换改成「选中文字直接改写」。
  */
 function findTarget() {
   const pane = detailPane();
-  const previewOnly = mode === 'preview';
   return {
     pane,
-    backend: previewOnly ? 'dom' : 'cm',
-    getCm: () => (editor && editor.codemirror) || null,
+    backend: 'dom',
+    getCm: () => null,
     getRoot: () => (pane ? pane.querySelector('#nt-preview') : null),
     onChange: () => { if (saver) saver.schedule(); schedulePreviewRefresh(); },
   };
@@ -1506,31 +1369,25 @@ function selectionInPreview(pane) {
 }
 
 /**
- * 打开浮条：没编辑器 / 没预览区要给出可用提示，而不是默默什么都不发生。
- * @param {{replace?:boolean, seed?:string}} [o] seed 用于切模式后把查询词带过去
+ * 打开查找浮条。源码态已移除，Ctrl+H 也只开查找（替换改为选中文字直接改写）。
+ * @param {{replace?:boolean, seed?:string}} [o]
  */
 function openNoteFind({ replace = false, seed } = {}) {
   const pane = detailPane();
   if (!pane) return;
-  // 替换必须写源码：预览态按 Ctrl+H 仍然先切到分栏（与以前一致），查找则留在预览里
-  if (replace && mode === 'preview') switchMode('split');
-  const previewOnly = mode === 'preview';
-  const cmInst = editor && editor.codemirror;
-  if (!previewOnly && !cmInst) { notify('编辑器还没准备好，请稍后再试'); return; }
   const target = findTarget();
-  const seedText = seed != null
-    ? seed
-    : (previewOnly ? selectionInPreview(pane) : (cmInst ? cmInst.getSelection() : ''));
+  const seedText = seed != null ? seed : selectionInPreview(pane);
   const ok = openFindBar({
     pane: target.pane,
-    backend: target.backend,
-    getCm: target.getCm,
+    backend: 'dom',
+    getCm: () => null,
     getRoot: target.getRoot,
-    replace: previewOnly ? false : replace,
+    replace: false,
     seed: seedText,
     onChange: target.onChange,
   });
-  if (!ok) notify(previewOnly ? '预览区还没准备好，请稍后再试' : '编辑器还没准备好，请稍后再试');
+  if (!ok) notify('正文还没准备好，请稍后再试');
+  else if (replace) notify('所见即所得下没有源码，替换请直接选中文字改写');
 }
 
 /**
@@ -2001,16 +1858,9 @@ function disposeEditor() {
   disposeSaver();
   clearTimeout(previewTimer);
   previewTimer = null;
-  // 查找 / 替换浮条挂在详情面板里：整个 innerHTML 重建前必须撤掉，
-  // 否则它会拿着已销毁的 CodeMirror 继续打标记 / 调 replaceRange
+  // 查找 / 替换浮条挂在详情面板里：整个 innerHTML 重建前必须撤掉
   closeFindBar({ keepFocus: true });
-  if (editorObserver) {
-    try { editorObserver.disconnect(); } catch (e) { /* 忽略 */ }
-    editorObserver = null;
-  }
-  try {
-    if (editor && typeof editor.toTextArea === 'function') editor.toTextArea();
-  } catch (e) { /* 编辑器已随 DOM 移除，忽略 */ }
+  try { if (editor && editor.dispose) editor.dispose(); } catch (e) { /* 编辑器已随 DOM 移除 */ }
   editor = null;
   dirty = false;
 }
@@ -2317,56 +2167,31 @@ function matchLabel(matchedBy) {
   return String(matchedBy || '').split('+').map((k) => map[k] || k).join(' + ');
 }
 
-/* ---------------- Markdown 语法帮助 ---------------- */
+/* ---------------- 编辑快捷键速查 ---------------- */
 
 function showGuide() {
+  const rows = [
+    ['进入 / 退出编辑', '右上角「✎ 编辑」；Esc 或「✓ 完成」退出'],
+    ['加粗 / 斜体 / 下划线 / 删除线', 'Ctrl+B / Ctrl+I / Ctrl+U / Ctrl+Shift+X'],
+    ['正文 / 一级 / 二级 / 三级标题', 'Ctrl+Alt+0 / 1 / 2 / 3'],
+    ['无序列表 / 有序列表', 'Ctrl+Shift+8 / Ctrl+Shift+7'],
+    ['插入链接', 'Ctrl+K（选中文字后）'],
+    ['插入代码块', 'Ctrl+Alt+C（弹出语言列表，选中即插入）'],
+    ['撤销 / 重做', 'Ctrl+Z / Ctrl+Shift+Z'],
+    ['保存', 'Ctrl+S（也会自动保存）'],
+    ['查找', 'Ctrl+F'],
+  ];
   openPanelModal({
-    title: 'Markdown 语法速查',
-    html: `<div class="nt-guide">${renderSafeMarkdown([
-      '# 一级标题 / ## 二级标题',
-      '- 无序列表',
-      '1. 有序列表',
-      '**加粗** *斜体* ~~删除线~~',
-      '> 引用',
-      '`行内代码`',
-      '```js',
-      'console.log("代码块");',
-      '```',
-      '[链接](https://example.com)',
-      '![图片](https://example.com/a.png) ← 本地图片直接粘贴 / 拖拽即可',
-      '',
-      '| 列 A | 列 B |',
-      '| --- | --- |',
-      '| 1 | 2 |',
-      '',
-      '## 代码块（自动着色）',
-      '```python',
-      'def main():',
-      '    print("按语言自动高亮，右上角可一键复制")',
-      '```',
-      '',
-      '支持 js / ts / python / java / go / rust / c / cpp / sql / bash / yaml / json … '
-      + '不认识的语言会尝试自动识别。Tab 键插入 2 个空格（与预览里的缩进宽度一致）。',
-      '',
-      '## 图表（Mermaid）',
-      '```mermaid',
-      'graph LR',
-      '  A[想法] --> B(笔记)',
-      '  B --> C{进入知识库}',
-      '  C -->|是| D[AI 可检索]',
-      '  C -->|否| E[继续整理]',
-      '```',
-      '',
-      '流程 / 时序 / 类 / 甘特 / 饼图五种语法同 mermaid 官方（其它图表类型不支持）；'
-      + '语法写错时会就地显示源码，改完立刻重画。',
-      '',
-      '## 颜色与高亮（本应用扩展）',
-      '==默认高亮文字==',
-      '==红字=={c:#e5484d}',
-      '==蓝底=={bg:#cfe3ff}',
-      '==红字蓝底=={c:#e5484d;bg:#fff3a3}',
-      '',
-      '> 选中文字后点工具栏「A」「🖍」即可上色；色值只支持 #hex，随正文一起保存。',
-    ].join('\n'))}</div>`,
+    title: '编辑快捷键',
+    html: `<div class="nt-guide nt-guide-keys">
+      <p>默认进入<strong>只读展示</strong>：不显示工具条，也不能输入、删除或粘贴。
+         点右上角「✎ 编辑」后才会出现工具条并允许修改；退出后自动回到只读。
+         正文里不会显示任何 Markdown 标记，排版在两种状态下完全一致。</p>
+      <table><thead><tr><th>操作</th><th>方式</th></tr></thead><tbody>
+        ${rows.map(([a, b]) => `<tr><td>${esc(a)}</td><td><code>${esc(b)}</code></td></tr>`).join('')}
+      </tbody></table>
+      <p>引用、代码块、表格、分割线、图片、字体颜色与背景高亮都在工具条上；
+         图片也可以直接粘贴或拖进正文。Tab 在列表里缩进一层。</p>
+    </div>`,
   });
 }
