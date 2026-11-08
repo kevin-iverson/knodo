@@ -19,3 +19,6 @@ canvas/*
 .tmp/
 
 docs/*
+
+# electron-builder 临时配置（build-win.js 生成，正常退出会自删）
+.builder-config.json

@@ -16,7 +16,7 @@
 
 [为什么是 Knodo](#为什么是-knodo) · [功能亮点](#功能亮点) · [重复待办](#重复待办一条任务天天自己出现) · [日历](#日历回答这周排得下吗) · [番茄钟](#番茄钟每一格留下一句话) · [快捷键](#快捷键不用切回主窗口) · [快速开始](#快速开始) · [文档](docs/README.md)
 
-<a href="https://gitee.com/kiverson/todo-task/releases/latest"><b>⬇ 下载最新版 · 免安装包（约 90 MB）</b></a>
+<a href="https://gitee.com/kiverson/todo-task/releases/latest"><b>⬇ 下载最新版 · 免安装包 / 安装包（约 90 MB）</b></a>
 
 <sub>Windows 10/11 · 不用注册 · 双击即用 · 不会装？看<a href="docs/下载与安装.md">三步图解</a></sub>
 
@@ -301,13 +301,15 @@ Mermaid 图块鼠标移上去会露出 **⤢ 放大** 与 **⬇ 下载**：下�
 
 ### 直接使用（不需要懂代码）
 
-打开 **[最新版本](https://gitee.com/kiverson/todo-task/releases/latest)**，滑到页面最底部，
-点名字带 **便携版** 的那个 `.exe`，下载完双击即可 —— 没有安装向导。
+打开 **[最新版本](https://gitee.com/kiverson/todo-task/releases/latest)**，滑到页面最底部，按习惯挑一个 `.exe`：
 
 | 文件 | 说明 |
 |---|---|
-| `Knodo-<版本>-便携版.exe` | **推荐**。单文件绿色版，数据在 exe 同级的 `data/`，整个文件夹拷走即可换机 |
-| `Knodo-<版本>-win64.7z` | 解压即用版，需先解压，数据在 `%APPDATA%\todo-desktop`，可开开机自启 |
+| `Knodo-<版本>-便携版.exe` | **推荐**。单文件绿色版，下载后双击即用（没有安装向导），数据在 exe 同级的 `data/`，整个文件夹拷走即可换机 |
+| `Knodo-<版本>-安装版.exe` | 双击走安装向导，可选安装目录、生成桌面与开始菜单快捷方式；数据在 `%APPDATA%\todo-desktop`，可开开机自启 |
+
+两个包功能完全一致，区别只在**装不装**和**数据放哪**：
+固定一台电脑长期用选安装版（有快捷方式、能开机自启），换来换去或放 U 盘选便携版。
 
 > ⚠️ 别点 `Source code (zip)` 或页面右上角绿色的「克隆/下载」——那是源代码，下下来用不了。
 

@@ -104,6 +104,7 @@
         "zh_CN"
       ],
       "deleteAppDataOnUninstall": false,
+      "differentialPackage": false,
       "artifactName": "${productName}-${version}-安装版.${ext}"
     },
     "portable": {
