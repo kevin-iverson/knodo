@@ -122,12 +122,20 @@ body {
   min-width: 0;
 }
 
+/* 完成进度徽标：这是浮窗最核心的读数，必须一眼扫到 —— 小灰字会淹没在标题栏里 */
 .dw-count {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--dw-text-2);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--dw-primary-strong);
   font-variant-numeric: tabular-nums;
   flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dw-primary) 14%, transparent);
+}
+html[data-theme='dark'] .dw-count {
+  color: #9db4ff;
+  background: color-mix(in srgb, var(--dw-primary) 26%, transparent);
 }
 
 .dw-btns {
@@ -242,6 +250,63 @@ body {
   text-overflow: ellipsis;
 }
 
+/* ---------------- 优先级色点（8px，四档固定配色） ----------------
+   固定档位色，不跟分组色走：低=灰 / 中=青 / 高=橙 / 紧急=红。
+   「中」刻意避开品牌蓝与分组常见的绿 —— 撞色会被误读成分组颜色。
+   缺省 / 越界回落「中」，由 desktop.js 的 priOf() 兜住。
+   -------------------------------------------------------- */
+.dw-pri {
+  width: 8px; height: 8px;
+  border-radius: 4px;
+  flex: none;
+  background: #0f94a8;
+}
+.dw-pri.p0 { background: #8896ab; }
+.dw-pri.p1 { background: #0f94a8; }
+.dw-pri.p2 { background: #f59e0b; }
+.dw-pri.p3 { background: #e5484d; }
+html[data-theme='dark'] .dw-pri.p0 { background: #9aa6b8; }
+html[data-theme='dark'] .dw-pri.p1 { background: #3fc9dd; }
+html[data-theme='dark'] .dw-pri.p2 { background: #f7b23b; }
+html[data-theme='dark'] .dw-pri.p3 { background: #ff6b6e; }
+/* 已完成统一灰化，不显示档位色（档位在「做完的事」上不是信息） */
+.dw-row.is-done .dw-pri { background: #c9cbd3; }
+html[data-theme='dark'] .dw-row.is-done .dw-pri { background: #5b5b6a; }
+
+/* 优先级文字标签（名称后面）：色点之外再给一层明确读数。
+   10px 小字 + 标题截断，不会把标题挤没；配色与色点同档 */
+.dw-pri-tag {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.5px;
+  color: var(--dw-text-3);
+}
+.dw-pri-tag.p0 { color: #8896ab; }
+.dw-pri-tag.p1 { color: #0b7f92; font-weight: 600; }
+.dw-pri-tag.p2 { color: #d97706; font-weight: 600; }
+.dw-pri-tag.p3 { color: #e5484d; font-weight: 600; }
+html[data-theme='dark'] .dw-pri-tag.p0 { color: #9aa6b8; }
+html[data-theme='dark'] .dw-pri-tag.p1 { color: #3fc9dd; }
+html[data-theme='dark'] .dw-pri-tag.p2 { color: #f7b23b; }
+html[data-theme='dark'] .dw-pri-tag.p3 { color: #ff6b6e; }
+/* 已完成的优先级不再是信息，统一灰化 */
+.dw-row.is-done .dw-pri-tag { color: var(--dw-text-3); font-weight: 400; }
+
+/* 紧急行额外强化：左侧 3px 竖条 + 标题加粗 + 淡红底 —— 色点太弱，扫一屏时看不见 */
+.dw-row.is-urgent { background: rgba(229, 72, 77, 0.055); }
+.dw-row.is-urgent::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 6px; bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: #e5484d;
+}
+.dw-row.is-urgent .dw-text { font-weight: 500; }
+html[data-theme='dark'] .dw-row.is-urgent { background: rgba(255, 107, 110, 0.1); }
+html[data-theme='dark'] .dw-row.is-urgent::before { background: #ff6b6e; }
+
 /* 已完成：同字号、只降色，不加删除线（密排列表里删除线会让整屏发脏） */
 .dw-row.is-done .dw-text { color: var(--dw-text-2); }
 
@@ -254,6 +319,39 @@ body {
 }
 .dw-due.is-soon { color: var(--dw-primary); font-weight: 500; }
 .dw-row.is-done .dw-due { color: var(--dw-text-3); font-weight: 400; }
+
+/* 「未完成」四段分组标题：段内不加分隔线，只靠小字 + 间距分段（密排列表里加线会更碎） */
+.dw-sec {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 6px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--dw-text-3);
+}
+.dw-sec:first-child { margin-top: 0; }
+.dw-sec-label { letter-spacing: 0.3px; }
+.dw-sec-count { font-variant-numeric: tabular-nums; opacity: 0.75; }
+.dw-sec.is-overdue .dw-sec-label,
+.dw-sec.is-overdue .dw-sec-count { color: #e5484d; font-weight: 500; }
+html[data-theme='dark'] .dw-sec.is-overdue .dw-sec-label,
+html[data-theme='dark'] .dw-sec.is-overdue .dw-sec-count { color: #ff6b6e; }
+
+/* 行尾附加信息（逾期 N 天）：定宽截断，绝不去挤标题 */
+.dw-tail {
+  flex: none;
+  max-width: 72px;
+  font-size: 11px;
+  line-height: 1;
+  color: #e5484d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+html[data-theme='dark'] .dw-tail { color: #ff6b6e; }
+.dw-row.is-done .dw-tail { color: var(--dw-text-3); }
 
 /* 番茄钟：正在专注的那一行显示进度环 + 倒计时（浮窗只做「看」，入口仍在主窗口） */
 /* 环与倒计时成组放在右侧（环在倒计时左边），占用的横排间距与其它元素一致 */
@@ -390,3 +488,40 @@ body {
 .dw.is-collapsed .dw-body,
 .dw.is-collapsed .dw-foot,
 .dw.is-collapsed .dw-grip { display: none; }
+
+/* 收起态保留展开箭头（旋转 180° 朝下）：普通浮窗收起后没有别的展开入口，
+   藏掉箭头用户就再也打不开了（dock 例外 —— 悬停自动展开，但留着也不碍事） */
+
+/* ---------------- 贴顶 dock ----------------
+   一条贴在屏幕工作区顶边的窄条：收起 30px、悬停展开 360px。
+   上边不应有圆角（它贴屏幕边缘），下方两角保留。
+   ---------------------------------------- */
+.dw.is-dock {
+  --dw-head-h: 30px;
+  border-radius: 0 0 var(--dw-r) var(--dw-r);
+}
+.dw.is-dock .dw-head { padding: 0 6px 0 12px; gap: 6px; }
+.dw.is-dock .dw-grip { display: none; }
+/* 收起态视觉高度锁在 30px：Windows 的窗口最小可跟踪高度约 38px，窗口本身收不下去，
+   多出来的 8px 留成透明区（窗口是透明的，看不出来），视觉上就是一条 30px 的窄条 */
+.dw.is-dock.is-collapsed { height: var(--dw-head-h); }
+/* 收起态就是一个「读数条」：数字比标题重要 */
+.dw.is-dock.is-collapsed .dw-title { font-weight: 600; letter-spacing: 0.2px; }
+.dw.is-dock.is-collapsed .dw-row-acts { display: none; }
+
+/* 逾期徽标：常驻，滚动时也一直看得到最该看的那条 */
+.dw-count.is-overdue {
+  color: #e5484d;
+  font-weight: 600;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(229, 72, 77, 0.1);
+}
+html[data-theme='dark'] .dw-count.is-overdue {
+  color: #ff6b6e;
+  background: rgba(255, 107, 110, 0.14);
+}
+
+/* 「保持展开」图钉：仅 dock 出现；打开时用品牌色标出来 */
+.dw-pin { font-size: 11px; }
+.dw-pin.is-on { color: var(--dw-primary); background: color-mix(in srgb, var(--dw-primary) 14%, transparent); }

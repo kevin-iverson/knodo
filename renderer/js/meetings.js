@@ -275,11 +275,18 @@ async function openHistoryModal(root) {
         const id = Number(row.dataset.id);
         if (btn.dataset.act === 'del') {
           if (!window.confirm('删除这条会议记录？对应的录音分片也会一并清除。')) return;
-          await api.meeting.remove(id).catch(() => {});
-          list = await api.meeting.list().catch(() => []);
-          paint(list);
-          onChanged();
-          notify('已删除该会议记录');
+          try {
+            await api.meeting.remove(id);
+            list = await api.meeting.list().catch(() => []);
+            paint(list);
+            if (selectedId === id) selectedId = null;
+            onChanged();
+            // 弹窗背后的会议视图也要同步：只刷侧栏的话，关掉弹窗还看得到这条已删除的记录
+            await renderMeetings(root);
+            notify('已删除该会议记录');
+          } catch (e) {
+            notify(`${e && e.message ? e.message : '删除失败'}`);
+          }
           return;
         }
         selectedId = id;

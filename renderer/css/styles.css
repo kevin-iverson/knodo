@@ -267,6 +267,18 @@ body {
 }
 .text-btn.note-btn:hover { background: var(--primary); border-color: var(--primary); color: #fff; }
 
+/* 顶栏「📌 贴顶便签」：只放图标不写文字（顶栏 1080 已排满），已打开时主色高亮 */
+.text-btn.dock-btn {
+  padding: 8px 7px;
+  line-height: 1;
+  flex: none;
+}
+.text-btn.dock-btn.is-on {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
 .icon-btn {
   width: 34px; height: 34px; border: 1px solid var(--border);
   background: var(--bg-panel); border-radius: 8px; cursor: pointer;
@@ -1562,6 +1574,15 @@ html.is-resizing .detail-foot { pointer-events: none; }
   font-size: 13px; padding: 2px 4px; border-radius: 4px; flex-shrink: 0;
 }
 .sh-del:hover { background: var(--bg-hover); color: var(--danger); }
+
+/* AI 检索弹窗（原独立视图改弹窗）：宽面板 + 固定高度，结果与历史都在 body 里滚动。
+   只改宽度不够 —— .modal 的默认 max-width 380px 会把它压回单输入框的尺寸。 */
+.modal-search { width: 840px; max-width: 100%; height: min(680px, calc(100vh - 48px)); }
+.modal-search .modal-body { padding: 16px 20px 20px; }
+.modal-search .search-panel { max-width: none; }
+.modal-search .search-hero { margin-bottom: 12px; }
+.modal-search .search-hero input { background: var(--bg); }
+.modal-search .search-hero .primary-btn:disabled { opacity: 0.6; cursor: default; }
 
 /* ---------------- 响应式（窄屏 / 移动端） ---------------- */
 @media (max-width: 768px) {

@@ -22,6 +22,7 @@ const el = {
   title: document.getElementById('dw-title'),
   count: document.getElementById('dw-count'),
   collapse: document.getElementById('dw-collapse'),
+  pin: document.getElementById('dw-pin'),
   more: document.getElementById('dw-more'),
   body: document.getElementById('dw-body'),
   list: document.getElementById('dw-list'),
@@ -39,6 +40,13 @@ const MAX_H = 520;
 const MIN_W = 240;
 const MAX_W = 460;
 const DEFAULT_W = 286;
+/** 贴顶 dock：收起高度 30（展开高度按内容自适应，宽度 420 由主进程锁死） */
+const DOCK_HEAD_H = 30;
+/** 悬停时序：进入 120ms 展开（手速划过顶边不闪），离开 400ms 收回（向下移动时不抽搐） */
+const DOCK_OPEN_DELAY = 120;
+const DOCK_CLOSE_DELAY = 400;
+
+/** 优先级色点在 CSS 里按 .dw-pri.p0~p3 分档（深色主题要另一套更亮的色值，写死内联色就覆盖不了） */
 
 /** 当前投影数据：{ projection, title, color, tasks, counts, missing, error } */
 let view = null;
@@ -109,22 +117,60 @@ function isCollapsed() {
   return !!(view && view.projection && view.projection.collapsed);
 }
 
+/** 这个窗是不是贴顶 dock */
+function isDock() {
+  return !!(view && view.projection && view.projection.dock === 'top');
+}
+
+/** 「保持展开」：dock 悬停展开后手动钉住，鼠标移开也不收回 */
+function isDockPinned() {
+  return !!(view && view.projection && view.projection.dockPinned);
+}
+
+/** 本地日期 YYYY-MM-DD（与主进程 todayStr 同口径，避免 new Date() 相减跨时区差一天） */
+function todayStr() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/**
+ * 优先级：0 低 / 1 中 / 2 高 / 3 紧急。
+ * 缺失（null / undefined / 空串）或越界一律回落 1（中）—— 写 `t.priority || 0` 会把 null 变成「低」，
+ * 把「没设过」误报成「低优先级」。Number(null) === 0，所以必须先显式判空。
+ */
+function priOf(t) {
+  const raw = t ? t.priority : null;
+  if (raw == null || raw === '') return 1;
+  const p = Number(raw);
+  return Number.isInteger(p) && p >= 0 && p <= 3 ? p : 1;
+}
+
 function signature() {
   if (!view) return 'none';
-  const t = (view.tasks || []).map((x) => `${x.id}:${x.completed ? 1 : 0}:${x.title}:${x.parent_id || ''}:${x.plan_end || ''}`).join('|');
+  const t = (view.tasks || []).map((x) => `${x.id}:${x.completed ? 1 : 0}:${x.title}:${x.parent_id || ''}:${x.plan_end || ''}:${priOf(x)}`).join('|');
   // 番茄钟：只把「哪个任务 / 什么状态 / 计划时长」放进指纹（不要放 focusedMs/segStart，
   // 否则每 500ms 的本地 tick 都会触发整表重建）
   const f = view.focus;
   const fSig = f && f.active ? `${f.taskId}:${f.mode}:${f.plannedSec}` : '-';
-  return `${view.title}|${view.counts ? view.counts.done : 0}/${view.counts ? view.counts.total : 0}|${view.error || ''}|${view.missing ? 1 : 0}|${isCollapsed() ? 1 : 0}|${t}|${highlightId || ''}|${fSig}`;
+  const p = view.projection || {};
+  // 优先级必须进指纹：否则主列表改了优先级，浮窗不重绘 = 「色标永远不变」
+  return `${view.title}|${view.counts ? view.counts.done : 0}/${view.counts ? view.counts.total : 0}|${view.error || ''}|${view.missing ? 1 : 0}|${isCollapsed() ? 1 : 0}|${p.kind || ''}|${p.dock || ''}|${view.pending == null ? '' : view.pending}/${view.overdue == null ? '' : view.overdue}|${t}|${highlightId || ''}|${fSig}`;
 }
 
 function render() {
   if (!view) return;
   const collapsed = isCollapsed();
+  const dock = isDock();
   el.root.classList.toggle('is-collapsed', collapsed);
+  // dock 态：标题栏压到 30px、上边不画圆角、隐藏缩放手柄（宽度固定 420）
+  el.root.classList.toggle('is-dock', dock);
   el.collapse.classList.toggle('is-rotated', collapsed);
   el.collapse.title = collapsed ? '展开清单' : '折叠为标题条';
+  // 📌 只在 dock 上出现：把展开态钉住，鼠标移开也不收回
+  el.pin.hidden = !dock;
+  el.pin.classList.toggle('is-on', dock && isDockPinned());
+  el.pin.title = dock && isDockPinned() ? '取消保持展开' : '保持展开';
 
   // 标题栏
   if (view.missing) {
@@ -139,6 +185,8 @@ function render() {
     el.count.hidden = true;
   } else {
     el.root.dataset.state = 'ready';
+    const p = view.projection || {};
+    const isUnfinished = p.kind === 'unfinished';
     el.title.textContent = view.title || '清单';
     el.title.title = view.title || '';
     if (view.color) {
@@ -148,9 +196,21 @@ function render() {
       el.dot.hidden = true;
     }
     const c = view.counts || { done: 0, total: 0 };
-    el.count.hidden = false;
-    el.count.textContent = `${c.done} / ${c.total}`;
-    el.count.title = `已完成 ${c.done} / 共 ${c.total}`;
+    if (isUnfinished) {
+      // 「未完成」的头条信息是「我还欠多少」：收起条尤其要一眼看到数字 + 逾期数
+      const pend = view.pending == null ? Math.max(0, c.total - c.done) : view.pending;
+      const over = Number(view.overdue) || 0;
+      el.title.textContent = dock && collapsed ? `未完成 ${pend}` : '未完成';
+      el.count.hidden = !over;
+      el.count.textContent = over ? `逾期 ${over}` : '';
+      el.count.title = `逾期 ${over} 条（未勾掉）`;
+      el.count.classList.toggle('is-overdue', over > 0);
+    } else {
+      el.count.hidden = false;
+      el.count.classList.remove('is-overdue');
+      el.count.textContent = `${c.done} / ${c.total}`;
+      el.count.title = `已完成 ${c.done} / 共 ${c.total}`;
+    }
   }
 
   // 折叠时列表与新增行整体隐藏（窗口高度由 fit() 收回 42px）
@@ -229,6 +289,79 @@ function focusRingHtml(f) {
   </svg></span>`;
 }
 
+/** 一行任务（不带分组） */
+function rowHtml(t, opts = {}) {
+  const done = !!t.completed;
+  const isFocus = opts.focusId != null && Number(t.id) === opts.focusId;
+  const pri = priOf(t);
+  const cls = [
+    'dw-row',
+    done ? 'is-done' : '',
+    t.parent_id ? 'is-child' : '',
+    t.id === selId ? 'is-sel' : '',
+    t.id === highlightId ? 'is-new' : '',
+    isFocus ? 'is-focus' : '',
+    isFocus && opts.paused ? 'is-paused' : '',
+    // 紧急行额外强化：左侧竖条 + 标题加粗 + 淡红底（色点太弱，一眼扫不到）
+    pri === 3 && !done ? 'is-urgent' : '',
+  ].filter(Boolean).join(' ');
+  const due = opts.due || '';
+  const tail = opts.tail || '';
+  // 专注行：进度环 + 倒计时成组放在右侧（环在倒计时左边），不占左侧复选框的位置
+  const focusGroup = isFocus
+    ? `<span class="dw-focus">${focusRingHtml(opts.focus)}<span class="dw-focus-remain">${fmtRemain(focusRemainMs(opts.focus))}</span></span>`
+    : '';
+  return `<div class="${cls}" data-id="${t.id}"${opts.sec ? ` data-sec="${opts.sec}"` : ''} role="checkbox" aria-checked="${done}" title="${esc(t.title)}">
+      <span class="dw-check${done ? ' on' : ''}"></span>
+      <span class="dw-pri p${pri}" title="优先级：${['低', '中', '高', '紧急'][pri]}"></span>
+      <span class="dw-text">${esc(t.title)}</span>
+      <span class="dw-pri-tag p${pri}" title="优先级：${['低', '中', '高', '紧急'][pri]}">${['低', '中', '高', '紧急'][pri]}</span>
+      ${due ? `<span class="dw-due${due === '今天' || due === '明天' ? ' is-soon' : ''}">${esc(due)}</span>` : ''}
+      ${tail ? `<span class="dw-tail">${esc(tail)}</span>` : ''}
+      ${focusGroup}
+      <span class="dw-row-acts">
+        <button type="button" class="dw-row-btn" data-act="open" title="在主窗口打开">↗</button>
+        <button type="button" class="dw-row-btn" data-act="del" title="删除任务">✕</button>
+      </span>
+    </div>`;
+}
+
+/**
+ * 「未完成」的四段分组：逾期 → 今天 → 之后 → 未安排。
+ * 为什么不复用主列表的 smart 排序：它把逾期混进「最早截止」里，22 条时逾期会被埋在中间，
+ * 而这张清单的第一诉求正是「我漏了什么」。
+ * 段内保持后端给出的顺序（不按完成态重排）—— 勾掉一条要留在原位，否则连点会误勾。
+ */
+function groupSections(tasks) {
+  const today = todayStr();
+  const secs = [
+    { key: 'overdue', label: '逾期', cls: 'is-overdue', rows: [] },
+    { key: 'today', label: '今天', cls: '', rows: [] },
+    { key: 'later', label: '之后', cls: '', rows: [] },
+    { key: 'none', label: '未安排', cls: '', rows: [] },
+  ];
+  const byKey = new Map(secs.map((s) => [s.key, s]));
+  for (const t of tasks) {
+    const pe = t.plan_end || '';
+    let k = 'none';
+    if (pe && pe < today) k = 'overdue';
+    else if (pe && pe === today) k = 'today';
+    else if (pe && pe > today) k = 'later';
+    byKey.get(k).rows.push(t);
+  }
+  return secs.filter((s) => s.rows.length);
+}
+
+/** 逾期天数（字符串日期相减，避免时区差一天） */
+function overdueDays(planEnd) {
+  if (!planEnd) return 0;
+  const d = new Date(`${planEnd}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (Number.isNaN(d.getTime())) return 0;
+  return Math.max(0, Math.round((today - d) / 86_400_000));
+}
+
 function renderList() {
   const scrollTop = el.list.scrollTop;
   const tasks = Array.isArray(view.tasks) ? view.tasks : [];
@@ -237,38 +370,36 @@ function renderList() {
     return;
   }
   const kind = (view.projection && view.projection.kind) || 'group';
-  const showDue = kind === 'upcoming';
   const f = view.focus;
   const fId = focusedTaskId();
-  const fPaused = !!(f && f.mode === 'paused');
-  el.list.innerHTML = tasks.map((t) => {
-    const done = !!t.completed;
-    const isFocus = fId != null && Number(t.id) === fId;
-    const cls = [
-      'dw-row',
-      done ? 'is-done' : '',
-      t.parent_id ? 'is-child' : '',
-      t.id === selId ? 'is-sel' : '',
-      t.id === highlightId ? 'is-new' : '',
-      isFocus ? 'is-focus' : '',
-      isFocus && fPaused ? 'is-paused' : '',
-    ].filter(Boolean).join(' ');
-    const due = showDue ? dueLabel(t.plan_end) : '';
-    // 专注行：进度环 + 倒计时成组放在右侧（环在倒计时左边），不占左侧复选框的位置
-    const focusGroup = isFocus
-      ? `<span class="dw-focus">${focusRingHtml(f)}<span class="dw-focus-remain">${fmtRemain(focusRemainMs(f))}</span></span>`
-      : '';
-    return `<div class="${cls}" data-id="${t.id}" role="checkbox" aria-checked="${done}" title="${esc(t.title)}">
-      <span class="dw-check${done ? ' on' : ''}"></span>
-      <span class="dw-text">${esc(t.title)}</span>
-      ${due ? `<span class="dw-due${due === '今天' || due === '明天' ? ' is-soon' : ''}">${esc(due)}</span>` : ''}
-      ${focusGroup}
-      <span class="dw-row-acts">
-        <button type="button" class="dw-row-btn" data-act="open" title="在主窗口打开">↗</button>
-        <button type="button" class="dw-row-btn" data-act="del" title="删除任务">✕</button>
-      </span>
-    </div>`;
-  }).join('');
+  const opts = { focusId: fId, paused: !!(f && f.mode === 'paused'), focus: f };
+
+  // 「未完成」全部做完了：整窗换成空态，不留一个只有灰行的空列表
+  if (kind === 'unfinished' && !Number(view.pending)) {
+    el.list.innerHTML = '';
+    return;
+  }
+
+  if (kind === 'unfinished') {
+    const html = groupSections(tasks).map((sec) => {
+      const rows = sec.rows.map((t) => {
+        const overdue = sec.key === 'overdue' && !t.completed ? `逾期 ${overdueDays(t.plan_end)} 天` : '';
+        const due = sec.key === 'later' ? dueLabel(t.plan_end) : '';
+        // 逾期段行尾给天数，之后段给短日期；今天 / 未安排不占宽度
+        return rowHtml(t, {
+          ...opts, due, tail: overdue, sec: sec.key,
+        });
+      }).join('');
+      return `<div class="dw-sec ${sec.cls}" data-sec="${sec.key}">
+        <span class="dw-sec-label">${sec.label}</span>
+        <span class="dw-sec-count">${sec.rows.filter((t) => !t.completed).length}</span>
+      </div>${rows}`;
+    }).join('');
+    el.list.innerHTML = html;
+  } else {
+    const showDue = kind === 'upcoming';
+    el.list.innerHTML = tasks.map((t) => rowHtml(t, { ...opts, due: showDue ? dueLabel(t.plan_end) : '' })).join('');
+  }
   el.list.scrollTop = scrollTop;
   if (highlightId) {
     setTimeout(() => {
@@ -312,14 +443,21 @@ function renderHint() {
     el.hint.innerHTML = '数据未就绪，<b>点击重试</b>';
     return;
   }
-  if (!tasks.length) {
-    // 空态直接告诉用户下一步，不写「暂无数据」。
-    // 视图投影（今天 / 即将到期）用「这里」，分组投影用「这个清单」——文案跟着宿主走。
+  if (!tasks.length || ((view.projection || {}).kind === 'unfinished' && !Number(view.pending))) {
     const kind = (view.projection && view.projection.kind) || 'group';
-    const where = kind === 'group' ? '这个清单' : '这里';
-    const tip = kind === 'upcoming' ? '在下方输入框添加，默认排在今天' : '在下方输入框直接添加';
     el.hint.hidden = false;
     el.hint.className = 'dw-hint';
+    if (kind === 'unfinished') {
+      // 全部完成不是「暂无数据」，是一句收尾 + 今天的战果
+      const doneToday = tasks.filter((t) => t.completed).length;
+      el.hint.innerHTML = '都做完了<b> · 今天到此为止</b>'
+        + (doneToday ? `<br>今日完成 ${doneToday} 条` : '<br>在下方输入框直接加一条');
+      return;
+    }
+    // 空态直接告诉用户下一步，不写「暂无数据」。
+    // 视图投影（今天 / 即将到期）用「这里」，分组投影用「这个清单」——文案跟着宿主走。
+    const where = kind === 'group' ? '这个清单' : '这里';
+    const tip = kind === 'upcoming' ? '在下方输入框添加，默认排在今天' : '在下方输入框直接添加';
     el.hint.innerHTML = `${where}还没有待办<br><b>${tip}</b>`;
     return;
   }
@@ -340,7 +478,8 @@ function renderFatal(msg) {
 function fit() {
   const collapsed = isCollapsed();
   if (collapsed) {
-    api.desktop.fit(projectionId, HEAD_H).catch(() => {});
+    // dock 收起成一条只有 30px；普通浮窗收起是完整标题栏 42px
+    api.desktop.fit(projectionId, isDock() ? DOCK_HEAD_H : HEAD_H).catch(() => {});
     return;
   }
   const listMax = MAX_H - HEAD_H - FOOT_H;
@@ -366,7 +505,20 @@ function paintRow(task) {
   row.setAttribute('aria-checked', String(!!task.completed));
   const box = row.querySelector('.dw-check');
   if (box) box.classList.toggle('on', !!task.completed);
-  el.count.textContent = `${view.counts.done} / ${view.counts.total}`;
+  // 色点用类名而不是内联色：深色主题要靠 CSS 覆盖换一套更亮的档位色
+  const priEl = row.querySelector('.dw-pri');
+  if (priEl) priEl.className = `dw-pri p${priOf(task)}`;
+  // 紧急行的左侧竖条 / 淡红底只对未完成有意义
+  row.classList.toggle('is-urgent', priOf(task) === 3 && !task.completed);
+}
+
+/** 段头的小计数（勾选后立即更新，不让用户等到下一次刷新） */
+function paintSectionCounts() {
+  el.list.querySelectorAll('.dw-sec').forEach((sec) => {
+    const n = el.list.querySelectorAll(`.dw-row[data-sec="${sec.dataset.sec}"]:not(.is-done)`).length;
+    const badge = sec.querySelector('.dw-sec-count');
+    if (badge) badge.textContent = String(n);
+  });
 }
 
 async function toggleTask(taskId) {
@@ -395,7 +547,22 @@ function recount() {
   if (!view || !view.tasks) return;
   view.counts.total = view.tasks.length;
   view.counts.done = view.tasks.filter((x) => x.completed).length;
-  el.count.textContent = `${view.counts.done} / ${view.counts.total}`;
+  const p = view.projection || {};
+  if (p.kind === 'unfinished') {
+    // 「未完成」的头条数字：未勾掉的条数 + 逾期条数（勾一条要立刻少一）
+    const today = todayStr();
+    const open = view.tasks.filter((x) => !x.completed);
+    view.pending = open.length;
+    view.overdue = open.filter((t) => t.plan_end && t.plan_end < today).length;
+    el.title.textContent = isDock() && isCollapsed() ? `未完成 ${view.pending}` : '未完成';
+    el.count.hidden = !view.overdue;
+    el.count.textContent = view.overdue ? `逾期 ${view.overdue}` : '';
+    el.count.title = `逾期 ${view.overdue} 条（未勾掉）`;
+    el.count.classList.toggle('is-overdue', view.overdue > 0);
+    paintSectionCounts();
+  } else {
+    el.count.textContent = `${view.counts.done} / ${view.counts.total}`;
+  }
   // 指纹里的计数变了，下次 refresh 才会真正重建（这里先同步，避免重复重绘）
   lastSig = signature();
 }
@@ -474,6 +641,17 @@ async function setCollapsed(next) {
   }
 }
 
+/** 「保持展开」：dock 手动钉住后，鼠标移开也不收回（只能再点一次或 Esc） */
+async function setDockPinned(next) {
+  if (!view || !view.projection) return;
+  view.projection.dockPinned = !!next;
+  try {
+    await api.desktop.update(projectionId, { dockPinned: !!next });
+  } catch (e) {
+    view.projection.dockPinned = !next;
+  }
+}
+
 /* ---- 清单已删除 ---- */
 
 function enterMissing() {
@@ -500,6 +678,26 @@ function enterMissing() {
   missingTimer = setTimeout(() => {
     api.desktop.unpin(projectionId).catch(() => {});
   }, 3000);
+}
+
+/* ---------------- dock 悬停时序 ---------------- */
+
+let dockOpenTimer = null;
+let dockCloseTimer = null;
+
+function clearDockTimers() {
+  if (dockOpenTimer) { clearTimeout(dockOpenTimer); dockOpenTimer = null; }
+  if (dockCloseTimer) { clearTimeout(dockCloseTimer); dockCloseTimer = null; }
+}
+
+/**
+ * 四种情况不许收回：① 手动点了「保持展开」② 正在输入新待办
+ * （③ 正在拖滚动条 / 勾选 —— 指针还在窗口内，本来就不会触发 mouseleave）。
+ */
+function dockShouldStayOpen() {
+  if (isDockPinned()) return true;
+  if (!el.addInput.hidden) return true;
+  return false;
 }
 
 /* ---------------- 事件绑定 ---------------- */
@@ -530,7 +728,18 @@ function bind() {
 
   el.collapse.addEventListener('click', (e) => {
     e.stopPropagation();
+    // dock 上手动收起 = 取消「保持展开」，否则下次悬停前它又会被算作 pinned
+    if (isDock() && !isCollapsed()) setDockPinned(false);
     setCollapsed(!isCollapsed());
+  });
+
+  // dock 收起条：📌 展开并「保持展开」（标题栏是拖动区，吞点击，所以只能挂在按钮上）
+  el.pin.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!isDock()) return;
+    const on = !isDockPinned();
+    setDockPinned(on);
+    setCollapsed(!on);
   });
 
   // 更多：交给主进程弹原生菜单（透明小窗里放不下二级菜单，原生菜单不会被裁掉）
@@ -565,6 +774,14 @@ function bind() {
       return;
     }
     if (inInput) return;
+    // dock：Esc 收起（保持展开态时也一样，这是文档约定的「只能再点一次或 Esc 收起」）
+    if (e.key === 'Escape' && isDock() && !isCollapsed()) {
+      e.preventDefault();
+      clearDockTimers();
+      if (isDockPinned()) setDockPinned(false);
+      setCollapsed(true);
+      return;
+    }
     const tasks = (view && view.tasks) || [];
     if (!tasks.length) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -617,8 +834,30 @@ function bind() {
   });
 
   // 悬停置顶档：鼠标进出时临时置顶
-  document.addEventListener('mouseenter', () => { api.desktop.hover(projectionId, true).catch(() => {}); });
-  document.addEventListener('mouseleave', () => { api.desktop.hover(projectionId, false).catch(() => {}); });
+  document.addEventListener('mouseenter', () => {
+    api.desktop.hover(projectionId, true).catch(() => {});
+    // 贴顶 dock：进入 120ms 后展开（正常手速划过顶边约 80–150ms，没延迟每次路过都闪一下）
+    if (!isDock()) return;
+    clearDockTimers();
+    if (!isCollapsed()) return;
+    dockOpenTimer = setTimeout(() => {
+      dockOpenTimer = null;
+      if (!isDock() || !isCollapsed()) return;
+      setCollapsed(false);
+    }, DOCK_OPEN_DELAY);
+  });
+  document.addEventListener('mouseleave', () => {
+    api.desktop.hover(projectionId, false).catch(() => {});
+    // 离开 400ms 后收回：窗口刚变高时鼠标会有一瞬间落在窗口外，太短就是「展开—收回—再展开」的抽搐
+    if (!isDock()) return;
+    clearDockTimers();
+    if (isCollapsed() || dockShouldStayOpen()) return;
+    dockCloseTimer = setTimeout(() => {
+      dockCloseTimer = null;
+      if (!isDock() || dockShouldStayOpen()) return;
+      setCollapsed(true);
+    }, DOCK_CLOSE_DELAY);
+  });
 
   // 主进程事件
   api.on('desktop:invalidate', (id) => { if (id === projectionId) refresh(); });
@@ -627,6 +866,16 @@ function bind() {
     if (!view || !view.projection) return;
     view.projection.collapsed = !!v;
     render();
+  });
+  // dock 被拖离顶边：主进程已清掉 dock，这里跟着变回普通浮窗（重新量高度）
+  api.on('desktop:undocked', () => {
+    if (!view || !view.projection) return;
+    view.projection.dock = null;
+    view.projection.dockPinned = false;
+    view.projection.collapsed = false;
+    clearDockTimers();
+    lastSig = '';
+    refresh();
   });
 
   // 窗口重新获得焦点 / 跨天：轻量刷新一次（浮窗开了整夜也能看到新的一天）

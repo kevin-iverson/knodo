@@ -1390,28 +1390,38 @@ app.whenReady().then(async () => {
           `);
           if (dom.__fatal) console.log('[SMOKE][dom fatal]', dom.__fatal);
 
-          /* ---- 非任务视图：筛选栏一律隐藏；AI 检索独留顶栏工具行（入口已上移到顶栏） ---- */
+          /* ---- 非任务视图：筛选栏一律隐藏；AI 检索是弹窗，不换视图 ---- */
           const tbVis = await mainWindow.webContents.executeJavaScript(`
             (async () => {
               const out = {};
               const right = document.querySelector('.topbar-right');
               const bar = document.getElementById('filter-bar');
-              const nav = (v) => (v === 'search'
-                ? document.getElementById('btn-ai-search')
-                : document.querySelector('.nav-item[data-view="' + v + '"]')).click();
-              for (const v of ['stats', 'reports', 'search', 'meetings']) {
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              for (const v of ['stats', 'reports', 'meetings']) {
                 nav(v);
                 await new Promise(r => setTimeout(r, 600));
-                // 统计 / 报告 / 纪要连工具行一起收起；检索要保留，否则顶栏入口会点一下就消失
-                out[v + 'Hidden'] = bar.hidden && (v === 'search' ? !right.hidden : right.hidden);
+                out[v + 'Hidden'] = bar.hidden && right.hidden;
               }
               nav('all');
               await new Promise(r => setTimeout(r, 600));
               out.taskShown = !right.hidden && !bar.hidden;
+              // AI 检索：点顶栏按钮 → 弹窗出现，且当前列表视图与工具行完全不动
+              const ai = document.getElementById('btn-ai-search');
+              if (ai) { ai.click(); await new Promise(r => setTimeout(r, 500)); }
+              const mask = document.querySelector('.modal-mask .modal-search');
+              out.searchModal = !!mask;
+              out.searchKeepsView = !right.hidden && !bar.hidden;
+              out.searchInput = !!mask && !!mask.querySelector('#ai-search-input');
+              out.searchCloseBtn = !!mask && !!mask.querySelector('[data-modal="close"]');
+              out.searchHistory = !!mask && !!mask.querySelector('#ai-search-history');
+              const closeBtn = mask && mask.querySelector('[data-modal="close"]');
+              if (closeBtn) { closeBtn.click(); await new Promise(r => setTimeout(r, 400)); }
+              out.searchClosed = !document.querySelector('.modal-mask .modal-search');
               return out;
             })()
           `);
-          console.log(`[SMOKE] 非任务视图工具区 = 统计${tbVis.statsHidden ? '✓' : '✗'} 报告${tbVis.reportsHidden ? '✓' : '✗'} 检索(顶栏保留)${tbVis.searchHidden ? '✓' : '✗'} 纪要${tbVis.meetingsHidden ? '✓' : '✗'}；回到任务视图恢复=${tbVis.taskShown ? '是' : '否'}`);
+          console.log(`[SMOKE] 非任务视图工具区 = 统计${tbVis.statsHidden ? '✓' : '✗'} 报告${tbVis.reportsHidden ? '✓' : '✗'} 纪要${tbVis.meetingsHidden ? '✓' : '✗'}；回到任务视图恢复=${tbVis.taskShown ? '是' : '否'}`);
+          console.log(`[SMOKE] AI 检索弹窗 = 弹出${tbVis.searchModal ? '✓' : '✗'}；视图未跳走${tbVis.searchKeepsView ? '✓' : '✗'}；检索框${tbVis.searchInput ? '✓' : '✗'}；历史区${tbVis.searchHistory ? '✓' : '✗'}；关闭按钮${tbVis.searchCloseBtn ? '✓' : '✗'}；关闭后移除${tbVis.searchClosed ? '✓' : '✗'}`);
 
           /* ---- 分组自定义颜色：预设色 + 取色器自由取色 → 落库 → 视觉标识同步 ---- */
           const gcOut = await mainWindow.webContents.executeJavaScript(`
@@ -1521,7 +1531,7 @@ app.whenReady().then(async () => {
           `);
           if (aiOut.__fatal) console.log('[SMOKE][ai fatal]', aiOut.__fatal);
           Object.assign(dom, aiOut, { aiMenuItem: !!aiMenuItem });
-          Object.assign(dom, { tbStatsHidden: tbVis.statsHidden, tbReportsHidden: tbVis.reportsHidden, tbSearchHidden: tbVis.searchHidden, tbMeetingsHidden: tbVis.meetingsHidden, tbTaskShown: tbVis.taskShown });
+          Object.assign(dom, { tbStatsHidden: tbVis.statsHidden, tbReportsHidden: tbVis.reportsHidden, tbMeetingsHidden: tbVis.meetingsHidden, tbTaskShown: tbVis.taskShown, tbSearchModal: tbVis.searchModal, tbSearchKeepsView: tbVis.searchKeepsView, tbSearchInput: tbVis.searchInput, tbSearchClosed: tbVis.searchClosed });
           console.log(`[SMOKE] 底部"添加任务"入口 = ${dom.addRowExists ? '存在' : '缺失'}`);
           console.log(`[SMOKE] 弹窗已移除 = ${dom.noModal ? '是' : '否'}`);
           console.log(`[SMOKE] 时间筛选面板 = ${dom.timeFilterBtn && dom.timeFilterPanel ? '存在' : '缺失'}`);
@@ -2536,6 +2546,10 @@ app.whenReady().then(async () => {
               if (item) { item.click(); await wait(700); }
               out.searchRestored = (document.getElementById('ai-search-input').value || '').length > 0;
               out.searchResultsRestored = document.querySelectorAll('#ai-search-results .search-result-item').length > 0;
+              // 收尾：检索已是弹窗，测完必须关掉，否则遮罩会挡住后续轮次
+              const sClose = document.querySelector('.modal-mask .modal-search [data-modal="close"]');
+              if (sClose) { sClose.click(); await wait(400); }
+              out.searchClosed = !document.querySelector('.modal-mask .modal-search');
               return out;
             })()
           `);
@@ -3157,6 +3171,11 @@ app.whenReady().then(async () => {
               out.uiAssoc = await runUi('ui 改版');
               out.uiNone = await runUi('zzzqqqxyz无关词');
 
+              // 收尾：关掉检索弹窗（弹窗常态，别把遮罩留给后续轮次）
+              const sClose17 = document.querySelector('.modal-mask .modal-search [data-modal="close"]');
+              if (sClose17) { sClose17.click(); await wait(400); }
+              out.uiClosed = !document.querySelector('.modal-mask .modal-search');
+
               // 清理
               for (const id of ids) { try { await window.api.tasks.remove(id); } catch (e) {} }
               } catch (e) { out.__fatal = String((e && e.stack) || e).split('\\n').slice(0, 4).join(' | '); }
@@ -3377,17 +3396,24 @@ app.whenReady().then(async () => {
               const back = document.querySelector('.nav-item[data-view="today"]');
               if (back) { back.click(); await wait(500); }
               out.backToList = !document.querySelector('.cal-wrap');
+              // 顶栏「AI 检索」：弹窗形态 —— 打开不换视图，重复点不叠层，✕ 关闭
               const ai = document.getElementById('btn-ai-search');
+              if (ai) { ai.click(); await wait(500); }
+              out.aiPanel = !!document.querySelector('.modal-mask .modal-search');
+              out.aiSingle = document.querySelectorAll('.modal-mask .modal-search').length === 1;
+              // 仍停留在「今天」列表：视图标题与工具行都不该被检索换掉
+              out.aiKeepsView = !!document.querySelector('#filter-bar:not([hidden])')
+                && (document.getElementById('view-title') || {}).textContent === '今天';
               if (ai) { ai.click(); await wait(400); }
-              out.aiPanel = !!document.querySelector('.search-panel');
-              out.aiActive = !!ai && ai.classList.contains('is-active');
-              if (ai) { ai.click(); await wait(400); }
-              out.aiBack = !document.querySelector('.search-panel');
+              out.aiNoStack = document.querySelectorAll('.modal-mask .modal-search').length === 1;
+              const aiClose = document.querySelector('.modal-mask .modal-search [data-modal="close"]');
+              if (aiClose) { aiClose.click(); await wait(400); }
+              out.aiBack = !document.querySelector('.modal-mask .modal-search');
             } catch (e) { out.err = String((e && e.message) || e); }
             return out;
           })()`);
           console.log(`[SMOKE] 日历视图 = 侧栏项=${calOut.navExists ? '有' : '无'}；chip已移除=${calOut.chipGone ? '是' : '否'}；高亮=${calOut.navActive ? '是' : '否'}；标题「${calOut.title || '-'}」；骨架=${calOut.wrap ? '有' : '无'}；格子 ${calOut.cells} 个；负载条 ${calOut.loadBars} 条；待安排池=${calOut.pool ? '有' : '无'}；图例=${calOut.legend ? '有' : '无'}；月/周控件 ${calOut.segCount} 个；周视图 ${calOut.weekCols} 列；回列表=${calOut.backToList ? '成功' : '失败'}；描述「${calOut.desc || '-'}」${calOut.err ? '；异常=' + calOut.err : ''}`);
-          console.log(`[SMOKE] 顶栏 AI 检索 = 进检索视图=${calOut.aiPanel ? '成功' : '失败'}；按钮选中态=${calOut.aiActive ? '有' : '无'}；再点回列表=${calOut.aiBack ? '成功' : '失败'}`);
+          console.log(`[SMOKE] 顶栏 AI 检索（弹窗）= 弹出=${calOut.aiPanel ? '成功' : '失败'}；单层=${calOut.aiSingle ? '是' : '否'}；视图不动=${calOut.aiKeepsView ? '是' : '否'}；再点不叠层=${calOut.aiNoStack ? '是' : '否'}；关闭移除=${calOut.aiBack ? '成功' : '失败'}`);
 
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.aiSearchTopbar && dom.searchNavGone && dom.calendarAfterToday && dom.titleFocused
@@ -3406,14 +3432,15 @@ app.whenReady().then(async () => {
             && calOut.navExists && calOut.chipGone && calOut.navActive && calOut.wrap && calOut.segCount === 2
             && calOut.cells >= 28 && calOut.loadBars > 0
             && calOut.pool && calOut.legend && calOut.weekCols === 7 && calOut.backToList
-            && calOut.aiPanel && calOut.aiActive && calOut.aiBack
+            && calOut.aiPanel && calOut.aiSingle && calOut.aiKeepsView && calOut.aiNoStack && calOut.aiBack
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
             && dom.aiToolbarBtnGone && dom.aiMenuItem && dom.aiModalOpened && dom.aiModalCount === 1
             && dom.aiCols === 2 && dom.aiSections === 2 && dom.aiFieldCount === 8
             && dom.aiInViewport && dom.aiFootReachable && dom.aiBodyScrolls && dom.aiNoHOverflow
             && dom.aiSavedUrl === 'https://smoke.example.com' && dom.aiSavedModel === 'smoke-model'
-            && dom.tbStatsHidden && dom.tbReportsHidden && dom.tbSearchHidden && dom.tbMeetingsHidden && dom.tbTaskShown
+            && dom.tbStatsHidden && dom.tbReportsHidden && dom.tbMeetingsHidden && dom.tbTaskShown
+            && dom.tbSearchModal && dom.tbSearchKeepsView && dom.tbSearchInput && dom.tbSearchClosed
             && dom.gcModalOpened && dom.gcPicker && dom.gcAuto && dom.gcCustom && dom.gcAbbrev
             && dom.gcInvalidKept && dom.gcPreset && dom.gcCreated && dom.gcDot && dom.gcPersisted && dom.gcEditEcho
             && dom.moveMenuHasUpdown && dom.moveReordered && dom.moveDropMarked
@@ -3480,7 +3507,7 @@ app.whenReady().then(async () => {
             && r11.rpHistoryBtn && r11.rpHistoryInToolbar && r11.rpModalOpened
             && r11.rpRows1 >= 1 && r11.rpHistoryGrew && r11.rpModalClosed && r11.rpLoadedContent
             && r11.rpHistoryShrunk
-            && r11.searchHistoryBox && r11.searchHistoryGrew && r11.searchRestored
+            && r11.searchHistoryBox && r11.searchHistoryGrew && r11.searchRestored && r11.searchClosed
             && r11main.reports >= 1 && r11main.searches >= 1 && r11main.reportHasContent
             && r11main.searchHasKeyword && r11main.exportHasTables
             // 第 13 轮
@@ -3526,7 +3553,7 @@ app.whenReady().then(async () => {
             && r17.topCapped && r17.topHasScore
             && r17.uiExact.items >= 1 && r17.uiExact.bannerUnique && !r17.uiExact.empty
             && r17.uiAssoc.items >= 1 && (r17.uiAssoc.reasons || []).some((s) => /缩写还原|同义词|关键词/.test(s))
-            && r17.uiNone.empty && r17.uiNone.items === 0 && r17.uiNone.tried >= 1
+            && r17.uiNone.empty && r17.uiNone.items === 0 && r17.uiNone.tried >= 1 && r17.uiClosed
             // 第 18 轮：实用工具（代码格式化 / 文本对比 浮窗）
             && r18.noMask && r18.winBtns >= 3
             && r18.jsonOk && r18.xmlOk && r18.sqlOk && r18.javaOk && r18.autoOk && r18.multiOk && r18.errThrown

@@ -1556,6 +1556,31 @@ function listCompletions(ruleId) {
   ).all(ruleId);
 }
 
+/**
+ * 日历用：一次性取出**全部**重复事项的打卡历史。
+ * 重复事项只有一条任务行，跨天会被推到下一次发生日，历史完成记录只存在于
+ * recurrence_completions —— 日历要回答「那天做完没有」，只能从这里回填。
+ * 不做按规则 N 次 IPC（规则少量时也不值得多绕一圈）。
+ */
+function listCompletionsAll(f = {}) {
+  const where = [];
+  const params = [];
+  const from = dateU.toDay(f.from);
+  const to = dateU.toDay(f.to);
+  if (from) { where.push('c.occurrence_date >= ?'); params.push(from); }
+  if (to) { where.push('c.occurrence_date <= ?'); params.push(to); }
+  const sql = `SELECT c.rule_id, c.occurrence_date, c.completed_at,
+      t.id AS task_id, t.title, t.priority, t.parent_id, t.archived,
+      g.name AS group_name, g.color AS group_color
+    FROM recurrence_completions c
+    JOIN recurring_rules r ON r.id = c.rule_id
+    JOIN tasks t ON t.id = r.task_id
+    LEFT JOIN groups g ON g.id = t.group_id
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    ORDER BY c.occurrence_date`;
+  return db.prepare(sql).all(...params);
+}
+
 /** 习惯面板补打卡 / 撤销：指定发生日，不依赖当前任务行显示的是哪一天 */
 function setCompletion(ruleId, date, done, opts = {}) {
   const rule = db.prepare('SELECT task_id FROM recurring_rules WHERE id = ?').get(ruleId);
@@ -3669,6 +3694,7 @@ module.exports = {
   // 重复待办 / 习惯
   RECUR_AHEAD_DAYS,
   listRecurringRules,
+  listCompletionsAll,
   getRecurringRule,
   createRecurringRule,
   updateRecurringRule,

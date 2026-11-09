@@ -253,6 +253,11 @@ function buildFilter() {
       f.excludeRecurringDue = today;
       f.sort = 'due';
       break;
+    case 'unfinished':
+      // 「我还欠多少」：全部 active，不做任何日期限制（逾期也留在里面，靠行尾天数分辨）
+      f.status = 'active';
+      f.sort = 'due';
+      break;
     case 'completed':
       f.status = 'completed';
       break;

@@ -223,6 +223,8 @@ function registerIpc() {
     return decorateRule(db.getRecurringRule(t.recurring_id));
   }));
   ipcMain.handle('recur:completions', withDb((id) => db.listCompletions(id)));
+  // 日历回填历史打卡：一次取全部（可选 from/to），避免按规则逐个 IPC
+  ipcMain.handle('recur:completionsAll', withDb((f) => db.listCompletionsAll(f || {})));
   ipcMain.handle('recur:setCompletion', withDb((id, date, done) => db.setCompletion(id, date, !!done), { notify: true }));
   ipcMain.handle('recur:skipDay', withDb((id, date) => decorateRule(db.skipOccurrence(id, date)), { notify: true }));
   ipcMain.handle('recur:stats', withDb((id) => db.habitStats(id)));

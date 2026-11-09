@@ -1,11 +1,20 @@
 'use strict';
 /**
- * AI 检索视图：输入关键词检索所有任务，AI 生成总结，结果以可点击链接展示。
+ * AI 检索（弹窗）：输入关键词检索所有任务，AI 生成总结，结果以可点击链接展示。
  * 每次检索都会写进 ai_searches 表（关键词 + 总结 + 命中任务快照），
- * 下方「检索历史」可回看、删除；切换视图或重启都不丢。
+ * 下方「检索历史」可回看、删除；关窗再开、重启都不丢。
+ *
+ * 为什么是弹窗而不是独立视图：检索是「随手查一下」的动作，
+ * 不该把主列表（含筛选、选中任务）整页换掉。弹窗关掉就回到原视图，上下文零丢失。
+ *
+ * 约束：
+ *  - 同一时刻只允许一个检索弹窗：两层 openPanelModal 会让一次 Esc 连关两层；
+ *  - 所有查询都走 rootEl 而不是 document，避免与页面里同名 id 撞车；
+ *  - 点结果先关弹窗再开详情抽屉，否则抽屉被遮罩压住。
  */
 import { api } from './api.js';
 import { renderMarkdown } from './markdown.js';
+import { openPanelModal } from './modal.js';
 
 const esc = (s) =>
   String(s == null ? '' : s)
@@ -15,6 +24,11 @@ const esc = (s) =>
 let handlers = { openDetail: () => {}, toast: () => {} };
 export function setSearchHandlers(h) { handlers = { ...handlers, ...h }; }
 
+/** 当前弹窗根节点 / 关闭函数（关闭后置空，异步回来时不会往已销毁的 DOM 里写） */
+let rootEl = null;
+let closeFn = null;
+const q = (id) => (rootEl ? rootEl.querySelector(`#${id}`) : null);
+
 function fmtTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -22,9 +36,8 @@ function fmtTime(iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export function renderSearch(initialKeyword = '') {
-  const viewEl = document.getElementById('view');
-  viewEl.innerHTML = `
+function panelHtml(initialKeyword) {
+  return `
     <div class="search-panel">
       <div class="search-hero">
         <input id="ai-search-input" type="text" placeholder="输入关键词，检索任务并由 AI 生成总结…"
@@ -39,32 +52,80 @@ export function renderSearch(initialKeyword = '') {
         <ul class="sh-list" id="ai-search-history"><li class="subtask-empty">加载中…</li></ul>
       </div>
     </div>`;
+}
 
-  const input = viewEl.querySelector('#ai-search-input');
-  const btn = viewEl.querySelector('#ai-search-btn');
-  const run = () => doSearch(input.value.trim());
-  btn.addEventListener('click', run);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
-  input.focus();
-  // 关键词从顶栏带过来时把光标放到末尾，直接回车即可检索（不自动发起，AI 调用有成本）
-  if (initialKeyword) input.setSelectionRange(input.value.length, input.value.length);
+/**
+ * 打开检索弹窗。
+ * @param {string} [initialKeyword] 顶栏搜索框已输入的关键词（只回填，不自动发起 —— AI 调用有成本）
+ */
+export function openSearchModal(initialKeyword = '') {
+  const existing = document.querySelector('.modal-mask .modal-search');
+  if (existing) {
+    // 已经开着：不叠第二层，只把关键词带进去并聚焦
+    const input = existing.querySelector('#ai-search-input');
+    if (input) {
+      const kw = String(initialKeyword || '').trim();
+      if (kw) input.value = kw;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+    return;
+  }
 
-  bindHistoryEvents();
-  loadHistory();
+  openPanelModal({
+    title: '🤖 AI 检索',
+    className: 'modal-search',
+    showClose: true,
+    okText: '关闭',
+    resizable: true,
+    resizeKey: 'ai-search',
+    minWidth: 560,
+    minHeight: 420,
+    html: panelHtml(initialKeyword),
+    onMount: (root, close) => {
+      rootEl = root;
+      closeFn = close;
+      const input = q('ai-search-input');
+      const btn = q('ai-search-btn');
+      const run = () => doSearch(input.value.trim());
+      btn.addEventListener('click', run);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); run(); }
+      });
+      input.focus();
+      // 关键词从顶栏带过来时把光标放到末尾，直接回车即可检索
+      if (initialKeyword) input.setSelectionRange(input.value.length, input.value.length);
+      bindHistoryEvents();
+      loadHistory();
+    },
+    onClose: () => { rootEl = null; closeFn = null; },
+  });
 }
 
 /* ---------------- 检索 ---------------- */
 
 async function doSearch(keyword) {
   if (!keyword) { handlers.toast('请输入检索关键词'); return; }
-  const note = document.getElementById('ai-search-note');
-  const summary = document.getElementById('ai-search-summary');
-  const results = document.getElementById('ai-search-results');
+  const note = q('ai-search-note');
+  const summary = q('ai-search-summary');
+  const results = q('ai-search-results');
+  const btn = q('ai-search-btn');
+  if (!note || !results) return;
   note.textContent = '检索中…';
   summary.hidden = true;
   results.innerHTML = '';
+  if (btn) btn.disabled = true;
 
-  const r = await api.search.ai(keyword);
+  let r;
+  try {
+    r = await api.search.ai(keyword);
+  } catch (e) {
+    r = { ok: false, message: (e && e.message) || '检索失败' };
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+  // 等待期间用户可能已经关窗：rootEl 置空后 q() 返回 null，这里直接放弃写 DOM
+  if (!rootEl) return;
   if (!r.ok) { note.textContent = r.message || '检索失败'; return; }
 
   const n = r.tasks.length;
@@ -87,9 +148,11 @@ function resultHeadline(r, n) {
 
 /** 回填一次检索结果（新检索与回看历史共用） */
 function paintResult(r, n) {
-  const summary = document.getElementById('ai-search-summary');
-  const results = document.getElementById('ai-search-results');
-  const input = document.getElementById('ai-search-input');
+  if (!rootEl) return;
+  const summary = q('ai-search-summary');
+  const results = q('ai-search-results');
+  const input = q('ai-search-input');
+  if (!summary || !results) return;
   if (input && r.keyword) input.value = r.keyword;
   if (r.summary) {
     summary.innerHTML = renderMarkdown(r.summary);
@@ -145,17 +208,23 @@ function paintResult(r, n) {
     </li>`;
   }).join('');
   results.querySelectorAll('.search-result-item').forEach((li) => {
-    li.addEventListener('click', () => handlers.openDetail(Number(li.dataset.id)));
+    li.addEventListener('click', () => {
+      const id = Number(li.dataset.id);
+      // 先关弹窗再开详情：遮罩会压住抽屉，而且用户这时要看的是那一条任务
+      if (closeFn) closeFn();
+      handlers.openDetail(id);
+    });
   });
 }
 
 /* ---------------- 历史记录 ---------------- */
 
 async function loadHistory() {
-  const box = document.getElementById('ai-search-history');
-  const count = document.getElementById('ai-search-history-count');
+  const box = q('ai-search-history');
+  const count = q('ai-search-history-count');
   if (!box) return;
   const list = await api.search.history(50).catch(() => []);
+  if (!rootEl || !box.isConnected) return; // 读历史期间窗已关
   if (count) count.textContent = list.length ? `${list.length} 条` : '';
   if (!list.length) {
     box.innerHTML = '<li class="subtask-empty">还没有检索记录</li>';
@@ -173,9 +242,8 @@ async function loadHistory() {
 }
 
 function bindHistoryEvents() {
-  const box = document.getElementById('ai-search-history');
-  if (!box || box.__bound) return;
-  box.__bound = true; // 视图重绘时元素被替换，这里只给当前节点绑定一次
+  const box = q('ai-search-history');
+  if (!box) return;
   box.addEventListener('click', async (e) => {
     const item = e.target.closest('.sh-item');
     if (!item) return;
@@ -187,7 +255,7 @@ function bindHistoryEvents() {
     }
     const rec = await api.search.get(id).catch(() => null);
     if (!rec) { handlers.toast('读取这条记录失败'); return; }
-    const note = document.getElementById('ai-search-note');
+    const note = q('ai-search-note');
     if (note) note.textContent = `回看历史：${fmtTime(rec.created_at)} · 找到 ${rec.tasks.length} 个相关任务`;
     paintResult(
       { keyword: rec.keyword, summary: rec.summary, tasks: rec.tasks || [] },

@@ -263,7 +263,10 @@
   color: #fff; font-size: 9px; line-height: 10px; text-align: center; cursor: pointer;
 }
 .cal-task.is-done .cal-check { background: var(--cal-green, #23b07e); border-color: var(--cal-green, #23b07e); }
-.cal-task.is-done { opacity: .4; }
+/* 完成态要「一眼看出做过」而不是「像被删掉」：0.4 太淡，历史记录会看不见 */
+.cal-task.is-done { opacity: .62; cursor: default; }
+.cal-task.is-done .cal-task-title { text-decoration: line-through; text-decoration-color: rgba(127, 140, 170, .55); }
+.cal-task.is-done .cal-task-bar { opacity: .55; }
 /* 配图里的格内卡片只有「色条 + 标题」；勾选框悬停才出现，避免挤掉标题宽度。
    常驻勾选在右侧当日面板里，右键菜单也有「标记完成」，触屏用户不会丢能力。 */
 .cal-task .cal-check { display: none; }
@@ -402,7 +405,14 @@
 .cal-panel-group-name { margin: 8px 0 4px; font-size: 10.5px; color: var(--cal-ink3); }
 .cal-panel-list { max-height: 320px; overflow-y: auto; }
 .cal-panel-row { display: flex; align-items: center; gap: 6px; padding: 6px 2px; border-bottom: 1px solid var(--cal-line); }
-.cal-panel-row.is-done { opacity: .45; }
+.cal-panel-row.is-done { opacity: .6; }
+.cal-panel-row.is-done .cal-panel-title { text-decoration: line-through; text-decoration-color: rgba(127, 140, 170, .5); }
+.cal-occ-tag {
+  padding: 0 4px; border-radius: 3px;
+  background: rgba(35, 176, 126, .12); color: var(--cal-green, #23b07e);
+  font-size: 10px; white-space: nowrap;
+}
+.cal-panel-act[disabled] { opacity: .3; cursor: not-allowed; }
 .cal-panel-main { flex: 1; min-width: 0; }
 /* 右栏是「完整信息」的承载区，320px 宽不该把长名单行切掉 */
 .cal-panel-title {

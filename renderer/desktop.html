@@ -17,6 +17,9 @@
       <span class="dw-title" id="dw-title">加载中…</span>
       <span class="dw-count" id="dw-count" hidden></span>
       <span class="dw-btns">
+        <!-- 贴顶 dock 专属：把展开态钉住（鼠标移开也不收回）。拖动区域吞点击，
+             所以「点一下条展开」必须落在这个 no-drag 按钮上 -->
+        <button type="button" class="dw-btn dw-pin" id="dw-pin" title="保持展开" aria-label="保持展开" hidden>📌</button>
         <button type="button" class="dw-btn" id="dw-collapse" title="折叠为标题条" aria-label="折叠">⌃</button>
         <button type="button" class="dw-btn" id="dw-more" title="更多" aria-label="更多">⋯</button>
       </span>

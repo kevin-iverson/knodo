@@ -226,6 +226,56 @@
   pointer-events: none;
 }
 
+/* ---- 任务详情「描述」：同一套工具条 + 常驻编辑区 ----
+   描述存 HTML、没有「预览 / 编辑」两态，所以工具条一进来就显示；
+   抽屉比笔记右栏窄得多，工具条允许换行（横向滚动在 360px 宽的面板里基本没法用）。 */
+.detail-notes-wrap { display: flex; flex-direction: column; min-width: 0; }
+.detail-notes-wrap .nt-wys-bar {
+  flex-wrap: wrap;
+  overflow: visible;
+  row-gap: 2px;
+  border-radius: 8px 8px 0 0;
+  /* 描述区很长时工具条吸在抽屉顶部（.detail-body 是滚动容器） */
+  position: sticky;
+  top: 0;
+}
+.detail-notes-wrap .detail-notes-editor {
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+}
+/* 空描述的占位符沿用 styles.css 的 `.detail-notes-editor:empty::before`；
+   别按 .is-empty 再写一条 —— 打字之后 class 不会立刻更新，会盖在正文上。 */
+
+/* 描述里的代码块：语言标签可点换语言（与笔记编辑态同一套交互，只是根节点类名不同） */
+.detail-notes-wrap .md-code-lang {
+  padding: 0 4px;
+  margin-left: -4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.detail-notes-wrap .md-code-lang::after {
+  content: '▾';
+  margin-left: 3px;
+  font-size: 9px;
+  opacity: .55;
+}
+.detail-notes-wrap .md-code-lang:hover { color: var(--primary); background: var(--bg-hover); }
+.detail-notes-wrap .md-code pre > code:empty::before,
+.detail-notes-wrap .md-code pre > code:has(> br:only-child)::before {
+  content: '在这里输入代码';
+  color: var(--text-3);
+  opacity: .7;
+  pointer-events: none;
+}
+
+/* 粘贴内容像 Markdown 时的转换提示（浮层里的一段说明文字） */
+.nt-overlay-desc {
+  padding: 0 8px 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* ---- 快捷键速查 ---- */
 .nt-guide-keys { font-size: 13px; line-height: 1.8; color: var(--text-2); }
 .nt-guide-keys p { margin: 0 0 12px; }

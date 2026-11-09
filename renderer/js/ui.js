@@ -13,7 +13,7 @@ import {
 } from './store.js';
 import { renderReports } from './reports.js';
 import { openDetail, setDetailHandlers, refreshDetailIfIdle } from './detail.js';
-import { renderSearch, setSearchHandlers } from './search.js';
+import { openSearchModal, setSearchHandlers } from './search.js';
 import { openPromptModal, openFormModal, openPanelModal } from './modal.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { flattenGroupTree, childGroups, descendantGroupIds, groupPath } from './group-tree.js';
@@ -69,18 +69,19 @@ const VIEW_META = {
   // 一级视图：侧栏「今天」下面的「日历」；描述由 calendar.js 按当月 / 当周统计动态写入
   calendar: { title: '日历', desc: '', long: '按日负载排布任务，月 / 周缩放，拖拽即可改期' },
   upcoming: { title: '即将到期', desc: '计划完成日期在今天或之后的任务' },
+  // 「未完成」= 全部进行中任务，跨分组汇总，逾期也在里面（与「即将到期」互补：一个看将来，一个看欠账）
+  unfinished: { title: '未完成', desc: '所有还没勾掉的任务（含逾期 / 未排期）' },
   all: { title: '全部任务', desc: '所有进行中与已完成任务' },
   completed: { title: '已完成', desc: '已完成但未归档的任务' },
   archived: { title: '归档', desc: '已归档的完成任务' },
   stats: { title: '统计', desc: '任务完成情况概览' },
   reports: { title: 'AI 报告', desc: '基于本地数据自动生成日报 / 周报 / 月报' },
-  search: { title: 'AI 检索', desc: '输入关键词检索任务，由 AI 生成总结' },
   meetings: { title: '会议纪要', desc: '录制 / 导入会议音频 → 语音转写 → AI 纪要 → 待办入库' },
   notes: { title: '笔记', desc: 'Markdown 笔记 → 按目录 / 标签沉淀为知识库，可关联到任务并供 AI 检索' },
 };
 
 /** 会展示任务列表、因而消费分组/标签筛选的视图 */
-const TASK_VIEWS = ['today', 'upcoming', 'all', 'completed', 'archived'];
+const TASK_VIEWS = ['today', 'upcoming', 'unfinished', 'all', 'completed', 'archived'];
 
 /** 重复规则缓存：任务行徽标要显示规则摘要 / 是否为习惯，renderTasks 每轮拉一次（规则表很小） */
 let recurringRules = [];
@@ -92,7 +93,7 @@ let pendingRecurringOpen = false;
  * 可以钉到桌面的「视图投影」。
  * 共同点：不需要 refId（内容按视图口径实时算），与分组投影共用同一套窗口 chrome。
  */
-const PINNABLE_VIEWS = ['today', 'upcoming'];
+const PINNABLE_VIEWS = ['today', 'upcoming', 'unfinished'];
 
 /**
  * 时间筛选的三组日期范围。
@@ -139,8 +140,11 @@ let focusDurationSec = Number(localStorage.getItem('knodo.focusDurationSec')) ||
 export async function init() {
   setDetailHandlers({ refresh: () => { renderSidebar(); renderTasks(); }, toast });
   setSearchHandlers({ openDetail, toast });
-  // 会议录制 / 纪要：录制归档后自动跳到会议视图查看
-  setMeetingsHandlers({ toast, refresh: () => { renderSidebar(); renderTasks(); } });
+  // 会议录制 / 纪要：录制归档后自动跳到会议视图查看。
+  // refresh 只刷侧栏计数，绝不碰 #view —— 它是共享容器，会议里完成转写 / 出纪要 /
+  // 删除记录 / 导入待办都会回调它，这里调 renderTasks() 会把整页换回任务列表
+  // （「录制完跳任务列表」「删除录音记录也跳任务列表」都是这个原因）。
+  setMeetingsHandlers({ toast, refresh: () => { renderSidebar().catch(() => {}); } });
   // 笔记视图：切走时销毁编辑器自动保存器（否则拿着已销毁的 DOM 继续写库）
   setNotesHandlers({
     toast,
@@ -317,24 +321,19 @@ function bindStaticEvents() {
     }, 200);
   });
 
-  // 顶栏「🔍 AI 检索」：原侧栏导航项上移，紧贴搜索框；再点一次回到任务列表。
+  // 顶栏「🔍 AI 检索」：以弹窗打开，不离开当前视图（筛选 / 选中任务都保留）。
   // 顶栏搜索框里已经敲过的关键词会带进检索框，省得重打一遍。
   document.getElementById('btn-ai-search')?.addEventListener('click', () => {
-    if (state.view === 'search') state.view = lastListView || 'today';
-    else {
-      state.view = 'search';
-      state.currentGroup = 'all';
-      state.editingTaskId = null;
-      state.addingTask = false;
-    }
-    renderSidebar();
-    render();
+    openSearchModal(document.getElementById('search-input')?.value.trim() || '');
   });
 
   // 笔记弹窗：不离开当前任务视图就能看 / 改笔记（弹窗里是同一套笔记界面）
   document.getElementById('btn-notes-dock')?.addEventListener('click', () => {
     openNotesDock().catch((e) => toast(`打开笔记失败：${(e && e.message) || e}`));
   });
+
+  // 贴顶便签：把「未完成」钉到屏幕顶边（再点取消）
+  document.getElementById('btn-dock')?.addEventListener('click', () => { toggleDock(); });
 
   // 顶栏标签筛选指示：点击即清除筛选
   const tagChip = document.getElementById('tag-filter-chip');
@@ -524,28 +523,21 @@ async function render() {
   descEl.textContent = meta.desc;
   descEl.title = meta.long || meta.desc;
   // 统计 / AI 报告 / 会议纪要不是任务列表：顶栏工具整排隐藏。
-  // 日历保留工具行但收起筛选栏（有自己的负载图例与控件）；AI 检索保留工具行，
-  // 这样顶栏那个「🔍 AI 检索」按钮不会点一下就消失，选中态也能看见。
+  // 日历保留工具行但收起筛选栏（有自己的负载图例与控件）。
   const isTaskView = TASK_VIEWS.includes(state.view);
   const isCalendar = state.view === 'calendar';
-  const isSearch = state.view === 'search';
-  document.querySelector('.topbar-right').hidden = !(isTaskView || isCalendar || isSearch);
+  document.querySelector('.topbar-right').hidden = !(isTaskView || isCalendar);
   document.getElementById('filter-bar').hidden = !isTaskView;
   if (!isTaskView) document.getElementById('time-filter').hidden = true;
-  // AI 检索视图里自带检索框：顶栏那个过滤列表的输入框先收起，避免两个输入框抢注意力
-  const searchBox = document.querySelector('.search-box');
-  if (searchBox) searchBox.hidden = isSearch;
+  // AI 检索已是弹窗：顶栏按钮只是入口，不再有「选中态」，也不占视图
   const aiBtn = document.getElementById('btn-ai-search');
-  if (aiBtn) {
-    aiBtn.classList.toggle('is-active', isSearch);
-    aiBtn.title = isSearch ? '返回任务列表' : 'AI 检索：关键词检索全部任务并生成 AI 总结（再点一次返回任务列表）';
-  }
+  if (aiBtn) aiBtn.title = 'AI 检索：关键词检索全部任务并生成 AI 总结（弹窗，不离开当前视图）';
   syncNavHint();
+  // 顶栏「贴顶便签」的选中态也跟着每次重绘校正一次（事件偶尔丢一拍时能自愈）
+  paintDockBtn();
   renderTagFilterChip();
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
-  // 顶栏搜索框里已输入的关键词带进 AI 检索框，省得重打一遍（不自动发起检索）
-  if (isSearch) { renderSearch(document.getElementById('search-input')?.value.trim() || ''); return; }
   if (state.view === 'meetings') { await renderMeetings(); return; }
   if (state.view === 'notes') { await renderNotes(); return; }
   if (isCalendar) { await renderCalendar(); return; }
@@ -604,13 +596,64 @@ async function refreshDesktopPins(rerender = true) {
     const list = await api.desktop.list();
     desktopPins = Array.isArray(list) ? list : [];
   } catch (e) {
-    desktopPins = []; // 主进程没就绪时当作「都没钉」，不影响其它功能
+    // 读失败**不要清空缓存**：主进程正好在写库时 IPC 会短暂失败，把磁盘上的 📌 抹掉
+    // 会让用户以为「钉的窗丢了」，还会把顶栏「贴顶便签」按钮的错误地变成未开启态。
+    if (!Array.isArray(desktopPins)) desktopPins = [];
   }
   if (rerender) {
     renderSidebarList();
-    // 导航项（今天 / 即将到期）上的 📌 不随分组列表重绘，单独刷一次
+    // 导航项（今天 / 即将到期 / 未完成）上的 📌 不随分组列表重绘，单独刷一次
     paintNavPins();
+    paintDockBtn(true);
   }
+}
+
+/**
+ * 顶栏「贴顶便签」按钮的选中态。
+ * 这里**实时查一次**而不是只读 desktopPins 缓存：钉 / 取消钉是异步的，
+ * 缓存刷新与按钮重绘容易错一拍，表现为「已经钉了但图标没亮」。
+ */
+let dockBtnToken = 0;
+let dockBtnAt = 0;
+async function paintDockBtn(force = false) {
+  const btn = document.getElementById('btn-dock');
+  if (!btn) return;
+  // 每次重绘都会调一次，节流 400ms：视图切换足够即时，又不会变成 IPC 洪水
+  if (!force && Date.now() - dockBtnAt < 400) return;
+  dockBtnAt = Date.now();
+  const token = ++dockBtnToken;
+  let pins = desktopPins;
+  try {
+    const live = await api.desktop.list();
+    if (Array.isArray(live)) pins = live;
+  } catch (e) { /* 主进程忙时退回缓存，不闪成「未钉」 */ }
+  if (token !== dockBtnToken) return; // 只应用最后一次，避免并发回填旧状态
+  const pin = (pins || []).find((p) => p.kind === 'unfinished' && p.dock === 'top');
+  btn.classList.toggle('is-on', !!pin);
+  btn.title = pin
+    ? '顶部便签已打开：点击取消（也可以在便签上点 📌 / Esc 收起）'
+    : '把「未完成」钉到屏幕顶边（悬停展开成列表）';
+}
+
+/**
+ * 贴顶便签（dock）的开关。
+ * 它装的是「未完成」这一份口径 —— 用户要的是「我欠多少」而不是「现在做什么」，
+ * 22 条对「今天」是噪音，对「未完成」才是答案。
+ */
+async function toggleDock() {
+  const pin = desktopPins.find((p) => p.kind === 'unfinished' && p.dock === 'top');
+  try {
+    if (pin) {
+      await api.desktop.unpin(pin.id);
+      toast('已取消顶部便签');
+    } else {
+      await api.desktop.pin('unfinished', null, { dock: 'top' });
+      toast('已钉到屏幕顶边：未完成（鼠标碰一下展开）');
+    }
+  } catch (e) {
+    toast(`${pin ? '取消' : '钉到顶边'}失败：${(e && e.message) || e}`);
+  }
+  await refreshDesktopPins();
 }
 
 /**
@@ -946,7 +989,21 @@ async function promptMoveGroup(g) {
 /** 「今天」/「即将到期」右键菜单（导航项与对应视图的任务区空白处共用） */
 function showViewContextMenu(view, e) {
   const label = (VIEW_META[view] && VIEW_META[view].title) || view;
+  const items = [];
+  // 「未完成」多一个顶边便签入口：它装的正是这张清单
+  if (view === 'unfinished') {
+    const dockPin = desktopPins.find((p) => p.kind === 'unfinished' && p.dock === 'top');
+    items.push({
+      label: dockPin ? '取消顶部便签' : '钉到屏幕顶边（悬停展开）',
+      icon: '📌',
+      checked: !!dockPin,
+      hint: '贴在屏幕工作区顶部，收起 30px，鼠标碰一下展开成未完成列表',
+      onClick: () => { toggleDock(); },
+    });
+    items.push({ type: 'sep' });
+  }
   openContextMenu([
+    ...items,
     ...pinMenuItems(view, null, label),
     { type: 'sep' },
     {
@@ -1465,6 +1522,9 @@ function hasTimeFilter() {
 async function renderTasks() {
   // #view 是共享容器：日历态下任何误调（应用内快捷键、外部刷新）都不能把日历整块冲成列表
   if (state.view === 'calendar') { await renderCalendar(); return; }
+  // 统计 / AI 报告 / 检索 / 会议 / 笔记同样共用 #view：后台回调里的误调不能把当前视图
+  // 整块换成任务列表。想展示任务列表的入口都必须先改 state.view（ensureTaskView 等）再刷。
+  if (!TASK_VIEWS.includes(state.view)) return;
   const tasks = await loadTasks();
   // 重复规则摘要（任务行徽标的 title / 习惯图标）；一次批量查询，规则数量很小
   recurringRules = api.recurrences ? await api.recurrences.list().catch(() => []) : [];

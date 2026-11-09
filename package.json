@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": "WorkBuddy",
@@ -21,6 +21,7 @@
     "verify:desktop": "node scripts/verify-desktop-level.js",
     "verify:identity": "node scripts/verify-notification-identity.js",
     "verify:wys": "node scripts/verify-wysiwyg.js",
+    "verify:detail": "node scripts/verify-detail-notes.js",
     "dist": "node scripts/gen-icon.js && node scripts/build-tools.js && node scripts/build-win.js",
     "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --target portable",
     "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis",

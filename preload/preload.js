@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('api', {
     preview: (p) => call('recur:preview', p),
     forTask: (taskId) => call('recur:forTask', taskId),
     completions: (id) => call('recur:completions', id),
+    completionsAll: (f) => call('recur:completionsAll', f || {}),
     setCompletion: (id, date, done) => call('recur:setCompletion', id, date, done),
     skipDay: (id, date) => call('recur:skipDay', id, date),
   },
@@ -273,9 +274,9 @@ contextBridge.exposeInMainWorld('api', {
    */
   desktop: {
     list: () => call('desktop:list'),
-    pin: (kind, refId) => call('desktop:pin', kind, refId),
+    pin: (kind, refId, opts) => call('desktop:pin', kind, refId, opts),
     unpin: (id) => call('desktop:unpin', id),
-    togglePin: (kind, refId) => call('desktop:togglePin', kind, refId),
+    togglePin: (kind, refId, opts) => call('desktop:togglePin', kind, refId, opts),
     get: (id) => call('desktop:get', id),
     toggleTask: (taskId) => call('desktop:toggleTask', taskId),
     deleteTask: (id, taskId) => call('desktop:deleteTask', id, taskId),
@@ -364,6 +365,8 @@ contextBridge.exposeInMainWorld('api', {
       'capture:show',
       // 桌面浮窗：浮窗重拉自己的投影 / 主窗口重绘 / 菜单里的已钉列表变化 / 清单被删除
       'desktop:invalidate', 'desktop:missing', 'desktop:collapsed', 'desktop:projection-changed',
+      // 贴顶 dock 被拖离顶边 → 变回普通浮窗，渲染层要重新量高度
+      'desktop:undocked',
       'ui:data-changed',
       // 重复事项：File 菜单打开管理面板 / 后台跨天生成后让列表跟上
       'ui:recurrence-manager', 'ui:recurrence-generated',

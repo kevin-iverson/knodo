@@ -18,11 +18,47 @@
  * 自研部分只有薄薄的一层：两态状态机、工具条、快捷键、只读拦截、块级原文保真。
  */
 
-import { renderMarkdownBlocks, enhanceMarkdown } from './markdown-lib.js';
+import {
+  renderMarkdownBlocks, enhanceMarkdown, renderSafeMarkdown, TEXT_COLORS, BG_COLORS,
+} from './markdown-lib.js';
 
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+/* ---------------- Markdown 语法识别（粘贴时提示转换） ---------------- */
+
+/**
+ * 判定「粘贴进来的这段纯文本像不像 Markdown」。
+ * 只在粘贴路径上用，所以宁可漏判也别错判：中文里偶尔一个 `*` 或行首 `-`
+ * 不该弹出「要转换吗」。规则是：围栏代码 / 表格分隔行命中即算，
+ * 其余语法至少命中两类不同特征才提示。
+ */
+const MD_SIGNALS = [
+  { key: 'fence', re: /^```/m },
+  { key: 'heading', re: /^#{1,6}\s+\S/m },
+  { key: 'bold', re: /\*\*[^*\n]+\*\*|__[^_\n]+__/ },
+  { key: 'italic', re: /(^|\s)\*[^*\n]+\*(\s|$)/ },
+  { key: 'bullet', re: /^[ \t]*[-*+]\s+\S/m },
+  { key: 'ordered', re: /^[ \t]*\d+[.)]\s+\S/m },
+  { key: 'quote', re: /^[ \t]*>\s?\S/m },
+  { key: 'link', re: /\[[^\]\n]+\]\([^)\s]+\)/ },
+  { key: 'table', re: /^[ \t]*\|?[\s:-]*\|[\s:|-]*$/m },
+  { key: 'hr', re: /^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/m },
+];
+
+/**
+ * @param {string} text 粘贴进来的纯文本
+ * @returns {boolean}
+ */
+export function looksLikeMarkdown(text) {
+  const s = String(text == null ? '' : text);
+  if (s.trim().length < 6) return false;
+  if (!/[#*`>|_[\]]/.test(s)) return false;
+  const hits = MD_SIGNALS.filter((x) => x.re.test(s));
+  if (hits.some((x) => x.key === 'fence' || x.key === 'table')) return true;
+  return hits.length >= 2;
+}
 
 /** 工具条：只读态整条 hidden，编辑态才出现。图标用文字符号，离线不依赖图标字体。 */
 export const TOOLBAR_HTML = `
@@ -188,14 +224,19 @@ function getTurndown() {
 
 let overlayEl = null;
 let overlayKeyBound = false;
+/** 浮层被「非选择」方式关掉时的兜底回调（例如粘贴转换提示被 Esc 关掉 → 仍要落原文） */
+let overlayOnClose = null;
 
-function closeOverlay() {
+function closeOverlay(silent) {
+  const cb = silent ? null : overlayOnClose;
+  overlayOnClose = null;
   if (overlayEl) { overlayEl.remove(); overlayEl = null; }
   document.removeEventListener('mousedown', onOverlayOutside, true);
   if (overlayKeyBound) {
     document.removeEventListener('keydown', onOverlayKey, true);
     overlayKeyBound = false;
   }
+  if (cb) cb();
 }
 function onOverlayOutside(e) {
   if (!overlayEl) return;
@@ -213,13 +254,19 @@ function onOverlayKey(e) {
  * @param {HTMLElement} o.root    正文容器（#nt-preview）
  * @param {HTMLElement} o.pane    详情面板（.nt-dp）
  * @param {HTMLElement} o.toolbar 工具条（.nt-wys-bar）
+ * @param {'markdown'|'html'} [o.mode] 数据形态：
+ *        - `markdown`（默认）读 / 写 Markdown，供笔记用（两态：只读预览 ↔ 工具条编辑）；
+ *        - `html` 读 / 写 HTML，供任务详情的描述用（常驻编辑态，工具条一直显示）。
+ *        两种模式共用同一份 DOM / 同一套工具条与快捷键，只是序列化方式不同 ——
+ *        描述存 HTML 是为了不改变既有数据语义（AI 报告、检索、备份都在按 HTML 处理它）。
  * @param {(msg:string)=>void} o.notify
  * @param {()=>void} o.onInput   正文有改动（触发自动保存）
  * @param {(editing:boolean)=>void} o.onEditingChange
- * @param {object} o.hooks       { pasteImage, pickImage, palette, guide, canExit }
+ * @param {object} o.hooks       { pasteImage, pickImage, palette, guide, canExit, exitEdit, enterEdit }
  */
 export function createWysiwyg(o) {
   const { root, pane, toolbar } = o;
+  const htmlMode = o.mode === 'html';
   const notify = o.notify || (() => {});
   const hooks = o.hooks || {};
   let editing = false;
@@ -258,14 +305,59 @@ export function createWysiwyg(o) {
   }
 
   /* ---- 渲染 ---- */
-  function setContent(md) {
-    const text = String(md || '');
+
+  /** 复杂块整体不可编辑：避免把 SVG / 高亮 span / 表格结构改坏，
+   *  但允许整块选中删除，也允许在块间插入新段落。 */
+  function lockComplexNodes() {
+    root.querySelectorAll('.md-mermaid, .md-code-bar, .md-code-copy, img, hr').forEach((el) => {
+      el.setAttribute('contenteditable', 'false');
+    });
+  }
+
+  /**
+   * 把「裸」的 `<pre><code>` 包成与笔记渲染一致的 `.md-code` 外壳（语言标签 + 代码区）。
+   * 描述里的 HTML 可能来自老数据（markdown 渲染器直出的 pre / code），
+   * 统一成外壳后才与工具条插入的代码块长得一样，也能点标签换语言。
+   */
+  function normalizeCodeShells(box) {
+    box.querySelectorAll('pre').forEach((pre) => {
+      if (pre.closest('.md-code') || pre.closest('.md-mermaid')) return;
+      const code = pre.querySelector('code');
+      if (!code) return;
+      const lang = ((code.className || '').match(/language-([\w+#.-]+)/) || [])[1] || 'text';
+      const shell = document.createElement('div');
+      shell.className = 'md-code';
+      const bar = document.createElement('div');
+      bar.className = 'md-code-bar';
+      bar.setAttribute('contenteditable', 'false');
+      const label = document.createElement('span');
+      label.className = 'md-code-lang';
+      label.textContent = lang;
+      bar.appendChild(label);
+      shell.appendChild(bar);
+      pre.replaceWith(shell);
+      shell.appendChild(pre);
+      code.className = lang === 'text' ? '' : `language-${lang}`;
+    });
+  }
+
+  /** @param {string} input Markdown（默认模式）或 HTML（html 模式） */
+  function setContent(input) {
+    const text = String(input || '');
     originalMd = text;
     dirty = false;
     savedRange = null;
+    root.classList.toggle('is-empty', !text.trim());
+    if (htmlMode) {
+      // 描述编辑器：内容本来就是 HTML，直接落进 DOM（空串交给 CSS 占位符）
+      root.innerHTML = text.trim() ? text : '';
+      normalizeCodeShells(root);
+      lockComplexNodes();
+      enhanceMarkdown(root);
+      return;
+    }
     const built = renderMarkdownBlocks(text);
     sources = built.sources || [];
-    root.classList.toggle('is-empty', !text.trim());
     root.innerHTML = built.html
       || '<div class="nt-blk" data-nt-blk="0" data-nt-clean><p><br></p></div>';
     blockCount = root.children.length;
@@ -274,17 +366,21 @@ export function createWysiwyg(o) {
       const pre = el.querySelector('.md-mermaid-src');
       if (pre) el.setAttribute('data-nt-mmd', pre.textContent || '');
     });
-    // 复杂块整体不可编辑：避免把 SVG / 高亮 span / 表格结构改坏，
-    // 但允许整块选中删除，也允许在块间插入新段落。
-    root.querySelectorAll('.md-mermaid, .md-code-bar, .md-code-copy, img, hr').forEach((el) => {
-      el.setAttribute('contenteditable', 'false');
-    });
+    lockComplexNodes();
     enhanceMarkdown(root);
   }
 
   /* ---- 序列化 ---- */
   function value(md) {
     if (arguments.length) { setContent(md); return undefined; }
+    if (htmlMode) {
+      // 空内容统一成空串：库里存空串，而不是浏览器塞进来的 <br> / 空段落
+      if (!root.textContent.trim() && !root.querySelector('img')) return '';
+      // contenteditable 属性只是编辑态的实现细节，不进正文
+      const clone = root.cloneNode(true);
+      clone.querySelectorAll('[contenteditable]').forEach((el) => el.removeAttribute('contenteditable'));
+      return clone.innerHTML;
+    }
     if (!dirty) return originalMd;
     const td = getTurndown();
     const parts = [];
@@ -524,7 +620,13 @@ export function createWysiwyg(o) {
     input?.focus();
   }
 
-  function showOverlay(anchor, html, onItem) {
+  /**
+   * @param {HTMLElement|{getBoundingClientRect:Function}} anchor 浮层贴着谁（也可传一个假的 rect 源）
+   * @param {string} html
+   * @param {(btn:HTMLElement)=>void} [onItem] data-ov-cmd 按钮回调
+   * @param {()=>void} [onClose] 浮层以「点击外部 / Esc」方式关闭时的兜底回调
+   */
+  function showOverlay(anchor, html, onItem, onClose) {
     closeOverlay();
     saveSelection();
     overlayEl = document.createElement('div');
@@ -541,9 +643,61 @@ export function createWysiwyg(o) {
         if (btn) onItem(btn);
       });
     }
+    overlayOnClose = typeof onClose === 'function' ? onClose : null;
     document.addEventListener('mousedown', onOverlayOutside, true);
     document.addEventListener('keydown', onOverlayKey, true);
     overlayKeyBound = true;
+  }
+
+  /* ---- 内置取色板（宿主没提供 hooks.palette 时用，例如任务详情描述） ---- */
+  let paletteEl = null;
+  function closePalette() {
+    if (paletteEl) { paletteEl.remove(); paletteEl = null; }
+    document.removeEventListener('mousedown', onPaletteOutside, true);
+    document.removeEventListener('keydown', onPaletteKey, true);
+  }
+  function onPaletteOutside(e) {
+    if (!paletteEl) return;
+    const t = e.target;
+    if (!paletteEl.contains(t) && !(t && t.closest && t.closest('.nt-wys-bar'))) closePalette();
+  }
+  function onPaletteKey(e) {
+    if (paletteEl && e.key === 'Escape') { e.stopPropagation(); closePalette(); }
+  }
+  /**
+   * @param {'color'|'bg'} kind
+   * @param {HTMLElement} btn 贴哪个按钮（工具条上的 A / H）
+   */
+  function openPalette(kind, btn) {
+    if (paletteEl) { closePalette(); return; }
+    const list = kind === 'color' ? TEXT_COLORS : BG_COLORS;
+    paletteEl = document.createElement('div');
+    paletteEl.className = 'nt-palette';
+    paletteEl.innerHTML = `
+      <div class="nt-palette-title">${kind === 'color' ? '字体颜色' : '背景高亮'}</div>
+      <div class="nt-palette-grid">
+        ${list.map((c) => `
+          <button type="button" class="nt-swatch" data-color="${esc(c.v)}" title="${esc(c.label)}">
+            <i style="background:${esc(c.v)}"></i>
+          </button>`).join('')}
+      </div>
+      <button type="button" class="nt-palette-clear" data-color="">清除${kind === 'color' ? '颜色' : '高亮'}</button>`;
+    document.body.appendChild(paletteEl);
+    // 贴按钮下方，贴边时向左 / 向上收，避免超出窗口
+    const anchor = btn && typeof btn.getBoundingClientRect === 'function' ? btn : root;
+    const r = anchor.getBoundingClientRect();
+    const width = paletteEl.offsetWidth || 168;
+    paletteEl.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - width - 8))}px`;
+    paletteEl.style.top = `${Math.min(r.bottom + 6, window.innerHeight - (paletteEl.offsetHeight || 140) - 8)}px`;
+    paletteEl.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-color]');
+      if (!b) return;
+      const v = b.dataset.color;
+      closePalette();
+      applyStyle(kind, v); // 内部 focusRoot(true) 把选区还原回来再上色
+    });
+    document.addEventListener('mousedown', onPaletteOutside, true);
+    document.addEventListener('keydown', onPaletteKey, true);
   }
 
   const COMMANDS = {
@@ -570,8 +724,8 @@ export function createWysiwyg(o) {
     image: () => { if (hooks.pickImage) hooks.pickImage(); },
     undo: () => exec('undo'),
     redo: () => exec('redo'),
-    color: () => { saveSelection(); if (hooks.palette) hooks.palette('color'); },
-    bg: () => { saveSelection(); if (hooks.palette) hooks.palette('bg'); },
+    color: (btn) => { saveSelection(); if (hooks.palette) hooks.palette('color'); else openPalette('color', btn); },
+    bg: (btn) => { saveSelection(); if (hooks.palette) hooks.palette('bg'); else openPalette('bg', btn); },
     guide: () => { if (hooks.guide) hooks.guide(); },
     done: () => { if (hooks.exitEdit) hooks.exitEdit(); else setEditing(false); },
   };
@@ -637,7 +791,8 @@ export function createWysiwyg(o) {
   }
 
   function setEditing(on, force = false) {
-    if (disposed || (!force && editing === !!on)) return;
+    // html 模式（任务描述）常驻编辑态：没有「预览 / 编辑」两态，工具条一直显示
+    if (disposed || htmlMode || (!force && editing === !!on)) return;
     editing = !!on;
     root.contentEditable = editing ? 'true' : 'false';
     root.spellcheck = editing;
@@ -736,6 +891,65 @@ export function createWysiwyg(o) {
     }
   }
 
+  /**
+   * 纯文本按行落成段落。粘贴的默认行为（也是「保持原文」分支）：
+   * 外部 HTML 一律不进来（脚本 / 内联样式 / 未知标签），Markdown 标记保持肉眼可见。
+   */
+  function insertPlainText(text) {
+    const paras = String(text).split(/\r?\n/).map((line) => `<p>${esc(line) || '<br>'}</p>`).join('');
+    insertHTML(paras);
+  }
+
+  /** 把粘贴进来的 Markdown 渲染成富文本再插入（Markdown → HTML 走渲染器，和笔记展示同一份逻辑） */
+  function insertMarkdownText(text) {
+    insertHTML(renderSafeMarkdown(String(text)));
+  }
+
+  /**
+   * 粘贴内容像 Markdown 时先问一句，而不是默默按纯文本落进去
+   * （用户从文档 / 对话窗口复制过来的 Markdown，多半希望看到排版后的效果）。
+   *
+   * 兜底很关键：浮层被 Esc / 点外部关掉时按「保持原文」处理 —— 绝不能出现
+   * 「弹了一下提示，剪贴板内容却丢了」这种情况。
+   */
+  function askMarkdownConvert(text) {
+    let settled = false;
+    const rect = (() => {
+      try {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount) {
+          const r = sel.getRangeAt(0).getBoundingClientRect();
+          if (r && (r.width || r.height || r.top)) return r;
+        }
+      } catch (e) { /* 取不到光标位置就退化到正文左上角 */ }
+      return root.getBoundingClientRect();
+    })();
+    const finish = (convert) => {
+      if (settled) return;
+      settled = true;
+      closeOverlay();
+      focusRoot(true);
+      if (convert) insertMarkdownText(text); else insertPlainText(text);
+    };
+    showOverlay(
+      { getBoundingClientRect: () => rect },
+      `<div class="nt-overlay-title">检测到 Markdown 语法</div>
+       <div class="nt-overlay-desc">粘贴的内容像是 Markdown，要转换成富文本吗？</div>
+       <div class="nt-overlay-acts">
+         <button type="button" class="ghost-btn tiny" data-ov-act="raw">保持原文</button>
+         <span class="nt-tb-spacer"></span>
+         <button type="button" class="primary-btn tiny" data-ov-act="md">转换</button>
+       </div>`,
+      null,
+      () => finish(false),
+    );
+    overlayEl?.addEventListener('click', (e) => {
+      const act = e.target.closest('[data-ov-act]')?.dataset.ovAct;
+      if (act === 'md') finish(true);
+      else if (act === 'raw') finish(false);
+    });
+  }
+
   function onPaste(e) {
     if (!editing) return;
     const files = [...((e.clipboardData && e.clipboardData.files) || [])]
@@ -750,8 +964,8 @@ export function createWysiwyg(o) {
     const plain = e.clipboardData && e.clipboardData.getData('text/plain');
     if (plain == null) return;
     e.preventDefault();
-    const paras = String(plain).split(/\r?\n/).map((line) => `<p>${esc(line) || '<br>'}</p>`).join('');
-    insertHTML(paras);
+    if (looksLikeMarkdown(plain)) { askMarkdownConvert(String(plain)); return; }
+    insertPlainText(String(plain));
   }
 
   function onDrop(e) {
@@ -767,7 +981,8 @@ export function createWysiwyg(o) {
     if (!editing) return;
     const mod = e.ctrlKey || e.metaKey;
     const k = String(e.key || '').toLowerCase();
-    if (k === 'escape' && !overlayEl && (!hooks.canExit || hooks.canExit())) {
+    // html 模式没有「退出编辑」这种状态：Esc 必须继续冒泡给抽屉（关面板），不能吞掉
+    if (!htmlMode && k === 'escape' && !overlayEl && (!hooks.canExit || hooks.canExit())) {
       e.preventDefault(); e.stopPropagation();
       if (hooks.exitEdit) hooks.exitEdit(); else setEditing(false);
       return;
@@ -780,9 +995,11 @@ export function createWysiwyg(o) {
     else if (e.shiftKey && e.key === '7') cmd = 'ol';
     else if (e.shiftKey && e.key === '8') cmd = 'ul';
     else if (e.shiftKey && k === 'x') cmd = 'strike';
+    // Ctrl+Shift+Z = 重做。必须单独判一次：写在下面的 !e.shiftKey 分支里永远走不到
+    // （那里 e.shiftKey 已经为假），快捷键会在帮助面板里写着却不生效。
+    else if (e.shiftKey && k === 'z') cmd = 'redo';
     else if (!e.altKey && !e.shiftKey) {
       cmd = { b: 'bold', i: 'italic', u: 'underline', k: 'link' }[k];
-      if (k === 'z' && e.shiftKey) cmd = 'redo';
     }
     if (!cmd) return;
     e.preventDefault(); e.stopPropagation();
@@ -837,7 +1054,8 @@ export function createWysiwyg(o) {
     toTextArea() {},
     dispose() {
       disposed = true;
-      closeOverlay();
+      closeOverlay(true); // 销毁时不再触发「保持原文」兜底，正文 DOM 可能已被宿主丢弃
+      closePalette();
       root.removeEventListener('input', onRootInput);
       root.removeEventListener('paste', onPaste);
       root.removeEventListener('drop', onDrop);
@@ -850,6 +1068,16 @@ export function createWysiwyg(o) {
       document.removeEventListener('selectionchange', onSelectionChange);
     },
   };
+  if (htmlMode) {
+    // 任务描述是常驻编辑态：没有「预览 ↔ 编辑」切换，工具条一进来就显示，
+    // 也不抢焦点（抽屉刚打开时焦点应该留给标题 / 面板本身）。
+    editing = true;
+    root.contentEditable = 'true';
+    root.spellcheck = true;
+    root.classList.add('is-editing');
+    if (toolbar) toolbar.hidden = false;
+    syncToolbarState();
+  }
   syncMetaReadonly();
   return api;
 }

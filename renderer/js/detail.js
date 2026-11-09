@@ -17,6 +17,7 @@ import {
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { groupOptionsHtml } from './group-tree.js';
 import { detailRepeatHtml, bindDetailRepeat, derivedScheduleHtml } from './recurrence.js';
+import { TOOLBAR_HTML, createWysiwyg } from './wysiwyg.js';
 
 // 详情页的计划日期是否必填（默认否，保持可创建“无期限”任务）
 const PLAN_DATE_REQUIRED = DATE_RANGE_DEFAULTS.required;
@@ -388,6 +389,7 @@ export function openDetail(id) {
 export function closeDetail() {
   // 关闭前把还在防抖队列里的改动落库（否则最后一下输入会被抽屉隐藏一起带走）
   disposeSavers(); // 主任务 + 所有子任务：flush 后 dispose，避免关掉后还有保存器在跑
+  releaseNotesEditor(); // 编辑器同理：不销毁的话选区 / 色板监听会一直挂在 document 上
   const drawer = document.getElementById('detail-drawer');
   state.detailTaskId = null;
   if (drawer) {
@@ -490,6 +492,8 @@ async function renderDetail() {
   // 同时回收上一轮的保存器：此时抽屉还是上一个任务的 DOM，flush 写的是它自己的数据；
   // 之后旧保存器被 dispose，再也不会拿新任务的 DOM 去写旧任务的 id。
   disposeSavers();
+  // 描述编辑器的 document 级监听（选区 / 色板 / 浮层）不随 innerHTML 消失，必须显式销毁
+  releaseNotesEditor();
   renderAbort = new AbortController();
 
   const task = await api.tasks.get(id);
@@ -574,13 +578,15 @@ async function renderDetail() {
           <div class="detail-section-head">
             <span>描述</span>
             <span class="np-head-ops">
-              <button class="ghost-btn tiny" data-act="md-help" title="查看 Markdown 快捷键">?</button>
               <button class="ghost-btn tiny" data-act="polish" title="用 AI 改写这段描述（可选预设或自定义提示词），先预览再决定是否采纳">✨ AI 改写</button>
               <button class="ghost-btn tiny" data-act="polish-restore" title="放弃润色结果，恢复润色前的原文" hidden>↩ 还原原文</button>
             </span>
           </div>
-          <div class="detail-notes-editor markdown-body" contenteditable="true" spellcheck="false"
-               data-placeholder="支持 Markdown 快捷键，点左上角「?」查看；可直接粘贴图片…">${notesHtml}</div>
+          <div class="detail-notes-wrap">
+            ${TOOLBAR_HTML}
+            <div class="detail-notes-editor markdown-body" contenteditable="true" spellcheck="false"
+                 data-placeholder="写点什么…支持工具条排版与 Markdown 快捷键，可直接粘贴 / 拖入图片">${notesHtml}</div>
+          </div>
         </div>
 
         <div class="detail-section">
@@ -657,122 +663,84 @@ function subtaskItemHtml(s) {
   </li>`;
 }
 
-/* ---------------- 描述编辑器：Markdown 快捷键与帮助 ---------------- */
+/* ---------------- 描述编辑器：与笔记同一套所见即所得 ---------------- */
 
-/** 快捷键清单：帮助弹窗与 keydown 分发共用同一份数据 */
+/**
+ * 快捷键清单（「?」帮助弹窗）。键位与 wysiwyg.js 的 onKeydown **必须逐条对齐** ——
+ * 这里写错了不会报错，只会让人按了没反应。
+ */
 const MD_SHORTCUTS = [
-  { keys: 'Ctrl+B', desc: '加粗', cmd: 'bold' },
-  { keys: 'Ctrl+I', desc: '斜体', cmd: 'italic' },
-  { keys: 'Ctrl+U', desc: '下划线', cmd: 'underline' },
-  { keys: 'Ctrl+1 / 2 / 3', desc: '一 / 二 / 三级标题', cmd: 'heading' },
-  { keys: 'Ctrl+Shift+7', desc: '有序列表（1. 2. 3.）', cmd: 'ol' },
-  { keys: 'Ctrl+Shift+8', desc: '无序列表（*）', cmd: 'ul' },
-  { keys: 'Ctrl+\\', desc: '清除样式（还原为正文）', cmd: 'clear' },
+  { keys: 'Ctrl+B', desc: '加粗' },
+  { keys: 'Ctrl+I', desc: '斜体' },
+  { keys: 'Ctrl+U', desc: '下划线' },
+  { keys: 'Ctrl+Shift+X', desc: '删除线' },
+  { keys: 'Ctrl+Alt+0 / 1 / 2 / 3', desc: '正文 / 一级 / 二级 / 三级标题' },
+  { keys: 'Ctrl+Shift+7', desc: '有序列表' },
+  { keys: 'Ctrl+Shift+8', desc: '无序列表' },
+  { keys: 'Ctrl+K', desc: '插入链接' },
+  { keys: 'Ctrl+Alt+C', desc: '插入代码块（可选语言）' },
+  { keys: 'Ctrl+Z / Ctrl+Shift+Z', desc: '撤销 / 重做' },
 ];
 
-/**
- * 在描述编辑器里执行一个 Markdown 格式化命令。
- * 用 execCommand：虽已标记废弃，但 Chromium（Electron）里依旧稳定可用，
- * 且天生与 contenteditable 的撤销栈 / 选区协同，比手动改 DOM 可靠得多。
- */
-function execMdCommand(editor, cmd) {
-  editor.focus();
-  document.execCommand(cmd, false);
-}
-
-/** 标题级别快捷键：Ctrl+1/2/3 切换 h1/h2/h3；对同级标题再按一次还原为正文 */
-function execHeading(editor, level) {
-  const block = (document.queryCommandValue('formatBlock') || '').toLowerCase();
-  const tag = `h${level}`;
-  document.execCommand('formatBlock', false, block === tag ? 'p' : tag);
-}
-
-const MD_BLOCK_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'DIV', 'BLOCKQUOTE', 'PRE']);
-
-/**
- * 清除样式（Ctrl+\）。
- * 关键坑：选区折叠（光标停着没选中任何文字）时，removeFormat 在 Chromium 里不作用于任何内容，
- * 表现就是「按了没反应」。所以光标折叠时先自动选中光标所在的整个块，再清内联格式、还原为正文。
- */
-function clearMdStyles(editor) {
-  editor.focus();
-  const sel = document.getSelection();
-  if (sel && sel.rangeCount > 0 && sel.getRangeAt(0).collapsed) {
-    // 从光标向上找编辑器内的块级元素，全选其内容
-    let node = sel.anchorNode;
-    let block = null;
-    while (node && node !== editor) {
-      if (node.nodeType === Node.ELEMENT_NODE && MD_BLOCK_TAGS.has(node.tagName)) { block = node; break; }
-      node = node.parentNode;
-    }
-    if (block) {
-      const range = document.createRange();
-      range.selectNodeContents(block);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  }
-  document.execCommand('removeFormat', false);
-  document.execCommand('unlink', false);
-  document.execCommand('formatBlock', false, 'p');
-}
-
-/** 「?」帮助弹窗：展示常用 Markdown 快捷键 */
+/** 「?」帮助弹窗：展示常用快捷键 */
 function showMdHelp() {
   const rows = MD_SHORTCUTS.map((s) => `
     <tr><td class="md-key">${esc(s.keys)}</td><td>${esc(s.desc)}</td></tr>`).join('');
   openPanelModal({
-    title: 'Markdown 快捷键',
+    title: '描述排版快捷键',
     className: 'modal-md-help',
     html: `
       <table class="md-help-table">
         <thead><tr><th>快捷键</th><th>功能</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <div class="md-help-tip">另外：可直接粘贴截图到描述里，图片会插入光标处。</div>`,
+      <div class="md-help-tip">
+        工具条上的「▾ 正文」可切换段落样式；代码块插入后点左上角语言标签能就地换语言。
+        也可以直接把截图 / 图片粘贴或拖进描述，图片会插到光标处。
+      </div>`,
   });
 }
 
-/** 绑定描述编辑器的键盘快捷键（挂在抽屉内，随抽屉重建自动回收） */
-function bindMdShortcuts(editor, drawer) {
-  editor.addEventListener('keydown', (e) => {
-    const mod = e.ctrlKey || e.metaKey;
-    if (!mod) return;
-    const key = e.key.toLowerCase();
-    const schedule = () => { if (drawer.__autoSave) drawer.__autoSave.schedule(); };
+/**
+ * 本地图片 → dataURL → 插到描述光标处。
+ * 描述随任务一起备份 / 导出，图片只能内联存储（与该功能历史行为一致）。
+ */
+function insertLocalImage(drawer, file) {
+  if (!file) return;
+  if (!/^image\//i.test(file.type || '')) { handlers.toast('只能插入图片文件'); return; }
+  if (file.size && file.size > 8 * 1024 * 1024) { handlers.toast('图片超过 8MB，请先压缩再插入'); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    if (!drawer.__notesEditor) return;
+    drawer.__notesEditor.insertImage(String(reader.result || ''), file.name || '图片');
+  };
+  reader.onerror = () => handlers.toast('图片读取失败，请重试');
+  reader.readAsDataURL(file);
+}
 
-    if (key === '1' || key === '2' || key === '3') {
-      e.preventDefault();
-      execHeading(editor, Number(key));
-      schedule();
-      return;
-    }
-    if (e.shiftKey && (key === '&' || e.code === 'Digit7')) { // Shift+7 = '&'
-      e.preventDefault();
-      document.execCommand('insertOrderedList', false);
-      schedule();
-      return;
-    }
-    if (e.shiftKey && (key === '*' || e.code === 'Digit8')) { // Shift+8 = '*'
-      e.preventDefault();
-      document.execCommand('insertUnorderedList', false);
-      schedule();
-      return;
-    }
-    if (key === '\\' || e.code === 'Backslash') {
-      // 清除样式：先去内联格式，再把所在块还原为正文段落
-      e.preventDefault();
-      clearMdStyles(editor);
-      schedule();
-      return;
-    }
-    if (key === 'b' || key === 'i' || key === 'u') {
-      const cmd = { b: 'bold', i: 'italic', u: 'underline' }[key];
-      e.preventDefault();
-      execMdCommand(editor, cmd);
-      schedule();
-    }
+/** 工具条「插入图片」：走系统文件选择框，可多选 */
+function pickInlineImage(drawer) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.multiple = true;
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  // cancel 事件（Chromium 支持）：用户放弃选择时把临时 input 收回，不留 DOM 垃圾
+  input.addEventListener('cancel', () => input.remove());
+  input.addEventListener('change', () => {
+    [...(input.files || [])].forEach((f) => insertLocalImage(drawer, f));
+    input.remove();
   });
+  input.click();
+}
+
+/** 渲染前 / 关闭抽屉时回收编辑器：document 级监听（选区、色板）不随 innerHTML 消失 */
+function releaseNotesEditor() {
+  const drawer = document.getElementById('detail-drawer');
+  const ed = drawer && drawer.__notesEditor;
+  if (ed) { try { ed.dispose(); } catch (_e) { /* 已销毁 */ } }
+  if (drawer) drawer.__notesEditor = null;
 }
 
 /**
@@ -827,25 +795,29 @@ function bindDetailEvents(drawer, task) {
 
   drawer.querySelector('[data-act="save"]').addEventListener('click', () => saveDetail(drawer, task));
 
-  // 所见即所得描述：粘贴图片插入光标处
+  // 描述：与笔记完全同一套所见即所得编辑器（工具条 / 快捷键 / 色板 / 代码块），
+  // 区别只在数据形态 —— 描述存 HTML，所以走 mode:'html' 的常驻编辑态。
+  // 撤销、快捷键、只读拦截等都复用同一份实现，别再在这里手写一套 execCommand。
   const editor = drawer.querySelector('.detail-notes-editor');
-  editor.addEventListener('paste', (e) => {    const items = e.clipboardData && e.clipboardData.items;
-    if (!items) return;
-    for (const item of items) {
-      if (item.kind === 'file' && item.type && item.type.startsWith('image/')) {
-        e.preventDefault();
-        const file = item.getAsFile();
-        const reader = new FileReader();
-        reader.onload = () => insertImageAtCursor(reader.result);
-        reader.readAsDataURL(file);
-      }
-    }
-  });
-
-  // Markdown 快捷键 + 「?」帮助弹窗
-  bindMdShortcuts(editor, drawer);
-  const mdHelpBtn = drawer.querySelector('[data-act="md-help"]');
-  if (mdHelpBtn) mdHelpBtn.addEventListener('click', showMdHelp);
+  if (editor) {
+    const rich = createWysiwyg({
+      root: editor,
+      toolbar: drawer.querySelector('.detail-notes-wrap [data-nt-toolbar]'),
+      mode: 'html',
+      notify: (msg) => handlers.toast(msg),
+      onInput: () => { if (drawer.__autoSave) drawer.__autoSave.schedule(); },
+      hooks: {
+        // 粘贴 / 拖入图片：读成 dataURL 插到光标处
+        pasteImage: (files) => files.forEach((f) => insertLocalImage(drawer, f)),
+        pickImage: () => pickInlineImage(drawer),
+        guide: () => showMdHelp(),
+      },
+    });
+    // HTML 已经由模板渲染进 DOM，这里再走一遍 setContent：统一代码块外壳、
+    // 给图片 / 代码块工具条打上 contenteditable=false（编辑态的原子块）
+    rich.setContent(editor.innerHTML);
+    drawer.__notesEditor = rich;
+  }
 
   // 描述 AI 润色：结果先预览，采纳后可一键还原原文
   const polishBtn = drawer.querySelector('[data-act="polish"]');
@@ -1436,27 +1408,6 @@ async function syncDetailSideEffects(parentId) {
   }
 }
 
-/** 图片插入到所见即所得编辑器光标处 */
-function insertImageAtCursor(dataUrl) {
-  const sel = window.getSelection();
-  const editor = document.querySelector('.detail-notes-editor');
-  if (sel && sel.rangeCount && editor.contains(sel.anchorNode)) {
-    const range = sel.getRangeAt(0);
-    const img = document.createElement('img');
-    img.src = dataUrl;
-    img.className = 'notes-img';
-    range.deleteContents();
-    range.insertNode(img);
-    range.setStartAfter(img);
-    range.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(range);
-  } else {
-    editor.focus();
-    document.execCommand('insertImage', false, dataUrl);
-  }
-}
-
 /**
  * 子任务拖拽排序（同一父级内重排）。
  * 与任务主列表同一套规则：只有按住行首手柄才允许拖拽（否则标题输入框会抢走 mousedown，
@@ -1549,8 +1500,12 @@ function collectDetailPayload(drawer, { quiet = false } = {}) {
     }
     reminderAt = computeReminder(drawer, planEnd);
   }
+  // 描述由所见即所得编辑器统一序列化（html 模式 = 去掉 contenteditable 等编辑态痕迹的 innerHTML），
+  // 保证「未改动不写库」的基线与这里取到的是同一份字符串
   const editor = drawer.querySelector('.detail-notes-editor');
-  const notes = (editor.textContent.trim() || editor.querySelector('img')) ? editor.innerHTML : '';
+  const notes = drawer.__notesEditor
+    ? drawer.__notesEditor.value()
+    : ((editor.textContent.trim() || editor.querySelector('img')) ? editor.innerHTML : '');
   const payload = {
     title,
     priority: Number(drawer.querySelector('.detail-priority').value),
@@ -1582,15 +1537,17 @@ function setDetailSaveState(drawer, status, message) {
 
 /**
  * 详情面板的即时持久化：任意字段改动 → 防抖后自动写库。
- * notesHtml 是渲染时实际写进编辑器的 HTML —— 基线必须用它（而不是库里的原始字符串），
- * 否则浏览器归一化后的 innerHTML 与库里的文本永远不相等，会出现"没改也写库"。
+ * 基线必须用「编辑器实际序列化出来的字符串」（而不是库里的原始值 / 渲染前的 HTML），
+ * 否则浏览器的 DOM 归一化会让两边永远不相等，出现"没改也写库"。
  */
 function bindDetailAutoSave(drawer, task, notesHtml, { derived = false } = {}) {
   // 身份校验是最后一道闸：抽屉已经切到别的任务（或已关闭）时，read 直接返回 null，
   // 本次保存整个作废 —— 宁可少写一次，也绝不能把 B 的内容写进 A。
   const read = () => (isDrawerShowing(task.id) ? collectDetailPayload(drawer, { quiet: true }) : null);
   const notesEl = drawer.querySelector('.detail-notes-editor');
-  const baselineNotes = notesHtml != null ? notesHtml : (task.notes || '');
+  const baselineNotes = drawer.__notesEditor
+    ? drawer.__notesEditor.value()
+    : (notesHtml != null ? notesHtml : (task.notes || ''));
 
   const saver = trackSaver(createAutoSave({
     delay: DETAIL_AUTO_SAVE_DELAY,

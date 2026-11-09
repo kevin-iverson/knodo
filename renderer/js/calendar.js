@@ -21,7 +21,9 @@ import { openPanelModal } from './modal.js';
 /** priority 0–3 的负载权重（低 0.5 / 中 1 / 高 2 / 紧急 3） */
 const WEIGHT = [0.5, 1, 2, 3];
 const DEFAULT_PREFS = {
-  capacity: 6, weekStart: 1, showCompleted: false, view: 'month', seenHint: false,
+  // hideCompleted 是 showCompleted 的反向语义：已完成任务**默认就要看得见**（用户明确要求
+  // 「今天勾掉、第二天别消失」），老库里存的 showCompleted: false 因此自动失效，无需迁移。
+  capacity: 6, weekStart: 1, hideCompleted: false, view: 'month', seenHint: false,
 };
 const WEEK_MON = ['一', '二', '三', '四', '五', '六', '日'];
 const WEEK_SUN = ['日', '一', '二', '三', '四', '五', '六'];
@@ -120,6 +122,7 @@ const cfg = {
   prefs: { ...DEFAULT_PREFS },
   serverPrefs: {},
   tasks: [],
+  completions: [],           // 重复事项的历史打卡（rule_id / occurrence_date / 任务展示字段）
   byDate: new Map(),
   pool: [],
   overdue: [],
@@ -143,6 +146,8 @@ async function loadData() {
   let prefs = null;
   try { prefs = await api.ui.getToolPref('calendar'); } catch (e) { /* 库未就绪时按默认值 */ }
   cfg.serverPrefs = prefs && typeof prefs === 'object' ? { ...prefs } : {};
+  // 旧字段（showCompleted）已换成反向语义 hideCompleted：直接丢掉，老用户默认就是"显示"
+  delete cfg.serverPrefs.showCompleted;
   cfg.prefs = { ...DEFAULT_PREFS, ...cfg.serverPrefs };
   cfg.prefs.capacity = clamp(Number(cfg.prefs.capacity) || 6, 4, 10);
   cfg.prefs.weekStart = Number(cfg.prefs.weekStart) === 0 ? 0 : 1;
@@ -151,6 +156,11 @@ async function loadData() {
     ext.toast(`读取任务失败：${(e && e.message) || e}`);
   }
   cfg.tasks = Array.isArray(tasks) ? tasks : [];
+  // 重复事项的打卡历史：一条重复事项只有一行任务，跨天会被推到下一次发生日，
+  // 历史「那天做完了」只留在 recurrence_completions 里，必须单独取回来回填日历。
+  let comps = [];
+  try { comps = await api.recurrences.completionsAll({}); } catch (e) { /* 无重复事项 / 旧库降级为空 */ }
+  cfg.completions = Array.isArray(comps) ? comps : [];
   buildIndex();
 }
 
@@ -161,12 +171,31 @@ async function savePrefs(patch) {
   try { await api.ui.setToolPref('calendar', next); } catch (e) { /* 只读环境不阻断使用 */ }
 }
 
+/** 历史打卡 → 可渲染的实例（只用于日历展示，不写库；日期就是发生日） */
+function occurrenceTask(c, day) {
+  return {
+    id: Number(c.task_id),
+    title: c.title,
+    priority: c.priority,
+    group_name: c.group_name,
+    group_color: c.group_color,
+    completed: 1,
+    completed_at: c.completed_at,
+    recurring_id: Number(c.rule_id),
+    occurrence_date: day,
+    plan_start: day,
+    plan_end: day,
+    occ: day,                                  // 标记「历史打卡实例」，交互走 setCompletion
+  };
+}
+
 /** 构建「日期 → 负载 / 任务」索引。超期任务不散落到过去日期，只汇总到今天的积压行 */
 function buildIndex() {
   const today = todayStr();
   cfg.byDate = new Map();
   cfg.pool = [];
   cfg.overdue = [];
+  const covered = new Set();                   // 任务行自己占住的「任务 + 发生日」，避免打卡再画一遍
   const ensure = (d) => {
     if (!cfg.byDate.has(d)) cfg.byDate.set(d, { load: 0, tasks: [] });
     return cfg.byDate.get(d);
@@ -174,19 +203,35 @@ function buildIndex() {
   for (const t of cfg.tasks) {
     if (t.archived) continue;                                  // 归档任务任何情况下都不出现
     if (t.parent_id != null) continue;                         // 子任务跟随父任务
-    if (t.completed && !cfg.prefs.showCompleted) continue;     // 完成态默认不显示
+    if (t.completed && cfg.prefs.hideCompleted) continue;      // 仅在用户主动勾了「隐藏」时才藏
     const range = taskRange(t);
-    if (!range) { cfg.pool.push(t); continue; }                // 未排期 → 待安排池
+    if (!range) {
+      // 已完成且没有排期的任务无处落格；放待安排池只会污染排期区（它已经在「已完成」列表里）
+      if (!t.completed) cfg.pool.push(t);
+      continue;
+    }
     if (isOverdue(t, today)) { cfg.overdue.push(t); continue; } // 欠账停在今天
+    if (t.recurring_id != null && t.occurrence_date) covered.add(`${t.id}|${t.occurrence_date}`);
     const [start, end] = range;
     const span = clamp(diffDays(start, end) + 1, 1, 400);
     const perDay = weightOf(t) / span;                         // 跨天任务负载均摊
     let d = start;
     for (let i = 0; i < span && d <= end; i += 1) {            // 字符串比较，不转 Date
       const cell = ensure(d);
-      if (!t.completed) cell.load += perDay;
+      if (!t.completed) cell.load += perDay;                   // 已完成不计入负载
       cell.tasks.push({ task: t, continuation: d !== start, perDay });
       d = addDays(d, 1);
+    }
+  }
+  // 历史打卡回填：重复事项只有一行任务，跨天会被推到下一次发生日，那一天做过的记录
+  // 只存在于 recurrence_completions —— 不回填就等于「昨天明明做完了，日历上却没痕迹」。
+  if (!cfg.prefs.hideCompleted) {
+    for (const c of cfg.completions) {
+      if (c.archived) continue;
+      const day = String(c.occurrence_date || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+      if (covered.has(`${c.task_id}|${day}`)) continue;        // 当前这一次已经画过了
+      ensure(day).tasks.push({ task: occurrenceTask(c, day), continuation: false, perDay: 0, occ: day });
     }
   }
   const byPriority = (a, b) => priorityOf(b) - priorityOf(a)
@@ -310,20 +355,30 @@ function onTitleHover(e) {
   tipHost = host;
   if (cfg.drag) { tip.hidden = true; return; }  // 拖拽中不弹
   const elided = isTitleElided(label);
+  const occ = host.dataset.occ || '';
   const t = cfg.tasks.find((x) => x.id === Number(host.dataset.taskId));
   if (!elided || !t) { tip.hidden = true; return; }
   const pri = priorityOf(t);
   const range = taskRange(t);
   const when = range ? (range[0] === range[1] ? range[0] : `${range[0]} → ${range[1]}`) : '待安排';
-  const bits = [
-    `<span class="cal-tip-dot" style="background:${PRIORITY_COLOR[pri]}"></span>${PRIORITY_TEXT[pri]}`,
-    t.group_name ? esc(t.group_name) : '',
-    esc(when),
-    Number(t.subtask_count) ? `${Number(t.subtask_count)} 个子任务` : '',
-    host.classList.contains('is-cont') ? '跨天延续' : '',
-    t.completed ? '已完成' : '',
-    isOverdue(t, todayStr()) ? '<span class="cal-tip-bad">已超期</span>' : '',
-  ].filter(Boolean);
+  const priBit = `<span class="cal-tip-dot" style="background:${PRIORITY_COLOR[pri]}"></span>${PRIORITY_TEXT[pri]}`;
+  // 历史打卡格子：日期说的是「那一天」，不是任务行现在被滚到的下一次
+  const bits = occ
+    ? [
+      priBit,
+      t.group_name ? esc(t.group_name) : '',
+      `${esc(occ)} 已完成`,
+      '重复事项打卡',
+    ].filter(Boolean)
+    : [
+      priBit,
+      t.group_name ? esc(t.group_name) : '',
+      esc(when),
+      Number(t.subtask_count) ? `${Number(t.subtask_count)} 个子任务` : '',
+      host.classList.contains('is-cont') ? '跨天延续' : '',
+      t.completed ? '已完成' : '',
+      isOverdue(t, todayStr()) ? '<span class="cal-tip-bad">已超期</span>' : '',
+    ].filter(Boolean);
   const canOpen = host.matches('.cal-task, .cal-pool-item');
   tip.innerHTML = `<div class="cal-tip-title">${esc(t.title || '未命名任务')}</div>
     <div class="cal-tip-meta">${bits.join('<i>·</i>')}</div>
@@ -364,14 +419,17 @@ function taskCardHtml(entry, opts = {}) {
   const t = entry.task;
   const pri = priorityOf(t);
   const late = isOverdue(t, todayStr());
+  const occ = entry.occ || '';
   const cls = [
     'cal-task', `p${pri}`,
     t.completed ? 'is-done' : '',
+    occ ? 'is-occ' : '',
     entry.continuation ? 'is-cont' : '',
     late ? 'is-late' : '',
     opts.week ? 'is-wide' : '',
   ].filter(Boolean).join(' ');
-  const check = `<button type="button" class="cal-check" data-cal-act="toggle" data-task-id="${t.id}"
+  // 已完成条目不能再拖（拖了会改掉历史那天的排期，语义是错的）
+  const check = `<button type="button" class="cal-check" data-cal-act="toggle" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}
     title="${t.completed ? '取消完成' : '标记完成'}">${t.completed ? '✓' : ''}</button>`;
   const flag = pri === 3 ? '<span class="cal-flag" title="紧急">⚑</span>' : '';
   const dot = safeColor(t.group_color) ? `<span class="cal-gdot" style="background:${safeColor(t.group_color)}" title="${esc(t.group_name || '')}"></span>` : '';
@@ -382,7 +440,7 @@ function taskCardHtml(entry, opts = {}) {
   const lateDot = late ? '<span class="cal-late-dot" title="已超期"></span>' : '';
   // 跨天延续的格子里照样显示任务标题：只写「续」等于白占一个卡片位，看不出在做什么
   const title = esc(t.title || '未命名任务');
-  return `<div class="${cls}" draggable="true" data-task-id="${t.id}" data-priority="${pri}"
+  return `<div class="${cls}" draggable="${t.completed ? 'false' : 'true'}" data-task-id="${t.id}" data-priority="${pri}"${occ ? ` data-occ="${occ}"` : ''}
     style="--cal-pri:${PRIORITY_COLOR[pri]};--cal-soft:${PRIORITY_SOFT[pri]}">
     <span class="cal-task-bar"></span>${check}
     ${entry.continuation ? '<span class="cal-cont-mark">↳</span>' : ''}
@@ -580,18 +638,22 @@ function backlogListHtml() {
 function panelRowHtml(entry) {
   const t = entry.task;
   const pri = priorityOf(t);
+  const occ = entry.occ || '';
   const opts = [3, 2, 1, 0].map((p) => `<option value="${p}"${p === pri ? ' selected' : ''}>${PRIORITY_TEXT[p]}</option>`).join('');
-  return `<div class="cal-panel-row ${t.completed ? 'is-done' : ''}" data-task-id="${t.id}">
-    <button type="button" class="cal-check" data-cal-act="toggle" data-task-id="${t.id}">${t.completed ? '✓' : ''}</button>
+  const metaTail = occ
+    ? '<span class="cal-occ-tag" title="重复事项在这一天的打卡记录">已完成 · 重复打卡</span>'
+    : (isOverdue(t, todayStr()) ? '<span class="is-bad">已超期</span>' : PRIORITY_TEXT[pri]);
+  return `<div class="cal-panel-row ${t.completed ? 'is-done' : ''}" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}>
+    <button type="button" class="cal-check" data-cal-act="toggle" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}>${t.completed ? '✓' : ''}</button>
     <div class="cal-panel-main">
       <div class="cal-panel-title">${entry.continuation ? '↳ ' : ''}${esc(t.title || '未命名任务')}</div>
       <div class="cal-panel-meta">
         ${t.group_name ? `<span class="cal-gdot" style="background:${safeColor(t.group_color) || PRIORITY_COLOR[pri]}"></span>${esc(t.group_name)} · ` : ''}
-        ${isOverdue(t, todayStr()) ? '<span class="is-bad">已超期</span>' : PRIORITY_TEXT[pri]}
+        ${metaTail}
       </div>
     </div>
     <select class="cal-panel-priority" data-cal-act="priority" data-task-id="${t.id}" title="改优先级">${opts}</select>
-    <button type="button" class="cal-panel-act" data-cal-act="defer" data-task-id="${t.id}" title="延期一天">→</button>
+    <button type="button" class="cal-panel-act" data-cal-act="defer" data-task-id="${t.id}" title="延期一天"${occ ? ' disabled' : ''}>→</button>
   </div>`;
 }
 
@@ -801,9 +863,23 @@ async function patchTask(id, patch, label) {
   }
 }
 
-async function toggleTask(id) {
+/**
+ * occ 非空 = 这是「重复事项某一天的打卡」格子，撤销时删那一天的打卡记录，
+ * 而不能把任务行当前的完成态翻过来（那会误伤今天 / 下一次那一份）。
+ */
+async function toggleTask(id, occ = '') {
   const t = cfg.tasks.find((x) => x.id === id);
   if (!t) return;
+  if (occ && t.recurring_id != null && occ !== (t.occurrence_date || '')) {
+    try {
+      await api.recurrences.setCompletion(t.recurring_id, occ, false);
+      await reloadAndPaint();
+      ext.toast(`已撤销 ${occ} 的打卡`);
+    } catch (e) {
+      ext.toast(`撤销打卡失败：${(e && e.message) || e}`);
+    }
+    return;
+  }
   try {
     await api.tasks.toggle(id);
     // 与列表视图同口径：勾掉的任务今天仍要留在「今天」视图里
@@ -890,8 +966,8 @@ function openCapacityDialog() {
           <option value="1"${p.weekStart === 1 ? ' selected' : ''}>周一</option>
           <option value="0"${p.weekStart === 0 ? ' selected' : ''}>周日</option>
         </select></div>
-      <div class="cal-set-row"><label>显示已完成任务 <small>降为 40% 透明度，不计入负载</small></label>
-        <input id="cal-set-done" type="checkbox"${p.showCompleted ? ' checked' : ''}></div>
+      <div class="cal-set-row"><label>隐藏已完成任务 <small>默认显示：勾掉的任务留在当天格子里，只是不计入负载</small></label>
+        <input id="cal-set-done" type="checkbox"${p.hideCompleted ? ' checked' : ''}></div>
       <div class="cal-set-note">6 是这天能扛的量，超过就该挪 —— 容量是你自己的校准口。也可以在 设置 → 日历 里改。</div>
     </div>`,
     onSubmit: async (mask) => {
@@ -899,7 +975,7 @@ function openCapacityDialog() {
       await savePrefs({
         capacity: cap,
         weekStart: mask.querySelector('#cal-set-week').value === '0' ? 0 : 1,
-        showCompleted: !!mask.querySelector('#cal-set-done').checked,
+        hideCompleted: !!mask.querySelector('#cal-set-done').checked,
       });
       await reloadAndPaint();
       return '';
@@ -981,7 +1057,7 @@ function onClick(e) {
   if (act) {
     const id = Number(act.dataset.taskId || 0);
     switch (act.dataset.calAct) {
-      case 'toggle': toggleTask(id); return;
+      case 'toggle': toggleTask(id, act.dataset.occ || ''); return;
       case 'capacity': openCapacityDialog(); return;
       case 'more': selectDate(act.dataset.date || todayStr()); return;
       case 'overdue': selectDate(todayStr(), true); return;
@@ -1042,8 +1118,18 @@ function onContextMenu(e) {
   if (!card || !e.currentTarget.querySelector('.cal-wrap')) return;
   e.preventDefault();
   const id = Number(card.dataset.taskId);
+  const occ = card.dataset.occ || '';
   const t = cfg.tasks.find((x) => x.id === id);
   if (!t) return;
+  // 历史打卡格子：排期 / 优先级 / 完成态都不属于"这一天"，只留详情与撤销
+  if (occ) {
+    openContextMenu([
+      { label: '打开详情', icon: '↗', onClick: () => ext.openTaskDetail(id) },
+      { type: 'sep' },
+      { label: `撤销 ${occ} 的打卡`, icon: '↺', onClick: () => toggleTask(id, occ) },
+    ], { x: e.clientX, y: e.clientY });
+    return;
+  }
   openContextMenu([
     { label: '打开详情', icon: '↗', onClick: () => ext.openTaskDetail(id) },
     { type: 'sep' },
@@ -1053,7 +1139,7 @@ function onContextMenu(e) {
       onClick: () => setPriority(id, p),
     })),
     { type: 'sep' },
-    { label: '延期一天', icon: '→', disabled: !taskRange(t), onClick: () => deferOneDay(id) },
+    { label: '延期一天', icon: '→', disabled: !taskRange(t) || !!t.completed, onClick: () => deferOneDay(id) },
     { label: '移出排期', icon: '⌫', disabled: !taskRange(t), onClick: () => unschedule(id) },
     { label: t.completed ? '取消完成' : '标记完成', icon: '✓', onClick: () => toggleTask(id) },
   ], { x: e.clientX, y: e.clientY });
@@ -1089,6 +1175,8 @@ function paintPanel() {
 function onDragStart(e) {
   const card = e.target.closest('.cal-task[draggable], .cal-pool-item[draggable]');
   if (!card || !e.currentTarget.querySelector('.cal-wrap')) return;
+  // draggable="false" 仍然算「有该属性」，必须按值判断：已完成任务不允许拖动改期
+  if (card.getAttribute('draggable') === 'false') { e.preventDefault(); return; }
   hideTitleTip();
   const id = Number(card.dataset.taskId);
   const task = cfg.tasks.find((t) => t.id === id);

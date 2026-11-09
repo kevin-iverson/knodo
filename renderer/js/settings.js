@@ -378,9 +378,9 @@ function calendarHtml() {
           search: '周视图 星期 calendar',
         }),
         rowHtml({
-          title: '显示已完成任务',
-          desc: '显示时降为 40% 透明度，且不计入负载',
-          ctl: ctlSwitch('st-cal-showdone', !!cal.showCompleted),
+          title: '隐藏已完成任务',
+          desc: '默认显示：完成的任务留在当天格子里，只是不计入负载',
+          ctl: ctlSwitch('st-cal-hidedone', !!cal.hideCompleted),
           search: '完成态 calendar',
         }),
       ],
@@ -397,8 +397,9 @@ function mountCalendar(pane) {
       ...(S.calendar || {}),
       capacity: cap,
       weekStart: Number(pane.querySelector('#st-cal-weekstart')?.value ?? 1) ? 1 : 0,
-      showCompleted: !!pane.querySelector('#st-cal-showdone')?.checked,
+      hideCompleted: !!pane.querySelector('#st-cal-hidedone')?.checked,
     };
+    delete next.showCompleted;   // 旧反向字段，别让它继续留在配置里
     try {
       await api.ui.setToolPref('calendar', next);
       S.calendar = next;
@@ -408,7 +409,7 @@ function mountCalendar(pane) {
       toast(`保存失败：${(e && e.message) || e}`);
     }
   };
-  ['#st-cal-capacity', '#st-cal-weekstart', '#st-cal-showdone'].forEach((sel) => {
+  ['#st-cal-capacity', '#st-cal-weekstart', '#st-cal-hidedone'].forEach((sel) => {
     const el = pane.querySelector(sel);
     if (el) el.addEventListener('change', () => saveCal());
   });

@@ -32,6 +32,17 @@ const MIN_W = 240;
 const MAX_W = 460;
 const MAX_H = 520;
 const HEAD_H = 42;
+/**
+ * 贴顶 dock（dock: 'top'）：一条贴在屏幕工作区顶边的窄条，收起 30px、悬停展开 360px。
+ * 它复用同一套窗口 / 折叠 / 自适应高度，只是尺寸与位置另算一套。
+ */
+const DOCK_W = 420;
+const DOCK_HEAD_H = 30;
+const DOCK_H = 360;
+/** 窗口最小高度：dock 收起是 30，系统最小高度必须比它更小，否则会被卡回 40（"收起没生效"） */
+const DOCK_MIN_H = 28;
+/** 把 dock 拖离顶边超过这个距离 = 用户想解除贴顶 */
+const DOCK_UNDOCK_GAP = 40;
 /** 圆角半径，必须与 renderer/css/desktop.css 的 --dw-r 一致（DIP） */
 const WINDOW_RADIUS = 14;
 /** 吸附：贴屏幕边 12px / 与其它浮窗左边界差 8px 对齐、垂直间距 8px 贴合 */
@@ -40,11 +51,11 @@ const SNAP_ALIGN = 8;
 const SNAP_GAP = 8;
 const SNAP_INSET = 12;
 /**
- * 支持的投影类型：group（单清单）/ today（今天）/ upcoming（即将到期）。
- * 后两者是「视图投影」，不带 refId —— 内容由视图口径实时算出，不需要指向任何分组。
+ * 支持的投影类型：group（单清单）/ today（今天）/ upcoming（即将到期）/ unfinished（全部未完成）。
+ * 视图投影不带 refId —— 内容由视图口径实时算出，不需要指向任何分组。
  * 漏加 kind 会被 readAll() 的 KINDS.includes(p.kind) 过滤掉，表现为「贴了但重启就没了」。
  */
-const KINDS = ['group', 'today', 'upcoming'];
+const KINDS = ['group', 'today', 'upcoming', 'unfinished'];
 
 let getMainWindow = () => null;
 let onChanged = () => {};
@@ -91,6 +102,11 @@ function normalizeProjection(raw) {
     },
     pinMode: ['always', 'hover', 'desktop'].includes(raw.pinMode) ? raw.pinMode : 'always',
     collapsed: !!raw.collapsed,
+    // 贴顶 dock：'top' 表示贴在屏幕工作区顶边；null = 普通浮窗。
+    // 存进 projection 而不是运行时状态，重启后还在原位。
+    dock: raw.dock === 'top' ? 'top' : null,
+    // 「保持展开」：dock 悬停展开后手动钉住，鼠标移开也不收回
+    dockPinned: !!raw.dockPinned,
   };
 }
 
@@ -147,8 +163,13 @@ function list() {
       title: view.title,
       done: view.counts.done,
       total: view.counts.total,
+      // 「未完成」投影才有：未勾掉的条数与逾期条数（dock 收起条与顶栏徽标要用）
+      pending: view.pending == null ? null : view.pending,
+      overdue: view.overdue == null ? null : view.overdue,
       collapsed: p.collapsed,
       pinMode: p.pinMode,
+      dock: p.dock,
+      dockPinned: p.dockPinned,
       missing: !!view.missing,
       visible: isShown(p.id),
     };
@@ -231,6 +252,26 @@ function buildView(p) {
     };
   }
 
+  if (p.kind === 'unfinished') {
+    // 「我还欠多少」：全部 active，跨分组汇总。刚勾掉的那条也带上，
+    // 让它留在原位变灰（勾选不动位置），而不是整行消失。
+    const today = todayStr();
+    const tasks = mergeVisible(
+      db.listTasks({ status: 'active', sort: 'due' }),
+      db.listTasks({ status: 'completed', completedFrom: since, sort: 'due' }),
+    );
+    const open = tasks.filter((t) => !t.completed);
+    return {
+      title: '未完成',
+      kindLabel: '全部未完成',
+      tasks,
+      counts: countsOf(tasks),
+      pending: open.length,
+      // 逾期只算未勾掉的：勾掉一条逾期任务，徽标要立刻少一
+      overdue: open.filter((t) => t.plan_end && t.plan_end < today).length,
+    };
+  }
+
   if (p.kind === 'upcoming') {
     // 与主窗口「即将到期」同一口径：进行中 + 计划完成日期在今天或之后（没有日期的任务不在其中）。
     // 刚勾掉的那条按同一到期口径再取一次，让它留在原位变灰，而不是整行消失。
@@ -270,6 +311,23 @@ function isShown(id) {
 function windowOf(id) {
   const w = wins.get(id);
   return w && !w.isDestroyed() ? w : null;
+}
+
+/**
+ * dock 的落点：贴工作区顶边（y === wa.y，不留吸附缝），水平靠右留 24px。
+ * 不做整宽 —— 整宽会压住浏览器的标签栏和窗口关闭按钮，而且看起来像系统栏而不是工具。
+ */
+function dockGeometry(height) {
+  const d = screen.getPrimaryDisplay();
+  const wa = d.workArea;
+  const h = clamp(Math.round(height || DOCK_HEAD_H), DOCK_MIN_H, MAX_H);
+  return {
+    x: wa.x + wa.width - DOCK_W - 24,
+    y: wa.y,
+    w: DOCK_W,
+    h,
+    displayId: d.id,
+  };
 }
 
 /** 默认落点：主屏工作区右侧、距边 24px、垂直居中偏上；已有浮窗则向下错开 48px */
@@ -377,18 +435,24 @@ function openWindow(p) {
     show(p.id);
     return wins.get(p.id);
   }
-  const geo = p.geometry.x == null || p.geometry.y == null
-    ? defaultGeometry(p.geometry.h)
-    : p.geometry;
+  const isDock = p.dock === 'top';
+  // dock 的落点每次重算：贴顶是它的定义，不该被上一次的坐标带偏
+  const geo = isDock
+    ? dockGeometry(p.collapsed ? DOCK_HEAD_H : DOCK_H)
+    : (p.geometry.x == null || p.geometry.y == null
+      ? defaultGeometry(p.geometry.h)
+      : p.geometry);
   // 位置来自记忆值时也要夹回可视区（副屏拔掉 / 分辨率变了）
   const d = screen.getDisplayMatching({
     x: geo.x, y: geo.y, width: geo.w, height: geo.h,
   });
   const wa = d.workArea;
-  const w = clamp(geo.w, MIN_W, MAX_W);
-  const h = clamp(p.collapsed ? HEAD_H : geo.h, HEAD_H, MAX_H);
+  const w = isDock ? DOCK_W : clamp(geo.w, MIN_W, MAX_W);
+  const minH = isDock ? DOCK_MIN_H : HEAD_H;
+  const h = clamp(p.collapsed ? minH : geo.h, minH, MAX_H);
   const x = clamp(geo.x, wa.x, wa.x + wa.width - w);
-  const y = clamp(geo.y, wa.y, wa.y + wa.height - h);
+  // dock 必须严丝合缝贴住顶边：clamp 的下界就是 wa.y，不会再被 SNAP_INSET 抬起
+  const y = isDock ? wa.y : clamp(geo.y, wa.y, wa.y + wa.height - h);
 
   const win = new BrowserWindow({
     x, y, width: w, height: h,
@@ -396,14 +460,15 @@ function openWindow(p) {
     // 按外框设 286 会得到 292 的内容宽，圆角与内描边就跟设计稿对不上。
     useContentSize: true,
     // min/max 留 8px 余量（这几个参数按外框算），真正的上下限在 JS 里夹
-    minWidth: MIN_W - 8, minHeight: HEAD_H - 2,
+    minWidth: MIN_W - 8, minHeight: DOCK_MIN_H - 2,
     maxWidth: MAX_W + 8, maxHeight: MAX_H + 8,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
     hasShadow: false,
     thickFrame: false,
-    resizable: true,
+    // dock 宽度固定 420：贴顶条拖宽没有意义，还会破坏「同一条」的视觉
+    resizable: !isDock,
     maximizable: false,
     minimizable: false,
     fullscreenable: false,
@@ -422,6 +487,9 @@ function openWindow(p) {
   wins.set(p.id, win);
   applyPinMode(win, p);
   applyContentSize(win, w, h);
+  // dock 必须按**内容区**贴顶：Windows 的透明无边框窗外框比内容高 8px，
+  // 按外框设 y=wa.y 会在屏幕顶部露出一条 8px 的空隙（看起来像没贴住）。
+  if (isDock) win.setContentBounds({ x, y: wa.y, width: DOCK_W, height: h });
 
   win.loadFile(path.join(__dirname, '..', 'renderer', 'desktop.html'), { query: { id: p.id } });
 
@@ -440,8 +508,11 @@ function openWindow(p) {
   // 拖动松手 → 吸附 + 落盘几何（hover 档要靠鼠标进出切换置顶）
   win.on('moved', () => {
     if (win.isDestroyed()) return;
-    if (p.pinMode === 'hover') win.setAlwaysOnTop(true, 'floating');
-    snapWindow(win, p);
+    const cur = findProjection(p.id) || p;
+    // dock：拖离顶边 = 解除贴顶；还贴着就钉回 wa.y（拖动头部时系统会给出一条缝）
+    if (cur.dock === 'top') { handleDockMoved(win, cur); return; }
+    if (cur.pinMode === 'hover') win.setAlwaysOnTop(true, 'floating');
+    snapWindow(win, cur);
     keepOnDesktop(win); // 拖拽后重新确认：位置变了，仍要留在桌面层
     schedulePersist(p.id, win);
   });
@@ -471,8 +542,57 @@ function openWindow(p) {
   return win;
 }
 
+/**
+ * 解除贴顶（拖离顶边 / 菜单里主动取消）。
+ * - 高度恢复成展开态、宽度回默认：dock 是 420 宽，普通浮窗是 286；
+ * - 通知渲染层重新量一次高度（它收到 desktop:undocked 会自己 fit）。
+ */
+function undock(id) {
+  const p = findProjection(id);
+  if (!p || p.dock !== 'top') return false;
+  patchProjection(id, {
+    dock: null, dockPinned: false, collapsed: false, geometry: { h: 320 },
+  });
+  const win = windowOf(id);
+  if (win) {
+    applyContentSize(win, DEF_W, 320);
+    const b = win.getBounds();
+    const wa = screen.getDisplayMatching(b).workArea;
+    win.setPosition(
+      clamp(b.x, wa.x, wa.x + wa.width - DEF_W),
+      clamp(b.y, wa.y, wa.y + wa.height - b.height),
+    );
+    win.webContents.send('desktop:undocked');
+    schedulePersist(id, win);
+  }
+  notifyProjections();
+  return true;
+}
+
+/**
+ * dock 被拖动后的处理：
+ *  - 仍贴顶（y === wa.y）→ 原地钉回，dock 永远是「贴在顶边」的；
+ *  - 拖离超过 40px → 用户想把它变回普通浮窗。
+ */
+let undocking = false;
+function handleDockMoved(win, cur) {
+  if (undocking || win.isDestroyed()) return;
+  const b = win.getBounds();
+  const wa = screen.getDisplayMatching(b).workArea;
+  if (b.y <= wa.y + DOCK_UNDOCK_GAP) {
+    if (b.y !== wa.y) win.setPosition(b.x, wa.y);
+    return;
+  }
+  undocking = true;
+  undock(cur.id);
+  setTimeout(() => { undocking = false; }, 400);
+}
+
 /** 落盘几何：拖拽过程可能有几十次 moved，松手 400ms 后写一次就够 */
 function schedulePersist(id, win) {
+  // dock 的位置与高度每次按工作区重算，记忆它反而会让它「跑位」（例如收起时的 30px 被当成展开高度）
+  const cur = findProjection(id);
+  if (cur && cur.dock === 'top') return;
   const old = persistTimers.get(id);
   if (old) clearTimeout(old);
   persistTimers.set(id, setTimeout(() => {
@@ -658,8 +778,15 @@ function focusNth(n) {
 
 /* ------------------------------ 对外操作 ------------------------------ */
 
-function pin(kind, refId) {
+/**
+ * 钉一个投影到桌面。
+ * @param {string} kind KINDS 之一
+ * @param {number|null} refId 分组 id（只有 group 用）
+ * @param {{dock?: 'top'}} [opts] dock='top' 时钉成贴顶条（默认收起 30px），否则是普通浮窗
+ */
+function pin(kind, refId, opts = {}) {
   if (!KINDS.includes(kind)) throw new Error('不支持的浮窗类型');
+  const dock = opts && opts.dock === 'top' ? 'top' : null;
   const rid = kind === 'group' ? Number(refId) : null;
   if (kind === 'group') {
     if (!Number.isFinite(rid)) throw new Error('缺少分组');
@@ -668,7 +795,8 @@ function pin(kind, refId) {
   const list0 = readAll();
   // 非 group 的 kind 的 refId 恒为 null，这条判断天然就是单例约束：
   // 再点一次「钉到桌面」只会 focus 已有窗口，不会贴出好几个一模一样的视图投影。
-  const exist = list0.find((p) => p.kind === kind && p.refId === rid);
+  // dock 与普通浮窗分开算：同一个视图可以既有一条贴顶条、又有一个浮窗，互不顶替。
+  const exist = list0.find((p) => p.kind === kind && p.refId === rid && (p.dock || null) === dock);
   if (exist) {
     openWindow(exist);
     return { ok: true, projection: exist, existed: true };
@@ -678,13 +806,24 @@ function pin(kind, refId) {
   }
   const p = normalizeProjection({
     id: newId(), kind, refId: rid,
+    // dock 必须总在最前：用「贴桌面」档会被最大化的主窗口盖住，等于看不见
     pinMode: 'always',
-    geometry: { w: DEF_W, h: 320 },
+    dock,
+    collapsed: !!dock,                 // 贴顶条默认收起成一条
+    dockPinned: false,
+    geometry: { w: dock ? DOCK_W : DEF_W, h: dock ? DOCK_H : 320 },
   });
-  const geo = defaultGeometry(p.geometry.h);
-  p.geometry.x = geo.x;
-  p.geometry.y = geo.y;
-  p.geometry.displayId = geo.displayId;
+  if (dock) {
+    const geo = dockGeometry(p.collapsed ? DOCK_HEAD_H : DOCK_H);
+    p.geometry.x = geo.x;
+    p.geometry.y = geo.y;
+    p.geometry.displayId = geo.displayId;
+  } else {
+    const geo = defaultGeometry(p.geometry.h);
+    p.geometry.x = geo.x;
+    p.geometry.y = geo.y;
+    p.geometry.displayId = geo.displayId;
+  }
   writeAll([...list0, p]);
   reviveCount.delete(p.id);
   openWindow(p);
@@ -702,11 +841,12 @@ function unpin(id) {
   return { ok: true };
 }
 
-function togglePin(kind, refId) {
+function togglePin(kind, refId, opts = {}) {
+  const dock = opts && opts.dock === 'top' ? 'top' : null;
   const rid = kind === 'group' ? Number(refId) : null;
-  const exist = readAll().find((p) => p.kind === kind && p.refId === rid);
+  const exist = readAll().find((p) => p.kind === kind && p.refId === rid && (p.dock || null) === dock);
   if (exist) return unpin(exist.id);
-  return pin(kind, refId);
+  return pin(kind, refId, opts);
 }
 
 /** 分组被删除 → 对应浮窗显示「该清单已删除」，由渲染层 3 秒后自行调用 unpin */
@@ -725,6 +865,7 @@ function update(id, patch = {}) {
   const next = { ...cur };
   if (patch.pinMode && ['always', 'hover', 'desktop'].includes(patch.pinMode)) next.pinMode = patch.pinMode;
   if (patch.collapsed != null) next.collapsed = !!patch.collapsed;
+  if (patch.dockPinned != null) next.dockPinned = !!patch.dockPinned;
   if (patch.geometry && typeof patch.geometry === 'object') {
     next.geometry = { ...cur.geometry, ...patch.geometry };
   }
@@ -745,19 +886,33 @@ function fit(id, height) {
   const p = findProjection(id);
   if (!p) return false;
   const win = windowOf(id);
-  const h = clamp(Math.round(Number(height) || HEAD_H), HEAD_H, MAX_H);
+  const isDock = p.dock === 'top';
+  // dock 收起是 30px：下限必须低于它，否则 clamp 会把窗口顶回 42（表现为「收起没生效」）
+  const minH = isDock ? DOCK_MIN_H : HEAD_H;
+  const h = clamp(Math.round(Number(height) || minH), minH, MAX_H);
   if (!win) return false;
   const b = win.getBounds();
   const size = win.getContentSize();
   const wa = screen.getDisplayMatching(b).workArea;
-  let y = b.y;
-  if (y + h > wa.y + wa.height) y = Math.max(wa.y, wa.y + wa.height - h);
-  if (b.y !== y) win.setPosition(b.x, y);
-  const w = clamp(p.geometry.w, MIN_W, MAX_W);
-  if (size[0] !== w || size[1] !== h) applyContentSize(win, w, h);
+  if (isDock) {
+    // 用内容区坐标贴顶 + 按内容区定高：外框那 8px 隐形边框不能算进去，
+    // 否则屏幕顶部会露出一条缝、收起高度也不等于 30。
+    const cb = win.getContentBounds();
+    if (cb.y !== wa.y || cb.width !== DOCK_W || cb.height !== h) {
+      win.setContentBounds({
+        x: cb.x, y: wa.y, width: DOCK_W, height: h,
+      });
+    }
+  } else {
+    let y = b.y;
+    if (y + h > wa.y + wa.height) y = Math.max(wa.y, wa.y + wa.height - h);
+    if (b.y !== y) win.setPosition(b.x, y);
+    const w = clamp(p.geometry.w, MIN_W, MAX_W);
+    if (size[0] !== w || size[1] !== h) applyContentSize(win, w, h);
+  }
   if (typeof win.__dwShow === 'function') win.__dwShow();
-  // 高度记进 projection：下次启动先按上次高度开窗，少一次跳动
-  if (p.geometry.h !== h) {
+  // 高度记进 projection：下次启动先按上次高度开窗，少一次跳动（dock 除外，它每次重算）
+  if (!isDock && p.geometry.h !== h) {
     const t = persistTimers.get(id);
     if (t) clearTimeout(t);
     persistTimers.set(id, setTimeout(() => {
@@ -775,6 +930,8 @@ function fit(id, height) {
 function resize(id, width) {
   const win = windowOf(id);
   if (!win) return false;
+  const cur = findProjection(id);
+  if (cur && cur.dock === 'top') return false; // dock 宽度固定 420（贴顶条拖宽没有意义）
   const [cw, ch] = win.getContentSize();
   const w = clamp(Math.round(Number(width) || cw), MIN_W, MAX_W);
   applyContentSize(win, w, ch);
@@ -785,7 +942,15 @@ function resize(id, width) {
 function resetPosition(id) {
   const win = windowOf(id);
   if (!win) return false;
+  const cur = findProjection(id);
   const ch = win.getContentSize()[1];
+  // dock 的位置由工作区决定：重置 = 重新贴顶
+  if (cur && cur.dock === 'top') {
+    const dg = dockGeometry(ch);
+    applyContentSize(win, dg.w, dg.h);
+    win.setPosition(dg.x, dg.y);
+    return true;
+  }
   const geo = defaultGeometry(ch);
   applyContentSize(win, DEF_W, ch);
   win.setPosition(geo.x, geo.y);
@@ -802,6 +967,10 @@ function printMenu(id) {
   // 这是这一档原来被标成「实验性」的由来 —— 现在改成如实标注可用性。
   const canDesktop = desktopLevel.available();
   const template = [
+    // 贴顶 dock 的主形态是「贴在顶边」，这里给它一个回退出口（也可以直接拖离顶边）
+    ...(p.dock === 'top'
+      ? [{ label: '取消贴顶（变回普通浮窗）', click: () => undock(id) }, { type: 'separator' }]
+      : []),
     {
       label: '置顶方式',
       submenu: [
@@ -885,9 +1054,9 @@ function wrap(fn) {
 function registerIpc() {
   ipcMain.handle('desktop:list', wrap(() => list()));
 
-  ipcMain.handle('desktop:pin', wrap((_e, kind, refId) => pin(kind, refId)));
+  ipcMain.handle('desktop:pin', wrap((_e, kind, refId, opts) => pin(kind, refId, opts || {})));
   ipcMain.handle('desktop:unpin', wrap((_e, id) => unpin(id)));
-  ipcMain.handle('desktop:togglePin', wrap((_e, kind, refId) => togglePin(kind, refId)));
+  ipcMain.handle('desktop:togglePin', wrap((_e, kind, refId, opts) => togglePin(kind, refId, opts || {})));
 
   ipcMain.handle('desktop:get', wrap((_e, id) => {
     const p = findProjection(id);
@@ -938,12 +1107,16 @@ function registerIpc() {
     const text = String(title || '').trim();
     if (!text) throw new Error('任务标题不能为空');
     if (text.length > 200) throw new Error('任务标题过长（最多 200 字）');
-    // 视图投影（今天 / 即将到期）里新增的任务默认挂在今天：
+    // 视图投影（今天 / 即将到期 / 未完成）里新增的任务默认挂在今天：
     // 与主窗口「今天」的计划完成日期口径一致，也让它在「即将到期」（今天或之后）里立刻看得见 ——
     // 留空日期的任务根本不会出现在「即将到期」里，加了等于没加。
-    const t = db.createTask(p.kind === 'today' || p.kind === 'upcoming'
-      ? { title: text, planEnd: todayStr() }
-      : { title: text, groupId: p.refId });
+    // 「未完成」漏加这一支会走进 else 分支：refId 为 null → 任务挂到「无分组」且没有日期，
+    // 直接落到「未安排」段最底部，用户会以为没加成功。
+    const t = db.createTask(
+      p.kind === 'today' || p.kind === 'upcoming' || p.kind === 'unfinished'
+        ? { title: text, planEnd: todayStr() }
+        : { title: text, groupId: p.refId },
+    );
     notifyChange(event.sender, { created: t.id });
     return t;
   }));
@@ -980,6 +1153,8 @@ function registerIpc() {
         aboveIcons: info.aboveIcons,
         topmost: info.topmost === true,
         bounds: dead ? null : w.getBounds(),
+        // 内容区坐标：dock 贴顶看的是这个（外框比内容高 8px，按外框判断会误判「没贴住」）
+        content: dead ? null : w.getContentBounds(),
       };
     }),
   })));
