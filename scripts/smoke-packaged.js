@@ -85,7 +85,12 @@ child.stdout.on('data', (b) => scan(b.toString()));
 child.stderr.on('data', (b) => scan(b.toString()));
 
 child.on('error', (e) => finish(false, `无法启动产物：${e.message}`));
-child.on('exit', (code, signal) => {
+/* 必须等 'close' 而不是 'exit'：'exit' 只表示进程结束，此时 stdio 管道里可能还有
+   未读完的数据（产物日志将近 100 行，末尾的 SMOKE_OK 正好在最后）。用 'exit' 会在
+   数据到齐之前就判定「未打印 SMOKE_OK 即退出」，把一次通过的冒烟报成失败 —— v2.3.0
+   首次构建就踩到了（手动跑同一份产物，98 行、末行 SMOKE_OK、exit 0）。
+   'close' 在所有 stdio 流关闭后才触发，数据一定已经进过 scan()。 */
+child.on('close', (code, signal) => {
   // 正常路径由 SMOKE_OK 先行收尾；走到这里还没打印，就是启动期就挂了
   finish(false, `产物在打印 SMOKE_OK 之前退出（code=${code} signal=${signal || '-'}）`);
 });
