@@ -122,8 +122,10 @@ body {
   min-width: 0;
 }
 
-/* 完成进度徽标：这是浮窗最核心的读数，必须一眼扫到 —— 小灰字会淹没在标题栏里 */
-.dw-count {
+/* 完成进度徽标：这是浮窗最核心的读数，必须一眼扫到 —— 小灰字会淹没在标题栏里。
+   .dw-pend 是「未完成」投影的第二个徽标（逾期右边报总数），与它同一套材质。 */
+.dw-count,
+.dw-pend {
   font-size: 12px;
   font-weight: 700;
   color: var(--dw-primary-strong);
@@ -133,7 +135,8 @@ body {
   border-radius: 999px;
   background: color-mix(in srgb, var(--dw-primary) 14%, transparent);
 }
-html[data-theme='dark'] .dw-count {
+html[data-theme='dark'] .dw-count,
+html[data-theme='dark'] .dw-pend {
   color: #9db4ff;
   background: color-mix(in srgb, var(--dw-primary) 26%, transparent);
 }
@@ -525,3 +528,152 @@ html[data-theme='dark'] .dw-count.is-overdue {
 /* 「保持展开」图钉：仅 dock 出现；打开时用品牌色标出来 */
 .dw-pin { font-size: 11px; }
 .dw-pin.is-on { color: var(--dw-primary); background: color-mix(in srgb, var(--dw-primary) 14%, transparent); }
+
+/* ---------------- 笔记投影（kind: 'note'）----------------
+   正文沿用主窗口的 .markdown-body（本文件最后才加载，只做「小窗适配」的收口）：
+   浮窗没有工具条，编辑靠快捷键，所以这里不引入任何编辑器外壳样式。
+   ------------------------------------------------------ */
+
+/* 笔记窗：正文是滚动容器，标题输入在它上面 */
+.dw-note {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 12px 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dw-scroll) transparent;
+}
+.dw-note::-webkit-scrollbar { width: 8px; }
+.dw-note::-webkit-scrollbar-thumb {
+  background: var(--dw-scroll);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.dw-note::-webkit-scrollbar-track { background: transparent; }
+
+/* 标题输入：编辑态才出现，长得像「大一号的标题」而不是表单控件 */
+.dw-note-title {
+  flex: none;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dw-text);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  outline: none;
+  -webkit-app-region: no-drag;
+  /* 浮窗整体 user-select:none，正文与标题必须显式放开，否则连选词都做不到 */
+  user-select: text;
+}
+.dw-note-title::placeholder { color: var(--dw-text-3); font-weight: 500; }
+.dw-note-title:focus { background: var(--dw-hover); }
+.dw-note-title[hidden] { display: none !important; }
+
+/* 正文：字号比主窗口略小一点（一行放得下更多字），行高保持可读 */
+.dw-note-body {
+  flex: none;
+  min-height: 60px;
+  outline: none;
+  color: var(--dw-text);
+  font-size: 13px;
+  line-height: 1.7;
+  user-select: text;
+}
+.dw-note-body:empty::before,
+.dw-note-body.is-empty::before {
+  content: '空笔记 · 点「编辑」写点什么';
+  color: var(--dw-text-3);
+}
+/* 选中的文字与链接：浮窗里也要能看清选中范围 */
+.dw-note-body ::selection { background: color-mix(in srgb, var(--dw-primary) 32%, transparent); }
+
+/* 小窗收紧一层留白：主窗口的 14px 标题上边距在 380px 里太空 */
+.dw-note-body h1 { font-size: 17px; margin: 10px 0 6px; }
+.dw-note-body h2 { font-size: 15px; margin: 10px 0 5px; }
+.dw-note-body h3 { font-size: 13.5px; margin: 8px 0 4px; }
+.dw-note-body p { margin: 6px 0; }
+.dw-note-body ul, .dw-note-body ol { padding-left: 20px; margin: 6px 0; }
+.dw-note-body blockquote { margin: 6px 0; padding: 2px 10px; }
+.dw-note-body pre { margin: 6px 0; padding: 8px 10px; }
+/* 图片：窄窗里不要撑出横向滚动条 */
+.dw-note-body img { max-width: 100%; height: auto; border-radius: 6px; }
+
+/* 编辑态的标题输入要有「可以改」的样子：一条细下划线足够，别做成完整表单框 */
+.dw-note[data-mode='edit'] .dw-note-title {
+  border-bottom: 1px solid var(--dw-sep);
+  border-radius: 6px 6px 2px 2px;
+}
+.dw-note[data-mode='edit'] .dw-note-title:focus {
+  border-bottom-color: color-mix(in srgb, var(--dw-primary) 55%, transparent);
+}
+
+/* 编辑态的细描边：只给一道内框，不铺底色（透明窗铺底色会脏） */
+.dw-note[data-mode='edit'] .dw-note-body {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dw-primary) 26%, transparent);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin: 0 -2px;
+}
+
+/* 底栏：字数 / 更新时间 + 保存状态 + 编辑开关 */
+.dw-note-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+.dw-note-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--dw-text-3);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dw-note-state {
+  flex: none;
+  font-size: 11px;
+  color: var(--dw-text-3);
+}
+.dw-note-state.is-error { color: var(--dw-danger, #e5484d); }
+.dw-edit-btn {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--dw-sep);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dw-text-2);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.dw-edit-btn:hover { color: var(--dw-text); border-color: var(--dw-text-3); }
+/* 编辑中：实心品牌色，和「✓ 完成」的语义一致 */
+.dw-edit-btn.is-on {
+  color: #fff;
+  background: var(--dw-primary);
+  border-color: var(--dw-primary);
+}
+
+/* 底栏左右各留 12px：与正文同一条竖线 */
+.dw.is-note .dw-foot { padding: 0 12px; }
+
+/* 笔记窗不显示任务用语（缩放手柄保留：正文段落长，宽一点更好读） */
+.dw.is-note .dw-add,
+.dw.is-note .dw-add-input { display: none !important; }

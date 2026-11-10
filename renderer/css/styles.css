@@ -84,7 +84,7 @@ body {
 /* 品牌标识：内联 SVG（与 assets/knodo.svg 同一套几何），自带圆角与渐变底色，
    所以这里只做尺寸约束，不要再画背景，否则会叠出双层圆角 */
 .brand-logo {
-  width: 26px; height: 26px; flex: none; overflow: hidden; border-radius: 7px;
+  width: 26px; height: 26px; flex: none; overflow: hidden; border-radius: 6px;
 }
 .brand-logo svg { width: 100%; height: 100%; display: block; }
 .brand-name { font-weight: 600; font-size: 15px; letter-spacing: 0.2px; }
@@ -463,6 +463,20 @@ body {
   outline: 2px solid var(--primary); outline-offset: 1px; border-radius: 4px;
 }
 .meta-item.subtask-progress { color: var(--text-2); }
+/* 列表行里的备注摘要：一行、纯文本、可省略。左侧细线表示「这是引用的备注」，
+   不抢 meta 行的视线，长文与 base64 串都不会把行撑破 */
+.task-note {
+  display: flex; align-items: baseline; gap: 5px;
+  margin-top: 5px; padding-left: 8px; min-width: 0;
+  border-left: 2px solid var(--border);
+  font-size: 12px; line-height: 1.5; color: var(--text-3);
+}
+.task-note-text {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.note-img-badge { flex: 0 0 auto; font-size: 11px; opacity: .85; }
+.task-item.done .task-note { opacity: .7; }
 .pri-badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; }
 .pri-0 { background: #eef1f6; color: var(--text-2); }
 .pri-1 { background: rgba(79, 124, 255, 0.12); color: var(--primary-strong); }
@@ -1489,64 +1503,180 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .markdown-body a { color: var(--primary); }
 .markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
 
-/* ---------------- AI 检索 ---------------- */
-.search-panel { max-width: 760px; margin: 0 auto; }
-.search-hero { display: flex; gap: 10px; margin-bottom: 14px; }
-.search-hero input {
-  flex: 1; padding: 12px 16px; border: 1px solid var(--border); border-radius: 10px;
-  background: var(--bg-panel); color: var(--text); font-size: 14px; outline: none;
+/* ---------------- AI 检索（弹窗） ----------------
+   左侧检索历史 + 右侧结果区：历史是「回头找上一次查的」，结果才是主角，
+   所以固定窄栏 + 自适应主区。上下堆叠会把弹窗撑成一长条，右半边全是空白。
+   ------------------------------------------------- */
+.search-panel {
+  /* 必须显式 width:100%：.modal-body 是 flex 列，子项带 margin:auto 会退化成
+     fit-content —— 旧版就是因此缩成中间一条、弹窗里大片空白 */
+  display: flex; flex-direction: column; gap: 10px;
+  width: 100%; flex: 1 1 auto; min-height: 0;
 }
-.search-hero input:focus { border-color: var(--primary); }
-.search-note { color: var(--text-3); font-size: 13px; margin-bottom: 12px; }
-.search-summary {
-  background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px; margin-bottom: 16px;
-}
-.search-results { list-style: none; display: flex; flex-direction: column; gap: 6px; }
-.search-result-item {
-  display: flex; flex-direction: column; gap: 6px; padding: 10px 14px;
-  background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  cursor: pointer; transition: box-shadow 0.15s;
-}
-.search-result-item:hover { box-shadow: var(--shadow); border-color: var(--primary); }
-.sr-row { display: flex; align-items: center; gap: 10px; }
-.sr-status { font-size: 14px; }
-.sr-title { flex: 1; font-size: 14px; word-break: break-word; }
-.sr-meta { color: var(--text-3); font-size: 12px; white-space: nowrap; }
-.sr-arrow { color: var(--text-3); font-size: 16px; }
 
-/* 联想检索：命中依据 + 相关度条 */
-.sr-why { display: flex; align-items: center; gap: 8px; padding-left: 24px; }
+/* 搜索栏：图标内嵌，焦点给整块描边 + 光晕，比只换 input 边框更像搜索框 */
+.search-hero { display: flex; gap: 8px; flex: 0 0 auto; }
+.search-field {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px;
+  height: 40px; padding: 0 12px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.search-field:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 15%, transparent);
+}
+.search-field .sf-ico { flex: none; font-size: 13px; opacity: 0.5; }
+.search-field input {
+  flex: 1 1 auto; min-width: 0; height: 100%; border: none; outline: none;
+  background: transparent; color: var(--text); font-size: 13.5px;
+}
+.search-field input::placeholder { color: var(--text-3); }
+.search-hero .primary-btn {
+  flex: none; height: 40px; padding: 0 22px; border-radius: 10px; font-size: 13px;
+}
+.search-hero .primary-btn:disabled { opacity: 0.6; cursor: default; }
+
+.search-note { color: var(--text-3); font-size: 12.5px; line-height: 1.5; }
+/* 没开始检索时不占位：空态整块才能垂直居中 */
+.search-note:empty { display: none; }
+
+.search-main {
+  flex: 1 1 auto; min-height: 0;
+  display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 16px;
+}
+
+/* ---- 左栏：检索历史 ---- */
+.search-side {
+  display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--border); padding-right: 12px;
+}
+.sh-head { display: flex; align-items: center; gap: 6px; padding: 0 2px 8px; flex: 0 0 auto; }
+.sh-title { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: 0.3px; }
+.sh-count { margin-left: auto; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.sh-list { list-style: none; display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow-y: auto; }
+.sh-item {
+  display: flex; align-items: center; gap: 4px; padding: 7px 8px;
+  border-radius: 8px; cursor: pointer; transition: background 0.12s;
+}
+.sh-item:hover { background: var(--bg-hover); }
+.sh-main { flex: 1 1 auto; min-width: 0; }
+.sh-kw { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-sub {
+  font-size: 11px; color: var(--text-3); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 删除按钮默认隐形：常驻一个 ✕ 会把关键词挤没，鼠标移上去才出现 */
+.sh-del {
+  flex: none; opacity: 0; transition: opacity 0.12s;
+  border: none; background: transparent; color: var(--text-3);
+  font-size: 11px; line-height: 1; padding: 4px 4px; border-radius: 5px; cursor: pointer;
+}
+.sh-item:hover .sh-del, .sh-del:focus-visible { opacity: 1; }
+.sh-del:hover { background: var(--bg-panel); color: var(--danger); }
+.sh-empty { font-size: 12px; color: var(--text-3); line-height: 1.7; padding: 8px 4px; }
+
+/* ---- 右栏：结果区（唯一滚动容器） ---- */
+.search-stage {
+  display: flex; flex-direction: column; gap: 10px;
+  min-height: 0; overflow-y: auto; padding-right: 2px;
+}
+.search-summary {
+  flex: 0 0 auto; font-size: 13px; padding: 12px 14px; border-radius: 10px;
+  background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--primary);
+}
+
+/* 空态：填满右半边，不再是一大片白 */
+.search-empty {
+  flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; text-align: center; padding: 12px 12px 24px;
+}
+.se-ico { font-size: 26px; opacity: 0.45; }
+.se-title { font-size: 14px; font-weight: 600; color: var(--text-2); }
+.se-sub { font-size: 12px; color: var(--text-3); max-width: 340px; line-height: 1.7; }
+.se-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 10px; }
+.se-chip {
+  padding: 5px 12px; border-radius: 999px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-panel); color: var(--text-2);
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.se-chip:hover { border-color: var(--primary); color: var(--primary); background: var(--bg-active); }
+
+/* ---- 结果条目 ---- */
+.search-results { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+/* 空列表不能占位：flex 容器里它仍会吃掉一个 gap，空态的「填满」就差这 10px */
+.search-results:empty { display: none; }
+.search-result-item {
+  padding: 10px 12px; border-radius: 10px; cursor: pointer;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.search-result-item:hover { border-color: var(--primary); box-shadow: var(--shadow-sm); }
+.sr-row { display: flex; align-items: center; gap: 8px; }
+.sr-status { flex: none; font-size: 13px; }
+.sr-title {
+  flex: 1 1 auto; min-width: 0; font-size: 13.5px; font-weight: 500; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.sr-meta {
+  flex: none; max-width: 38%; font-size: 11px; color: var(--text-3);
+  background: var(--bg); border-radius: 6px; padding: 1px 7px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sr-arrow { flex: none; color: var(--text-3); font-size: 15px; }
+
+/* 命中依据 + 相关度条 */
+.sr-why { display: flex; align-items: center; gap: 8px; padding: 6px 0 0 21px; }
 /* 只用边框 + 文字色表达强弱，不铺底色：浅色与深色主题下都不用另写一套覆写 */
 .sr-conf {
-  flex: none; font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 4px;
+  flex: none; font-size: 10.5px; line-height: 1.6; padding: 0 6px; border-radius: 4px;
   border: 1px solid var(--border); color: var(--text-3);
 }
-.sr-conf-high { color: var(--green); border-color: var(--green); }
-.sr-conf-mid { color: #d68b2c; border-color: #d68b2c; }
+.sr-conf-high { color: var(--green); border-color: color-mix(in srgb, var(--green) 55%, transparent); }
+.sr-conf-mid { color: #d68b2c; border-color: color-mix(in srgb, #d68b2c 55%, transparent); }
 .sr-conf-low { color: var(--text-3); }
 .sr-reasons {
-  flex: 1; min-width: 0; font-size: 12px; color: var(--text-2);
+  flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--text-3);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .sr-score {
-  flex: none; width: 54px; height: 4px; border-radius: 2px;
-  background: var(--border); overflow: hidden;
+  flex: none; width: 48px; height: 3px; border-radius: 2px; overflow: hidden;
+  /* 轨道要能看见：--border 在浅色白底上几乎隐形，进度条会变成一根孤零零的蓝短线 */
+  background: color-mix(in srgb, var(--primary) 20%, transparent);
 }
-.sr-score i { display: block; height: 100%; background: var(--primary); }
+.sr-score i { display: block; height: 100%; border-radius: 2px; background: var(--primary); }
+
+/* 检索中：一条呼吸中的占位行，别让右半边空着 */
+.sr-loading {
+  list-style: none; display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; color: var(--text-3); padding: 12px 2px;
+}
+.sr-loading i {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--primary);
+  animation: srPulse 1.1s ease-in-out infinite;
+}
+@keyframes srPulse { 0%, 100% { opacity: 0.25; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
 
 /* 结果类型提示条 */
 .sr-banner {
-  list-style: none; padding: 8px 14px; border-radius: var(--radius-sm);
-  font-size: 12.5px; color: var(--text-2); border: 1px dashed var(--border);
+  list-style: none; padding: 8px 12px; border-radius: 8px; font-size: 12.5px;
+  color: var(--text-2); background: var(--bg); border: 1px solid var(--border);
 }
-.sr-banner-unique { border-color: var(--green); color: var(--green); }
-.sr-banner-multi { border-color: #d68b2c; color: #d68b2c; }
+.sr-banner-unique {
+  color: #14845e; border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+}
+.sr-banner-multi {
+  color: #b0742a; border-color: color-mix(in srgb, #d68b2c 45%, transparent);
+  background: color-mix(in srgb, #d68b2c 9%, transparent);
+}
+[data-theme="dark"] .sr-banner-unique { color: var(--green); }
+[data-theme="dark"] .sr-banner-multi { color: #f0b25c; }
 
 /* 确实无关联：说清"试过哪些方向"，而不是冷冰冰一句没找到 */
 .sr-empty {
-  list-style: none; padding: 14px 16px; border-radius: var(--radius-sm);
-  border: 1px solid var(--border); background: var(--bg-panel);
+  list-style: none; padding: 14px 16px; border-radius: 10px;
+  border: 1px dashed var(--border); background: var(--bg-panel);
 }
 .sr-empty-title { font-size: 13.5px; color: var(--text); margin-bottom: 6px; }
 .sr-empty-sub { font-size: 12px; color: var(--text-3); margin: 8px 0 4px; }
@@ -1554,35 +1684,17 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .sr-tried li { font-size: 12px; color: var(--text-2); padding-left: 14px; position: relative; }
 .sr-tried li::before { content: '·'; position: absolute; left: 4px; color: var(--text-3); }
 
-/* AI 检索历史（持久化在 ai_searches 表，可回看 / 删除） */
-.search-history { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 14px; }
-.sh-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.sh-title { font-size: 13px; font-weight: 600; color: var(--text-2); }
-.sh-count { font-size: 12px; color: var(--text-3); }
-.sh-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
-.sh-item {
-  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
-  background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.sh-item:hover { border-color: var(--primary); }
-.sh-main { flex: 1; min-width: 0; }
-.sh-kw { font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sh-sub { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
-.sh-del {
-  border: none; background: transparent; cursor: pointer; color: var(--text-3);
-  font-size: 13px; padding: 2px 4px; border-radius: 4px; flex-shrink: 0;
-}
-.sh-del:hover { background: var(--bg-hover); color: var(--danger); }
+/* ---- 弹窗容器 ---- */
+.modal-search { width: 860px; max-width: 100%; height: min(620px, calc(100vh - 48px)); }
+.modal-search .modal-head { padding: 12px 16px 12px 18px; }
+/* body 自己不能滚：滚动交给 .search-stage / .sh-list，否则两栏会一起被推走 */
+.modal-search .modal-body { padding: 12px 16px 10px; gap: 0; overflow: hidden; }
+.modal-search .modal-foot { padding: 8px 16px 10px; }
+.search-foot-hint { font-size: 11.5px; color: var(--text-3); }
 
-/* AI 检索弹窗（原独立视图改弹窗）：宽面板 + 固定高度，结果与历史都在 body 里滚动。
-   只改宽度不够 —— .modal 的默认 max-width 380px 会把它压回单输入框的尺寸。 */
-.modal-search { width: 840px; max-width: 100%; height: min(680px, calc(100vh - 48px)); }
-.modal-search .modal-body { padding: 16px 20px 20px; }
-.modal-search .search-panel { max-width: none; }
-.modal-search .search-hero { margin-bottom: 12px; }
-.modal-search .search-hero input { background: var(--bg); }
-.modal-search .search-hero .primary-btn:disabled { opacity: 0.6; cursor: default; }
+/* 从检索弹窗里打开详情：抽屉默认 z-index 150 < 遮罩 300，会被压住。
+   closeDetail() 会摘掉这个类，所以从列表正常打开不受影响。 */
+.detail-drawer.is-over-modal { z-index: 320; }
 
 /* ---------------- 响应式（窄屏 / 移动端） ---------------- */
 @media (max-width: 768px) {

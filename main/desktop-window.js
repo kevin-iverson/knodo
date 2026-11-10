@@ -28,6 +28,9 @@ const KEY = 'tool.desktopWindows';
 const MAX_WINDOWS = 6;
 /** 窗口规格（与设计稿一致） */
 const DEF_W = 286;
+/** 笔记浮窗默认更宽：正文按段落排，286px 一行放不下几个字（可在 MAX_W 内继续拖宽） */
+const NOTE_W = 380;
+const NOTE_H = 420;
 const MIN_W = 240;
 const MAX_W = 460;
 const MAX_H = 520;
@@ -51,11 +54,13 @@ const SNAP_ALIGN = 8;
 const SNAP_GAP = 8;
 const SNAP_INSET = 12;
 /**
- * 支持的投影类型：group（单清单）/ today（今天）/ upcoming（即将到期）/ unfinished（全部未完成）。
- * 视图投影不带 refId —— 内容由视图口径实时算出，不需要指向任何分组。
+ * 支持的投影类型：group（单清单）/ today（今天）/ upcoming（即将到期）/ unfinished（全部未完成）
+ * / note（单篇笔记，可读可编辑）。
+ * 视图投影不带 refId —— 内容由视图口径实时算出，不需要指向任何分组；
+ * group 与 note 带 refId（清单 id / 笔记 id）。
  * 漏加 kind 会被 readAll() 的 KINDS.includes(p.kind) 过滤掉，表现为「贴了但重启就没了」。
  */
-const KINDS = ['group', 'today', 'upcoming', 'unfinished'];
+const KINDS = ['group', 'today', 'upcoming', 'unfinished', 'note'];
 
 let getMainWindow = () => null;
 let onChanged = () => {};
@@ -288,6 +293,30 @@ function buildView(p) {
     };
   }
 
+  if (p.kind === 'note') {
+    const n = p.refId == null ? null : db.getNote(p.refId);
+    // 进回收站也算「不在了」：浮窗继续显示一篇已删笔记，比直接收窗更让人困惑
+    if (!n || n.deleted_at) {
+      return { title: '该笔记已删除', missing: true, tasks: [], counts: { done: 0, total: 0 } };
+    }
+    return {
+      title: n.title || '无标题笔记',
+      kindLabel: '笔记',
+      // 正文按原样下发（Markdown）：浮窗用同一套 wysiwyg 渲染 / 编辑，存储口径不变
+      note: {
+        id: n.id,
+        title: n.title || '',
+        content_md: n.content_md || '',
+        word_count: n.word_count || 0,
+        updated_at: n.updated_at,
+        content_hash: n.content_hash || '',
+        folder_id: n.folder_id ?? null,
+      },
+      tasks: [],
+      counts: { done: 0, total: 0 },
+    };
+  }
+
   const g = p.refId == null ? null : db.getGroup(p.refId);
   if (!g) {
     return { title: '该清单已删除', missing: true, tasks: [], counts: { done: 0, total: 0 } };
@@ -316,13 +345,19 @@ function windowOf(id) {
 /**
  * dock 的落点：贴工作区顶边（y === wa.y，不留吸附缝），水平靠右留 24px。
  * 不做整宽 —— 整宽会压住浏览器的标签栏和窗口关闭按钮，而且看起来像系统栏而不是工具。
+ * @param {number} height 高度（收起 30 / 展开按内容）
+ * @param {number|null} [preferredX] 用户拖到顶部时的横向落点：记住它，别把便签甩回右上角
  */
-function dockGeometry(height) {
+function dockGeometry(height, preferredX) {
   const d = screen.getPrimaryDisplay();
   const wa = d.workArea;
   const h = clamp(Math.round(height || DOCK_HEAD_H), DOCK_MIN_H, MAX_H);
+  const right = wa.x + wa.width - DOCK_W - 24;
+  const x = Number.isFinite(preferredX)
+    ? clamp(Math.round(preferredX), wa.x, wa.x + wa.width - DOCK_W)
+    : right;
   return {
-    x: wa.x + wa.width - DOCK_W - 24,
+    x,
     y: wa.y,
     w: DOCK_W,
     h,
@@ -436,9 +471,9 @@ function openWindow(p) {
     return wins.get(p.id);
   }
   const isDock = p.dock === 'top';
-  // dock 的落点每次重算：贴顶是它的定义，不该被上一次的坐标带偏
+  // dock 的落点每次重算：贴顶是它的定义，不该被上一次的坐标带偏（横向位置是用户摆的，要留）
   const geo = isDock
-    ? dockGeometry(p.collapsed ? DOCK_HEAD_H : DOCK_H)
+    ? dockGeometry(p.collapsed ? DOCK_HEAD_H : DOCK_H, p.geometry.x)
     : (p.geometry.x == null || p.geometry.y == null
       ? defaultGeometry(p.geometry.h)
       : p.geometry);
@@ -506,13 +541,19 @@ function openWindow(p) {
   setTimeout(showOnce, 1200);
 
   // 拖动松手 → 吸附 + 落盘几何（hover 档要靠鼠标进出切换置顶）
+  // will-move 只在**用户**拖动时触发（Windows）。用它给 moved 打标：程序性 setBounds
+  // （fit 顶到顶边、开窗夹回工作区）不该被当成「用户把它拖到了顶部」。
+  win.on('will-move', () => { win.__dwDragAt = Date.now(); });
   win.on('moved', () => {
     if (win.isDestroyed()) return;
     const cur = findProjection(p.id) || p;
     // dock：拖离顶边 = 解除贴顶；还贴着就钉回 wa.y（拖动头部时系统会给出一条缝）
     if (cur.dock === 'top') { handleDockMoved(win, cur); return; }
     if (cur.pinMode === 'hover') win.setAlwaysOnTop(true, 'floating');
-    snapWindow(win, cur);
+    // 推到屏幕顶边 → 自动变回便签条（用户明确要的手势）；顶边状态跳过吸附，否则会被内缩 12px
+    if (!maybeAutoDock(win, cur)) snapWindow(win, cur);
+    // 吸附之后再兜一次「拖没了」：完全拖出屏幕的窗口没有任何入口能找回来
+    rescueOffscreen(win);
     keepOnDesktop(win); // 拖拽后重新确认：位置变了，仍要留在桌面层
     schedulePersist(p.id, win);
   });
@@ -570,22 +611,231 @@ function undock(id) {
 }
 
 /**
- * dock 被拖动后的处理：
- *  - 仍贴顶（y === wa.y）→ 原地钉回，dock 永远是「贴在顶边」的；
- *  - 拖离超过 40px → 用户想把它变回普通浮窗。
+ * dock 横向被拖出所有显示器之外时，算一个能抓回来的落点（否则这条 30px 窄条就彻底失踪了）。
+ * 判据是「在任意显示器上还露出 60px 以上」—— 只在真出界时动手，
+ * 否则跨屏横向拖动会被夹在第一块屏上，表现为「拖不到另一个显示器」。
  */
+function dockRescuePoint(b) {
+  const reachable = screen.getAllDisplays().some((d) => {
+    const wa = d.workArea;
+    return Math.min(b.x + b.width, wa.x + wa.width) - Math.max(b.x, wa.x) >= RESCUE_W;
+  });
+  if (reachable) return null;
+  const d = screen.getDisplayNearestPoint({
+    x: b.x + Math.round(b.width / 2),
+    y: b.y + Math.round(b.height / 2),
+  });
+  const wa = d.workArea;
+  return { x: clamp(b.x, wa.x, wa.x + wa.width - DOCK_W), y: wa.y };
+}
+
+/** dock 的横向位置是用户摆的（纵向永远贴顶）：单独落盘，schedulePersist 对 dock 整体跳过 */
+const dockXTimers = new Map();
+function scheduleDockX(id, win) {
+  const old = dockXTimers.get(id);
+  if (old) clearTimeout(old);
+  dockXTimers.set(id, setTimeout(() => {
+    dockXTimers.delete(id);
+    if (!win || win.isDestroyed()) return;
+    patchProjection(id, { geometry: { x: win.getBounds().x } });
+  }, 500));
+}
+
 let undocking = false;
+/**
+ * dock 被拖动后的处理：
+ *  - 还贴顶 → 原地钉回（dock 永远是「贴在顶边」的），横向位置照用户的来；
+ *  - 往下拉超过 40px → 解除贴顶变回普通浮窗。
+ * 「往下拉」按**累积**算：拖动时每个 moved 事件可能只走十几像素，单看一次会被门槛挡住，
+ * 一钉回顶边又归零 —— 表现就是「慢慢拖，怎么都拖不下来」。
+ */
 function handleDockMoved(win, cur) {
   if (undocking || win.isDestroyed()) return;
   const b = win.getBounds();
   const wa = screen.getDisplayMatching(b).workArea;
-  if (b.y <= wa.y + DOCK_UNDOCK_GAP) {
-    if (b.y !== wa.y) win.setPosition(b.x, wa.y);
+  const pull = b.y - wa.y;
+  if (pull > 0) {
+    win.__dwPull = Math.max(Number(win.__dwPull) || 0, pull);
+    const t = win.__dwPullTimer;
+    if (t) clearTimeout(t);
+    win.__dwPullTimer = setTimeout(() => { win.__dwPull = 0; }, 600);
+  }
+  if ((Number(win.__dwPull) || 0) < DOCK_UNDOCK_GAP) {
+    const rescue = dockRescuePoint(b);
+    const x = rescue ? rescue.x : b.x;
+    if (b.y !== wa.y || x !== b.x) win.setPosition(x, wa.y);
+    if (x !== b.x) scheduleDockX(cur.id, win);
     return;
   }
   undocking = true;
+  win.__dwPull = 0;
   undock(cur.id);
   setTimeout(() => { undocking = false; }, 400);
+}
+
+/**
+ * 普通浮窗 → 贴回屏幕顶边（变回 dock）。
+ * **原地转**，不重建窗口：拖动到顶部自动贴边依赖「窗口一直在」，重建会让原生拖动循环抓着一个
+ * 已销毁的句柄；而且原地转能保住滚动位置、没有重新加载的白闪。
+ * 宽度 420 / 贴顶 30 这些 dock 规格在运行时补上（setContentBounds；宽度由 renderer 锁死）。
+ */
+let dockConverting = false;
+function convertToDock(id, xHint) {
+  const cur = findProjection(id);
+  if (!cur || cur.dock === 'top' || dockConverting) return false;
+  // 同一视图已经有一条贴顶条：把人带到那一条，不造第二个同源窗口
+  const dup = readAll().find((p) => p.id !== id && p.kind === cur.kind && p.refId === cur.refId && p.dock === 'top');
+  if (dup) {
+    openWindow(dup);
+    return true;
+  }
+  dockConverting = true;
+  try {
+    const geo = dockGeometry(DOCK_HEAD_H, xHint);
+    // 先落投影再动窗口：后面的 setContentBounds 会触发 moved，那时必须已经知道自己是 dock，
+    // 否则会被普通浮窗的吸附规则按 12px 内缩重摆一次。
+    patchProjection(id, {
+      dock: 'top',
+      // dock 必须是「常在最前」：贴桌面档会被最大化的主窗口盖住，等于看不见
+      pinMode: 'always',
+      collapsed: true,
+      dockPinned: false,
+      geometry: {
+        x: geo.x, y: geo.y, w: DOCK_W, h: DOCK_HEAD_H, displayId: geo.displayId,
+      },
+    });
+    const win = windowOf(id);
+    if (win) {
+      // 宽度改由 renderer 侧锁（dock 态隐藏缩放手柄、desktop:size 直接返回 false）：
+      // 这里不动 resizable —— 无边框窗本来就没有可抓的边，改了反而多一个「和 pin 出来的
+      // dock 不一样」的差异（原生 dock 建窗时是 resizable:false，实测拖动行为一致）
+      win.setContentBounds({
+        x: geo.x, y: geo.y, width: DOCK_W, height: DOCK_HEAD_H,
+      });
+      win.webContents.send('desktop:redocked');
+    } else {
+      // 窗口还没建（例如启动阶段）：直接按 dock 规格开一个
+      const next = findProjection(id);
+      if (next) openWindow(next);
+    }
+    notifyProjections();
+  } finally {
+    setTimeout(() => { dockConverting = false; }, 400);
+  }
+  return true;
+}
+
+/** 菜单 / 顶栏 📌 走这条：和拖拽自动贴边是同一个转换 */
+function redock(id) {
+  return convertToDock(id, null);
+}
+
+/** 鼠标左键是否还按着。原生拖动没有「松开」事件，只能问系统；
+ *  拿不到（非 Windows / FFI 不可用）返回 null，调用方按「已松开」处理。 */
+let mouseDownFn;
+function isPrimaryButtonDown() {
+  if (mouseDownFn === undefined) {
+    mouseDownFn = null;
+    try {
+      if (process.platform !== 'win32') throw new Error('非 Windows');
+      // eslint-disable-next-line global-require
+      const koffi = require('koffi');
+      const fn = koffi.load('user32.dll').func('int16 __stdcall GetAsyncKeyState(int vKey)');
+      // 只看最高位（当前是否按下）；最低位是「上次按过」，会误判
+      mouseDownFn = () => (Number(fn(0x01)) & 0x8000) !== 0;
+    } catch (e) {
+      mouseDownFn = null;
+    }
+  }
+  return mouseDownFn ? mouseDownFn() : null;
+}
+
+/** 拖到顶边就算「推到底」的范围（DIP）：比吸附的 12px 更紧，免得随手一放就变便签 */
+const DOCK_AUTO_GAP = 6;
+/** 最后一次移动后等这么久再转：确认用户真的松手了 */
+const DOCK_AUTO_DELAY = 260;
+
+let autoDockTimer = null;
+
+/**
+ * 拖到屏幕顶边 → 自动变回贴顶条。
+ * 两个前提缺一不可：
+ *  ① 动过的是**用户**（`will-move` 只在用户拖动时触发）—— 否则 fit() 把窗口顶到 wa.y、
+ *     或者开窗时把越界坐标夹回工作区，都会莫名其妙变成便签；
+ *  ② 已经松手（问 GetAsyncKeyState）—— 拖动中途转换会让窗口被 dock 规则按在顶边，
+ *     用户还攥着鼠标，下一次移动就变成「贴上去又掉下来」的闪烁。
+ */
+function maybeAutoDock(win, cur) {
+  if (cur.dock === 'top') return false;
+  const b = win.getBounds();
+  const wa = screen.getDisplayMatching(b).workArea;
+  if (b.y > wa.y + DOCK_AUTO_GAP) { cancelAutoDock(); return false; }
+  const byUser = Date.now() - Number(win.__dwDragAt || 0) < 5000;
+  if (!byUser) return false;
+  armAutoDock(win, cur);
+  return true; // 顶边状态不再走吸附（会内缩 12px，看着就没贴住）
+}
+
+function cancelAutoDock() {
+  if (autoDockTimer) {
+    clearTimeout(autoDockTimer);
+    autoDockTimer = null;
+  }
+}
+
+function armAutoDock(win, cur) {
+  cancelAutoDock();
+  const attempt = (n) => {
+    autoDockTimer = setTimeout(() => {
+      autoDockTimer = null;
+      const w = windowOf(cur.id);
+      if (!w || w.isDestroyed()) return;
+      const b = w.getBounds();
+      const wa = screen.getDisplayMatching(b).workArea;
+      if (b.y > wa.y + DOCK_AUTO_GAP) return; // 又拖走了
+      if (isPrimaryButtonDown() === true && n < 20) { attempt(n + 1); return; }
+      win.__dwDragAt = 0;
+      convertToDock(cur.id, b.x);
+    }, DOCK_AUTO_DELAY);
+  };
+  attempt(0);
+}
+
+/** 标题栏至少要露出这么多（DIP），否则用户抓不到窗口 */
+const RESCUE_W = 60;
+const RESCUE_H = 12;
+
+/**
+ * 拖出屏幕之外 → 拉回最近的显示器。
+ * 判据只看「标题栏能不能摸到」，不看整个窗口是否越界：副屏之间拖动时窗口必然有一部分在外面，
+ * 按整窗判断会在两块屏之间来回抢，表现为「怎么拖都过不去另一块屏」。
+ */
+function rescueOffscreen(win) {
+  if (!win || win.isDestroyed()) return false;
+  const b = win.getBounds();
+  const headY = b.y;
+  const headBottom = b.y + Math.min(HEAD_H, b.height);
+  const reachable = screen.getAllDisplays().some((d) => {
+    const wa = d.workArea;
+    const w = Math.min(b.x + b.width, wa.x + wa.width) - Math.max(b.x, wa.x);
+    const h = Math.min(headBottom, wa.y + wa.height) - Math.max(headY, wa.y);
+    return w >= RESCUE_W && h >= RESCUE_H;
+  });
+  if (reachable) return false;
+  const d = screen.getDisplayNearestPoint({
+    x: b.x + Math.round(b.width / 2),
+    y: b.y + Math.round(b.height / 2),
+  });
+  const wa = d.workArea;
+  const width = Math.min(b.width, wa.width);
+  const height = Math.min(b.height, wa.height);
+  win.setBounds({
+    x: wa.x + Math.round((wa.width - width) / 2),
+    y: wa.y + Math.round((wa.height - height) / 3),
+    width,
+    height,
+  });
+  return true;
 }
 
 /** 落盘几何：拖拽过程可能有几十次 moved，松手 400ms 后写一次就够 */
@@ -781,16 +1031,22 @@ function focusNth(n) {
 /**
  * 钉一个投影到桌面。
  * @param {string} kind KINDS 之一
- * @param {number|null} refId 分组 id（只有 group 用）
+ * @param {number|null} refId 分组 id / 笔记 id（只有 group 与 note 用）
  * @param {{dock?: 'top'}} [opts] dock='top' 时钉成贴顶条（默认收起 30px），否则是普通浮窗
  */
 function pin(kind, refId, opts = {}) {
   if (!KINDS.includes(kind)) throw new Error('不支持的浮窗类型');
   const dock = opts && opts.dock === 'top' ? 'top' : null;
-  const rid = kind === 'group' ? Number(refId) : null;
+  const needsRef = kind === 'group' || kind === 'note';
+  const rid = needsRef ? Number(refId) : null;
   if (kind === 'group') {
     if (!Number.isFinite(rid)) throw new Error('缺少分组');
     if (!db.getGroup(rid)) throw new Error('分组不存在（可能已被删除）');
+  }
+  if (kind === 'note') {
+    if (!Number.isFinite(rid)) throw new Error('缺少笔记');
+    const n = db.getNote(rid);
+    if (!n || n.deleted_at) throw new Error('笔记不存在（可能已删除）');
   }
   const list0 = readAll();
   // 非 group 的 kind 的 refId 恒为 null，这条判断天然就是单例约束：
@@ -811,7 +1067,10 @@ function pin(kind, refId, opts = {}) {
     dock,
     collapsed: !!dock,                 // 贴顶条默认收起成一条
     dockPinned: false,
-    geometry: { w: dock ? DOCK_W : DEF_W, h: dock ? DOCK_H : 320 },
+    geometry: {
+      w: dock ? DOCK_W : (kind === 'note' ? NOTE_W : DEF_W),
+      h: dock ? DOCK_H : (kind === 'note' ? NOTE_H : 320),
+    },
   });
   if (dock) {
     const geo = dockGeometry(p.collapsed ? DOCK_HEAD_H : DOCK_H);
@@ -843,7 +1102,7 @@ function unpin(id) {
 
 function togglePin(kind, refId, opts = {}) {
   const dock = opts && opts.dock === 'top' ? 'top' : null;
-  const rid = kind === 'group' ? Number(refId) : null;
+  const rid = (kind === 'group' || kind === 'note') ? Number(refId) : null;
   const exist = readAll().find((p) => p.kind === kind && p.refId === rid && (p.dock || null) === dock);
   if (exist) return unpin(exist.id);
   return pin(kind, refId, opts);
@@ -852,6 +1111,16 @@ function togglePin(kind, refId, opts = {}) {
 /** 分组被删除 → 对应浮窗显示「该清单已删除」，由渲染层 3 秒后自行调用 unpin */
 function dropByGroup(groupId) {
   const hit = readAll().filter((p) => p.kind === 'group' && p.refId === Number(groupId));
+  hit.forEach((p) => {
+    const win = windowOf(p.id);
+    if (win) win.webContents.send('desktop:missing', p.id);
+  });
+  return hit.map((p) => p.id);
+}
+
+/** 笔记被删（进回收站 / 彻底删除）→ 同理，浮窗提示后自行收起 */
+function dropByNote(noteId) {
+  const hit = readAll().filter((p) => p.kind === 'note' && p.refId === Number(noteId));
   hit.forEach((p) => {
     const win = windowOf(p.id);
     if (win) win.webContents.send('desktop:missing', p.id);
@@ -949,6 +1218,8 @@ function resetPosition(id) {
     const dg = dockGeometry(ch);
     applyContentSize(win, dg.w, dg.h);
     win.setPosition(dg.x, dg.y);
+    // 顺手清掉记住的横向位置：重置就该回到默认的右上角
+    patchProjection(id, { geometry: { x: dg.x } });
     return true;
   }
   const geo = defaultGeometry(ch);
@@ -967,10 +1238,11 @@ function printMenu(id) {
   // 这是这一档原来被标成「实验性」的由来 —— 现在改成如实标注可用性。
   const canDesktop = desktopLevel.available();
   const template = [
-    // 贴顶 dock 的主形态是「贴在顶边」，这里给它一个回退出口（也可以直接拖离顶边）
+    // 贴顶 dock 的主形态是「贴在顶边」，这里给它一个回退出口（也可以直接拖离顶边）；
+    // 反过来，被拖离过的普通浮窗也要有一条贴回去的路 —— 否则「拖出去就贴不回来」。
     ...(p.dock === 'top'
       ? [{ label: '取消贴顶（变回普通浮窗）', click: () => undock(id) }, { type: 'separator' }]
-      : []),
+      : [{ label: '贴回屏幕顶边（悬停展开）', click: () => redock(id) }, { type: 'separator' }]),
     {
       label: '置顶方式',
       submenu: [
@@ -1104,6 +1376,7 @@ function registerIpc() {
     if (!db.isReady()) throw new Error('数据库未就绪');
     const p = findProjection(id);
     if (!p) throw new Error('浮窗已被移除');
+    if (p.kind === 'note') throw new Error('笔记浮窗不能新增待办');
     const text = String(title || '').trim();
     if (!text) throw new Error('任务标题不能为空');
     if (text.length > 200) throw new Error('任务标题过长（最多 200 字）');
@@ -1134,6 +1407,8 @@ function registerIpc() {
   }));
 
   ipcMain.handle('desktop:menu', wrap((_e, id) => printMenu(id)));
+  // 把普通浮窗贴回屏幕顶边（拖离顶边之后的回头路）
+  ipcMain.handle('desktop:redock', wrap((_e, id) => redock(id)));
   // 诊断：贴桌面到底挂上没有（用户报「没效果」时先看这里，不用远程连桌面）
   ipcMain.handle('desktop:diagnostics', wrap(() => ({
     level: desktopLevel.status(),
@@ -1204,8 +1479,15 @@ function restoreAll() {
   if (!db.isReady()) return 0;
   const list0 = readAll();
   if (!list0.length) return 0;
-  // 分组已被删掉的投影：顺手清理，不要留一个永远显示「已删除」的窗口
-  const alive = list0.filter((p) => p.kind !== 'group' || db.getGroup(p.refId));
+  // 分组 / 笔记已被删掉的投影：顺手清理，不要留一个永远显示「已删除」的窗口
+  const alive = list0.filter((p) => {
+    if (p.kind === 'group') return !!db.getGroup(p.refId);
+    if (p.kind === 'note') {
+      const n = db.getNote(p.refId);
+      return !!n && !n.deleted_at;
+    }
+    return true;
+  });
   if (alive.length !== list0.length) writeAll(alive);
   alive.slice(0, MAX_WINDOWS).forEach((p) => {
     try { openWindow(p); } catch (e) { console.error('[desktop] 还原浮窗失败', e && e.message); }
@@ -1233,8 +1515,8 @@ function destroyAll() {
 
 module.exports = {
   init, restoreAll, destroyAll,
-  list, pin, unpin, togglePin, update, fit, resize, resetPosition,
-  show, hide: hideWin, dropByGroup, notifyChange, isDesktopSender,
+  list, pin, unpin, togglePin, update, fit, resize, resetPosition, redock,
+  show, hide: hideWin, dropByGroup, dropByNote, notifyChange, isDesktopSender,
   toggleAllVisible, focusNth, focusedProjection,
   MAX_WINDOWS,
 };

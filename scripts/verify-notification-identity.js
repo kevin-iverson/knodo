@@ -46,7 +46,7 @@ app.whenReady().then(() => {
     new Notification({
       title: 'Knodo 通知身份自检',
       body: '通知中心上方若显示 Knodo 即修复成功',
-      icon: path.join(__dirname, '..', 'assets', 'tray.png'),
+      icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     }).show();
     setTimeout(() => app.exit(ok ? 0 : 1), 2500);
   } else {

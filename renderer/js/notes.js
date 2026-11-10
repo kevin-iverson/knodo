@@ -456,6 +456,8 @@ function detailHtml(note) {
       </div>
       <div class="nt-dp-foot">
         <button class="ghost-btn" data-nt-act="dp-pin">${note.pinned ? '取消置顶' : '📌 置顶'}</button>
+        <button class="ghost-btn" data-nt-act="dp-desktop"
+                title="在桌面上单独开一个小窗显示这篇笔记，可直接在小窗里编辑">🖥 钉到桌面</button>
         <button class="ghost-btn" data-nt-act="dp-export" title="把这篇笔记直接导出为 .md（图片以 base64 内嵌，单文件即可分享）">⬇ 导出</button>
         <button class="ghost-btn" data-nt-act="dp-archive">${note.archived ? '取消归档' : '🗄 归档'}</button>
         <button class="danger-btn" data-nt-act="dp-delete">删除</button>
@@ -517,6 +519,7 @@ export async function openNote(id, opts = {}) {
   renderRefs(pane, note);
   updateDetailMeta(pane, note);
   markListActive(note.id);
+  paintDesktopPinBtn(); // 钉住态要按主进程的实际投影定，不能被上一次的按钮文案带偏
 
   if (opts.focusTitle) {
     const titleEl = pane.querySelector('.nt-dp-title');
@@ -1132,6 +1135,7 @@ function bindModalEvents(mask) {
     else if (act === 'dp-save') { await flushNow(); notify('已保存'); }
     else if (act === 'dp-cancel') await cancelEdit();
     else if (act === 'dp-pin') await togglePin();
+    else if (act === 'dp-desktop') await toggleDesktopPin();
     else if (act === 'dp-archive') await toggleArchive();
     else if (act === 'dp-delete') await deleteFromDetail();
   });
@@ -1270,6 +1274,7 @@ function bindEvents(root) {
     else if (act === 'dp-save') { await flushNow(); notify('已保存'); }
     else if (act === 'dp-cancel') { await cancelEdit(); }
     else if (act === 'dp-pin') { await togglePin(); }
+    else if (act === 'dp-desktop') { await toggleDesktopPin(); }
     else if (act === 'dp-export') { await exportCurrentNote(); }
     else if (act === 'dp-archive') { await toggleArchive(); }
     else if (act === 'dp-delete') { await deleteFromDetail(); }
@@ -1769,6 +1774,46 @@ async function togglePin() {
   if (btn) btn.textContent = currentNote.pinned ? '取消置顶' : '📌 置顶';
   updateListItem(currentNote);
   notify(currentNote.pinned ? '已置顶' : '已取消置顶');
+}
+
+/**
+ * 笔记也能钉到桌面：浮窗是「投影」，内容仍从库里实时读，钉住只是多一个入口。
+ * 这里只管主窗口这侧的按钮态 —— 真实的开关在主进程（desktop-window.js），
+ * 所以每次都以 list() 的结果为准，不自己记状态。
+ */
+async function toggleDesktopPin() {
+  if (!currentNote) return;
+  try {
+    const list = await api.desktop.list();
+    const hit = (list || []).find((p) => p.kind === 'note' && Number(p.refId) === Number(currentNote.id));
+    if (hit) {
+      await api.desktop.unpin(hit.id);
+      notify('已取消钉住');
+    } else {
+      await api.desktop.pin('note', currentNote.id);
+      notify('已钉到桌面：在小窗里可以直接编辑');
+    }
+  } catch (e) {
+    notify((e && e.message) || '操作失败');
+  }
+  await paintDesktopPinBtn();
+}
+
+/** 按钮文案跟着「是否已钉」走（详情每次挂载后都刷一次） */
+async function paintDesktopPinBtn() {
+  const btn = (modalRoot || boundRoot)?.querySelector?.('[data-nt-act="dp-desktop"]');
+  if (!btn || !currentNote) return;
+  let hit = null;
+  try {
+    const list = await api.desktop.list();
+    hit = (list || []).find((p) => p.kind === 'note' && Number(p.refId) === Number(currentNote.id)) || null;
+  } catch (e) {
+    return; // 读失败保留原样，不要闪成「未钉」
+  }
+  btn.textContent = hit ? '🖥 取消钉住' : '🖥 钉到桌面';
+  btn.title = hit
+    ? '从桌面移除这个笔记小窗（也可以在小窗的 ⋯ 菜单里点「取消钉住」）'
+    : '在桌面上单独开一个小窗显示这篇笔记，可直接在小窗里编辑';
 }
 
 async function toggleArchive() {

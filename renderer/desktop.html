@@ -6,6 +6,12 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self';" />
   <title>Knodo 浮窗</title>
+  <!-- 笔记投影需要 Markdown 排版 + 所见即所得编辑器样式。
+       用 media="not all" 先占位不生效：任务浮窗只有 286px，没必要为它多解析 3000 行 CSS；
+       真钉了笔记再由 desktop.js 把 media 切成 all（顺序在这里定好：styles → wysiwyg → desktop，
+       后者才能盖住前者对 body / 按钮的全局设定）。 -->
+  <link rel="stylesheet" href="css/styles.css" media="not all" data-note-css="base" />
+  <link rel="stylesheet" href="css/wysiwyg.css" media="not all" data-note-css="editor" />
   <link rel="stylesheet" href="css/desktop.css" />
 </head>
 <body>
@@ -16,6 +22,8 @@
       <span class="dw-dot" id="dw-dot" hidden></span>
       <span class="dw-title" id="dw-title">加载中…</span>
       <span class="dw-count" id="dw-count" hidden></span>
+      <!-- 「未完成」投影专用：逾期徽标右边常驻未完成总数，收起成一条读「还欠多少」 -->
+      <span class="dw-pend" id="dw-pend" hidden></span>
       <span class="dw-btns">
         <!-- 贴顶 dock 专属：把展开态钉住（鼠标移开也不收回）。拖动区域吞点击，
              所以「点一下条展开」必须落在这个 no-drag 按钮上 -->
@@ -26,6 +34,12 @@
     </header>
 
     <div class="dw-body" id="dw-body">
+      <!-- 笔记投影专用：标题输入（编辑态才出现）+ 正文（读态渲染 / 编辑态直接改） -->
+      <div class="dw-note" id="dw-note" hidden>
+        <input class="dw-note-title" id="dw-note-title" type="text" maxlength="120"
+               placeholder="无标题笔记" hidden />
+        <div class="dw-note-body markdown-body" id="dw-note-body"></div>
+      </div>
       <div class="dw-list" id="dw-list" role="list"></div>
       <div class="dw-hint" id="dw-hint" hidden></div>
     </div>
@@ -34,6 +48,13 @@
       <button type="button" class="dw-add" id="dw-add" title="新增待办（Ctrl+N）">＋ 新增待办</button>
       <input type="text" class="dw-add-input" id="dw-add-input" maxlength="200"
              placeholder="写点什么，回车添加 · Esc 退出" hidden />
+      <!-- 笔记投影的底栏：字数 / 更新时间 + 编辑开关（任务投影里整条隐藏） -->
+      <div class="dw-note-bar" id="dw-note-bar" hidden>
+        <span class="dw-note-meta" id="dw-note-meta"></span>
+        <span class="dw-note-state" id="dw-note-state"></span>
+        <button type="button" class="dw-edit-btn" id="dw-edit"
+                title="编辑这篇笔记（Ctrl+E）">✎ 编辑</button>
+      </div>
     </div>
 
     <div class="dw-grip" id="dw-grip" title="拖动调整宽度（双击恢复默认宽度）" role="separator" aria-label="调整窗口大小"></div>

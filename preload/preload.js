@@ -290,6 +290,7 @@ contextBridge.exposeInMainWorld('api', {
     show: (id) => call('desktop:show', id),
     hide: (id) => call('desktop:hide', id),
     resetPosition: (id) => call('desktop:resetPosition', id),
+    redock: (id) => call('desktop:redock', id),
     // 贴桌面诊断（是否真的挂进桌面层 / 是否压在图标之上 / 原生能力是否可用），只读不改状态
     diagnostics: () => call('desktop:diagnostics'),
   },
@@ -367,6 +368,8 @@ contextBridge.exposeInMainWorld('api', {
       'desktop:invalidate', 'desktop:missing', 'desktop:collapsed', 'desktop:projection-changed',
       // 贴顶 dock 被拖离顶边 → 变回普通浮窗，渲染层要重新量高度
       'desktop:undocked',
+      // 普通浮窗被贴回顶边（拖到顶部自动贴边 / ⋯ 菜单）→ 变回 dock，渲染层要切 dock 形态并收起
+      'desktop:redocked',
       'ui:data-changed',
       // 重复事项：File 菜单打开管理面板 / 后台跨天生成后让列表跟上
       'ui:recurrence-manager', 'ui:recurrence-generated',

@@ -79,10 +79,11 @@ function destroyTray() {
 }
 
 /**
- * 通知统一用托盘图标：以前托盘气泡与提醒调度各写一份 new Notification()，
- * 同一条提醒会弹两次、图标还可能不一致。现在只在这里定义一份图标，调度侧直接引用。
+ * 通知图标与托盘图标分开：托盘用 32px 的 tray.png，通知用 256px 的 icon.png。
+ * 以前两者共用 tray.png，toast 图标被系统放大后发虚；现在统一在这里定义一份，
+ * 提醒调度侧直接引用，避免两处各写一份导致图标不一致。
  */
-const NOTIFICATION_ICON = path.join(__dirname, '..', 'assets', 'tray.png');
+const NOTIFICATION_ICON = path.join(__dirname, '..', 'assets', 'icon.png');
 
 /** 托盘气泡提醒 */
 function showTrayNotification({ title, body }) {

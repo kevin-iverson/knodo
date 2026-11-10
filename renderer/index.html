@@ -22,28 +22,20 @@
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <div class="brand">
-        <!-- Knodo 标识（与 assets/knodo.svg 同一套几何）：环 = 知识回路，K = 清单竖条 + 斜臂，圆环上 3 个节点 = 知识关联 -->
+        <!-- Knodo 标识「一笔两色」（与 assets/knodo.svg 同一套几何）：朱砂短臂 = 待办，象牙长臂 = 知识，拐点圆点 = 节点 -->
         <span class="brand-logo" aria-hidden="true">
           <svg viewBox="0 0 256 256">
             <defs>
-              <linearGradient id="knodoMark" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0" stop-color="#2E5BFF" />
-                <stop offset="0.5" stop-color="#2450E8" />
-                <stop offset="1" stop-color="#16C8E8" />
+              <linearGradient id="knodoMark" x1="0" y1="0" x2="0.9" y2="1">
+                <stop offset="0" stop-color="#1E1A16" />
+                <stop offset="1" stop-color="#0F0C0A" />
               </linearGradient>
             </defs>
-            <rect width="256" height="256" rx="60.16" fill="url(#knodoMark)" />
-            <g fill="#fff" stroke="#fff" stroke-linecap="round">
-              <circle cx="128" cy="128" r="101.12" fill="none" stroke-width="13.82" />
-              <line x1="72.96" y1="60.16" x2="72.96" y2="195.84" stroke-width="23.55" />
-              <line x1="72.96" y1="128" x2="157.69" y2="61.8" stroke-width="24.58" />
-              <line x1="72.96" y1="128" x2="157.69" y2="194.2" stroke-width="24.58" />
-              <line x1="157.69" y1="61.8" x2="207.68" y2="65.74" stroke-width="7.17" opacity="0.85" />
-              <line x1="157.69" y1="194.2" x2="207.68" y2="190.26" stroke-width="7.17" opacity="0.85" />
-              <circle cx="207.68" cy="65.74" r="14.08" stroke="none" />
-              <circle cx="229.12" cy="128" r="14.08" stroke="none" />
-              <circle cx="207.68" cy="190.26" r="14.08" stroke="none" />
-            </g>
+            <rect width="256" height="256" rx="56" fill="url(#knodoMark)" />
+            <rect x="0.75" y="0.75" width="254.5" height="254.5" rx="55.25" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="1.5" />
+            <path d="M72 138 L110 175 L184 81" fill="none" stroke="#FFFBF0" stroke-width="31" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M72 138 L110 175" fill="none" stroke="#D9472E" stroke-width="31" stroke-linecap="round" />
+            <circle cx="110" cy="175" r="17" fill="#D9472E" />
           </svg>
         </span>
         <span class="brand-name" title="Knodo — 知识化待办（Knowledge + Todo）">Knodo</span>

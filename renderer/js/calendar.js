@@ -94,6 +94,12 @@ const isOverdue = (t, today) => !!t.plan_end && t.plan_end < today && !t.complet
 const priorityOf = (t) => clamp(Number(t.priority) || 0, 0, 3);
 const weightOf = (t) => WEIGHT[priorityOf(t)];
 
+/** 撤销条只有一行宽：长标题会把它撑爆，截到 12 字 */
+function clipTitle(s) {
+  const v = String(s || '未命名任务').trim();
+  return v.length > 12 ? `${v.slice(0, 12)}…` : v;
+}
+
 /** 超载四形态（方案 3.3）：颜色 + 形态双编码，色弱也能分辨 */
 function loadStateOf(load, cap) {
   const rate = cap > 0 ? load / cap : 0;
@@ -429,7 +435,7 @@ function taskCardHtml(entry, opts = {}) {
     opts.week ? 'is-wide' : '',
   ].filter(Boolean).join(' ');
   // 已完成条目不能再拖（拖了会改掉历史那天的排期，语义是错的）
-  const check = `<button type="button" class="cal-check" data-cal-act="toggle" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}
+  const check = `<button type="button" class="cal-check${t.completed ? ' is-checked' : ''}" data-cal-act="toggle" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}
     title="${t.completed ? '取消完成' : '标记完成'}">${t.completed ? '✓' : ''}</button>`;
   const flag = pri === 3 ? '<span class="cal-flag" title="紧急">⚑</span>' : '';
   const dot = safeColor(t.group_color) ? `<span class="cal-gdot" style="background:${safeColor(t.group_color)}" title="${esc(t.group_name || '')}"></span>` : '';
@@ -644,7 +650,7 @@ function panelRowHtml(entry) {
     ? '<span class="cal-occ-tag" title="重复事项在这一天的打卡记录">已完成 · 重复打卡</span>'
     : (isOverdue(t, todayStr()) ? '<span class="is-bad">已超期</span>' : PRIORITY_TEXT[pri]);
   return `<div class="cal-panel-row ${t.completed ? 'is-done' : ''}" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}>
-    <button type="button" class="cal-check" data-cal-act="toggle" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}>${t.completed ? '✓' : ''}</button>
+    <button type="button" class="cal-check${t.completed ? ' is-checked' : ''}" data-cal-act="toggle" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''} title="${t.completed ? '取消完成' : '标记完成'}">${t.completed ? '✓' : ''}</button>
     <div class="cal-panel-main">
       <div class="cal-panel-title">${entry.continuation ? '↳ ' : ''}${esc(t.title || '未命名任务')}</div>
       <div class="cal-panel-meta">
@@ -873,18 +879,33 @@ async function toggleTask(id, occ = '') {
   if (occ && t.recurring_id != null && occ !== (t.occurrence_date || '')) {
     try {
       await api.recurrences.setCompletion(t.recurring_id, occ, false);
+      // 撤销打卡后这一天会整条从日历上消失（没打卡的重复事项不回填格子），
+      // 不留撤销入口用户就再也勾不回来了。
+      cfg.undo = {
+        kind: 'occ', ruleId: t.recurring_id, occ,
+        label: `已撤销 ${occ} 的打卡`, ttl: 10000,
+      };
       await reloadAndPaint();
+      showUndo();
       ext.toast(`已撤销 ${occ} 的打卡`);
     } catch (e) {
       ext.toast(`撤销打卡失败：${(e && e.message) || e}`);
     }
     return;
   }
+  const wasDone = !!t.completed;
   try {
     await api.tasks.toggle(id);
     // 与列表视图同口径：勾掉的任务今天仍要留在「今天」视图里
-    noteCompletionChange(id, !t.completed, t.parent_id);
+    noteCompletionChange(id, !wasDone, t.parent_id);
+    // 历史格子里取消完成后，任务会按「已超期」归到今天的积压、从原格子消失 ——
+    // 勾错了要能一键勾回来，否则用户会觉得「历史日期不让改了」。
+    cfg.undo = {
+      kind: 'complete', id,
+      label: `${wasDone ? '已取消完成' : '已完成'}「${clipTitle(t.title)}」`, ttl: 10000,
+    };
     await reloadAndPaint();
+    showUndo();
   } catch (e) {
     ext.toast(`切换完成态失败：${(e && e.message) || e}`);
   }
@@ -931,16 +952,25 @@ function showUndo() {
     <button type="button" class="cal-undo-x" data-cal-act="undo-close" title="关闭">✕</button>`;
   bar.hidden = false;
   if (cfg.undoTimer) clearTimeout(cfg.undoTimer);
-  cfg.undoTimer = setTimeout(() => { cfg.undo = null; bar.hidden = true; }, 5000);
+  // 完成态 / 打卡类的撤销窗口给到 10 秒：它会改变任务在日历上的归属，用户需要时间反应
+  const ttl = Number(cfg.undo.ttl) > 0 ? Number(cfg.undo.ttl) : 5000;
+  cfg.undoTimer = setTimeout(() => { cfg.undo = null; bar.hidden = true; }, ttl);
 }
 function applyUndoBar() { if (cfg.undo) showUndo(); }
 async function undoLast() {
   const u = cfg.undo;
   if (!u) return;
-  const patch = { planStart: u.prev.planStart, planEnd: u.prev.planEnd };
-  if (u.prev.priority != null) patch.priority = u.prev.priority;
   try {
-    await api.tasks.update(u.id, patch);
+    if (u.kind === 'complete') {
+      // 完成态撤销 = 再切一次；两个方向都成立
+      await api.tasks.toggle(u.id);
+    } else if (u.kind === 'occ') {
+      await api.recurrences.setCompletion(u.ruleId, u.occ, true);
+    } else {
+      const patch = { planStart: u.prev.planStart, planEnd: u.prev.planEnd };
+      if (u.prev.priority != null) patch.priority = u.prev.priority;
+      await api.tasks.update(u.id, patch);
+    }
     cfg.undo = null;
     const bar = document.querySelector('.cal-undo');
     if (bar) bar.hidden = true;

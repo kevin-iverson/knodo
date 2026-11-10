@@ -581,7 +581,8 @@ function desktopMenuTemplate() {
   }
   const listItems = items.length
     ? items.map((p) => ({
-      label: `${p.title}${p.missing ? '（已删除）' : ''}  ${p.done}/${p.total}`,
+      // 笔记投影没有「完成进度」，别在菜单里显示 0/0
+      label: `${p.title}${p.missing ? '（已删除）' : ''}${p.kind === 'note' ? '  笔记' : `  ${p.done}/${p.total}`}`,
       type: 'checkbox',
       checked: p.visible,
       click: () => {
@@ -1064,7 +1065,7 @@ app.whenReady().then(async () => {
         {
           label: '桌面浮窗',
           submenu: items.map((p) => ({
-            label: `${p.title}${p.missing ? '（已删除）' : ''}  ${p.done}/${p.total}`,
+            label: `${p.title}${p.missing ? '（已删除）' : ''}${p.kind === 'note' ? '  笔记' : `  ${p.done}/${p.total}`}`,
             type: 'checkbox',
             checked: p.visible,
             click: () => { if (p.visible) desktopWindow.hide(p.id); else desktopWindow.show(p.id); },
@@ -3415,6 +3416,25 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 日历视图 = 侧栏项=${calOut.navExists ? '有' : '无'}；chip已移除=${calOut.chipGone ? '是' : '否'}；高亮=${calOut.navActive ? '是' : '否'}；标题「${calOut.title || '-'}」；骨架=${calOut.wrap ? '有' : '无'}；格子 ${calOut.cells} 个；负载条 ${calOut.loadBars} 条；待安排池=${calOut.pool ? '有' : '无'}；图例=${calOut.legend ? '有' : '无'}；月/周控件 ${calOut.segCount} 个；周视图 ${calOut.weekCols} 列；回列表=${calOut.backToList ? '成功' : '失败'}；描述「${calOut.desc || '-'}」${calOut.err ? '；异常=' + calOut.err : ''}`);
           console.log(`[SMOKE] 顶栏 AI 检索（弹窗）= 弹出=${calOut.aiPanel ? '成功' : '失败'}；单层=${calOut.aiSingle ? '是' : '否'}；视图不动=${calOut.aiKeepsView ? '是' : '否'}；再点不叠层=${calOut.aiNoStack ? '是' : '否'}；关闭移除=${calOut.aiBack ? '成功' : '失败'}`);
 
+          /* ---- 第 20 轮：笔记也能钉到桌面（kind: 'note' 投影）----
+             只验主进程这一侧：钉出来的是 note 投影、重复钉不叠加、标题取的是笔记标题、
+             取消后不留孤儿。浮窗里的渲染与就地编辑由 npm run verify:note 覆盖。 */
+          let r19 = {};
+          try {
+            const note = db.createNote({ title: '冒烟笔记投影', contentMd: '## 冒烟\n\n正文一段' });
+            const p1 = desktopWindow.pin('note', note.id, {});
+            const p2 = desktopWindow.pin('note', note.id, {});
+            const listed = desktopWindow.list().find((x) => x.id === p1.projection.id) || {};
+            r19.kind = p1.projection.kind;
+            r19.existed = !!p2.existed;
+            r19.single = desktopWindow.list().filter((x) => x.kind === 'note').length === 1;
+            r19.title = listed.title === '冒烟笔记投影';
+            r19.missing = listed.missing === false;
+            desktopWindow.unpin(p1.projection.id);
+            r19.gone = !desktopWindow.list().some((x) => x.kind === 'note');
+          } catch (e) { r19.err = String((e && e.message) || e); }
+          console.log(`[SMOKE] 笔记浮窗投影 = 类型=${r19.kind || '-'}；重复钉不叠加=${r19.single ? '是' : '否'}；标题取自笔记=${r19.title ? '是' : '否'}；未标记缺失=${r19.missing ? '是' : '否'}；取消后清干净=${r19.gone ? '是' : '否'}${r19.err ? '；异常=' + r19.err : ''}`);
+
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
             && dom.editorShown && dom.planFields && dom.detailDrawer && dom.aiSearchTopbar && dom.searchNavGone && dom.calendarAfterToday && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
@@ -3565,7 +3585,9 @@ app.whenReady().then(async () => {
             // 第 19 轮：语法高亮 + JSON 查看器
             && r18.diffHl >= 1 && r18.diffHlToggle && r18.diffHlOff
             && r18.jvOpened && r18.jvParsed && r18.jvTree >= 1 && /命中|个/.test(r18.jvHits || '')
-            && /2/.test(r18.jvQuery || '');
+            && /2/.test(r18.jvQuery || '')
+            // 第 20 轮：笔记浮窗投影
+            && r19.kind === 'note' && r19.existed && r19.single && r19.title && r19.missing && r19.gone && !r19.err;
           if (!allOk) {
             // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
             // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
@@ -3607,6 +3629,7 @@ app.whenReady().then(async () => {
             dumpFalsy('r16', r16);
             dumpFalsy('r17', r17);
             dumpFalsy('r18', r18);
+            dumpFalsy('r19', r19);
             // 假值列表抓不到「值非假但不匹配」的条件（如 xx === '旧文案'），补一行提示免得对着 && 死磕。
             if (!printed) {
               console.log('[SMOKE] 未通过项：无假值 → 问题在字符串/数值比对上（比对值或界面文案已过时）');

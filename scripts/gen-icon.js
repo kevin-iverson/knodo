@@ -4,24 +4,23 @@
  * 产物：assets/icon.png (256) / assets/tray.png (32) / assets/icon.ico (16~256) / assets/knodo.svg
  *
  * ── 标识释义（改图形前先看这里，别把语义破坏了）────────────────────────
- * 名字 Knodo = Knowledge + Todo，所以标识要同时说清「待办」和「知识网络」两件事：
- *   · 圆环（O）：知识回路 / 大脑环路，也是 Knodo 里的 O；
- *   · 竖条 + 两条斜臂（K）：Knodo 里的 K。竖条被做成「清单勾选竖条」的形状（胶囊竖条），
- *     两端正好与圆环内切 —— 待办清单被包在知识环路之中；
- *   · 两条斜臂从竖条中点（拐点 / 转折处）射出，各自顶到圆环上的一个节点；
- *   · 第三条细线水平连到圆环右侧的节点 —— 共 3 个连接点，代表「一条待办能牵出多条知识关联」。
- * 于是这个图形既是 K，又是一张「节点从清单里长出去」的网络。
+ * 一笔两色：一个勾，两种读法。
+ *   · 朱砂短臂 = 待办 / 行动，起笔是「今天要做什么」；
+ *   · 象牙长臂 = 笔记 / 知识，落笔是「做完留下什么」；
+ *   · 拐点圆点 = 节点（Knodo 的 node）：两条臂在这里相接，像任务和笔记
+ *     共用同一个本地数据库 —— 一次完成，就是一个知识节点；
+ *   · 暖墨底 + 纸白 + 朱砂 = 纸、墨、印章，不是蓝底白字的云工具徽章。
  *
- * ── 为什么不直接用图片 ────────────────────────────────────────────────
+ * ── 为什么不用图片 ────────────────────────────────────────────────────
  * 手写光栅器 + 4× 超采样，改一个数字就能重出全部尺寸，且 16px 这种小尺寸有单独的
- * 「简化几何」（加粗笔画、去掉细连线），不会糊成一团。外链工具 / AI 生图都做不到这点。
+ * 「简化几何」（去节点、加粗笔画），不会糊成一团。
  */
 
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-/* ---------------- PNG 编码（保持原实现） ---------------- */
+/* ---------------- PNG 编码 ---------------- */
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -69,16 +68,28 @@ function encodePNG(size, rgba) {
 
 /* ---------------- 标识几何（归一化坐标，1 = 画布边长） ---------------- */
 
+/** 设计稿画布边长（与提案 SVG 的 viewBox 一致） */
+const P = 512;
 /** 圆角方块的圆角半径 */
-const TILE_RADIUS = 0.235;
-/** 渐变三色停靠点（左上 → 右下）：科技蓝 → 亮青 */
+const TILE_RADIUS = 112 / P;
+/** 勾的两个端点与拐点 */
+const A = [144 / P, 276 / P];
+const V = [220 / P, 350 / P];
+const B = [368 / P, 162 / P];
+/** 笔画宽度 / 拐点节点半径 */
+const STROKE = 62 / P;
+const BEAD_R = 34 / P;
+/** 内描边：贴着方块边缘的一道 6% 白，只在大尺寸看得见 */
+const BORDER_W = 3 / P;
+const BORDER_OP = 0.06;
+/** 暖墨底：左上 #1E1A16 → 右下 #0F0C0A */
 const GRAD = [
-  [0.0, [46, 91, 255]],   // #2E5BFF
-  [0.5, [36, 80, 232]],   // #2450E8
-  [1.0, [22, 200, 232]],  // #16C8E8
+  [0.0, [30, 26, 22]],
+  [1.0, [15, 12, 10]],
 ];
-/** 前景：白色主体 + 略透的节点细线 */
-const FG = [255, 255, 255];
+/** 前景两色 */
+const IVORY = [255, 251, 240]; // #FFFBF0
+const VERM = [217, 71, 46]; // #D9472E
 
 /** 按输出尺寸选几何档位：16px 一档、24~47 一档、48+ 完整档 */
 function modeFor(size) {
@@ -89,70 +100,34 @@ function modeFor(size) {
 
 /**
  * 三档几何（改数字前先想清楚 16px 长什么样）：
- *  · full  ：圆环上 3 个节点 + 两条细连线，完整表达「知识关联」；
- *  · simple：去掉细连线、笔画加粗、节点放大，24~32px（任务栏 / 托盘）用；
- *  · tiny  ：去掉节点，竖条右移拉开与圆环左弧的距离 —— 16px 下贴太近会糊成一条白带。
+ *  · full  ：完整表达，带拐点节点；
+ *  · simple：与 full 同一套比例，24~32px（任务栏 / 托盘）用；
+ *  · tiny  ：去掉节点、笔画加粗到 70，16px 下不会糊成一团。
  * @param {'full'|'simple'|'tiny'} mode
  */
 function geometry(mode) {
   const tiny = mode === 'tiny';
-  const full = mode === 'full';
-  const ring = {
-    cx: 0.5,
-    cy: 0.5,
-    r: tiny ? 0.375 : full ? 0.395 : 0.386,
-    hw: tiny ? 0.042 : full ? 0.027 : 0.034,
-  };
-  // 竖条（清单勾选竖条）：上下两端顶到圆环内缘附近，成为圆环的一条弦
-  const barHW = tiny ? 0.052 : full ? 0.046 : 0.05;
-  const barX = tiny ? 0.325 : full ? 0.285 : 0.305;
-  const bar = { x1: barX, y1: tiny ? 0.255 : full ? 0.235 : 0.25, x2: barX, y2: tiny ? 0.745 : full ? 0.765 : 0.75, hw: barHW };
-  // 两条斜臂：从竖条中点（拐点）射出。角度别太小，否则会和细连线连成一把扇子、读成星形
-  const armHW = tiny ? 0.06 : full ? 0.048 : 0.056;
-  const armAng = ((tiny ? 36 : 38) * Math.PI) / 180;
-  const armLen = tiny ? 0.395 : full ? 0.42 : 0.405;
-  const vx = bar.x1;
-  const vy = 0.5;
-  const arm = (sign) => ({
-    x1: vx,
-    y1: vy,
-    x2: vx + armLen * Math.cos(armAng),
-    y2: vy + sign * armLen * Math.sin(armAng),
-    hw: armHW,
-  });
-  // 节点：圆环上 ±38°（与两条斜臂同向）与正右，共 3 个连接点；tiny 不要节点
-  const beadR = full ? 0.055 : 0.064;
-  const onRing = (rad) => ({
-    cx: ring.cx + ring.r * Math.cos(rad),
-    cy: ring.cy + ring.r * Math.sin(rad),
-    r: beadR,
-  });
-  const beads = tiny ? [] : [onRing(-armAng), onRing(0), onRing(armAng)];
-  // 细连线：斜臂末端 → 圆环上对应的节点。必须与斜臂共线，否则会变成一段横着浮空的短线
-  const connHW = 0.014;
-  const conn = (sign) => {
-    const a = sign < 0 ? arm(-1) : arm(1);
-    const b = sign < 0 ? beads[0] : beads[2];
-    return { x1: a.x2, y1: a.y2, x2: b.cx, y2: b.cy, hw: connHW };
-  };
+  const hw = (tiny ? 70 : 62) / P / 2;
+  const beadR = tiny ? 0 : BEAD_R;
   return {
-    ring,
-    bar,
-    arms: [arm(-1), arm(1)],
-    conns: full ? [conn(-1), conn(1)] : [],
-    beads,
+    hw,
+    beadR,
+    /** 长臂：拐点 → 右上 */
+    longArm: { x1: V[0], y1: V[1], x2: B[0], y2: B[1], hw, color: IVORY },
+    /** 短臂：左上 → 拐点，压在长臂上，拐点处露出朱砂圆点 */
+    shortArm: { x1: A[0], y1: A[1], x2: V[0], y2: V[1], hw, color: VERM },
+    bead: { cx: V[0], cy: V[1], r: beadR, color: VERM },
   };
 }
 
 /* ---------------- 形状命中判定 ---------------- */
 
-function inTile(u, v) {
+/** 圆角矩形的有符号距离：< 0 在内部 */
+function tileSDF(u, v) {
   const r = TILE_RADIUS;
-  const cx = Math.min(Math.max(u, r), 1 - r);
-  const cy = Math.min(Math.max(v, r), 1 - r);
-  const dx = u - cx;
-  const dy = v - cy;
-  return dx * dx + dy * dy <= r * r;
+  const qx = Math.abs(u - 0.5) - (0.5 - r);
+  const qy = Math.abs(v - 0.5) - (0.5 - r);
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
 }
 
 function distSeg(px, py, x1, y1, x2, y2) {
@@ -172,13 +147,6 @@ function inCapsule(px, py, s) {
   return distSeg(px, py, s.x1, s.y1, s.x2, s.y2) <= s.hw;
 }
 
-function inRing(px, py, ring) {
-  const dx = px - ring.cx;
-  const dy = py - ring.cy;
-  const d = Math.sqrt(dx * dx + dy * dy);
-  return Math.abs(d - ring.r) <= ring.hw;
-}
-
 function inDisc(px, py, b) {
   const dx = px - b.cx;
   const dy = py - b.cy;
@@ -186,39 +154,34 @@ function inDisc(px, py, b) {
 }
 
 function gradientAt(u, v) {
-  const t = Math.min(1, Math.max(0, (u + v) / 2));
-  for (let i = 0; i < GRAD.length - 1; i++) {
-    const [t0, c0] = GRAD[i];
-    const [t1, c1] = GRAD[i + 1];
-    if (t <= t1 || i === GRAD.length - 2) {
-      const k = (t - t0) / (t1 - t0);
-      const kk = k < 0 ? 0 : k > 1 ? 1 : k;
-      return [
-        c0[0] + (c1[0] - c0[0]) * kk,
-        c0[1] + (c1[1] - c0[1]) * kk,
-        c0[2] + (c1[2] - c0[2]) * kk,
-      ];
-    }
-  }
-  return GRAD[GRAD.length - 1][1];
+  // 与 SVG 的 linearGradient x1=0 y1=0 x2=0.9 y2=1 对齐：投影到 (0.9, 1)
+  const t = Math.min(1, Math.max(0, (0.9 * u + v) / (0.9 * 0.9 + 1)));
+  const [t0, c0] = GRAD[0];
+  const [t1, c1] = GRAD[1];
+  const k = (t - t0) / (t1 - t0);
+  const kk = k < 0 ? 0 : k > 1 ? 1 : k;
+  return [
+    c0[0] + (c1[0] - c0[0]) * kk,
+    c0[1] + (c1[1] - c0[1]) * kk,
+    c0[2] + (c1[2] - c0[2]) * kk,
+  ];
 }
 
 /* ---------------- 光栅化（4× 超采样 + 预乘平均） ---------------- */
 
 const SS = 4;
 
-/** 把几何展开成有类型的绘制列表（顺序即叠放顺序：圆环 → 竖条 → 斜臂 → 细连线 → 节点） */
+/** 把几何展开成有类型的绘制列表（顺序即叠放顺序：长臂 → 短臂 → 节点） */
 function shapesOf(g) {
-  const list = [{ kind: 'ring', ...g.ring }];
-  list.push({ kind: 'capsule', ...g.bar });
-  for (const a of g.arms) list.push({ kind: 'capsule', ...a });
-  for (const c of g.conns) list.push({ kind: 'capsule', op: 0.85, ...c });
-  for (const b of g.beads) list.push({ kind: 'disc', ...b });
+  const list = [
+    { kind: 'capsule', ...g.longArm },
+    { kind: 'capsule', ...g.shortArm },
+  ];
+  if (g.beadR > 0) list.push({ kind: 'disc', ...g.bead });
   return list;
 }
 
 function hitShape(s, u, v) {
-  if (s.kind === 'ring') return inRing(u, v, s);
   if (s.kind === 'disc') return inDisc(u, v, s);
   return inCapsule(u, v, s);
 }
@@ -244,20 +207,25 @@ function rasterize(size, mode = modeFor(size)) {
       let gg = 0;
       let b = 0;
       let a = 0;
-      if (inTile(u, v)) {
+      const d = tileSDF(u, v);
+      if (d < 0) {
         const c = gradientAt(u, v);
-        r = c[0]; gg = c[1]; b = c[2]; a = 1;
+        r = c[0];
+        gg = c[1];
+        b = c[2];
+        a = 1;
+        if (d > -BORDER_W) {
+          r = r * (1 - BORDER_OP) + 255 * BORDER_OP;
+          gg = gg * (1 - BORDER_OP) + 255 * BORDER_OP;
+          b = b * (1 - BORDER_OP) + 255 * BORDER_OP;
+        }
       }
       for (const s of list) {
         if (!hitShape(s, u, v)) continue;
-        const op = s.op == null ? 1 : s.op;
-        const na = op + a * (1 - op);
-        if (na > 0) {
-          r = (FG[0] * op + r * a * (1 - op)) / na;
-          gg = (FG[1] * op + gg * a * (1 - op)) / na;
-          b = (FG[2] * op + b * a * (1 - op)) / na;
-          a = na;
-        }
+        r = s.color[0];
+        gg = s.color[1];
+        b = s.color[2];
+        a = 1;
       }
       const oi = (oy * size + ((sx / SS) | 0)) * 4;
       acc[oi] += r * a;
@@ -314,34 +282,20 @@ function encodeICO(sizes) {
 /* ---------------- SVG（与应用内的内联标识同一套几何） ---------------- */
 
 function svgMark() {
-  const g = geometry('full');
-  const P = 256;
-  const p = (x) => (x * P).toFixed(2);
-  const body = shapesOf(g)
-    .map((s) => {
-      const op = s.op == null ? '' : ` opacity="${s.op}"`;
-      if (s.kind === 'ring') {
-        return `    <circle cx="${p(s.cx)}" cy="${p(s.cy)}" r="${p(s.r)}" fill="none" stroke-width="${p(s.hw * 2)}"/>`;
-      }
-      if (s.kind === 'disc') {
-        return `    <circle cx="${p(s.cx)}" cy="${p(s.cy)}" r="${p(s.r)}" stroke="none"/>`;
-      }
-      return `    <line x1="${p(s.x1)}" y1="${p(s.y1)}" x2="${p(s.x2)}" y2="${p(s.y2)}" stroke-width="${p(s.hw * 2)}"${op}/>`;
-    })
-    .join('\n');
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${P} ${P}" width="${P}" height="${P}" role="img" aria-label="Knodo">
-  <!-- Knodo 标识：O = 知识回路；K = 清单竖条 + 两条斜臂；圆环上 3 个节点 = 知识关联 -->
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Knodo">
+  <!-- Knodo 标识「一笔两色」：朱砂短臂 = 待办，象牙长臂 = 知识，拐点圆点 = 节点 -->
+  <title>Knodo</title>
   <defs>
-    <linearGradient id="kg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#2E5BFF"/>
-      <stop offset="0.5" stop-color="#2450E8"/>
-      <stop offset="1" stop-color="#16C8E8"/>
+    <linearGradient id="knodoTile" x1="0" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#1E1A16"/>
+      <stop offset="1" stop-color="#0F0C0A"/>
     </linearGradient>
   </defs>
-  <rect x="0" y="0" width="${P}" height="${P}" rx="${p(TILE_RADIUS)}" fill="url(#kg)"/>
-  <g fill="#fff" stroke="#fff" stroke-linecap="round">
-${body}
-  </g>
+  <rect width="512" height="512" rx="112" fill="url(#knodoTile)"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="110.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="3"/>
+  <path d="M144 276 L220 350 L368 162" fill="none" stroke="#FFFBF0" stroke-width="62" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M144 276 L220 350" fill="none" stroke="#D9472E" stroke-width="62" stroke-linecap="round"/>
+  <circle cx="220" cy="350" r="34" fill="#D9472E"/>
 </svg>
 `;
 }
@@ -349,13 +303,13 @@ ${body}
 /* ---------------- 预览图（供人眼检查，不进 assets） ---------------- */
 
 function previewPNG() {
-  const sizes = [256, 128, 64, 48, 32, 24, 16];
+  const sizes = [256, 96, 48, 32, 24, 16];
   const pad = 12;
-  const gap = 10;
+  const gap = 12;
   const W = pad * 2 + sizes.reduce((a, s) => a + s + gap, -gap);
   const H = pad * 2 + 256;
   const px = Buffer.alloc(W * H * 4);
-  // 中性灰底（模拟任务栏/文件夹的浅色环境）
+  // 中性灰底（模拟任务栏 / 文件夹的浅色环境）
   for (let i = 0; i < W * H; i++) {
     px[i * 4] = 238; px[i * 4 + 1] = 239; px[i * 4 + 2] = 242; px[i * 4 + 3] = 255;
   }

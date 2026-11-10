@@ -412,6 +412,9 @@ function bindStaticEvents() {
     renderSidebarList();
     if (TASK_VIEWS.includes(state.view)) await renderTasks();
     else if (state.view === 'calendar') await render();
+    // 浮窗里编辑了笔记：列表摘要 / 字数要跟着变（正文在编辑器里的那份不会被顶掉，
+    // 因为这条广播只在主窗口没有焦点时才处理）
+    else if (state.view === 'notes') await renderNotes();
   });
   // 已钉清单变化（钉 / 取消钉住 / 主进程还原）：刷新侧边栏的 📌 标记
   api.on('desktop:projection-changed', () => { refreshDesktopPins(); });
@@ -642,10 +645,15 @@ async function paintDockBtn(force = false) {
  */
 async function toggleDock() {
   const pin = desktopPins.find((p) => p.kind === 'unfinished' && p.dock === 'top');
+  // 之前拖离过顶边的那个浮窗：直接把它贴回去，而不是再造一个同源的第二个窗
+  const loose = desktopPins.find((p) => p.kind === 'unfinished' && !p.dock);
   try {
     if (pin) {
       await api.desktop.unpin(pin.id);
       toast('已取消顶部便签');
+    } else if (loose) {
+      await api.desktop.redock(loose.id);
+      toast('已贴回屏幕顶边：未完成（鼠标碰一下展开）');
     } else {
       await api.desktop.pin('unfinished', null, { dock: 'top' });
       toast('已钉到屏幕顶边：未完成（鼠标碰一下展开）');
@@ -1827,6 +1835,44 @@ function groupPathAt(id) {
   return g ? groupPath(g, state.groups) : '';
 }
 
+/**
+ * 备注转纯文本：列表行与行内编辑器都只该看到「话」，不该看到标签和图片。
+ * 图片（含 base64 data URI）会被整块吃掉并计数 —— 一串 `data:image/png;base64,iVBOR…`
+ * 足以把整行撑爆，而它对读者没有任何信息量。
+ */
+function notesToPlain(raw) {
+  const src = String(raw || '');
+  if (!src.trim()) return { text: '', images: 0 };
+  let images = 0;
+  let s = src
+    .replace(/<img\b[^>]*>/gi, () => { images += 1; return ' '; })
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, () => { images += 1; return ' '; })
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/(p|div|li|h[1-6]|tr|blockquote|pre)>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&');
+  // 旧数据可能残留裸 data URI（没被 <img> 包住），同样不能漏到界面上
+  if (s.includes('data:image/')) s = s.replace(/data:image\/[^\s"')]+/gi, ' ');
+  return { text: s.replace(/\s+/g, ' ').trim(), images };
+}
+
+const NOTE_SUMMARY_MAX = 72;
+
+/** 列表行备注摘要：单行、限长；只有图片时只说「图片」 */
+function noteSummaryHtml(t) {
+  const { text, images } = notesToPlain(t.notes);
+  if (!text && !images) return '';
+  const clipped = text.length > NOTE_SUMMARY_MAX ? `${text.slice(0, NOTE_SUMMARY_MAX)}…` : text;
+  const img = images ? `<span class="note-img-badge" title="备注含 ${images} 张图片">📷${images > 1 ? images : ''}</span>` : '';
+  const tip = text ? `${text.length > 400 ? `${text.slice(0, 400)}…` : text}` : '备注里只有图片';
+  return `<div class="task-note" title="${esc(tip)}">${img}<span class="task-note-text">${esc(clipped || '图片备注')}</span></div>`;
+}
+
 /** 重复事项徽标：只有一条任务，点开可改规则 / 停止 / 看打卡；习惯模式用 💪 区分 */
 function recurBadgeHtml(t) {
   if (t.recurring_id == null) return '';
@@ -1925,6 +1971,7 @@ function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
         ${recurBadgeHtml(t)}
       </div>
       <div class="task-meta">${groupLabel}${meta.join('')}</div>
+      ${noteSummaryHtml(t)}
     </div>
     ${isFocusing ? focusStatusHtml() : ''}
     <div class="task-actions">
@@ -2141,7 +2188,7 @@ function taskEditorHtml(task) {
       ${derived
     ? '<span class="editor-derived" title="重复事项的计划时间与提醒由规则派生，下方有只读明细；要改请改重复规则">🔁 按规则排期</span>'
     : dateRangeFieldHtml(range.start, range.end, rangeOpts)}
-      <button class="ghost-btn" data-act="editor-more" title="展开更多字段（优先级 / 提醒 / 标签 / 备注）">⚙ 更多选项</button>
+      <button class="ghost-btn" data-act="editor-more" title="展开更多字段（优先级 / 提醒 / 标签 / 备注）">⚙ 更多</button>
       ${isEdit ? '<button class="danger-btn" data-act="editor-delete" title="删除任务">删除</button>' : ''}
       <button class="ghost-btn" data-act="editor-cancel">取消</button>
       <button class="primary-btn" data-act="editor-save">${isEdit ? '保存' : '添加'}</button>
@@ -2152,7 +2199,7 @@ function taskEditorHtml(task) {
       ${derived ? '' : reminderHtml(t.reminder_at, t.plan_end)}
       <input class="editor-tags" type="text" placeholder="标签（逗号分隔）" value="${esc((t.tag_names || []).join(', '))}" />
       ${showCompletedAt ? `<input class="editor-completed-at" type="datetime-local" value="${isoToLocal(t.completed_at)}" title="实际完成时间" />` : ''}
-      <textarea class="editor-notes" rows="2" placeholder="备注">${esc(t.notes || '')}</textarea>
+      <textarea class="editor-notes" rows="2" placeholder="备注">${esc(notesToPlain(t.notes).text)}</textarea>
     </div>
     ${repeatEditorHtml(t, recurRule)}
   </div>`;
@@ -2305,6 +2352,19 @@ async function resolveTagIds(namesStr) {
  * 从编辑器 DOM 收集待保存的字段。返回 null 表示当前值不合法（标题为空 / 日期未通过校验）。
  * 供「保存按钮」与「自动保存」共用，保证两条路径写入的数据完全一致。
  */
+function collectNotesValue(ed) {
+  const el = ed.querySelector('.editor-notes');
+  if (!el) return '';
+  const val = el.value;
+  const id = Number(ed.dataset.editor);
+  if (!Number.isFinite(id) || id <= 0) return val;      // 新建任务：输入即正文
+  const task = state.tasks.find((x) => x.id === id);
+  const raw = task && task.notes ? String(task.notes) : '';
+  // 行内 textarea 显示的是纯文本（不带标签 / base64）。内容没动就把原始 HTML 原样写回，
+  // 否则「改个标题触发自动保存」会把富文本与图片洗成纯文本。
+  return raw && val === notesToPlain(raw).text ? raw : val;
+}
+
 function collectEditorPayload(ed, { quiet = false } = {}) {
   const title = ed.querySelector('.editor-title').value.trim();
   if (!title) {
@@ -2330,7 +2390,7 @@ function collectEditorPayload(ed, { quiet = false } = {}) {
   }
   const payload = {
     title,
-    notes: ed.querySelector('.editor-notes').value,
+    notes: collectNotesValue(ed),
     priority: Number(ed.querySelector('.editor-priority').value),
     groupId: ed.querySelector('.editor-group').value ? Number(ed.querySelector('.editor-group').value) : null,
   };

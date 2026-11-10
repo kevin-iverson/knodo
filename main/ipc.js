@@ -818,20 +818,26 @@ function registerIpc() {
     if (note) knowledge.indexNote(note.id);
     return note;
   }));
+  // 更新后广播：笔记也可以钉在桌面上（浮窗是投影，必须知道正文变了），
+  // 主窗口侧顺带刷新列表；来源是浮窗自己时 desktop-window 会跳过它本身，不会打断输入。
   ipcMain.handle('notes:update', withDb((id, patch) => {
     const note = db.updateNote(id, patch || {});
     if (note) knowledge.indexNote(note.id);
     return note;
-  }));
+  }, { notify: true }));
   ipcMain.handle('notes:archive', withDb((id, archived) => db.setNoteArchived(id, !!archived)));
   ipcMain.handle('notes:pin', withDb((id, pinned) => db.setNotePinned(id, !!pinned)));
   // 软删除：保留任务引用，返回被引用次数供界面提示影响面
   ipcMain.handle('notes:trash', withDb((id) => {
     const refs = db.listNoteTasks(id).length;
     const note = db.trashNote(id);
-    if (note) knowledge.removeNote(note.id);
+    if (note) {
+      knowledge.removeNote(note.id);
+      // 钉在桌面上的那篇笔记已经进回收站 → 浮窗显示「该笔记已删除」并自动收起
+      try { desktopWindow.dropByNote(note.id); } catch (e) { /* 通知失败不影响删除结果 */ }
+    }
     return { note, refs };
-  }));
+  }, { notify: true }));
   ipcMain.handle('notes:restore', withDb((id) => {
     const note = db.restoreNote(id);
     if (note) knowledge.indexNote(note.id);
@@ -843,8 +849,9 @@ function registerIpc() {
     knowledge.removeNote(id);
     // 文件本体随笔记一起清掉（库记录已删，不清理会留下孤儿文件）
     attachments.removeOwnerDir('note', id);
+    try { desktopWindow.dropByNote(id); } catch (e) { /* 通知失败不影响删除结果 */ }
     return res;
-  }));
+  }, { notify: true }));
   ipcMain.handle('notes:trashList', withDb(() => db.listTrash()));
   ipcMain.handle('notes:emptyTrash', withDb(() => ({ removed: db.emptyTrash() })));
   ipcMain.handle('notes:search', withDb((keyword, opts) => db.searchNotes(keyword, opts || {})));

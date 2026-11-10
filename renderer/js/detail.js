@@ -394,6 +394,8 @@ export function closeDetail() {
   state.detailTaskId = null;
   if (drawer) {
     drawer.hidden = true;
+    // 从 AI 检索弹窗里打开时曾把抽屉抬到遮罩之上，关掉就恢复默认层级
+    drawer.classList.remove('is-over-modal');
     drawer.dataset.opened = '';  // 下次打开重新播放入场动画
     delete drawer.dataset.taskId; // 身份标记一并作废：此后任何保存器都不许再写
   }

@@ -10,7 +10,7 @@
  *  - 局部刷新优先：数据没变就不重建 DOM，滚动位置与选中项原地保留；
  *  - 不在透明窗上做骨架屏 / toast：286px 里任何闪动都比「什么都不显示」更干扰。
  */
-import { api } from './api.js';
+import { api, fmtDateTime } from './api.js';
 
 const query = new URLSearchParams(location.search);
 const projectionId = query.get('id') || '';
@@ -21,6 +21,7 @@ const el = {
   dot: document.getElementById('dw-dot'),
   title: document.getElementById('dw-title'),
   count: document.getElementById('dw-count'),
+  pend: document.getElementById('dw-pend'),
   collapse: document.getElementById('dw-collapse'),
   pin: document.getElementById('dw-pin'),
   more: document.getElementById('dw-more'),
@@ -31,6 +32,14 @@ const el = {
   add: document.getElementById('dw-add'),
   addInput: document.getElementById('dw-add-input'),
   grip: document.getElementById('dw-grip'),
+  // 笔记投影（kind: 'note'）：只在钉了笔记时出现，任务投影里一直 hidden
+  note: document.getElementById('dw-note'),
+  noteTitle: document.getElementById('dw-note-title'),
+  noteBody: document.getElementById('dw-note-body'),
+  noteBar: document.getElementById('dw-note-bar'),
+  noteMeta: document.getElementById('dw-note-meta'),
+  noteState: document.getElementById('dw-note-state'),
+  edit: document.getElementById('dw-edit'),
 };
 
 /** 视觉常量：与 desktop.css / 主进程 desktop-window.js 保持一致 */
@@ -42,6 +51,8 @@ const MAX_W = 460;
 const DEFAULT_W = 286;
 /** 贴顶 dock：收起高度 30（展开高度按内容自适应，宽度 420 由主进程锁死） */
 const DOCK_HEAD_H = 30;
+/** 笔记浮窗的最小高度：正文可能只有两行，但编辑要有个像样的画布 */
+const NOTE_MIN_H = 320;
 /** 悬停时序：进入 120ms 展开（手速划过顶边不闪），离开 400ms 收回（向下移动时不抽搐） */
 const DOCK_OPEN_DELAY = 120;
 const DOCK_CLOSE_DELAY = 400;
@@ -58,6 +69,25 @@ let selId = null;
 let lastSig = '';
 /** 清单已被删除：进入只读提示态，3 秒后自动取消钉住 */
 let missingTimer = null;
+
+/* ---- 笔记投影（kind: 'note'）---- */
+/** 懒加载出来的编辑器依赖：{ createWysiwyg, createAutoSave, SAVE_STATE_TEXT } */
+let noteAssets = null;
+/** 进行中的加载（并发调用共用一次）—— 别把 promise 塞进 noteAssets，
+ *  否则别处读 noteAssets.SAVE_STATE_TEXT 会拿到 undefined，状态位永远是空的 */
+let noteAssetsPromise = null;
+/** wysiwyg 实例：读态 / 编辑态共用同一份 DOM，切态只开关 contenteditable */
+let noteEditor = null;
+/** 防抖落库（与笔记视图同一套 createAutoSave：没改动就不写库） */
+let noteSaver = null;
+/** 编辑器当前挂的笔记 id（换一篇 = 重建内容与基线） */
+let noteForId = null;
+/** 库里的正文指纹：判断「外部改过这篇笔记」，避免每次轮询都重渲（会丢光标） */
+let noteHash = '';
+let noteEditing = false;
+let noteDirty = false;
+/** 异步加载 / 渲染的竞态令牌：只有最后一次的结果能落地 */
+let noteToken = 0;
 
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -99,8 +129,9 @@ async function refresh() {
   try {
     next = await api.desktop.get(projectionId);
   } catch (e) {
-    // 读失败不要把已有内容清空（数据库短暂占用时，界面上保留旧数据比一片空白好）
-    if (!view || !view.tasks || !view.tasks.length) {
+    // 读失败不要把已有内容清空（数据库短暂占用时，界面上保留旧数据比一片空白好）。
+    // 笔记窗尤其不能退化成错误态：正文在编辑器里，顶掉视图等于把正在写的东西藏起来。
+    if (!isNoteView() && (!view || !view.tasks || !view.tasks.length)) {
       view = { error: (e && e.message) || '读取失败', tasks: [], counts: { done: 0, total: 0 }, title: '数据未就绪' };
       render();
     }
@@ -120,6 +151,11 @@ function isCollapsed() {
 /** 这个窗是不是贴顶 dock */
 function isDock() {
   return !!(view && view.projection && view.projection.dock === 'top');
+}
+
+/** 这个窗是不是「一篇笔记」（任务列表的那套渲染整条不走） */
+function isNoteView() {
+  return !!(view && view.projection && view.projection.kind === 'note');
 }
 
 /** 「保持展开」：dock 悬停展开后手动钉住，鼠标移开也不收回 */
@@ -162,9 +198,12 @@ function render() {
   if (!view) return;
   const collapsed = isCollapsed();
   const dock = isDock();
+  const note = isNoteView();
   el.root.classList.toggle('is-collapsed', collapsed);
   // dock 态：标题栏压到 30px、上边不画圆角、隐藏缩放手柄（宽度固定 420）
   el.root.classList.toggle('is-dock', dock);
+  // 笔记：底栏换成「字数 / 更新时间 + 编辑」，列表与新增待办都不出现
+  el.root.classList.toggle('is-note', note);
   el.collapse.classList.toggle('is-rotated', collapsed);
   el.collapse.title = collapsed ? '展开清单' : '折叠为标题条';
   // 📌 只在 dock 上出现：把展开态钉住，鼠标移开也不收回
@@ -178,11 +217,13 @@ function render() {
     el.title.textContent = view.title || '该清单已删除';
     el.dot.hidden = true;
     el.count.hidden = true;
+    el.pend.hidden = true;
   } else if (view.error) {
     el.root.dataset.state = 'error';
     el.title.textContent = view.title || '数据未就绪';
     el.dot.hidden = true;
     el.count.hidden = true;
+    el.pend.hidden = true;
   } else {
     el.root.dataset.state = 'ready';
     const p = view.projection || {};
@@ -196,20 +237,28 @@ function render() {
       el.dot.hidden = true;
     }
     const c = view.counts || { done: 0, total: 0 };
-    if (isUnfinished) {
-      // 「未完成」的头条信息是「我还欠多少」：收起条尤其要一眼看到数字 + 逾期数
+    if (note) {
+      // 笔记没有「完成进度」这回事：徽标一律不显示，标题就是全部读数
+      el.count.hidden = true;
+      el.pend.hidden = true;
+    } else if (isUnfinished) {
+      // 「未完成」的头条信息是「我还欠多少」：收起条尤其要一眼看到数字 + 逾期数。
+      // 两个徽标并排 —— 左边红色报危机（逾期），右边品牌色报总量（未完成），标题只留名字。
       const pend = view.pending == null ? Math.max(0, c.total - c.done) : view.pending;
       const over = Number(view.overdue) || 0;
-      el.title.textContent = dock && collapsed ? `未完成 ${pend}` : '未完成';
       el.count.hidden = !over;
       el.count.textContent = over ? `逾期 ${over}` : '';
       el.count.title = `逾期 ${over} 条（未勾掉）`;
       el.count.classList.toggle('is-overdue', over > 0);
+      el.pend.hidden = false;
+      el.pend.textContent = `未完成 ${pend}`;
+      el.pend.title = `还有 ${pend} 条没勾掉`;
     } else {
       el.count.hidden = false;
       el.count.classList.remove('is-overdue');
       el.count.textContent = `${c.done} / ${c.total}`;
       el.count.title = `已完成 ${c.done} / 共 ${c.total}`;
+      el.pend.hidden = true;
     }
   }
 
@@ -222,6 +271,20 @@ function render() {
     fit();
     return;
   }
+
+  // 笔记投影：正文是编辑器自己的 DOM，不走列表那套「指纹 + 重建」
+  if (note) {
+    el.list.hidden = true;
+    el.note.hidden = false;
+    el.noteBar.hidden = false;
+    el.add.hidden = true;
+    el.addInput.hidden = true;
+    paintNote().catch((e) => showQuickHint((e && e.message) || '笔记渲染失败'));
+    return;
+  }
+  el.note.hidden = true;
+  el.noteBar.hidden = true;
+  el.list.hidden = false;
 
   const sig = signature();
   if (sig !== lastSig) {
@@ -465,6 +528,223 @@ function renderHint() {
   el.hint.innerHTML = '';
 }
 
+/* ---------------- 笔记投影：读 + 就地编辑 ---------------- */
+
+/**
+ * 为什么复用 wysiwyg.js 而不是自己写个 contenteditable：
+ * 写回必须是 Markdown，而且要「未改动的块字节级不变」——否则打开一篇长笔记、
+ * 改一个字、保存，整篇会被规范化（表格 / 代码块 / 颜色标记全丢）。
+ * 那套块级原文保真 + turndown 规则已经在主窗口的笔记里跑了很久，浮窗直接用同一份，
+ * 两处渲染与序列化才可能完全一致。
+ */
+
+function loadNoteScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = false;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`编辑器依赖加载失败：${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+/**
+ * 懒加载笔记所需资源（样式 + 4 个 UMD 依赖 + 两个模块）。
+ * 只钉了清单的窗口不该为这 3000 行 CSS / 500KB 解析付代价，所以一律等到真钉了笔记再加载。
+ */
+async function ensureNoteAssets() {
+  if (noteAssets) return noteAssets;
+  if (!noteAssetsPromise) {
+    noteAssetsPromise = (async () => {
+      // head 里的顺序已经排好（styles → wysiwyg → desktop），这里只负责让它们生效
+      document.querySelectorAll('link[data-note-css]').forEach((l) => { l.media = 'all'; });
+      // UMD 全局：markdown-lib 要 window.markdownit / hljs，wysiwyg 要 window.turndown（+ gfm 插件）
+      await loadNoteScript('vendor/markdown-it/markdown-it.min.js');
+      await loadNoteScript('vendor/highlight/highlight.min.js');
+      await loadNoteScript('vendor/turndown/turndown.js');
+      await loadNoteScript('vendor/turndown/turndown-plugin-gfm.js');
+      const [wys, auto] = await Promise.all([import('./wysiwyg.js'), import('./autosave.js')]);
+      return {
+        createWysiwyg: wys.createWysiwyg,
+        createAutoSave: auto.createAutoSave,
+        SAVE_STATE_TEXT: auto.SAVE_STATE_TEXT,
+      };
+    })().catch((e) => {
+      noteAssetsPromise = null; // 失败不缓存，下次刷新可重试
+      throw e;
+    });
+  }
+  noteAssets = await noteAssetsPromise;
+  return noteAssets;
+}
+
+function paintSaveState(st, info) {
+  if (!el.noteState) return;
+  const text = noteAssets ? noteAssets.SAVE_STATE_TEXT : null;
+  el.noteState.textContent = st === 'error'
+    ? `${(text && text.error) || '保存失败'}${info && info.message ? `：${info.message}` : ''}`
+    : ((text && text[st]) || '');
+  el.noteState.classList.toggle('is-error', st === 'error');
+  noteDirty = st === 'pending' || st === 'saving' || st === 'error';
+}
+
+function paintNoteMeta(n) {
+  if (!el.noteMeta) return;
+  const words = Number(n && n.word_count) || 0;
+  const when = n && n.updated_at ? fmtDateTime(n.updated_at) : '';
+  el.noteMeta.textContent = `${words} 字${when ? ` · ${when}` : ''}`;
+  el.noteMeta.title = when ? `最近更新：${when}` : '';
+}
+
+/** 进入 / 退出编辑态（视图与编辑器都跟着切，工具条在浮窗里不出现 —— 靠快捷键） */
+function setNoteEditing(on) {
+  if (!isNoteView() || !noteEditor) return;
+  if (noteEditing === !!on) return;
+  noteEditor.setEditing(!!on);
+}
+
+function createNoteEditor(assets) {
+  noteEditor = assets.createWysiwyg({
+    root: el.noteBody,
+    pane: el.note,
+    toolbar: null, // 286~380px 排不下工具条：加粗 / 标题走 Ctrl+B、Ctrl+Alt+1~3
+    notify: (msg) => showQuickHint(msg),
+    onInput: () => {
+      noteDirty = true;
+      if (noteSaver) noteSaver.schedule();
+      fit();
+    },
+    onEditingChange: (on) => {
+      noteEditing = !!on;
+      el.noteTitle.hidden = !on;
+      el.edit.classList.toggle('is-on', !!on);
+      el.edit.textContent = on ? '✓ 完成' : '✎ 编辑';
+      el.edit.title = on ? '退出编辑（Esc）' : '编辑这篇笔记（Ctrl+E）';
+      // 编辑态标题栏只报状态：正文上方已经有可编辑的标题输入框，
+      // 两处显示同一个标题在 380px 的小窗里会像重复了一遍
+      if (on) {
+        el.title.textContent = '编辑中…';
+        el.title.title = '';
+      } else {
+        const t = (view && view.note && view.note.title) || '';
+        el.title.textContent = t || '无标题笔记';
+        el.title.title = t || '无标题笔记';
+      }
+      // 退出编辑必须立刻落库：防抖窗口里关窗 / 收起 = 白改
+      if (!on && noteSaver) noteSaver.flush().catch(() => {});
+      fit();
+    },
+    hooks: {
+      exitEdit: () => setNoteEditing(false),
+      enterEdit: () => setNoteEditing(true),
+    },
+  });
+
+  noteSaver = assets.createAutoSave({
+    delay: 700,
+    save: async (payload) => {
+      const saved = await api.notes.update(noteForId, payload);
+      if (!saved || saved.__error) throw new Error((saved && saved.__error) || '保存失败');
+      noteHash = saved.content_hash || noteHash;
+      noteDirty = false;
+      // 主进程广播会跳过来源窗口（不打断输入），所以字数 / 时间在这里自己补。
+      // content_md 也要一起补：否则 view 里还是打开时那份，下次重绘（折叠再展开）
+      // 会拿旧内容和 noteHash 比出「不一致」，把刚写的内容顶回旧版本。
+      if (view && view.note) {
+        view.note.title = saved.title || '';
+        view.note.word_count = saved.word_count || 0;
+        view.note.updated_at = saved.updated_at || view.note.updated_at;
+        view.note.content_hash = saved.content_hash || view.note.content_hash;
+        if (payload && typeof payload.content_md === 'string') view.note.content_md = payload.content_md;
+        paintNoteMeta(view.note);
+        // 标题可能刚被改：标题栏与 input 都同步（input 正在输入时不要回写，会跳光标）
+        if (document.activeElement !== el.noteTitle) el.noteTitle.value = view.note.title;
+        if (!noteEditing) {
+          el.title.textContent = view.note.title || '无标题笔记';
+          el.title.title = view.note.title || '无标题笔记';
+        }
+      }
+      fit();
+      return saved;
+    },
+    read: () => {
+      if (!view || !view.note || !noteEditor) return null;
+      return { title: el.noteTitle.value.trim(), content_md: noteEditor.value() };
+    },
+    onStatus: (st, info) => paintSaveState(st, info),
+    onError: (e) => showQuickHint((e && e.message) || '保存失败'),
+  });
+}
+
+/** 换了一篇笔记：内容与保存基线一起重建 */
+function resetNoteContent(n) {
+  noteEditor.value(n.content_md || '');
+  noteHash = n.content_hash || '';
+  el.noteTitle.value = n.title || '';
+  if (noteSaver) {
+    noteSaver.setBaseline({ title: n.title || '', content_md: n.content_md || '' });
+  }
+  paintSaveState('idle');
+}
+
+/**
+ * 画笔记（异步：首次要先把编辑器依赖拉起来）。
+ * 编辑中 / 有未保存改动时**绝不覆盖正文** —— 60 秒轮询、主窗口保存触发的 invalidate
+ * 都会走到这里，覆盖一次就是把用户刚打的字抹掉。
+ */
+async function paintNote() {
+  if (!view || !view.note) return;
+  const token = ++noteToken;
+  const n = view.note;
+  // 编辑态标题栏写的是「编辑中…」：轮询 / invalidate 回来时别把它改回标题
+  if (!noteEditing) {
+    el.title.textContent = n.title || '无标题笔记';
+    el.title.title = n.title || '无标题笔记';
+  }
+  paintNoteMeta(n);
+
+  let assets;
+  try {
+    assets = await ensureNoteAssets();
+  } catch (e) {
+    showQuickHint((e && e.message) || '笔记编辑器加载失败');
+    return;
+  }
+  // 期间又刷新 / 切走 / 折叠了：这次结果作废（别把内容写进已经不在的视图）
+  if (token !== noteToken || !view || !view.note || isCollapsed()) return;
+
+  if (!noteEditor) createNoteEditor(assets);
+  if (noteForId !== n.id) {
+    noteForId = n.id;
+    resetNoteContent(n);
+  } else if (!noteEditing && !noteDirty && n.content_hash !== noteHash) {
+    // 主窗口里改过同一篇，本地又没有未保存内容 → 采用库里的版本
+    noteEditor.value(n.content_md || '');
+    noteHash = n.content_hash || '';
+    el.noteTitle.value = n.title || '';
+    if (noteSaver) noteSaver.setBaseline({ title: n.title || '', content_md: n.content_md || '' });
+  }
+  fit();
+}
+
+/** 笔记高度：按正文自然高度算（offsetHeight 不受滚动容器影响，避免「只涨不缩」的棘轮） */
+function fitNote() {
+  if (isCollapsed()) {
+    api.desktop.fit(projectionId, isDock() ? DOCK_HEAD_H : HEAD_H).catch(() => {});
+    return;
+  }
+  const headH = isDock() ? DOCK_HEAD_H : HEAD_H;
+  const titleH = el.noteTitle.hidden ? 0 : el.noteTitle.offsetHeight + 8;
+  const padTop = 6;
+  const padBottom = 10;
+  const h = Math.max(
+    NOTE_MIN_H,
+    Math.min(MAX_H, headH + padTop + titleH + el.noteBody.offsetHeight + padBottom + FOOT_H),
+  );
+  api.desktop.fit(projectionId, h).catch(() => {});
+}
+
 function renderFatal(msg) {
   el.root.dataset.state = 'error';
   el.title.textContent = '数据未就绪';
@@ -476,6 +756,7 @@ function renderFatal(msg) {
 
 /** 内容自适应高度：三段固定，只有列表区伸缩；超过 520 就在列表里滚动 */
 function fit() {
+  if (isNoteView()) { fitNote(); return; }
   const collapsed = isCollapsed();
   if (collapsed) {
     // dock 收起成一条只有 30px；普通浮窗收起是完整标题栏 42px
@@ -554,11 +835,13 @@ function recount() {
     const open = view.tasks.filter((x) => !x.completed);
     view.pending = open.length;
     view.overdue = open.filter((t) => t.plan_end && t.plan_end < today).length;
-    el.title.textContent = isDock() && isCollapsed() ? `未完成 ${view.pending}` : '未完成';
     el.count.hidden = !view.overdue;
     el.count.textContent = view.overdue ? `逾期 ${view.overdue}` : '';
     el.count.title = `逾期 ${view.overdue} 条（未勾掉）`;
     el.count.classList.toggle('is-overdue', view.overdue > 0);
+    el.pend.hidden = false;
+    el.pend.textContent = `未完成 ${view.pending}`;
+    el.pend.title = `还有 ${view.pending} 条没勾掉`;
     paintSectionCounts();
   } else {
     el.count.textContent = `${view.counts.done} / ${view.counts.total}`;
@@ -656,23 +939,31 @@ async function setDockPinned(next) {
 
 function enterMissing() {
   if (missingTimer) return;
-  // 一个 286px 的窗口任何状态下只允许「一个主信息」：清单没了就把旧任务清干净，
-  // 否则用户会看到一份「已经不存在的清单」的残留列表
+  // 提示语按投影类型写死：view.title 此刻还是「删除前」的标题（主进程只是发了 missing 事件）
+  const kind = (view && view.projection && view.projection.kind) || '';
+  const gone = kind === 'note' ? '该笔记已删除' : '该清单已删除';
+  // 一个 286px 的窗口任何状态下只允许「一个主信息」：清单 / 笔记没了就把旧内容清干净，
+  // 否则用户会看到一份「已经不存在的东西」的残留
   if (view) {
     view.missing = true;
     view.tasks = [];
+    view.note = null;
     view.counts = { done: 0, total: 0 };
   }
   el.root.dataset.state = 'missing';
-  el.title.textContent = '该清单已删除';
+  el.title.textContent = gone;
   el.count.hidden = true;
   el.dot.hidden = true;
   el.list.innerHTML = '';
+  el.list.hidden = false;
+  el.note.hidden = true;
+  el.noteBar.hidden = true;
+  noteToken += 1; // 作废进行中的 paintNote
   lastSig = '';
   el.foot.hidden = true;
   el.hint.hidden = false;
   el.hint.className = 'dw-hint';
-  el.hint.innerHTML = '该清单已删除<b>，窗口即将自动关闭</b>';
+  el.hint.innerHTML = `${esc(gone)}<b>，窗口即将自动关闭</b>`;
   fit();
   // 关闭前给 3 秒提示，不做静默消失
   missingTimer = setTimeout(() => {
@@ -697,6 +988,8 @@ function clearDockTimers() {
 function dockShouldStayOpen() {
   if (isDockPinned()) return true;
   if (!el.addInput.hidden) return true;
+  // 正在编辑笔记：鼠标一移开就收起，等于把窗口从眼前拿走
+  if (isNoteView() && (noteEditing || noteDirty)) return true;
   return false;
 }
 
@@ -750,6 +1043,30 @@ function bind() {
 
   el.add.addEventListener('click', (e) => { e.stopPropagation(); openAdd(); });
 
+  /* ---- 笔记投影：编辑开关 / 标题输入 ---- */
+  el.edit.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!isNoteView() || !noteEditor) return;
+    setNoteEditing(!noteEditing);
+  });
+  el.noteTitle.addEventListener('input', () => {
+    if (!view || !view.note) return;
+    view.note.title = el.noteTitle.value;
+    // 编辑态标题栏写的是「编辑中…」，别把用户正在敲的标题同步上去（会一抖一抖地变）
+    if (!noteEditing) el.title.textContent = el.noteTitle.value.trim() || '无标题笔记';
+    noteDirty = true;
+    if (noteSaver) noteSaver.schedule();
+    fit();
+  });
+  el.noteTitle.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    // 回车 / 下箭头把光标交回正文：标题下面就是要写的东西
+    if (e.key === 'Enter' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      el.noteBody.focus();
+    }
+  });
+
   el.addInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); submitAdd(); }
     else if (e.key === 'Escape') { e.preventDefault(); closeAdd(); }
@@ -768,6 +1085,14 @@ function bind() {
   // 键盘：上下选中、空格勾选、Ctrl+N 新增（窗口聚焦时生效）
   document.addEventListener('keydown', (e) => {
     const inInput = e.target === el.addInput;
+    // 笔记窗的键盘交给编辑器：Ctrl+E 切编辑态，Esc / 加粗 / 标题等由 wysiwyg 自己处理
+    if (isNoteView()) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        setNoteEditing(!noteEditing);
+      }
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'n' || e.key === 'N')) {
       e.preventDefault();
       openAdd();
@@ -875,11 +1200,29 @@ function bind() {
     view.projection.collapsed = false;
     clearDockTimers();
     lastSig = '';
+    // 回头路要写出来：拖离之后没有任何手势能贴回去，只能走 ⋯ 菜单。
+    // 必须等 refresh 画完再提示，否则 renderHint 会把这条提示盖掉。
+    refresh().then(() => showQuickHint('已拖离顶边 · ⋯ 菜单可「贴回屏幕顶边」'), () => {});
+  });
+  // 被贴回顶边（拖到顶部自动贴边 / ⋯ 菜单）：变回 dock 形态并收起成 30px 读数列
+  api.on('desktop:redocked', () => {
+    if (!view || !view.projection) return;
+    view.projection.dock = 'top';
+    view.projection.dockPinned = false;
+    view.projection.collapsed = true;
+    clearDockTimers();
+    lastSig = '';
+    // 主进程已经把窗口改成 420×30 并贴顶了，这里只负责把内容切成 dock 形态。
+    // 不给提示：30px 高的条上塞不进一行字，形态变化本身就是反馈（碰一下就会展开）。
     refresh();
   });
 
   // 窗口重新获得焦点 / 跨天：轻量刷新一次（浮窗开了整夜也能看到新的一天）
   window.addEventListener('focus', () => { refresh(); });
+  // 失焦立刻落库：防抖窗口里切走 / 最小化不该丢掉刚打的字
+  window.addEventListener('blur', () => {
+    if (noteSaver) noteSaver.flush().catch(() => {});
+  });
   setInterval(() => { if (!document.hidden) refresh(); }, 60_000);
   // 番茄钟倒计时：500ms 本地重算（不依赖主进程推送，浮窗隐藏时也不会停摆）
   setInterval(tickFocus, 500);

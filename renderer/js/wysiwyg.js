@@ -795,7 +795,9 @@ export function createWysiwyg(o) {
     if (disposed || htmlMode || (!force && editing === !!on)) return;
     editing = !!on;
     root.contentEditable = editing ? 'true' : 'false';
-    root.spellcheck = editing;
+    // 拼写检查一律关掉：中文 + 驼峰/下划线标识符（quickService、SWB_DEV_xxx）会被
+    // Chromium 满屏标红波浪线，纯噪声；我们也从不消费这个字典。
+    root.spellcheck = false;
     root.classList.toggle('is-editing', editing);
     if (toolbar) toolbar.hidden = !editing;
     if (pane) pane.dataset.mode = editing ? 'edit' : 'preview';
@@ -1073,7 +1075,7 @@ export function createWysiwyg(o) {
     // 也不抢焦点（抽屉刚打开时焦点应该留给标题 / 面板本身）。
     editing = true;
     root.contentEditable = 'true';
-    root.spellcheck = true;
+    root.spellcheck = false;   // 同 setEditing：中文与标识符的红色波浪线是纯噪声
     root.classList.add('is-editing');
     if (toolbar) toolbar.hidden = false;
     syncToolbarState();

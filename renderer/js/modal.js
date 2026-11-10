@@ -134,6 +134,10 @@ export function openPromptModal(opts) {
  * @param {string} [opts.resizeKey] 尺寸记忆键：同一键的弹窗下次打开沿用上次大小
  * @param {number} [opts.minWidth] 缩放最小宽度（默认 520）
  * @param {number} [opts.minHeight] 缩放最小高度（默认 380）
+ * @param {boolean} [opts.closeOnMask=true] 点遮罩是否关闭
+ * @param {boolean} [opts.closeOnEsc=true] 按 Esc 是否关闭。
+ *        与 closeOnMask 一起设成 false，就是「只有显式点按钮/✕ 才关」——
+ *        用于检索这类「关掉就丢结果、还有 AI 成本」的弹窗
  * @param {(mask:HTMLElement) => boolean} [opts.escGuard]
  *        返回 true 时把这次 Esc 让给弹窗内部处理（如笔记搜索框「Esc 清空关键词」），不关窗
  * @returns {Promise<boolean>} 是否以“确认”关闭
@@ -142,7 +146,7 @@ export function openPanelModal({
   title, html = '', className = '', onMount, okText = '关闭',
   extraButtons = [], onSubmit, onClose, showClose = false, headHtml = '',
   resizable = false, resizeKey = '', minWidth = 520, minHeight = 380,
-  closeOnMask = true, escGuard = null,
+  closeOnMask = true, closeOnEsc = true, escGuard = null,
 }) {
   return new Promise((resolve) => {
     const mask = document.createElement('div');
@@ -152,7 +156,7 @@ export function openPanelModal({
         <div class="modal-head">
           <span class="modal-head-text">${esc(title)}</span>
           ${headHtml}
-          ${showClose ? '<button type="button" class="modal-icon-btn" data-modal="close" title="关闭（Esc）" aria-label="关闭">✕</button>' : ''}
+          ${showClose ? `<button type="button" class="modal-icon-btn" data-modal="close" title="${closeOnEsc ? '关闭（Esc）' : '关闭'}" aria-label="关闭">✕</button>` : ''}
         </div>
         <div class="modal-body">${html}</div>
         <div class="modal-error" hidden></div>
@@ -196,6 +200,8 @@ export function openPanelModal({
       if (typeof escGuard === 'function') {
         try { if (escGuard(mask)) return; } catch (e) { /* 判定失败按「关窗」处理 */ }
       }
+      // 只允许显式按钮关闭（检索弹窗）：Esc 直接吞掉、不做任何事
+      if (!closeOnEsc) return;
       e.stopPropagation();
       close(false);
     };

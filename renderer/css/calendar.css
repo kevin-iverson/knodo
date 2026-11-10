@@ -21,6 +21,7 @@
   --cal-red: #e5484d;
   --cal-red-soft: #fef7f7;
   --cal-blue-bg: #f4f7ff;
+  --cal-done-bg: #f1faf6;
   --cal-trough: #eef0f5;
   --cal-card: #ffffff;
   --cal-radius: 12px;
@@ -262,15 +263,28 @@
   border: 1px solid #c9cede; border-radius: 3px; background: #fff;
   color: #fff; font-size: 9px; line-height: 10px; text-align: center; cursor: pointer;
 }
-.cal-task.is-done .cal-check { background: var(--cal-green, #23b07e); border-color: var(--cal-green, #23b07e); }
-/* 完成态要「一眼看出做过」而不是「像被删掉」：0.4 太淡，历史记录会看不见 */
-.cal-task.is-done { opacity: .62; cursor: default; }
-.cal-task.is-done .cal-task-title { text-decoration: line-through; text-decoration-color: rgba(127, 140, 170, .55); }
-.cal-task.is-done .cal-task-bar { opacity: .55; }
-/* 配图里的格内卡片只有「色条 + 标题」；勾选框悬停才出现，避免挤掉标题宽度。
-   常驻勾选在右侧当日面板里，右键菜单也有「标记完成」，触屏用户不会丢能力。 */
+/* 勾选态只认 .is-checked：绿底白勾。以前只写了「格内卡片」的 .is-done .cal-check，
+   右栏面板沿用白底 → 白勾压白底，等于没勾（用户反馈「已完成右侧看不到勾」）。 */
+.cal-check.is-checked {
+  background: var(--cal-green, #23b07e);
+  border-color: var(--cal-green, #23b07e);
+  color: #fff;
+  font-weight: 700;
+}
+.cal-check:hover { border-color: var(--cal-green, #23b07e); }
+/* 完成态：淡绿底 + 常驻绿勾 + 次要字色。整卡 opacity 会把历史记录糊成一片（反馈：月视图看不清） */
+.cal-task.is-done {
+  background: var(--cal-done-bg);
+  box-shadow: inset 0 0 0 1px rgba(35, 176, 126, .16);
+  cursor: default;
+}
+.cal-task.is-done .cal-task-title { color: var(--cal-ink2); text-decoration: line-through; text-decoration-color: rgba(127, 140, 170, .5); }
+.cal-task.is-done .cal-task-bar { background: var(--cal-green, #23b07e); opacity: .55; }
+/* 未完成的卡片勾选框悬停才出现，避免挤掉标题宽度；
+   已完成的必须常驻 —— 「做完了」是历史信息，靠悬停才发现等于没有。 */
 .cal-task .cal-check { display: none; }
 .cal-task:hover .cal-check { display: block; }
+.cal-task.is-done .cal-check { display: block; }
 /* 标题优先：格内最多两行，长名至少能看出开头；附加图标一律定宽，不参与挤压 */
 .cal-task-title {
   flex: 1 1 auto; min-width: 0;
@@ -405,8 +419,15 @@
 .cal-panel-group-name { margin: 8px 0 4px; font-size: 10.5px; color: var(--cal-ink3); }
 .cal-panel-list { max-height: 320px; overflow-y: auto; }
 .cal-panel-row { display: flex; align-items: center; gap: 6px; padding: 6px 2px; border-bottom: 1px solid var(--cal-line); }
-.cal-panel-row.is-done { opacity: .6; }
-.cal-panel-row.is-done .cal-panel-title { text-decoration: line-through; text-decoration-color: rgba(127, 140, 170, .5); }
+/* 只弱化文字，不整行降透明 —— 整行 opacity 连勾选框一起变淡，看不出做没做 */
+.cal-panel-row.is-done .cal-panel-title { color: var(--cal-ink2); text-decoration: line-through; text-decoration-color: rgba(127, 140, 170, .45); }
+.cal-panel-row.is-done .cal-panel-meta,
+.cal-panel-row.is-done .cal-panel-priority { opacity: .7; }
+/* 面板里的勾选框是「这一天做没做」的唯一常驻入口，给足 14px 点击热区 */
+.cal-panel-row .cal-check {
+  flex: 0 0 14px; width: 14px; height: 14px;
+  font-size: 10px; line-height: 12px;
+}
 .cal-occ-tag {
   padding: 0 4px; border-radius: 3px;
   background: rgba(35, 176, 126, .12); color: var(--cal-green, #23b07e);
@@ -509,6 +530,7 @@
   --cal-red: #f2555a;
   --cal-red-soft: #332226;
   --cal-blue-bg: #20283a;
+  --cal-done-bg: #1a2a25;
   --cal-trough: #2a2f3a;
   --cal-card: #1d212a;
 }
@@ -522,7 +544,8 @@
 [data-theme="dark"] .cal-preview-track { background: #503033; }
 [data-theme="dark"] .cal-backlog, [data-theme="dark"] .cal-backlog-row button { background: #332226; }
 [data-theme="dark"] .cal-drop-tip, [data-theme="dark"] .cal-drag-ghost { background: #262b36; border-color: #3a4150; }
-[data-theme="dark"] .cal-check { background: #262b36; border-color: #4b5363; }
+[data-theme="dark"] .cal-check:not(.is-checked) { background: #262b36; border-color: #4b5363; }
+[data-theme="dark"] .cal-task.is-done { box-shadow: inset 0 0 0 1px rgba(35, 176, 126, .22); }
 [data-theme="dark"] .cal-lg.is-empty, [data-theme="dark"] .cal-trend-bar.is-empty { background: #3a4150; }
 [data-theme="dark"] .cal-cell.is-past { background-image: linear-gradient(135deg, rgba(255, 255, 255, .02) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .02) 50%); }
 
