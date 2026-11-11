@@ -9,9 +9,10 @@
  *  1. **开关以系统状态为准**：用户可能在「任务管理器 → 启动」或系统设置里把它关掉，
  *     settings 表里的值会与系统不一致。读取一律以 `app.getLoginItemSettings()`
  *     的结果为准，settings 只作为「想让它是开还是关」的意图记录。
- *  2. **便携版 / 开发模式**：便携版 exe 每次运行会被解压到临时目录，路径不稳定；
- *     开发模式（electron.exe + 项目路径）需要额外带上 args。这两种情况都直接禁用，
- *     并在界面上说明原因，避免写进一条永远指向旧路径的启动项。
+ *  2. **旧单文件自解压便携版 / 开发模式**：那种便携版 exe 每次运行都会被解压到临时目录，
+ *     路径不稳定，写启动项等于写一条永远指向旧路径的死链；开发模式（electron.exe +
+ *     项目路径）需要额外带上 args。这两种情况都直接禁用并在界面上说明原因。
+ *     现行 7z 便携包解压到用户自选目录、exe 路径固定，按普通打包版处理（可自启）。
  *  3. **静默启动**：开机拉起时带上 `--autostart`，主进程据此只驻留托盘、不弹主窗口，
  *     不会开机就糊一脸窗口。
  */
@@ -32,7 +33,7 @@ const LOGIN_ITEM_NAME = 'Knodo';
 const LEGACY_LOGIN_ITEM_NAMES = ['TODO待办'];
 let legacyMigrated = false;
 
-/** 便携版：electron-builder 会把单文件包解压到临时目录运行，路径不固定 */
+/** 旧形态便携版（单文件自解压 exe）：会被解压到临时目录运行，路径不固定 */
 function isPortable() {
   return !!process.env.PORTABLE_EXECUTABLE_DIR;
 }
@@ -46,7 +47,7 @@ function availability() {
     return { supported: false, reason: `当前系统（${process.platform}）暂不支持该功能` };
   }
   if (isPortable()) {
-    return { supported: false, reason: '便携版每次运行都会解压到临时目录，无法登记稳定的启动项；安装版可用' };
+    return { supported: false, reason: '这个便携版每次运行都会解压到临时目录，无法登记稳定的启动项；安装版或 7z 便携包可用' };
   }
   if (!app.isPackaged) {
     return { supported: false, reason: '开发调试模式下不写系统启动项；打包安装后可用' };

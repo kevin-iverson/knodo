@@ -96,15 +96,33 @@ const esc = (s) => String(s == null ? '' : s)
 /* ---------------- 主题 ---------------- */
 
 /**
- * 只跟随系统 / 应用的 prefers-color-scheme：主进程设置 nativeTheme.themeSource 之后，
- * 这一层会自动跟着变（包括用户在主窗口点「主题」切换的情况），不需要额外的 IPC。
+ * 浮窗只跟随「配色」，不渲染背景图。
+ * 模式 × 风格都从主进程读（主窗口换风格这里立刻跟着换），但把 backdrop 清掉 ——
+ * 浮窗是贴在别人窗口上的，透出壁纸会和下面的内容糊在一起（设计方案 · 协同规则）。
  */
 const mq = window.matchMedia('(prefers-color-scheme: dark)');
-function applyTheme() {
+
+function applySystemMode() {
   document.documentElement.setAttribute('data-theme', mq.matches ? 'dark' : 'light');
 }
-applyTheme();
-if (mq.addEventListener) mq.addEventListener('change', applyTheme);
+
+async function syncTheme() {
+  try {
+    const t = await api.theme.get();
+    if (!window.KnodoTheme || !t) { applySystemMode(); return; }
+    window.KnodoTheme.paint({
+      ...t,
+      backdrop: { ...(t.backdrop || {}), type: 'none', image: '', missing: false },
+    });
+  } catch (e) {
+    // 主进程读不到（极早期 / 库未就绪）就退回系统深浅色，浮窗不能因为主题而空着
+    applySystemMode();
+  }
+}
+
+syncTheme();
+if (mq.addEventListener) mq.addEventListener('change', syncTheme);
+api.on('ui:theme-changed', syncTheme);
 
 /* ---------------- 数据 ---------------- */
 

@@ -1,35 +1,76 @@
+/* ============================================================
+   外观 token（模式 × 风格 × 背景三层）
+   ------------------------------------------------------------
+   语义名不变（--bg / --bg-panel / --text…），值的来源换成「rgb 三元组 + alpha 合成」：
+     · --bg-*-rgb 由渲染层按 6 套风格 × 明暗注入（见 js/theme-core.js，这里是雾灰浅色兜底）
+     · --surface-alpha 由背景透明度反推，无背景图时恒为 1
+   这样 3400 行既有规则一句选择器都不用改，面板就自动变成半透明。
+   铁律：透明度只作用在「面」（侧栏 / 内容区地面 / 卡片），文字与控件永远不透明。
+   ============================================================ */
 :root {
-  --bg: #f5f6f8;
-  --bg-panel: #ffffff;
-  --bg-sidebar: #fbfbfd;
-  --bg-hover: #eef1f6;
-  --bg-active: #e8eefc;
-  --text: #1f2430;
-  --text-2: #6b7280;
-  --text-3: #9aa1ad;
-  --border: #e6e8ee;
-  --primary: #4f7cff;
-  --primary-strong: #3a62e0;
+  /* 雾灰 · 浅色（未注入时的兜底，打印 / 冒烟 / 桌面浮窗都靠它） */
+  --bg-rgb: 245 246 248;
+  --panel-rgb: 255 255 255;
+  --sidebar-rgb: 251 251 253;
+  --hover-rgb: 238 241 246;
+  --active-rgb: 232 238 252;
+  --text-rgb: 31 36 48;
+  --text2-rgb: 107 114 128;
+  --text3-rgb: 154 161 173;
+  --border-rgb: 230 232 238;
+  --primary-rgb: 79 124 255;
+  --primary-strong-rgb: 58 98 224;
+
+  /* 背景层（JS 写入）：image / scrim / blur / fit / glass */
+  --surface-alpha: 1;
+  --glass: 0;
+  --bd-image: none;
+  --bd-scrim: 0;
+  --bd-blur: 0px;
+  --bd-scale: 1;
+  --bd-fit: cover;
+  --bd-repeat: no-repeat;
+
   --danger: #e5484d;
   --green: #23b07e;
   --shadow: 0 8px 30px rgba(20, 30, 60, 0.08);
   --shadow-sm: 0 2px 8px rgba(20, 30, 60, 0.06);
   --radius: 12px;
   --radius-sm: 8px;
+
+  /* 语义色：由三元组合成 */
+  --bg: rgb(var(--bg-rgb));
+  --bg-panel: rgb(var(--panel-rgb) / var(--surface-alpha));
+  --bg-sidebar: rgb(var(--sidebar-rgb) / calc(var(--surface-alpha) * 0.88));
+  --bg-hover: rgb(var(--hover-rgb) / var(--surface-alpha));
+  --bg-active: rgb(var(--active-rgb) / var(--surface-alpha));
+  --text: rgb(var(--text-rgb));
+  --text-2: rgb(var(--text2-rgb));
+  --text-3: rgb(var(--text3-rgb));
+  --border: rgb(var(--border-rgb));
+  --primary: rgb(var(--primary-rgb));
+  --primary-strong: rgb(var(--primary-strong-rgb));
+
+  /* 内容区「地面」：比卡片低一档，壁纸主要从这里透出来（见设计方案 4.1 L3） */
+  --bg-ground: rgb(var(--bg-rgb) / calc(var(--surface-alpha) * 0.45));
+  /* 浮层（弹窗 / 下拉 / 抽屉）：近实心，表单控件压在壁纸上会发脏 */
+  --bg-elevated: rgb(var(--panel-rgb) / calc(1 - (1 - var(--surface-alpha)) * 0.15));
 }
 
 [data-theme="dark"] {
-  --bg: #15181f;
-  --bg-panel: #1d212a;
-  --bg-sidebar: #181b22;
-  --bg-hover: #262b36;
-  --bg-active: #2c3444;
-  --text: #e7eaf0;
-  --text-2: #9aa3b2;
-  --text-3: #6c7482;
-  --border: #2a2f3a;
-  --primary: #6b90ff;
-  --primary-strong: #5278e8;
+  /* 石墨 / 苔绿等风格由 theme-core.js 注入三元组；这里只兜底「没有 data-style」的场合
+     （桌面浮窗的笔记投影会加载本文件，但它有自己的配色，这两套值只影响兜底观感） */
+  --bg-rgb: 21 24 31;
+  --panel-rgb: 29 33 42;
+  --sidebar-rgb: 24 27 34;
+  --hover-rgb: 38 43 54;
+  --active-rgb: 44 52 68;
+  --text-rgb: 231 234 240;
+  --text2-rgb: 154 163 178;
+  --text3-rgb: 108 116 130;
+  --border-rgb: 42 47 58;
+  --primary-rgb: 107 144 255;
+  --primary-strong-rgb: 82 120 232;
   --danger: #f2555a;
   --green: #35c78f;
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
@@ -45,13 +86,37 @@ html, body { height: 100%; }
 
 body {
   font-family: -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  /* L0：主题底色，永不透明 —— 背景图丢失 / 透明度 0 时的兜底 */
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
   overflow: hidden;
 }
 
-.app { display: flex; height: 100vh; }
+/* ---------------- 背景层（L1 图片 + L2 scrim） ---------------- */
+/* 图片层恒定满不透明；滑块调的是「它透过面板的比例」，不是这一层的 opacity。
+   给图片层加 opacity 会被主题底色洗成灰雾，看起来什么都没变（设计方案 4.1 的坑）。 */
+#app-backdrop {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+  background: rgb(var(--bg-rgb));
+}
+#app-backdrop .bd-image {
+  position: absolute; inset: -2px;
+  background-image: var(--bd-image);
+  background-size: var(--bd-fit);
+  background-position: center center;
+  background-repeat: var(--bd-repeat);
+  filter: blur(var(--bd-blur));
+  transform: scale(var(--bd-scale));
+  transform-origin: center;
+}
+#app-backdrop .bd-scrim {
+  position: absolute; inset: 0;
+  /* scrim 取当前模式底色：浅色配暗图要提亮，深色配亮图要压暗 */
+  background: rgb(var(--bg-rgb) / var(--bd-scrim));
+}
+
+.app { display: flex; height: 100vh; position: relative; z-index: 1; }
 
 /* ---------------- 侧边栏 ---------------- */
 /* 宽度可被拖拽调整：JS 会同时写 inline width 与 --sidebar-width */
@@ -199,7 +264,17 @@ body {
 .chip.chip-tag .chip-x { font-weight: 700; }
 
 /* ---------------- 主区域 ---------------- */
-.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* 内容区地面：比卡片低一档不透明度，壁纸主要从这里透出来。
+   没设背景图时 surface-alpha = 1，这里的 0.45 叠在 body 同色底上等于看不出差别。 */
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg-ground); }
+
+/* 毛玻璃：只挂在几个「大面积、数量固定」的容器上。
+   不要给每一行任务都加 backdrop-filter —— 上百个模糊层会直接掉帧（设计方案·风险表）。 */
+[data-glass="1"] .sidebar,
+[data-glass="1"] .modal,
+[data-glass="1"] .detail-drawer {
+  backdrop-filter: blur(12px) saturate(1.15);
+}
 
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -852,6 +927,17 @@ li.focus-wrapup {
   color: var(--text); padding: 6px 8px; box-shadow: none; min-height: 36px; align-items: center;
 }
 .ts-wrapper.focus .ts-control { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.16); }
+/* 组件自带样式里有三条把我们上面这条 `background` 顶掉的高特异性规则：
+     .ts-control,.ts-wrapper.single.input-active .ts-control{background:#fff}
+     .full .ts-control{background-color:#fff}
+     .disabled .ts-control{background-color:#fafafa}
+   深色主题下「单选」一打开下拉（wrapper 加 input-active）控件就闪成纯白块，
+   浅色文字直接看不见（截图复现：白底 + #e7eaf0 文字）；多选一旦带上 full 同样变白。
+   按同等或更高的特异性补回来，别用 !important —— 组件升级后会静默失效。 */
+.ts-wrapper .ts-control,
+.ts-wrapper.single.input-active .ts-control,
+.ts-wrapper.full .ts-control { background: var(--bg-panel); color: var(--text); }
+.ts-wrapper.disabled .ts-control { background: var(--bg-hover); }
 .ts-control input::placeholder { color: var(--text-3); }
 .ts-wrapper.multi .ts-control > div {
   background: var(--bg-hover); color: var(--text); border-radius: 6px;
@@ -3392,4 +3478,21 @@ body.nt-fs-open { overflow: hidden; }
   font-size: 15px;
   font-weight: 600;
   color: var(--text);
+}
+
+/* ============================================================
+   外观 · 浮层保持近实心
+   ------------------------------------------------------------
+   --bg-panel 从「纯色」变成「带 --surface-alpha 的半透明」之后，卡片半透是想要的效果，
+   但弹窗 / 下拉 / 日历浮层压在半透明底上会发脏、也看不清焦点落到哪个控件。
+   统一把「浮起来的层」提到 --bg-elevated：background 越透它越实，最多到 0.97。
+   ============================================================ */
+.modal,
+.detail-drawer,
+.ts-dropdown,
+.flatpickr-calendar,
+.ctx-menu,
+.time-filter,
+.img-zoom-mask > .img-zoom-inner {
+  background-color: var(--bg-elevated);
 }

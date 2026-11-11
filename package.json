@@ -1,9 +1,11 @@
 {
   "name": "todo-desktop",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
-  "author": "WorkBuddy",
+  "author": {
+    "name": "KevinOK"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -26,9 +28,11 @@
     "verify:note": "node scripts/verify-note-desktop.js",
     "verify:dock": "node scripts/verify-dock.js",
     "dist": "node scripts/gen-icon.js && node scripts/build-tools.js && node scripts/build-win.js",
-    "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --target portable",
-    "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis",
-    "release": "node scripts/release-gitee.js"
+    "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --dir",
+    "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis --no-portable",
+    "release": "node scripts/release-gitee.js",
+    "verify:appearance": "node scripts/verify-appearance.js",
+    "smoke:theme-image": "node scripts/smoke-theme-image.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
@@ -58,7 +62,7 @@
   "build": {
     "appId": "com.workbuddy.todo-desktop",
     "productName": "Knodo",
-    "copyright": "Copyright © 2026 WorkBuddy",
+    "copyright": "Copyright © 2026 KevinOK",
     "directories": {
       "output": "dist",
       "buildResources": "assets"
@@ -87,8 +91,7 @@
     "win": {
       "icon": "assets/icon.ico",
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ],
       "signtoolOptions": {
         "signingHashAlgorithms": [

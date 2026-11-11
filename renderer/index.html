@@ -7,10 +7,15 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: todo-media:; script-src 'self';" />
   <title>Knodo</title>
+  <!-- 外观：必须在样式之前同步把 data-theme / data-style / token 三元组写进 :root，
+       否则深色 / 石墨用户每次启动都会先闪一帧雾灰浅色（module 脚本是 defer 的，来不及）。 -->
+  <script src="js/theme-core.js"></script>
   <!-- 第三方依赖：flatpickr（日期范围选择）、tom-select（分组多选）。先加载厂商样式，再用本项目样式覆盖主题 -->
   <link rel="stylesheet" href="vendor/flatpickr/flatpickr.min.css" />
   <link rel="stylesheet" href="vendor/tom-select/tom-select.min.css" />
   <link rel="stylesheet" href="css/styles.css" />
+  <!-- 外观设置（风格卡 / 背景图 / 透明度）专用样式，只挂在设置中心「外观」分区与背景层上 -->
+  <link rel="stylesheet" href="css/appearance.css" />
   <!-- 所见即所得两态样式：加载在 styles.css 之后，覆盖旧的「预览 / 分栏 / 源码」三态规则 -->
   <link rel="stylesheet" href="css/wysiwyg.css" />
   <link rel="stylesheet" href="css/calendar.css" />
@@ -18,6 +23,13 @@
   <link rel="stylesheet" href="css/recurrence.css" />
 </head>
 <body>
+  <!-- 背景层：L1 图片 + L2 scrim（内容全在 .app 里，z-index 压在它上面）。
+       恒定满不透明；滑块调的是「它透过面板的比例」= --surface-alpha。 -->
+  <div id="app-backdrop" aria-hidden="true" hidden>
+    <div class="bd-image"></div>
+    <div class="bd-scrim"></div>
+  </div>
+
   <div class="app">
     <!-- 侧边栏 -->
     <aside class="sidebar">
@@ -139,6 +151,13 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
+
+  <!-- 背景图文件丢失的提示条：不阻塞启动，也不弹模态，点「重新选择」直接落到外观分区 -->
+  <div class="bd-lost" id="bd-lost" hidden>
+    <span class="bd-lost-text">⚠ 背景图文件已丢失，已回退主题底色</span>
+    <button type="button" class="bd-lost-btn" id="bd-lost-fix">重新选择</button>
+    <button type="button" class="bd-lost-x" id="bd-lost-close" aria-label="关闭提示">×</button>
+  </div>
 
   <!-- 任务详情抽屉 -->
   <div class="detail-drawer" id="detail-drawer" hidden></div>

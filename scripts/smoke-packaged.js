@@ -36,9 +36,15 @@ console.log(`[smoke:packaged] 运行 ${path.relative(root, exePath)} --smoke-tes
 
 /* 必须剔掉 ELECTRON_RUN_AS_NODE：某些宿主（CI、编辑器内置终端）会把它设为 1，
    那样 Electron 以纯 Node 模式启动，把 --smoke-test 当成非法 node 选项直接
-   报 `bad option`，产物压根没进主进程 —— 冒烟会得出假结论。 */
+   报 `bad option`，产物压根没进主进程 —— 冒烟会得出假结论。
+
+   NODE_OPTIONS 同理必须剔掉：宿主注入的 `--require .../shim/xxx.cjs` 在打包版
+   里不可用，Electron 会报 `Most NODE_OPTIONs are not supported in packaged apps`
+   并卡在启动阶段（v2.4.0 首次重出包时就这样超时 240s 假失败，手动清掉后同一份
+   产物立刻打印 SMOKE_OK）。 */
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
+delete env.NODE_OPTIONS;
 
 const child = spawn(exePath, ['--smoke-test'], {
   cwd: path.dirname(exePath),

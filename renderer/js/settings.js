@@ -19,14 +19,19 @@ import { openPanelModal } from './modal.js';
 import { keysPaneHtml, mountKeysPane, disposeKeysPane } from './settings-keys.js';
 import { openSponsorQr } from './sponsor.js';
 import { normalizeConfig } from './encourager-core.js';
+import {
+  getTheme, setTheme, pickBackdrop, clearBackdrop, resetTheme, previewOpacity,
+} from './theme.js';
+
+/** 外观的配色表与算法（theme-core.js 暴露在 window 上，是经典脚本） */
+const KT = window.KnodoTheme;
 
 let toast = (msg) => console.warn('[settings]', msg);
-/** 需要壳层配合的外部动作（主题切换要同步 ui.js 里的 state.theme，否则顶栏按钮会打架） */
-const ext = { onTheme: null, onCalendarPrefs: null };
+/** 需要壳层配合的外部动作（日历偏好改动要重绘日历视图） */
+const ext = { onCalendarPrefs: null };
 
-export function setSettingsHandlers({ toast: t, onTheme, onCalendarPrefs } = {}) {
+export function setSettingsHandlers({ toast: t, onCalendarPrefs } = {}) {
   if (typeof t === 'function') toast = t;
-  if (typeof onTheme === 'function') ext.onTheme = onTheme;
   if (typeof onCalendarPrefs === 'function') ext.onCalendarPrefs = onCalendarPrefs;
 }
 
@@ -34,7 +39,10 @@ export function setSettingsHandlers({ toast: t, onTheme, onCalendarPrefs } = {})
 
 /** 打开面板时一次性读齐，分区渲染只读内存（不再各自发 IPC，避免一开面板十几个请求） */
 const S = {
-  theme: 'system',
+  /** 外观：整份主题对象 { mode, style, backdrop }（主进程是唯一权威，这里只是本次面板的快照） */
+  theme: null,
+  /** 刚选完图时的文件信息（名称 / 压缩前后体积），只在本次面板里显示 */
+  bgInfo: null,
   autoStart: { enabled: false, supported: true, reason: '' },
   version: '',
   storage: null,
@@ -55,6 +63,7 @@ const svg = (d) => `<svg class="st-ico" viewBox="0 0 16 16" width="16" height="1
   stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 
 const ICON = {
+  appearance: svg('<circle cx="8" cy="8" r="5.6"/><path d="M8 2.4v2M8 11.6v2M2.4 8h2M11.6 8h2"/><circle cx="8" cy="8" r="1.9" fill="currentColor" stroke="none"/>'),
   general: svg('<path d="M2.6 4.6h10.8M2.6 8h10.8M2.6 11.4h10.8"/><circle cx="6" cy="4.6" r="1.5"/><circle cx="10.2" cy="8" r="1.5"/><circle cx="5.2" cy="11.4" r="1.5"/>'),
   keys: svg('<rect x="1.8" y="4.2" width="12.4" height="7.6" rx="1.6"/><path d="M4.2 6.6h.01M6.4 6.6h.01M8.6 6.6h.01M10.8 6.6h.01M4.6 9.2h6.8"/>'),
   ai: svg('<path d="M8 2.2 9.3 5.7 12.8 7 9.3 8.3 8 11.8 6.7 8.3 3.2 7 6.7 5.7z"/><path d="M12.2 10.8l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z"/>'),
@@ -120,23 +129,344 @@ const ctlButton = (act, label, kind = '') =>
 const ctlInfo = (text, { mono = true } = {}) =>
   `<span class="st-info${mono ? ' is-mono' : ''}" title="${esc(text)}">${esc(text)}</span>`;
 
+/* ------------------------------ 分区：外观 ------------------------------ */
+
+/**
+ * 外观 = 模式 × 风格 × 背景三层，三件事分开管（设计方案 · 三维模型）。
+ *
+ * 交互铁律：点卡即生效、没有「保存」按钮。每次改动都先落库再重绘，
+ * 失败就把界面退回主进程那份真值 —— 不做「本地草稿 + 确认」，否则关掉设置面板
+ * 会出现「面板里是樱粉、主界面还是雾灰」。
+ *
+ * 搜索：每个 section 自己带 data-search（applyFilter 认这个属性），
+ * 这样外壳的搜索框不用为外观分区做任何特殊处理。
+ */
+
+// 注意：这个公共前缀会被拼进每一节，别往里放「背景 / 透明度」这种专属于某一节的关键词，
+// 否则搜「透明度」三节都会亮（外壳的过滤是按 data-search 字面包含做的）
+const APPEARANCE_SEARCH = '外观 主题 配色 皮肤 自定义 appearance';
+
+function styleCardsHtml(mode) {
+  const cur = KT.normalize(S.theme).style;
+  return KT.ORDER.map((id) => {
+    const s = KT.STYLES[id];
+    const t = s[mode] || s.light;
+    const vars = `--c-bg:${t.bg};--c-panel:${t['bg-panel']};--c-side:${t['bg-sidebar']};--c-text:${t.text};--c-border:${t.border};--c-primary:${t.primary}`;
+    return `<button type="button" class="ap-card${id === cur ? ' is-on' : ''}" data-style="${id}"
+      role="radio" aria-checked="${id === cur}" title="${esc(s.name)}（${esc(s.en)}）">
+      <span class="ap-thumb" style="${vars}">
+        <span class="ap-thumb-side"><i class="is-on"></i><i></i><i></i><i></i></span>
+        <span class="ap-thumb-main">
+          <span class="ap-thumb-row"><b></b><i></i></span>
+          <span class="ap-thumb-row"><b></b><i></i></span>
+          <span class="ap-thumb-cta"></span>
+        </span>
+      </span>
+      <span class="ap-card-name">${esc(s.name)}<span class="ap-card-en">${esc(s.en)}</span></span>
+      <span class="ap-card-check" aria-hidden="true">✓</span>
+    </button>`;
+  }).join('');
+}
+
+function bgThumbHtml(r) {
+  if (!r.url) {
+    return '<div class="ap-bg-empty"><span class="ap-bg-plus">＋</span><span>未设置背景图</span></div>';
+  }
+  return `<div class="ap-bg-pic" style="background-image:url(&quot;${esc(r.url)}&quot;)"></div>`;
+}
+
+function appearanceHtml() {
+  const t = KT.normalize(S.theme);
+  const r = KT.resolve(t);
+  const bd = t.backdrop;
+  const locked = r.style === 'contrast';
+  return `
+  <div class="ap-top">
+    <div class="ap-top-text">配色只换色相与质感，圆角、间距、字号不动；背景与面板透明度互不影响文字</div>
+    <button type="button" class="ap-reset" data-act="reset">恢复默认</button>
+  </div>
+
+  <section class="st-sec" data-search="${APPEARANCE_SEARCH} 明暗 模式 深色 浅色 暗色 跟随系统 mode 夜间 白天">
+    <div class="st-sec-title">明暗模式<span class="ap-hint">与系统同步，窗口标题栏一起变</span></div>
+    <div class="st-card ap-card-body">
+      <div class="ap-seg" data-seg="mode" role="radiogroup" aria-label="明暗模式">
+        ${[['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']].map(([v, label]) =>
+    `<button type="button" data-mode="${v}" role="radio" aria-checked="${t.mode === v}"
+            class="${t.mode === v ? 'is-on' : ''}">${label}</button>`).join('')}
+      </div>
+    </div>
+  </section>
+
+  <section class="st-sec" data-search="${APPEARANCE_SEARCH} 风格 雾灰 石墨 苔绿 宣纸 樱粉 高对比 style 夜间盯屏 护眼 笔记">
+    <div class="st-sec-title">风格<span class="ap-hint">六套气质，随时可换</span></div>
+    <div class="st-card ap-card-body">
+      <div class="ap-styles" data-grid="styles" data-mode="${r.mode}" role="radiogroup" aria-label="风格">${styleCardsHtml(r.mode)}</div>
+    </div>
+  </section>
+
+  <section class="st-sec" data-search="${APPEARANCE_SEARCH} 背景图 壁纸 上传 更换 移除 透明度 填充 模糊 毛玻璃 backdrop image">
+    <div class="st-sec-title">背景图<span class="ap-hint">JPG / PNG / WebP，自动压缩至长边 2560</span></div>
+    <div class="st-card ap-card-body">
+
+    <div class="ap-bg">
+      <div class="ap-bg-thumb" data-role="thumb">${bgThumbHtml(r)}</div>
+      <div class="ap-bg-actions">
+        <button type="button" class="st-btn is-accent" data-act="pick">${bd.image ? '更换图片' : '选择图片'}</button>
+        <button type="button" class="st-btn" data-act="clear"${bd.image ? '' : ' disabled'}>移除</button>
+        <div class="ap-bg-note" data-role="bgnote">${bgNoteText(r)}</div>
+      </div>
+    </div>
+
+    <div class="ap-slider-row${locked ? ' is-locked' : ''}">
+      <span class="ap-slider-lab">背景透明度</span>
+      <input type="range" id="ap-opacity" min="0" max="100" step="5" value="${r.opacity}"
+             aria-label="背景透明度"${locked || !r.hasImage ? ' disabled' : ''}>
+      <span class="ap-slider-val" data-role="opval">${r.opacity}%</span>
+    </div>
+    <div class="ap-scale"><span>0 隐藏</span><span>60 默认</span><span>100 完全呈现</span></div>
+    <div class="ap-note" data-role="alphanote">${alphaNote(r)}</div>
+    <div class="ap-guard" data-role="guard"${r.guardPct > 0 ? '' : ' hidden'}>
+      <span>ⓘ</span>
+      <span>当前组合下正文对比度接近下限，已自动把面板加深 <b>${r.guardPct}%</b>；调低透明度即可恢复。</span>
+    </div>
+
+    <div class="ap-adv-row">
+      <span class="ap-adv-lab">填充方式</span>
+      <div class="ap-seg ap-seg-sm" data-seg="fit">
+        ${[['cover', '铺满'], ['contain', '完整'], ['repeat', '平铺']].map(([v, label]) =>
+    `<button type="button" data-fit="${v}" class="${bd.fit === v ? 'is-on' : ''}">${label}</button>`).join('')}
+      </div>
+      <span class="ap-adv-hint">铺满会裁掉边缘，完整保留整张图</span>
+    </div>
+
+    <div class="ap-adv">
+      <div class="ap-adv-title">高级</div>
+      <div class="ap-adv-row">
+        <span class="ap-adv-lab">图片模糊</span>
+        <div class="ap-seg ap-seg-sm" data-seg="blur">
+          ${[0, 8, 16].map((v) =>
+    `<button type="button" data-blur="${v}" class="${Number(bd.blur) === v ? 'is-on' : ''}">${v === 0 ? '关' : v + 'px'}</button>`).join('')}
+        </div>
+        <span class="ap-adv-hint">模糊只作用在背景层，大图建议 8px</span>
+      </div>
+      <div class="ap-adv-row">
+        <span class="ap-adv-lab">面板毛玻璃</span>
+        ${ctlSwitch('ap-glass', bd.glass !== false && r.style !== 'contrast', r.style === 'contrast')}
+        <span class="ap-adv-hint">${r.style === 'contrast' ? '高对比风格强制关闭' : '关闭后滚动更省 GPU'}</span>
+      </div>
+      <div class="ap-adv-row">
+        <span class="ap-adv-lab">面板浓度</span>
+        <span class="ap-adv-hint">跟随风格自动补偿（单滑块模式，不单独暴露）</span>
+      </div>
+    </div>
+    </div>
+  </section>`;
+}
+
+function bgNoteText(r) {
+  if (!r.hasImage && !r.missing) return '未设置背景图：面板保持不透明';
+  if (r.missing) return '⚠ 原文件已丢失，请重新选择';
+  // 只显示文件尾段，太长会把这一行撑爆
+  const name = String(S.bgInfo && S.bgInfo.name ? S.bgInfo.name : r.url.split('/').pop() || '');
+  return `当前：${esc(name)}`;
+}
+
+function alphaNote(r) {
+  if (!r.hasImage) return '设置背景图后，面板不透明度会随透明度自动补偿，保证正文可读。';
+  return `面板不透明度自动补偿为 <b>${r.alpha.toFixed(2)}</b> —— 图片越明显，面板同步变实，保证正文可读。`;
+}
+
+/** 只刷新动态文案与选中态，不重建 DOM（拖滑块时重建会闪、还会丢焦点） */
+function refreshAppearance(pane) {
+  if (!pane) return;
+  const t = KT.normalize(S.theme);
+  const r = KT.resolve(t);
+  const bd = t.backdrop;
+
+  pane.querySelectorAll('[data-seg="mode"] button').forEach((b) => {
+    const on = b.dataset.mode === t.mode;
+    b.classList.toggle('is-on', on);
+    b.setAttribute('aria-checked', String(on));
+  });
+  const grid = pane.querySelector('[data-grid="styles"]');
+  if (grid) {
+    const mode = r.mode;
+    if (grid.dataset.mode !== mode) {
+      // 深浅色变了要换一套缩略图（浅版 / 深版），否则卡片和实际配色对不上
+      grid.dataset.mode = mode;
+      grid.innerHTML = styleCardsHtml(mode);
+    } else {
+      grid.querySelectorAll('.ap-card').forEach((c) => {
+        const on = c.dataset.style === t.style;
+        c.classList.toggle('is-on', on);
+        c.setAttribute('aria-checked', String(on));
+      });
+    }
+  }
+
+  const thumb = pane.querySelector('[data-role="thumb"]');
+  if (thumb) thumb.innerHTML = bgThumbHtml(r);
+  const note = pane.querySelector('[data-role="bgnote"]');
+  if (note) note.textContent = bgNoteText(r);
+  const pickBtn = pane.querySelector('[data-act="pick"]');
+  if (pickBtn) pickBtn.textContent = bd.image ? '更换图片' : '选择图片';
+  const clearBtn = pane.querySelector('[data-act="clear"]');
+  if (clearBtn) clearBtn.disabled = !bd.image;
+
+  const slider = pane.querySelector('#ap-opacity');
+  const locked = t.style === 'contrast';
+  if (slider) {
+    slider.value = String(r.opacity);
+    slider.disabled = locked || !r.hasImage;
+  }
+  const row = pane.querySelector('.ap-slider-row');
+  if (row) row.classList.toggle('is-locked', locked);
+  const opval = pane.querySelector('[data-role="opval"]');
+  if (opval) opval.textContent = `${r.opacity}%`;
+  const an = pane.querySelector('[data-role="alphanote"]');
+  if (an) an.innerHTML = alphaNote(r);
+  const guard = pane.querySelector('[data-role="guard"]');
+  if (guard) {
+    guard.hidden = !(r.guardPct > 0);
+    const b = guard.querySelector('b');
+    if (b) b.textContent = `${r.guardPct}%`;
+  }
+
+  pane.querySelectorAll('[data-seg="fit"] button').forEach((b) => {
+    b.classList.toggle('is-on', b.dataset.fit === bd.fit);
+  });
+  pane.querySelectorAll('[data-seg="blur"] button').forEach((b) => {
+    b.classList.toggle('is-on', Number(b.dataset.blur) === Number(bd.blur));
+  });
+  const glass = pane.querySelector('#ap-glass');
+  if (glass) {
+    glass.checked = bd.glass !== false && t.style !== 'contrast';
+    glass.disabled = t.style === 'contrast';
+  }
+}
+
+function mountAppearance(pane) {
+  // 每次操作都走同一条路：乐观应用 → 落库 → 用主进程返回值校准界面
+  const commit = async (patch) => {
+    try {
+      const next = await setTheme(patch);
+      S.theme = next;
+      refreshAppearance(pane);
+      return next;
+    } catch (e) {
+      S.theme = getTheme();
+      refreshAppearance(pane);
+      toast(`外观设置保存失败：${(e && e.message) || e}`);
+      return null;
+    }
+  };
+
+  pane.addEventListener('click', async (e) => {
+    const modeBtn = e.target.closest('[data-seg="mode"] button');
+    if (modeBtn) { await commit({ mode: modeBtn.dataset.mode }); return; }
+
+    const card = e.target.closest('.ap-card');
+    if (card) { await commit({ style: card.dataset.style }); return; }
+
+    const fitBtn = e.target.closest('[data-seg="fit"] button');
+    if (fitBtn) { await commit({ backdrop: { fit: fitBtn.dataset.fit } }); return; }
+
+    const blurBtn = e.target.closest('[data-seg="blur"] button');
+    if (blurBtn) { await commit({ backdrop: { blur: Number(blurBtn.dataset.blur) } }); return; }
+
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    const name = act.dataset.act;
+    if (name === 'reset') {
+      try {
+        S.theme = await resetTheme();
+        S.bgInfo = null;
+        refreshAppearance(pane);
+        toast('已恢复默认外观');
+      } catch (err) {
+        toast(`恢复默认失败：${(err && err.message) || err}`);
+      }
+      return;
+    }
+    if (name === 'pick') {
+      act.disabled = true;
+      try {
+        const r = await pickBackdrop();
+        if (r && r.ok) {
+          S.theme = getTheme();
+          S.bgInfo = r.info || null;
+          const kb = r.info ? `${r.info.outKB} KB` : '';
+          toast(r.info ? `背景图已更新（${kb}）` : '背景图已更新');
+        } else if (r && r.reason && r.reason !== 'cancel') {
+          toast(r.reason);
+        }
+      } catch (err) {
+        toast(`选择背景图失败：${(err && err.message) || err}`);
+      } finally {
+        act.disabled = false;
+        refreshAppearance(pane);
+      }
+      return;
+    }
+    if (name === 'clear') {
+      try {
+        S.theme = await clearBackdrop();
+        S.bgInfo = null;
+        refreshAppearance(pane);
+        toast('已移除背景图');
+      } catch (err) {
+        toast(`移除失败：${(err && err.message) || err}`);
+      }
+    }
+  });
+
+  // 键盘：方向键在风格卡之间移动并应用（3 列布局，← → 走一格、↑ ↓ 走一行），
+  // Enter / Space 由 button 原生触发 click，不用再管
+  pane.querySelector('[data-grid="styles"]')?.addEventListener('keydown', async (e) => {
+    const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+    if (!keys.includes(e.key)) return;
+    const cards = [...pane.querySelectorAll('.ap-card')];
+    if (!cards.length) return;
+    const cur = cards.findIndex((c) => c.classList.contains('is-on'));
+    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -3, ArrowDown: 3 }[e.key];
+    const next = Math.min(cards.length - 1, Math.max(0, (cur < 0 ? 0 : cur) + step));
+    e.preventDefault();
+    cards[next].focus();
+    if (cards[next].classList.contains('is-on')) return;
+    await commit({ style: cards[next].dataset.style });
+    // commit 会重绘卡片（深浅色变了才重绘，一般只是换 class），焦点要补回来
+    pane.querySelector(`.ap-card[data-style="${cards[next].dataset.style}"]`)?.focus();
+  });
+
+  // 滑块：拖动只改 CSS 变量（即时预览、不写库），松手才落库 —— 否则拖一下就写一次库
+  const slider = pane.querySelector('#ap-opacity');
+  slider?.addEventListener('input', () => {
+    const v = Number(slider.value);
+    const r = previewOpacity(v);
+    const opval = pane.querySelector('[data-role="opval"]');
+    if (opval) opval.textContent = `${v}%`;
+    const an = pane.querySelector('[data-role="alphanote"]');
+    if (an) an.innerHTML = alphaNote(r);
+    const guard = pane.querySelector('[data-role="guard"]');
+    if (guard) guard.hidden = !(r.guardPct > 0);
+  });
+  slider?.addEventListener('change', async () => {
+    await commit({ backdrop: { opacity: Number(slider.value) } });
+  });
+
+  pane.querySelector('#ap-glass')?.addEventListener('change', (e) => {
+    commit({ backdrop: { glass: e.target.checked } });
+  });
+}
+
 /* ------------------------------ 分区：通用 ------------------------------ */
 
 function generalHtml() {
   const auto = S.autoStart || {};
   const supported = auto.supported !== false;
+  // 「界面主题」不在这里了：模式 × 风格 × 背景统一收进置顶的「外观」分区。
+  // 两个入口写同一个 settings 键只会让用户以为改了一个还有另一个没改。
   return [
-    sectionHtml({
-      rows: [
-        rowHtml({
-          title: '界面主题',
-          desc: '「跟随系统」会随 Windows 深浅色自动切换，修改后立即生效；也可用 Ctrl + , 打开设置',
-          ctl: ctlSelect('st-theme', S.theme, [['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']]),
-          search: '深色 浅色 暗色 外观 配色 theme',
-          id: 'theme',
-        }),
-      ],
-    }),
     sectionHtml({
       title: '启动',
       rows: [
@@ -153,22 +483,6 @@ function generalHtml() {
 }
 
 function mountGeneral(pane) {
-  const themeSel = pane.querySelector('#st-theme');
-  themeSel?.addEventListener('change', async (e) => {
-    const mode = e.target.value;
-    try {
-      await api.theme.set(mode);
-      S.theme = mode;
-      // 必须回传给 ui.js：主界面配色读的是它自己的 state.theme，
-      // 只改这里会让「界面配色」和「设置里的选择」各说各话
-      if (ext.onTheme) ext.onTheme(mode);
-      toast('主题已切换');
-    } catch (err) {
-      e.target.value = S.theme;
-      toast(`切换主题失败：${(err && err.message) || err}`);
-    }
-  });
-
   const autoSw = pane.querySelector('#st-autostart');
   autoSw?.addEventListener('change', async (e) => {
     const want = e.target.checked;
@@ -712,6 +1026,8 @@ const GROUPS = [
  * build 在打开面板时同步执行（只读内存里的 S），mount 在 DOM 插入后调用。
  */
 const PANES = [
+  // 外观置顶：换主题是最常做、也最容易找不到的一件事（原来藏在「通用」里一个下拉框）
+  { id: 'appearance', group: 'base', label: '外观', icon: ICON.appearance, build: appearanceHtml, mount: mountAppearance },
   { id: 'general', group: 'base', label: '通用', icon: ICON.general, build: generalHtml, mount: mountGeneral },
   { id: 'keys', group: 'base', label: '快捷键', icon: ICON.keys, build: keysPaneHtml, mount: null },
   { id: 'ai', group: 'feature', label: 'AI 与语音', icon: ICON.ai, build: aiHtml, mount: mountAi },
@@ -786,6 +1102,10 @@ function applyFilter(root) {
       if (hit) visible++;
     });
     paneEl.querySelectorAll('.st-sec').forEach((sec) => {
+      // 有些分区的整节就是一条「设置项」（外观：明暗 / 风格 / 背景），
+      // data-search 挂在 .st-sec 自己身上 —— 这时它的显隐已由上一段决定，
+      // 这里再按「节内没有行」重算会把刚藏起来的节又放出来。
+      if (sec.hasAttribute('data-search')) return;
       const rows = sec.querySelectorAll('[data-search]');
       sec.hidden = !!needle && rows.length > 0 && [...rows].every((r) => r.hidden);
     });
@@ -814,8 +1134,8 @@ function applyFilter(root) {
 
 async function loadState() {
   const soft = async (p, fb) => { try { return await p; } catch (e) { return fb; } };
-  const [theme, autoStart, version, storage, backup, salary, ai, calendar, encourager] = await Promise.all([
-    soft(api.theme.get(), 'system'),
+  const [themeRaw, autoStart, version, storage, backup, salary, ai, calendar, encourager] = await Promise.all([
+    soft(api.theme.get(), null),
     soft(api.app.getAutoStart(), { enabled: false, supported: false, reason: '读取开机自启动状态失败' }),
     soft(api.app.getVersion(), ''),
     soft(api.env.getStorageInfo(), null),
@@ -825,7 +1145,11 @@ async function loadState() {
     soft(api.ui.getToolPref('calendar'), null),
     soft(api.ui.getToolPref('encourager'), null),
   ]);
-  Object.assign(S, { theme, autoStart, version, storage, backup, salary, ai, calendar, encourager });
+  Object.assign(S, {
+    // 老库 / 读取失败时回落出厂值，界面永远有东西可渲染
+    theme: KT.normalize(themeRaw),
+    autoStart, version, storage, backup, salary, ai, calendar, encourager,
+  });
 }
 
 /* ------------------------------ 入口 ------------------------------ */

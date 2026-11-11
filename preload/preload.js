@@ -214,9 +214,13 @@ contextBridge.exposeInMainWorld('api', {
     remove: (id) => call('search:remove', id),
   },
   // 主题 / 强调色 / 界面偏好
+  // 主题是一份对象 { mode, style, backdrop }：set 走局部合并（只传要改的字段）
   theme: {
     get: () => call('theme:get'),
-    set: (mode) => call('theme:set', mode),
+    set: (patch) => call('theme:set', patch),
+    pickImage: () => call('theme:pickImage'),
+    clearImage: () => call('theme:clearImage'),
+    reset: () => call('theme:reset'),
   },
   accent: {
     get: () => call('accent:get'),

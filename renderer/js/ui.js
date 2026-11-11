@@ -36,6 +36,8 @@ import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
 import { openContextMenu, closeContextMenu } from './ctx-menu.js';
 import { openSettings, setSettingsHandlers } from './settings.js';
+// 外观：整份主题对象（模式 × 风格 × 背景）由主进程下发，渲染层不再自持副本
+import { initTheme as initThemeState, getTheme, setThemeHook } from './theme.js';
 import { renderCalendar, setCalendarHandlers, openCalendar, backToList, disposeCalendar } from './calendar.js';
 import {
   repeatEditorHtml, bindRepeatEditor, readRepeatConfig, isRepeatOn,
@@ -277,9 +279,6 @@ function bindStaticEvents() {
   // 设置（Ctrl+, / 菜单 / 托盘三条入口都汇到这条事件）
   setSettingsHandlers({
     toast,
-    // 设置面板里改主题后要同步回主界面：界面配色读的是 state.theme，
-    // 两边各自持有一份状态的话，改完就会出现「设置说浅色、界面是深色」
-    onTheme: (mode) => { state.theme = mode; applyTheme(); },
     // 设置中心的日历项与日历视图内的「调整每日容量」写同一个 tool.calendar 键
     onCalendarPrefs: () => { if (state.view === 'calendar') render(); },
   });
@@ -287,9 +286,13 @@ function bindStaticEvents() {
     // 主进程可带分区 id（菜单「趣味功能 → 工位搭子设置…」直接落到 fun 分区）
     openSettings(paneId || '').catch((e) => toast(`打开设置失败：${(e && e.message) || e}`));
   });
-  // 顶部菜单栏「主题」：主进程写库 + 改 nativeTheme 后推一份当前值，
-  // 这里只管把 state.theme 与界面配色对齐（与设置面板的 onTheme 同一条路径）
-  api.on('ui:theme-changed', (mode) => { state.theme = mode; applyTheme(); });
+  // 背景图丢失提示条上的「重新选择」：直接落到外观分区
+  document.addEventListener('knodo:open-appearance', () => {
+    openSettings('appearance').catch((e) => toast(`打开设置失败：${(e && e.message) || e}`));
+  });
+  // 供冒烟 / 验证脚本驱动：设置中心没有可点击的顶栏按钮（只有菜单与 Ctrl+,），
+  // 自动化碰不到原生菜单，就留一个与 __appReady 同性质的小钩子。
+  window.__openSettings = openSettings;
   // 启动后的静默检查：有新版只轻提示，不弹窗打断；详情从 File 菜单 / 设置「关于」打开
   api.on('ui:update-available', (info) => {
     toast(`发现新版本 ${(info && info.tag) || ''}：菜单 File → 检查更新 可查看详情`);
@@ -3351,19 +3354,15 @@ async function openStatDrilldown(key, cardEl) {
 
 /* ---------------- 主题 ---------------- */
 
+/**
+ * 主题的全部脏活都在 js/theme.js（取值 / 跟系统深浅色 / 背景图丢失兜底）。
+ * 这里只做两件事：启动时拉一次、把「配色变了」转成 state 里那份对象，
+ * 方便其他模块（报告预览等）读当前风格。
+ */
 async function initTheme() {
-  state.theme = await api.theme.get();
-  applyTheme();
-}
-
-function applyTheme() {
-  let effective = state.theme;
-  if (effective === 'system') {
-    effective = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
-  document.documentElement.setAttribute('data-theme', effective);
-  // 通知渲染层（笔记预览里的 Mermaid 图要按新主题重画，否则配色停留在旧主题）
-  document.dispatchEvent(new CustomEvent('app:theme-changed'));
+  await initThemeState();
+  state.theme = getTheme();
+  setThemeHook((t) => { state.theme = t; });
 }
 
 /* ---------------- 工具 ---------------- */

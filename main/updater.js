@@ -4,7 +4,7 @@
  *
  * 为什么不用 electron-updater 自动升级：
  *  - 发版脚本只上传安装版 / 便携版 / 7z，没有生成 latest.yml 等更新元数据；
- *  - 便携版是单文件、安装版是 NSIS，两种形态的替换动作不同，不能共用一套自动安装；
+ *  - 便携版是压缩包、安装版是 NSIS，两种形态的替换动作不同，不能共用一套自动安装；
  *  - 引入自动更新要改发版流程并新增运行时依赖，会顶到「dependencies 只留两个」的体积铁律。
  * 这里只做「查 + 比对 + 给出下载入口」，下载与替换永远由用户决定。
  *
@@ -73,7 +73,10 @@ function normalizeRelease(raw) {
   const parsed = parseVersion(tag);
   if (!parsed || !/^[A-Za-z0-9._-]+$/.test(tag)) return null;
   const assets = Array.isArray(raw.assets) ? raw.assets : [];
-  const portable = assets.find((a) => a && /便携版.*\.exe$/i.test(String(a.name || ''))
+  // 便携版自 v2.4.1 起是 7z 压缩包（单文件自解压 exe 每次启动都要重解压 337MiB，
+  // 实测 15 秒才出窗口）；更早的 release 仍是 .exe，两种都认，
+  // 否则「检查更新」会拿不到下载地址、只能回落到 release 页。
+  const portable = assets.find((a) => a && /便携版.*\.(?:exe|7z)$/i.test(String(a.name || ''))
     && isGiteeUrl(a.browser_download_url));
   return {
     tag,

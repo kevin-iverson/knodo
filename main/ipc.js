@@ -2,7 +2,7 @@
 /**
  * IPC 处理器注册：将渲染进程的请求映射到数据库 / AI / 报告等模块。
  */
-const { ipcMain, dialog, shell, app, desktopCapturer, nativeTheme } = require('electron');
+const { ipcMain, dialog, shell, app, desktopCapturer, nativeTheme, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const db = require('./db');
@@ -26,6 +26,7 @@ const focus = require('./focus');
 const recurRules = require('./recurrence-rules');
 const holidays = require('./holidays-cn');
 const dateU = require('./date-utils');
+const theme = require('./theme');
 
 /**
  * 附件相对路径 → 笔记正文里可引用的 todo-media:// URL。
@@ -1187,15 +1188,32 @@ function registerIpc() {
   });
 
   /* ---------- 应用 / 主题 ---------- */
-  ipcMain.handle('theme:get', () => db.getSetting('theme', 'system'));
-  ipcMain.handle('theme:set', (_e, mode) => {
-    // 只存库不生效是这里以前的 bug：切换主题后窗口标题栏 / 原生菜单 / 滚动条
-    // 仍停在旧主题，直到下次启动才变 —— 表现为「主题样式异常」。
-    const m = ['system', 'light', 'dark'].includes(mode) ? mode : 'system';
-    db.setSetting('theme', m);
-    nativeTheme.themeSource = m;
-    return m;
-  });
+  // 主题是一份对象（mode × style × backdrop），不再是一个字符串。老值 'dark' 由
+  // theme.normalize() 包成新结构，写回统一新结构 —— 不需要 DB 迁移。
+  const broadcastTheme = (t) => {
+    BrowserWindow.getAllWindows().forEach((w) => {
+      if (!w.isDestroyed()) w.webContents.send('ui:theme-changed', t);
+    });
+  };
+  const applyThemeObject = (t) => {
+    // 只存库不生效是这里以前的 bug：切换后标题栏 / 原生菜单 / 滚动条仍停在旧主题
+    nativeTheme.themeSource = t.mode;
+    broadcastTheme(t);
+    return t;
+  };
+  ipcMain.handle('theme:get', withDb(() => theme.read(db)));
+  ipcMain.handle('theme:set', withDb((patch) => applyThemeObject(theme.write(db, patch))));
+  // 选图：需要知道从哪个窗口弹对话框，拿不到 event 的 withDb 包不住，这里自己 guard
+  ipcMain.handle('theme:pickImage', guard(async (event) => {
+    if (!db.isReady()) throw new Error('数据库未就绪');
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const r = theme.pickImage(db, dialog, win || undefined);
+    if (!r.ok) return r;
+    applyThemeObject(r.theme);
+    return r;
+  }));
+  ipcMain.handle('theme:clearImage', withDb(() => applyThemeObject(theme.clearImage(db))));
+  ipcMain.handle('theme:reset', withDb(() => applyThemeObject(theme.reset(db))));
   // 强调色（用于区分分组 / 标签的主色，仅影响新渲染的日历高亮等元素）
   ipcMain.handle('accent:get', () => db.getSetting('accent', ''));
   ipcMain.handle('accent:set', (_e, hex) => {

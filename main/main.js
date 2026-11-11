@@ -12,6 +12,7 @@ const path = require('path');
 const db = require('./db');
 const storage = require('./storage');
 const attachments = require('./attachments');
+const theme = require('./theme');
 const { registerIpc } = require('./ipc');
 const { setupTray, destroyTray, refreshTrayMenu } = require('./tray');
 const desktopWindow = require('./desktop-window');
@@ -37,11 +38,23 @@ if (isSmoke) {
   app.setPath('userData', smokeProfile);
 }
 
-// 绿色版（portable）：electron-builder 打包时会注入 PORTABLE_EXECUTABLE_DIR，
-// 这里把数据目录改到 exe 同级的 data 目录，整个文件夹拷走即可带走全部数据。
-// 安装版没有该环境变量，仍然按系统默认位置（%APPDATA%）存储。
+// 绿色版（便携）的两种形态，数据都必须落在 exe 同级 data/，整个文件夹拷走即可换机：
+//  1) 旧形态「单文件自解压 exe」：electron-builder 注入 PORTABLE_EXECUTABLE_DIR；
+//  2) 现行形态「7z 便携包」：没有该环境变量，靠 exe 同级的 portable.marker 认领
+//     （标记由 scripts/build-win.js 压包时写入并随包发布，安装版不带）。
+// 安装版两条都不命中，仍按系统默认位置（%APPDATA%）存储。
 if (process.env.PORTABLE_EXECUTABLE_DIR) {
   app.setPath('userData', path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'data'));
+} else if (!isSmoke) {
+  try {
+    const exeDir = path.dirname(app.getPath('exe'));
+    if (fs.existsSync(path.join(exeDir, 'portable.marker'))) {
+      app.setPath('userData', path.join(exeDir, 'data'));
+    }
+  } catch (e) {
+    // 读不到（权限 / 路径异常）就按安装版处理，不能因为认领失败让应用起不来
+    console.warn('[portable] 读取便携标记失败，按安装版处理：', e && e.message ? e.message : e);
+  }
 }
 
 // Windows 任务栏 / 通知的身份标识（AppUserModelID）与通知中心显示名。
@@ -71,6 +84,60 @@ if (!gotLock) {
   app.on('second-instance', () => showWindow());
 }
 
+/* ---- 启动画面 ------------------------------------------------------------
+ * 便携包解压只需一次，但解压后到首屏之间仍有 ~1.5s 的 Electron 冷启动。
+ * 这段时间主窗口必须等 ready-to-show 才能显示（否则会先闪一下白底），
+ * 所以用一个独立小窗占位：它先出现，主窗口就绪后随即撤掉。
+ * 开机自启（silentLaunch）与冒烟测试不需要视觉反馈，直接跳过。
+ *
+ * 为什么要 await：whenReady 里紧跟的 storage / db 初始化是同步的（首次还可能跑迁移），
+ * 主进程被占住时渲染进程画不出首帧。先等服务一次，splash 才真的「先显示出来」；
+ * 兜底 400ms —— splash 自己加载失败也绝不能把启动卡住。 */
+let splashWindow = null;
+
+function destroySplash() {
+  const win = splashWindow;
+  splashWindow = null;
+  if (!win || win.isDestroyed()) return;
+  try { win.close(); } catch { /* 已经关了 */ }
+}
+
+function createSplash() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; resolve(); } };
+    try {
+      splashWindow = new BrowserWindow({
+        width: 380,
+        height: 236,
+        frame: false,
+        resizable: false,
+        maximizable: false,
+        minimizable: false,
+        fullscreenable: false,
+        show: false,
+        skipTaskbar: true,
+        alwaysOnTop: true,
+        // 不抢焦点：启动瞬间抢焦点会打断用户正在输入的东西
+        focusable: false,
+        backgroundColor: nativeTheme.shouldUseDarkColors ? '#15181f' : '#f5f6f8',
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+      });
+      splashWindow.once('ready-to-show', () => {
+        if (splashWindow && !splashWindow.isDestroyed()) splashWindow.showInactive();
+        done();
+      });
+      splashWindow.loadFile(path.join(__dirname, '..', 'renderer', 'splash.html'));
+      setTimeout(done, 400);
+      // 兜底：主窗口迟迟不 ready（例如弹了数据库恢复对话框）时别让 splash 永远压在最上层
+      setTimeout(destroySplash, 20000);
+    } catch (e) {
+      splashWindow = null;
+      done();
+    }
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1080,
@@ -78,8 +145,9 @@ function createWindow() {
     minWidth: 860,
     minHeight: 560,
     show: false,
-    // 深色主题下别让窗口先闪一下白底（applyTheme() 已在创建窗口之前执行）
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#15181f' : '#f5f6f8',
+    // 深色 / 特色风格下别让窗口先闪一下白底（applyTheme() 已在创建窗口之前执行）。
+    // 底色跟着「风格 × 明暗」走：石墨 / 苔绿 / 宣纸的底色和雾灰并不相同
+    backgroundColor: themeBgColor(),
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
@@ -108,7 +176,13 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     // 开机自启动唤起时只驻留托盘，不弹主窗口（用户想用时点托盘图标即可）
-    if (!isSmoke && !silentLaunch) mainWindow.show();
+    if (!isSmoke && !silentLaunch) {
+      mainWindow.show();
+      // 让主窗口先画一帧再撤 splash，避免中间闪一下桌面
+      setTimeout(destroySplash, 140);
+    } else {
+      destroySplash();
+    }
   });
 
   // 关闭 → 最小化到托盘
@@ -388,8 +462,19 @@ function focusTask(taskId) {
 }
 
 function applyTheme() {
-  const mode = db.getSetting('theme', 'system');
-  nativeTheme.themeSource = mode; // 'system' | 'light' | 'dark'
+  // 主题现在是一份对象（mode × style × backdrop），落库兼容旧字符串值
+  const t = theme.read(db);
+  nativeTheme.themeSource = t.mode; // 'system' | 'light' | 'dark'
+}
+
+/** 窗口底色：风格 × 明暗共同决定，用于创建窗口时防白闪 */
+function themeBgColor() {
+  try {
+    if (!db.isReady()) return nativeTheme.shouldUseDarkColors ? '#15181f' : '#f5f6f8';
+    return theme.bgColor(theme.read(db), nativeTheme);
+  } catch (e) {
+    return nativeTheme.shouldUseDarkColors ? '#15181f' : '#f5f6f8';
+  }
 }
 
 /**
@@ -561,13 +646,15 @@ function buildAppMenu() {
  * 切换主题：唯一的用户入口是设置中心（ipc.js 的 theme:set 走同一套写库 + nativeTheme 逻辑），
  * 这里保留给托盘等主进程内调用方。
  * 三件事必须一起做：写库（下次启动仍生效）、改 nativeTheme（标题栏 / 原生菜单 / 桌面浮窗跟着变）、
- * 推给渲染层（主界面配色读的是它自己的 state.theme）。
+ * 推给渲染层（主界面配色读的是主进程下发的整份对象）。
  */
 function setThemeMode(mode) {
   const m = ['system', 'light', 'dark'].includes(mode) ? mode : 'system';
-  if (db.isReady()) db.setSetting('theme', m);
-  nativeTheme.themeSource = m;
-  if (mainWindow) mainWindow.webContents.send('ui:theme-changed', m);
+  const t = db.isReady() ? theme.write(db, { mode: m }) : { ...theme.DEFAULT_THEME, mode: m };
+  nativeTheme.themeSource = t.mode;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('ui:theme-changed', t);
+  }
   buildAppMenu();
 }
 
@@ -935,6 +1022,9 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
+  // 先让启动画面显示出来，再做后面的同步初始化（db 首次还会跑迁移，会阻塞主线程）
+  if (!isSmoke && !silentLaunch) await createSplash();
+
   protocol.registerFileProtocol('todo-media', (req, callback) => {
     try {
       const u = new URL(req.url);
@@ -953,6 +1043,8 @@ app.whenReady().then(async () => {
   const dataInfo = storage.resolve();
   db.init(dataInfo.dir);
   attachments.init(path.join(dataInfo.dir, storage.ATTACH_DIR));
+  // 背景图落盘在 attachments/theme/ 下，主题模块要在 applyTheme() 之前拿到附件根目录
+  theme.init({ attachments });
 
   // 主库打不开（被删 / 损坏 / 同步盘占位）：先尝试用最近一份自动快照救回来，
   // 救不了就别带着坏库继续跑——继续跑只会在界面上到处报"数据库未就绪"。

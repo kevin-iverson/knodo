@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- 只用本地图标与内联样式，不开任何外部请求 -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:;" />
+  <title>Knodo</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f5f6f8;
+      color: #1f2430;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      -webkit-user-select: none;
+      user-select: none;
+      /* 无边框窗口不允许拖动，避免被拖到屏幕外找不回来 */
+      -webkit-app-region: no-drag;
+    }
+    .wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      transform: translateY(-6px);
+    }
+    .logo {
+      width: 62px;
+      height: 62px;
+      margin-bottom: 16px;
+      animation: breathe 2.6s ease-in-out infinite;
+    }
+    .name {
+      font-size: 17px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+    }
+    .tag {
+      margin-top: 6px;
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      color: #8b93a5;
+    }
+    .bar {
+      position: relative;
+      width: 148px;
+      height: 3px;
+      margin-top: 22px;
+      border-radius: 2px;
+      background: rgba(31, 36, 48, 0.10);
+      overflow: hidden;
+    }
+    .bar i {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 42%;
+      height: 100%;
+      border-radius: 2px;
+      background: #c2452d;
+      animation: slide 1.25s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    }
+    .hint {
+      margin-top: 12px;
+      font-size: 11px;
+      color: #8b93a5;
+    }
+    @keyframes slide {
+      /* 起点不设成 -110%：那样每次循环开头滑块整块滑出视野，
+         截图/第一眼容易看成「一条灰线没在动」 */
+      0% { transform: translateX(-55%); }
+      100% { transform: translateX(250%); }
+    }
+    @keyframes breathe {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.86; transform: scale(0.97); }
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #15181f; color: #e7e9ee; }
+      .tag, .hint { color: #8b93a5; }
+      .bar { background: rgba(255, 255, 255, 0.12); }
+      .bar i { background: #e0553a; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .logo, .bar i { animation: none; }
+      .bar i { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <img class="logo" src="../assets/icon.png" alt="Knodo" />
+    <div class="name">Knodo</div>
+    <div class="tag">知识 · 待办</div>
+    <div class="bar"><i></i></div>
+    <div class="hint">正在准备你的清单…</div>
+  </div>
+</body>
+</html>

@@ -9,7 +9,17 @@
  *
  * 产物默认输出到 dist/：
  *   - Knodo-<version>-安装版.exe   （NSIS 安装程序，可选安装目录、建快捷方式）
- *   - Knodo-<version>-便携版.exe   （portable 单文件，双击即用，数据存自身目录同级）
+ *   - Knodo-<version>-便携版.7z    （解压一次即用，数据存 exe 同级 data/）
+ *
+ * 便携版为什么是 7z 而不是单文件 exe（2026-11 改）：
+ *   electron-builder 的 portable target 是「自解压 exe」——portable.nsi 里
+ *   `RMDir /r $INSTDIR` + `File /r` 无条件全量解压 337MiB / 118 个文件，退出再删；
+ *   且 NsisTarget 默认把目录名生成成随机 KSUID，连系统缓存都命中不了。
+ *   实测双击到窗口出现 15.6s / 14.8s，而同样内容解压后只要 1.3~1.7s。
+ *   改成压缩包后「解压一次 → 之后每次都是 1.5s」，代价是用户要先解压。
+ *   体积上 zip 做不到：deflate 压出 139.9MiB 顶穿 Gitee 100MiB 单附件上限，
+ *   只有 LZMA2 的 94.7MiB 达标，所以用 7z。
+ *   想临时回到单文件 exe：`npm run dist -- --win portable`。
  *
  * 语言包裁剪（2026-11 起）走 `scripts/after-pack.js`：
  * 解包完成后、出安装包之前把 55 个 locales 裁到 2 个，一次构建两个产物都受益
@@ -24,6 +34,15 @@ const { spawn } = require('child_process');
 const root = path.join(__dirname, '..');
 const cli = path.join(root, 'node_modules', 'electron-builder', 'cli.js');
 const pkg = require(path.join(root, 'package.json'));
+
+/** LZMA2 压缩器：复用 devDependencies 里的 7zip-bin，不要求构建机预装 7-Zip */
+const SEVEN_ZIP = path.join(root, 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe');
+/**
+ * 便携包解压后留在 exe 同级的标记文件。
+ * 打包时写入、压完立即删除 —— 安装版与 win-unpacked 都不会带它，
+ * 只有 7z 包里有；main.js 见到它才把 userData 指到 exe 同级 data/。
+ */
+const PORTABLE_MARKER = 'portable.marker';
 
 /* 临时配置：语言包裁剪交给 afterPack 钩子自己做。
    不能让 electron-builder 用 config.electronLanguages 去删 —— 它在解包后批量删除
@@ -80,12 +99,53 @@ const env = {
     'https://npmmirror.com/mirrors/electron-builder-binaries/',
 };
 
+/**
+ * 把 win-unpacked 压成 7z 便携包。
+ *
+ * 必须等 electron-builder 全部跑完再压：此时 win-unpacked 已经过 afterPack 的语言包裁剪
+ * （55 → 2 个 .pak），若在裁剪前就压，包会白白大 15MiB 并顶穿 100MiB 上限。
+ * 标记文件只在压缩期间存在，`finally` 里删掉，避免污染 win-unpacked（安装版从它取文件）。
+ */
+async function packPortable7z() {
+  const unpacked = path.join(root, 'dist', 'win-unpacked');
+  const exePath = path.join(unpacked, `${pkg.build.productName}.exe`);
+  if (!fs.existsSync(exePath)) throw new Error('未找到 dist/win-unpacked 里的可执行文件，无法打便携包');
+  if (!fs.existsSync(SEVEN_ZIP)) throw new Error(`未找到 7za：${SEVEN_ZIP}（npm i 的 devDependencies 缺失？）`);
+
+  const out = path.join(root, 'dist', `${pkg.build.productName}-${pkg.version}-便携版.7z`);
+  // 7za 的 `a` 对已存在的包是「追加/更新」，不是覆盖 —— 不先删会混进旧版本的文件
+  try { fs.unlinkSync(out); } catch { /* 本来就没有 */ }
+
+  const marker = path.join(unpacked, PORTABLE_MARKER);
+  fs.writeFileSync(marker, `${pkg.build.productName} ${pkg.version}\n`
+    + '本文件让程序把数据写在同级的 data/ 目录（便携版）。删除它会退化成安装版行为（数据写 %APPDATA%）。\n');
+
+  try {
+    console.log('\n[build] 压便携包（LZMA2 solid，约 2 分钟）…');
+    await new Promise((resolve, reject) => {
+      const p = spawn(SEVEN_ZIP, ['a', '-t7z', '-mx9', '-ms=on', out, '*'], {
+        cwd: unpacked,
+        stdio: 'inherit',
+      });
+      p.on('error', reject);
+      p.on('close', (c) => (c === 0 ? resolve() : reject(new Error(`7za 退出码 ${c}`))));
+    });
+  } finally {
+    try { fs.unlinkSync(marker); } catch { /* 已被清掉 */ }
+  }
+
+  const size = fs.statSync(out).size;
+  if (size > 100 * 1024 * 1024) {
+    throw new Error(`便携包 ${(size / 1048576).toFixed(1)} MiB 超过 Gitee 单附件 100MiB 上限`);
+  }
+}
+
 /** dist 下最终产物的大小报告（超过 100MiB 直接点名，免得发布时才炸） */
 function report() {
   const distDir = path.join(root, 'dist');
   const prefix = `${pkg.build.productName}-${pkg.version}-`;
   const files = fs.existsSync(distDir)
-    ? fs.readdirSync(distDir).filter((f) => f.startsWith(prefix) && f.endsWith('.exe'))
+    ? fs.readdirSync(distDir).filter((f) => f.startsWith(prefix) && /\.(exe|7z)$/i.test(f))
     : [];
   console.log('\n[build] 产物');
   for (const f of files) {
@@ -95,13 +155,31 @@ function report() {
   }
 }
 
-const args = [cli, '--win', '--x64', ...process.argv.slice(2), '--config', tmpConfig];
+/* `--no-portable` 只给 dist:installer 用：跳过 7z 打包，省 2 分钟。
+   它是本脚本自造的开关，不能透传给 electron-builder（那边会报未知参数）。 */
+const rawArgs = process.argv.slice(2);
+const skipPortable = rawArgs.includes('--no-portable');
+const cliArgs = rawArgs.filter((a) => a !== '--no-portable');
+
+const args = [cli, '--win', '--x64', ...cliArgs, '--config', tmpConfig];
 
 console.log('[build] electron-builder ' + args.slice(1).join(' '));
 const child = spawn(process.execPath, args, { cwd: root, env, stdio: 'inherit' });
-child.on('exit', (code) => {
+child.on('exit', async (code) => {
   try { fs.unlinkSync(tmpConfig); } catch { /* 已清理 */ }
   if (code !== 0) process.exit(code == null ? 1 : code);
+
+  if (skipPortable) {
+    console.log('\n[build] 已跳过便携包（--no-portable），本次只出安装版');
+  } else {
+    try {
+      await packPortable7z();
+    } catch (e) {
+      console.error(`\n[build] ✗ 便携包生成失败：${e && e.message ? e.message : e}`);
+      process.exit(1);
+    }
+  }
+
   report();
   /* 出包后必须再对 win-unpacked 跑一次**产物**冒烟。
      `npm run smoke` 是 electron .（源码目录），读仓库 package.json；
