@@ -806,7 +806,7 @@ async function openBackupDialog() {
       message: `最近自动备份：${latest}`,
       detail: [
         `备份目录：${info.dir || '（数据目录未知）'}`,
-        `日快照 ${info.count} 份，共 ${fmtSize(info.totalBytes)}；保留最近 ${info.dailyDays} 天每日 1 份 + 最近 ${info.weeklyCount} 周每周 1 份，总量上限 500MB。`,
+        `日快照 ${info.count} 份，共 ${fmtSize(info.totalBytes)}；只保留最近 ${info.keepMonths || 2} 个月，总量上限 500MB。`,
         '',
         `全量备份（含附件与录音）：${latestFull}，现有 ${full.count || 0} 份，共 ${fmtSize(full.totalBytes)}。`,
         `每 ${full.intervalDays || 15} 天自动一份，只保留最近 ${full.keepMonths || 2} 个月；下一份约在 ${nextDue}。`,
@@ -2041,9 +2041,21 @@ app.whenReady().then(async () => {
               out.hasChineseAction = /[\\u4e00-\\u9fa5]/.test(out.actionLabel);
               document.querySelector('[data-act="start-add"]').click();
               await wait(350);
-              const moreBtn = document.querySelector('[data-act="editor-more"]');
-              out.moreLabel = moreBtn ? moreBtn.textContent.trim() : '';
-              out.hasChineseMore = /[\\u4e00-\\u9fa5]/.test(out.moreLabel);
+              const edNew = document.querySelector('.task-editor[data-editor="new"]');
+              const details = edNew && edNew.querySelector('.editor-details');
+              out.detailsShown = !!details && !details.hidden;
+              // 「⚙ 更多」这个折叠开关已撤：默认就是展开态，按钮不该再存在
+              out.moreBtnGone = !document.querySelector('[data-act="editor-more"]');
+              const priSelEl = edNew && edNew.querySelector('.editor-priority');
+              const titleEl = edNew && edNew.querySelector('.editor-title');
+              const groupSelEl = edNew && edNew.querySelector('select.editor-group');
+              const FOLLOWING = 4; // Node.DOCUMENT_POSITION_FOLLOWING
+              out.priInRow = !!priSelEl && !!priSelEl.closest('.editor-row');
+              out.priAfterTitle = !!(priSelEl && titleEl
+                && (titleEl.compareDocumentPosition(priSelEl) & FOLLOWING));
+              out.priBeforeGroup = !!(priSelEl && groupSelEl
+                && (priSelEl.compareDocumentPosition(groupSelEl) & FOLLOWING));
+              out.priNotInDetails = !!(priSelEl && !priSelEl.closest('.editor-details'));
               document.querySelector('[data-act="editor-cancel"]').click();
               await wait(250);
 
@@ -2114,7 +2126,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 子任务日期弹层 = 挂在 body ${r4.popInLayer ? '是' : '否'}；未落进裁剪容器=${r4.popClipped ? '否' : '是'}；完整在视口内=${r4.popInViewport ? '是' : '否'}；日历格=${r4.popCells}；关闭后无残留=${r4.layerCleaned ? '是' : '否'}；矩形=${JSON.stringify(r4.popRect)}`);
           console.log(`[SMOKE] 拖拽排序（列表）= 顺序 ${JSON.stringify(r4.beforeOrder)} → ${JSON.stringify(r4.afterOrder)}；sortOrder=${JSON.stringify(r4.sortOrders)}；排序方式=${r4.sortMode}；位置互换=${r4.reordered ? '是' : '否'}；已落库=${r4.persistedOrder ? '是' : '否'}`);
           console.log(`[SMOKE] 拖拽排序（子任务）= ${JSON.stringify(r4.subAfterOrder)}；互换=${r4.subReordered ? '是' : '否'}`);
-          console.log(`[SMOKE] 工具栏中文 = 行操作「${r4.actionLabel}」${r4.hasChineseAction ? '✓' : '✗'}；更多「${r4.moreLabel}」${r4.hasChineseMore ? '✓' : '✗'}`);
+          console.log(`[SMOKE] 新建表单 = 行操作中文「${r4.actionLabel}」${r4.hasChineseAction ? '✓' : '✗'}；详情默认展开=${r4.detailsShown ? '是' : '否'}；「更多」已撤=${r4.moreBtnGone ? '是' : '否'}；优先级在主行=${r4.priInRow ? '是' : '否'}（标题右${r4.priAfterTitle ? '✓' : '✗'} / 分组左${r4.priBeforeGroup ? '✓' : '✗'}，不在详情区=${r4.priNotInDetails ? '✓' : '✗'}）`);
           console.log(`[SMOKE] 报告分组多选(Tom Select) = 第三方库=${r4.tsThirdParty ? '已加载' : '未加载'}；控件=${r4.tsWrapper ? '已渲染' : '缺失'}；面板${r4.tsOpened ? '展开' : '未展开'}（挂 body=${r4.tsOnBody ? '是' : '否'}，${r4.tsOptionCount} 项，缩进=${r4.tsIndented ? '有' : '无'}）；多选 chips=${r4.tsChips}（带 ×=${r4.tsHasRemove}）；Word/MD 按钮=${r4.exportDocxBtn && r4.exportMdBtn ? '齐全' : '缺失'}`);
           console.log(`[SMOKE] 分组级联（${r4.tsCascadePair || '无父子分组'}）= 选父后子置灰${r4.tsChildLocked ? '✓' : '✗'}；点置灰项无效${r4.tsChildClickIgnored ? '✓' : '✗'}；取消父后恢复${r4.tsChildRestored ? '✓' : '✗'}`);
 
@@ -2515,14 +2527,15 @@ app.whenReady().then(async () => {
               // 与「添加任务」编辑器里的同类控件逐项比对视觉
               const addBtn = document.querySelector('[data-act="start-add"]');
               if (addBtn) { addBtn.click(); await wait(400); }
-              const edTrig = document.querySelector('#view .date-range-trigger');
+              // 新建编辑器长在列表末尾（#view 内），用编辑器本身限定范围，别撞上列表里的行
+              const edTrig = document.querySelector('.task-editor[data-editor="new"] .date-range-trigger');
               if (edTrig && trig) {
                 const a = getComputedStyle(trig);
                 const b = getComputedStyle(edTrig);
                 out.tfStyleSame = a.borderRadius === b.borderRadius && a.fontSize === b.fontSize
                   && a.color === b.color && a.borderColor === b.borderColor && a.fontFamily === b.fontFamily;
               } else out.tfStyleSame = false;
-              const cancelAdd = document.querySelector('#view [data-act="cancel-add"]');
+              const cancelAdd = document.querySelector('.task-editor[data-editor="new"] [data-act="editor-cancel"]');
               if (cancelAdd) { cancelAdd.click(); await wait(300); }
 
               trig.click(); await wait(500);
@@ -3403,11 +3416,29 @@ app.whenReady().then(async () => {
               const aiClose = document.querySelector('.modal-mask .modal-search [data-modal="close"]');
               if (aiClose) { aiClose.click(); await wait(400); }
               out.aiBack = !document.querySelector('.modal-mask .modal-search');
+              // 标题栏「搭子」：与「日历」同组、开在「搭子」页签、不切视图，关掉后按钮熄灭
+              const buddy = document.getElementById('btn-buddy');
+              // 文案只算文字部分：图标是 <span class="nav-ico">，textContent 会把它一起带上
+              const buddyLabel = buddy
+                ? Array.from(buddy.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim()
+                : '';
+              out.buddyBtn = !!buddy && buddyLabel === '搭子';
+              if (buddy) { buddy.click(); await wait(1100); }
+              out.buddyOpen = !!document.querySelector('.modal-encourager');
+              const bTab = document.querySelector('.modal-encourager .enc-tab.is-active');
+              out.buddyTab = bTab ? bTab.textContent.trim() : '';
+              out.buddyLit = !!buddy && buddy.classList.contains('is-open');
+              out.buddyKeepsView = (document.getElementById('view-title') || {}).textContent === '今天';
+              const bClose = document.querySelector('.modal-encourager [data-modal="close"]');
+              if (bClose) { bClose.click(); await wait(500); }
+              out.buddyBack = !document.querySelector('.modal-encourager')
+                && !!buddy && !buddy.classList.contains('is-open');
             } catch (e) { out.err = String((e && e.message) || e); }
             return out;
           })()`);
           console.log(`[SMOKE] 日历视图 = 标题栏入口=${calOut.navExists ? '有' : '无'}；chip已移除=${calOut.chipGone ? '是' : '否'}；高亮=${calOut.navActive ? '是' : '否'}；标题「${calOut.title || '-'}」；骨架=${calOut.wrap ? '有' : '无'}；格子 ${calOut.cells} 个；负载条 ${calOut.loadBars} 条；待安排池=${calOut.pool ? '有' : '无'}；图例=${calOut.legend ? '有' : '无'}；月/周控件 ${calOut.segCount} 个；周视图 ${calOut.weekCols} 列；回列表=${calOut.backToList ? '成功' : '失败'}；描述「${calOut.desc || '-'}」${calOut.err ? '；异常=' + calOut.err : ''}`);
           console.log(`[SMOKE] 顶栏 AI 检索（弹窗）= 弹出=${calOut.aiPanel ? '成功' : '失败'}；单层=${calOut.aiSingle ? '是' : '否'}；视图不动=${calOut.aiKeepsView ? '是' : '否'}；再点不叠层=${calOut.aiNoStack ? '是' : '否'}；关闭移除=${calOut.aiBack ? '成功' : '失败'}`);
+          console.log(`[SMOKE] 标题栏「搭子」= 入口=${calOut.buddyBtn ? '有' : '无'}；弹出=${calOut.buddyOpen ? '成功' : '失败'}；页签「${calOut.buddyTab || '-'}」；按钮点亮=${calOut.buddyLit ? '是' : '否'}；视图不动=${calOut.buddyKeepsView ? '是' : '否'}；关闭复位=${calOut.buddyBack ? '成功' : '失败'}`);
 
           /* ---- 第 20 轮：笔记也能钉到桌面（kind: 'note' 投影）----
              只验主进程这一侧：钉出来的是 note 投影、重复钉不叠加、标题取的是笔记标题、
@@ -3471,7 +3502,8 @@ app.whenReady().then(async () => {
             && r4.popInLayer && r4.popInViewport && r4.popCells >= 28 && r4.layerCleaned && !r4.popClipped
             && r4.hasHandle && r4.reordered && r4.persistedOrder && r4.sortMode === 'manual'
             && r4.subHasHandle && r4.subReordered
-            && r4.hasChineseAction && r4.hasChineseMore
+            && r4.hasChineseAction && r4.detailsShown && r4.moreBtnGone
+            && r4.priInRow && r4.priAfterTitle && r4.priBeforeGroup && r4.priNotInDetails
             && r4.tsThirdParty && r4.tsWrapper && r4.tsControl && r4.tsOpened && r4.tsOnBody
             && r4.tsOptionCount >= 2 && r4.tsChips >= 2 && r4.tsHasRemove >= 1
             && r4.tsChildLocked && r4.tsChildClickIgnored && r4.tsChildRestored

@@ -390,6 +390,9 @@ contextBridge.exposeInMainWorld('api', {
       'desktop:undocked',
       // 普通浮窗被吸到某条边（拖到边缘自动吸附 / ⋯ 菜单）→ 变回吸边形态并收起，参数是 'top' | 'left' | 'right'
       'desktop:redocked',
+      // 吸边窗的指针进出（主进程按系统指针位置判定，参数 true/false）：
+      // 标题栏是 drag 区，DOM 收不到 mouseenter/mouseleave，悬停展开只能靠这条
+      'desktop:pointer',
       'ui:data-changed',
       // 重复事项：File 菜单打开管理面板 / 后台跨天生成后让列表跟上
       'ui:recurrence-manager', 'ui:recurrence-generated',

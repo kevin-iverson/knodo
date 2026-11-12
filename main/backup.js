@@ -24,9 +24,8 @@ const { writeZipFile, listEntries, readEntry } = require('./zip');
 
 /** 自动快照目录（相对数据目录） */
 const BACKUP_DIR = 'backups';
-/** 自动快照保留策略 */
-const KEEP_DAILY_DAYS = 7;
-const KEEP_WEEKLY_COUNT = 4;
+/** 自动快照保留策略：与全量备份同一口径，只留最近 2 个自然月 */
+const KEEP_MONTHS = 2;
 const MAX_TOTAL_BYTES = 500 * 1024 * 1024;
 /** 启动后首次备份延迟 / 之后间隔 */
 const FIRST_DELAY_MS = 5 * 60 * 1000;
@@ -306,43 +305,26 @@ function listAutoBackups() {
   return out;
 }
 
-/** ISO 周键（用于「每周留一份」） */
-function weekKey(ts) {
-  const d = new Date(ts);
-  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const day = t.getUTCDay() || 7;
-  t.setUTCDate(t.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
-  return `${t.getUTCFullYear()}-${String(week).padStart(2, '0')}`;
-}
-
 /**
- * 清理旧快照：最近 7 天每日留 1 份 + 更早的每周留最新 1 份（最多 4 周），再压总量上限。
+ * 清理旧快照：只保留最近 2 个自然月（与全量备份同一口径），更早的删掉，再压总量上限。
+ * 文件名按日期，同一天重复备份会覆盖同名文件，所以「2 个月」≈ 最多 60 份。
+ * 最新一份无条件保留：系统时钟被改回 / 时间戳异常时，别把唯一副本删掉。
  * @returns {{removed:string[], totalBytes:number, count:number}}
  */
 function pruneAutoBackups() {
   const files = listAutoBackups();
   if (!files.length) return { removed: [], totalBytes: 0, count: 0 };
-  const now = Date.now();
-  const keep = new Set();
-  const older = [];
-  for (const f of files) {
-    if ((now - f.time) / 86400000 <= KEEP_DAILY_DAYS) keep.add(f.path);
-    else older.push(f);
-  }
-  const weeks = new Map();
-  for (const f of older) { // files 已按时间倒序，第一次遇到的就是该周最新的一份
-    const k = weekKey(f.time);
-    if (!weeks.has(k)) weeks.set(k, f.path);
-  }
-  [...weeks.values()].slice(0, KEEP_WEEKLY_COUNT).forEach((p) => keep.add(p.path));
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - KEEP_MONTHS);
+  cutoff.setHours(0, 0, 0, 0);
+  const cutoffMs = cutoff.getTime();
 
   const removed = [];
-  for (const f of files) {
-    if (keep.has(f.path)) continue;
+  files.forEach((f, i) => {
+    if (i === 0) return; // 最新那份永远留着
+    if (f.time >= cutoffMs) return;
     try { fs.unlinkSync(f.path); removed.push(f.name); } catch (e) { /* 占用中 / 已删除，跳过 */ }
-  }
+  });
 
   // 总量上限：从最旧删，至少保留最近 2 份
   let left = listAutoBackups();
@@ -563,8 +545,7 @@ function getInfo() {
     count: list.length,
     totalBytes: list.reduce((s, f) => s + f.size, 0),
     latest: list[0] ? { path: list[0].path, name: list[0].name, time: list[0].time, size: list[0].size } : null,
-    dailyDays: KEEP_DAILY_DAYS,
-    weeklyCount: KEEP_WEEKLY_COUNT,
+    keepMonths: KEEP_MONTHS,
     full: {
       dir: fullBackupDir(),
       count: full.length,

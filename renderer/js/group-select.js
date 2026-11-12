@@ -10,6 +10,7 @@
  * 所以现有的 collectEditorPayload / 自动保存（监听原生 input / change）逻辑都不用改。
  */
 import { flattenGroupTree } from './group-tree.js';
+import { PRIORITY_TEXT, PRIORITY_COLOR } from './api.js';
 
 const DEFAULT_COLOR = '#c3cad6';
 const esc = (s) => String(s == null ? '' : s)
@@ -80,6 +81,67 @@ function destroyAllGroupSelects() {
   for (const ts of [...registry.keys()]) destroyGroupSelect(ts);
 }
 
+/** 优先级下拉的选项：与分组同一套外观（色点 + 名称），只是没有层级。
+    倒序排列（紧急 → 低）：打开下拉第一眼就是最该选的那几个，不用往下找。 */
+const PRIORITY_ORDER = [3, 2, 1, 0];
+const PRI_FALLBACK = '#8896ab';
+
+function priorityPickerOptionsHtml(selected) {
+  const sel = selected == null ? 1 : Number(selected);
+  return PRIORITY_ORDER.map((p) => {
+    const color = PRIORITY_COLOR[p] || PRI_FALLBACK;
+    const label = PRIORITY_TEXT[p] || '';
+    return `<option value="${p}" data-color="${color}"${p === sel ? ' selected' : ''}>${label}</option>`;
+  }).join('');
+}
+
+function renderPriOption(data, escapeHtml) {
+  return '<div class="ts-opt">'
+    + groupDot(data, escapeHtml)
+    + `<span class="ts-name">${escapeHtml(data.text)}</span>`
+    + '</div>';
+}
+
+function renderPriItem(data, escapeHtml) {
+  return `<span class="ts-item">${groupDot(data, escapeHtml)}${escapeHtml(data.text)}</span>`;
+}
+
+/**
+ * 创建优先级下拉（与分组下拉同一个组件、同一套 CSS）。
+ *
+ * 为什么不用原生 <select>：分组已经是 Tom Select（色块 + 圆角面板 + 自绘箭头），
+ * 优先级紧挨着它却是浏览器默认样式（系统箭头、直角），两个控件并排就像两个产品。
+ * 选项只有 4 个，所以不要搜索框（controlInput: null），点开就是 4 行色点。
+ *
+ * @param {HTMLSelectElement} el 原始 select（option 由 priorityPickerOptionsHtml 生成）
+ * @returns {TomSelect|null} 依赖缺失时返回 null，原生 select 仍可用
+ */
+function createPrioritySelect(el, options = {}) {
+  if (!el) return null;
+  if (typeof window.TomSelect !== 'function') return null;
+  for (const [ts, input] of [...registry]) {
+    if (input === el) destroyGroupSelect(ts);
+  }
+  const settings = {
+    plugins: [],
+    controlInput: null,          // 4 个选项不需要输入框
+    dropdownParent: 'body',      // 列表是滚动容器，挂在里面会被下边缘裁掉
+    dropdownClass: 'ts-dropdown pri-picker-dropdown',
+    allowEmptyOption: false,     // 「低」是 0，不是空值
+    create: false,
+    maxItems: 1,
+    closeAfterSelect: true,
+    hideSelected: false,         // 单选要一直能看到当前值（与分组一致）
+    maxOptions: 20,
+    render: { option: renderPriOption, item: renderPriItem },
+    ...options,
+  };
+  let ts;
+  try { ts = new window.TomSelect(el, settings); } catch (_e) { return null; }
+  registry.set(ts, el);
+  return ts;
+}
+
 /**
  * 创建分组下拉。
  * @param {HTMLSelectElement} el 原始 select（option 由 groupPickerOptionsHtml 生成）
@@ -135,7 +197,9 @@ function createGroupSelect(el, options = {}) {
 
 export {
   groupPickerOptionsHtml,
+  priorityPickerOptionsHtml,
   createGroupSelect,
+  createPrioritySelect,
   destroyGroupSelect,
   destroyGroupSelectsIn,
   destroyAllGroupSelects,

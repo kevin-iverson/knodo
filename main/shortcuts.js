@@ -25,8 +25,8 @@ const VERSION = 1;
 const ACTIONS = [
   { id: 'app.show', label: '显示 / 隐藏主窗口', hint: '按一次唤起，再按一次收起', def: 'Control+Alt+B' },
   { id: 'app.notes', label: '显示 / 隐藏笔记', hint: '按一次唤起并打开笔记，再按一次收起', def: 'Control+Shift+H' },
-  { id: 'app.quickAdd', label: '快速添加任务', hint: '做', def: 'Control+Alt+N' },
-  { id: 'app.capture', label: '快速捕捉', hint: '记', def: 'Control+Alt+C' },
+  { id: 'app.quickAdd', label: '快速添加任务', hint: '在当前清单里就地新建一条，不切视图', def: 'Control+Alt+N' },
+  { id: 'app.capture', label: '快速捕捉', hint: '屏幕顶部弹一条输入条，回车即存', def: 'Control+Alt+C' },
   // 桌面浮窗用 D（Desktop）而不是原来的 H：H 与「显示 / 隐藏笔记」的 Ctrl+Shift+H
   // 只差一个修饰键，实机上很容易按混、也会被输入法/键盘宏串到一起
   { id: 'app.toggleDesktop', label: '显示 / 隐藏桌面浮窗', hint: '演示 / 共享屏幕前一键收起', def: 'Control+Alt+D' },
@@ -36,7 +36,7 @@ const ACTIONS = [
     hint: '置顶 2 秒便于定位',
     def: `Control+Alt+${n}`,
   })),
-  { id: 'app.calendar', label: '日历视图', hint: '打开侧栏「日历」（再按一次回列表）', def: 'Control+Alt+M' },
+  { id: 'app.calendar', label: '日历视图', hint: '打开日历视图（再按一次回列表）', def: 'Control+Alt+M' },
   // 趣味功能：E（Encourager）打开主浮窗。
   // 菜单加速键另用 CmdOrCtrl+Shift+* 前缀，不与全局键重复注册。
   { id: 'util.encourager', label: '上班鼓励器', hint: '打开 / 聚焦主浮窗（薪资进账主界面）', def: 'Control+Alt+E' },

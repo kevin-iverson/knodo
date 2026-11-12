@@ -196,21 +196,44 @@ async function pageOf(pred, tries = 50) {
         availWidth: window.screen.availWidth,
         availTop: window.screen.availTop,
         availHeight: window.screen.availHeight,
+        headRegion: getComputedStyle(head).webkitAppRegion,
       };
     })()`);
     ok('渲染层切到侧吸竖条形态',
       shape && shape.side && shape.left && !shape.isDock && shape.collapsed, JSON.stringify(shape));
     ok('标题竖排（writing-mode: vertical-rl）', shape && shape.writingMode === 'vertical-rl', shape && shape.writingMode);
     ok('竖条里标题不被横向裁掉', shape && shape.headOverflowX <= 0, shape && `overflowX=${shape.headOverflowX}`);
+    // 收起态保留 drag（能拖着沿边挪位置）：drag 区收不到 DOM 鼠标事件，
+    // 所以悬停展开必须由主进程的指针探测驱动 —— 下面用真实鼠标验证这条链路
+    ok('收起竖条仍是拖动区', shape && shape.headRegion === 'drag', shape && shape.headRegion);
     ok('窗口贴住工作区左边', d0 && d0.content && Math.abs(d0.content.x - shape.availLeft) <= 1,
       JSON.stringify({ content: d0 && d0.content, availLeft: shape.availLeft }));
     ok('收起宽度是 30px 竖条', shape && shape.rootW <= 40, `rootW=${shape && shape.rootW} / innerW=${shape && shape.innerW} / content=${(d0.content || {}).width}`);
     ok('收起高度沿用内容高度', d0 && d0.content && d0.content.height >= 200 && d0.content.height <= 521,
       `h=${d0.content && d0.content.height} / proj.h=${d0.proj && d0.proj.h}`);
 
-    /* 2) 悬停展开 → 320 宽 */
-    await side.evaluate(`(() => { document.dispatchEvent(new MouseEvent('mouseenter')); return true; })()`);
+    /* 2) 悬停展开 → 320 宽（**真实鼠标**：合成 mouseenter 测不出「整条是 drag 区、
+          系统鼠标事件根本进不来」这类问题 —— 那正是「侧吸后箭头没了、悬停不展开」的根因） */
+    const dpr = (await side.evaluate('window.devicePixelRatio')) || 1;
+    const cc = d0.content;
+    const midX = Math.round((cc.x + cc.width / 2) * dpr);
+    const midY = Math.round((cc.y + cc.height / 2) * dpr);
+    await side.evaluate(`(() => {
+      window.__dvProbe = { ptr: 0 };
+      window.api.on('desktop:pointer', () => { window.__dvProbe.ptr += 1; });
+      return true;
+    })()`);
+    // 先移到窗口外侧再逐步进入：指针从外部进来才生成 mouseenter
+    SetCursorPos(midX + Math.round(400 * dpr), midY);
+    await sleep(350);
+    for (let i = 6; i >= 1; i -= 1) {
+      SetCursorPos(midX + Math.round(i * 8 * dpr), midY);
+      await sleep(45);
+    }
+    SetCursorPos(midX, midY);
     await sleep(1400);
+    const ptr = (await side.evaluate('window.__dvProbe && window.__dvProbe.ptr')) || 0;
+    ok('真实鼠标移入 → 主进程指针探测送达渲染层', ptr > 0, `pointer 消息 ${ptr} 条`);
     const d1 = await diag(pinned.id);
     const open = await side.evaluate(`(async () => {
       const root = document.getElementById('dw');
@@ -229,9 +252,9 @@ async function pageOf(pred, tries = 50) {
     ok('展开后仍贴住左边', d1 && d1.content && Math.abs(d1.content.x - shape.availLeft) <= 1, JSON.stringify(d1 && d1.content));
     ok('展开态标题栏不溢出', open && open.headOverflowX <= 0, `overflowX=${open && open.headOverflowX}`);
 
-    /* 3) 移开 → 收回 30px */
-    await side.evaluate(`(() => { document.dispatchEvent(new MouseEvent('mouseleave')); return true; })()`);
-    await sleep(1200);
+    /* 3) 移开 → 收回 30px（同样是真实鼠标） */
+    SetCursorPos(midX + Math.round(500 * dpr), midY + Math.round(20 * dpr));
+    await sleep(1400);
     const d2 = await diag(pinned.id);
     const closed = await side.evaluate(`(() => {
       const root = document.getElementById('dw');
@@ -301,6 +324,8 @@ async function pageOf(pred, tries = 50) {
         autoDocked = await diag(loose.id);
       }
     }
+    // 松手时指针还压在条上：探测的初始状态按「已在里面」算，所以转换完是收起的 ——
+    // 用户把指针移开再回来才会展开（否则「拖到边缘」会立刻弹成展开面板）
     ok('拖到屏幕左边缘后自动侧吸',
       autoDocked && autoDocked.proj.dock === 'left' && autoDocked.proj.collapsed === true,
       JSON.stringify({ before: dr, after: autoDocked && autoDocked.proj, content: autoDocked && autoDocked.content }));

@@ -582,6 +582,7 @@ function openWindow(p) {
   if (isDock) {
     win.setContentBounds({ x, y, width: w, height: h });
     if (sideDock) pinSideDockEdge(win, dock);
+    startPointerWatch(win, p.id);
   }
 
   win.loadFile(path.join(__dirname, '..', 'renderer', 'desktop.html'), { query: { id: p.id } });
@@ -625,6 +626,7 @@ function openWindow(p) {
   win.on('blur', () => keepOnDesktop(win));
   win.on('closed', () => {
     wins.delete(p.id);
+    stopPointerWatch(p.id);
     const t = persistTimers.get(p.id);
     if (t) { clearTimeout(t); persistTimers.delete(p.id); }
     notifyProjections();
@@ -655,6 +657,7 @@ function undock(id) {
   });
   const win = windowOf(id);
   if (win) {
+    stopPointerWatch(id);
     // 先恢复普通浮窗的最小宽度，再放大：反过来会被 30px 的下限卡一下
     applyMinSize(win, null);
     applyContentSize(win, DEF_W, 320);
@@ -771,6 +774,43 @@ function handleDockMoved(win, cur) {
  * 已销毁的句柄；而且原地转能保住滚动位置、没有重新加载的白闪。
  * 宽度 420 / 贴顶 30 这些 dock 规格在运行时补上（setContentBounds；宽度由 renderer 锁死）。
  */
+/* ---------------- dock 悬停探测 ----------------
+   dock 的标题栏是 drag 区（要能拖着换位置），而 drag 区**不派发 DOM 鼠标事件**：
+   30px 宽的竖条若指望 mouseenter，鼠标移上去连事件都收不到 —— 表现就是「悬停不展开」。
+   展开态的标题栏同样是 drag 区，鼠标停在那儿时 DOM 会误报 mouseleave，导致「展开就收回」。
+   所以进出判断交给主进程：按系统指针位置（DIP）比窗口矩形，变化时才通知渲染层。
+   只在 dock 窗口存活期间跑，100ms 一次 —— 比 P/Invoke 轮询便宜，也不依赖 DOM 事件。
+   ------------------------------------------ */
+const pointerTimers = new Map();
+
+function stopPointerWatch(id) {
+  const t = pointerTimers.get(id);
+  if (t) {
+    clearInterval(t);
+    pointerTimers.delete(id);
+  }
+}
+
+/**
+ * @param {boolean} [assumeInside=true] 起始就把「指针在里面」当成已知状态 ——
+ *   拖到边缘 / 菜单贴边时指针正压在窗口上，若从这里开始判定，转换完立刻会收到一次
+ *   「进入」而把刚收起的条展开。默认 true：等指针真的离开再回来才是「用户要展开」。
+ */
+function startPointerWatch(win, id, assumeInside = true) {
+  stopPointerWatch(id);
+  let inside = !!assumeInside;
+  const timer = setInterval(() => {
+    if (win.isDestroyed()) { stopPointerWatch(id); return; }
+    const p = screen.getCursorScreenPoint();
+    const b = win.getContentBounds();
+    const now = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+    if (now === inside) return;
+    inside = now;
+    if (!win.webContents.isDestroyed()) win.webContents.send('desktop:pointer', inside);
+  }, 100);
+  pointerTimers.set(id, timer);
+}
+
 /**
  * 侧吸窗贴边校正（按**实测**内容宽度重算，只做平移，不改尺寸）。
  * Windows 的透明无边框窗在 setContentBounds 之后，读回来的内容宽度可能比请求值多 1~2px；
@@ -861,6 +901,7 @@ function convertToDock(id, side, along) {
         x: geo.x, y: geo.y, width: geo.w, height: geo.h,
       });
       pinSideDockEdge(win, dock);
+      startPointerWatch(win, id);
       win.webContents.send('desktop:redocked', dock);
     } else {
       // 窗口还没建（例如启动阶段）：直接按 dock 规格开一个

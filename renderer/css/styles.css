@@ -183,15 +183,29 @@ body {
 /* 设置面板开着时齿轮保持点亮：遮罩让出了标题栏，一眼能看出「设置正在前台」 */
 .tb-set.is-open { background: var(--bg-active); color: var(--primary-strong); }
 
-/* 标题栏「日历」入口：坐在主区段左端，与分界线另一侧的齿轮对称（各留 8px）。
-   它仍带 .nav-item 类（复用点击切换与 active 同步），所以基础尺寸要在这里按标题栏的
-   高度重写：26px 高、横向自适应的软按钮。active / hover 用 (0,3,0) 压下 .nav-item 的默认样式。 */
-.titlebar > .tb-cal {
+/* 标题栏主区段左端的快捷入口组（日历 / 搭子）：与分界线另一侧的齿轮对称（各留 8px）。
+   组负责定位与间距，按钮自带尺寸 —— 以后再加入口只往组里塞，不用重算绝对偏移。
+   .tb-cal 仍带 .nav-item 类（复用点击切换与 active 同步），所以基础尺寸要在按钮上按标题栏
+   的高度重写：26px 高、横向自适应的软按钮。hover / active 用 (0,3,0) 压下 .nav-item 默认样式。 */
+.titlebar > .tb-nav {
   position: absolute;
   top: 50%;
   left: calc(var(--sidebar-width, 220px) + 8px);
   transform: translateY(-50%);
+  display: flex; align-items: center; gap: 2px;
+  /* 组不参与 flex 收缩、也不换行：万一某条规则被覆盖，整组塌成 40px 宽时
+     文字会竖着摞成一列（曾经真的见过这个形态），加这两条至少不会烂成那样 */
+  flex: none; white-space: nowrap;
+  /* 组整体不可拖：里面全是按钮，漏一个就点不动只会拖窗 */
+  -webkit-app-region: no-drag;
+}
+.titlebar > .tb-nav > .tb-cal,
+.titlebar > .tb-nav > .tb-buddy {
   width: auto; height: 26px;
+  /* 与 .tb-nav 同理：按钮永远单行、不收缩。.tb-cal 还带着 .nav-item 类（复用点击与
+     active 同步），侧栏那条 .nav-item 是 width:100% + 允许换行，标题栏一旦被它接管
+     就会竖排挤成一列 —— 这两条是防止该回归的最小保险 */
+  flex: none; white-space: nowrap;
   display: inline-flex; align-items: center; gap: 6px;
   padding: 0 10px 0 8px;
   border: 0; border-radius: 7px;
@@ -199,13 +213,18 @@ body {
   color: var(--text-2);
   font-size: 12.5px; font-weight: 500; line-height: 1;
   text-align: left;
-  cursor: pointer; -webkit-app-region: no-drag;
+  cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.titlebar > .tb-cal .nav-ico { width: auto; font-size: 13px; line-height: 1; }
-.titlebar > .tb-cal:hover { background: var(--bg-hover); color: var(--text); }
-.titlebar > .tb-cal.active { background: var(--bg-active); color: var(--primary-strong); font-weight: 600; }
-.titlebar > .tb-cal:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; }
+.titlebar > .tb-nav > .tb-cal .nav-ico,
+.titlebar > .tb-nav > .tb-buddy .nav-ico { width: auto; font-size: 13px; line-height: 1; }
+.titlebar > .tb-nav > .tb-cal:hover,
+.titlebar > .tb-nav > .tb-buddy:hover { background: var(--bg-hover); color: var(--text); }
+.titlebar > .tb-nav > .tb-cal.active,
+.titlebar > .tb-nav > .tb-buddy.is-open {
+  background: var(--bg-active); color: var(--primary-strong); font-weight: 600;
+}
+.titlebar > .tb-nav > button:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; }
 
 /* ---------------- 窗口控制三键（自绘） ---------------- */
 /* 系统 overlay 撤掉后，三键就是普通按钮：颜色吃 currentColor，换主题 / 换风格不用
@@ -838,8 +857,15 @@ li.focus-wrapup {
 .add-row-btn:hover { background: var(--bg-hover); color: var(--primary-strong); border-color: var(--primary); }
 .add-plus { font-size: 16px; line-height: 1; }
 
-.task-editor-wrap { margin-top: 10px; }
+/* 新建编辑行：列表的最后一项，紧接最后一条任务（用户要求的落点）。
+   间距只给一点，别让它看起来像另一个面板。 */
+.task-editor-wrap { margin-top: 10px; padding-bottom: 8px; }
+.is-new-editor { padding-bottom: 12px; }
 .task-editor {
+  /* 关键：给 Tom Select 留下的原生 <select>（position:absolute + clip）一个定位祖先。
+     它原本逃到初始包含块，在 y≈1700 处撑出一个 1px 宽 34px 高的盒子，
+     把 document 撑得比视口还高 —— 任何一次 focus / scrollIntoView 都会把标题栏顶出视口。 */
+  position: relative;
   background: var(--bg-panel); border: 1px solid var(--primary);
   border-radius: var(--radius-sm); padding: 10px 12px; box-shadow: var(--shadow-sm);
 }
@@ -850,7 +876,9 @@ li.focus-wrapup {
 
 .editor-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .editor-title {
-  flex: 1; min-width: 160px; padding: 8px 12px; border: 1px solid var(--border);
+  /* 150 而不是 160：920 宽窗口下主行刚好差 5px 就会把计划时间甩到第二行，
+     标题再窄 10px 就能挤在同一行里（最小宽 860 时仍会换行，那是没办法的事） */
+  flex: 1; min-width: 150px; padding: 8px 12px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--bg); color: var(--text); font-size: 14px; outline: none;
 }
 .editor-title:focus { border-color: var(--primary); }
@@ -869,12 +897,38 @@ li.focus-wrapup {
 .editor-row > select.editor-group:hover { border-color: var(--primary); }
 .editor-row > select.editor-group:focus { border-color: var(--primary); }
 
+/* 优先级：主行、标题右边、分组左边（原先和提醒 / 标签一起藏在「⚙ 更多」里）。
+   正常态是 Tom Select（与分组同组件、同外观，见下方 .ts-wrapper.editor-priority）；
+   这里只留**原生降级**的样式：Tom Select 没加载时仍是可用、且带左侧 3px 色条的 select。 */
+.editor-row > select.editor-priority {
+  flex: 0 0 auto; width: 84px; height: 34px;
+  padding: 7px 6px 7px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); font-size: 13px; outline: none;
+  cursor: pointer;
+  box-shadow: inset 3px 0 0 #8896ab;
+}
+.editor-row > select.editor-priority:hover { border-color: var(--primary); }
+.editor-row > select.editor-priority:focus { border-color: var(--primary); }
+/* 色条跟值走：data-pri 由 bindEditorEvents 里的 change 监听同步（不重绘整行） */
+.editor-row > select.editor-priority[data-pri="1"] { box-shadow: inset 3px 0 0 rgb(var(--primary-rgb)); }
+.editor-row > select.editor-priority[data-pri="2"] { box-shadow: inset 3px 0 0 #f59e0b; }
+.editor-row > select.editor-priority[data-pri="3"] { box-shadow: inset 3px 0 0 #e5484d; }
+
 /* 分组单选：与 AI 报告共用 Tom Select 的色块 / 层级缩进 / 圆角面板，只是单选。
    原生 select 被组件藏成 .ts-hidden-accessible，尺寸与配色要落在 .ts-wrapper 上。 */
 .editor-row .ts-wrapper {
   position: relative; flex: 0 1 auto; min-width: 112px; max-width: 190px;
   padding: 0; /* 与内层 .ts-control 完全重合，只留一层边框 */
   --ts-pr-min: 26px; /* vendor 的 padding-right 带 !important，靠变量给箭头留位置 */
+}
+/* 优先级下拉（Tom Select 形态）：与分组同组件、同配色，只把宽度定死 ——
+   只有「低 / 中 / 高 / 紧急」四个选项，给到 96px 刚好装下「紧急 + 色点 + 箭头」，
+   再多就是浪费主行里标题的空间。 */
+.editor-row > .ts-wrapper.editor-priority {
+  flex: 0 0 auto;
+  width: 96px; min-width: 96px; max-width: 96px;
+  --ts-pr-min: 22px;
 }
 .editor-row .ts-wrapper .ts-control {
   height: 34px; min-height: 34px; box-sizing: border-box; flex-wrap: nowrap;
@@ -902,16 +956,31 @@ li.focus-wrapup {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* 详情区（提醒 / 标签 / 备注）**恒展开**：新建任务不再有「⚙ 更多」这个折叠开关，
+   折叠省下的那点高度换来的是「每次新建都得多点一下」。
+   第一行放短字段：提醒定宽、标签吃满剩余（编辑已完成任务时右端再多一个完成时间）；
+   备注独占第二行。用 flex 而不是 auto-fit 网格 —— 网格会把「不提醒」这种短下拉
+   也拉到和标签框一样的宽度，层级反而糊了。 */
 .editor-details {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);
+}
+.editor-details .reminder-field { flex: 0 1 210px; min-width: 0; }
+.editor-details .reminder-field .reminder-preset { flex: 1 1 auto; min-width: 0; width: auto; }
+.editor-details .reminder-field .reminder-custom { flex: 0 0 190px; }
+.editor-details .editor-tags { flex: 1 1 220px; min-width: 150px; }
+.editor-details .editor-completed-at { flex: 0 0 200px; }
+/* 取消 / 保存贴在详情行右端（与提醒 / 标签同一行）：主行因此只剩「标题 + 优先级 +
+   分组 + 计划时间」，1080 宽窗口下标题能有 ~300px；放独立一行会白撑高 42px。 */
+.editor-details > .editor-actions {
+  display: flex; align-items: center; gap: 8px; margin-left: auto;
 }
 .editor-details select, .editor-details input {
   padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg); color: var(--text); font-size: 13px; outline: none; width: 100%;
 }
 .editor-details textarea {
-  grid-column: 1 / -1; padding: 8px 10px; border: 1px solid var(--border);
+  flex: 1 1 100%; min-height: 54px; padding: 8px 10px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--bg); color: var(--text); font-size: 13px;
   outline: none; resize: vertical; font-family: inherit;
 }
@@ -1949,7 +2018,10 @@ html.is-resizing .detail-foot { pointer-events: none; }
   .view { padding-left: 16px; padding-right: 16px; }
   .search-box { flex: 1; min-width: 120px; }
   .search-box input, .search-box input:focus { width: 100%; }
-  .editor-details { grid-template-columns: 1fr; }
+  /* 窄屏：详情区三个字段各自独占一行，挤成两列时「不提醒」下拉会被压得只剩省略号 */
+  .editor-details .reminder-field,
+  .editor-details .editor-tags,
+  .editor-details .editor-completed-at { flex: 1 1 100%; }
   .editor-row { gap: 6px; }
   .editor-title { min-width: 120px; }
   .editor-row .editor-group { max-width: 130px; }

@@ -1045,6 +1045,26 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
     backupMod.listAutoBackups().length === 1 && db.quickCheck().ok === true);
   check('保留策略不会删掉最近一份', backupMod.pruneAutoBackups().count === 1);
 
+  // 保留策略：只留最近 2 个自然月（旧快照删掉、窗口内的留着）
+  const snapDir = path.join(path.dirname(db.getDbPath()), 'backups');
+  const mkSnap = (monthsAgo) => {
+    const now = new Date();
+    // 固定 15 号：月末直接减 N 个月会溢出到下个月，断言会时好时坏
+    const d = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 15);
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    const p = path.join(snapDir, `knodo-${stamp}.db`);
+    fs.writeFileSync(p, 'x');
+    return p;
+  };
+  const oldSnap = mkSnap(3);
+  const edgeSnap = mkSnap(2);
+  const midSnap = mkSnap(1);
+  const pruned = backupMod.pruneAutoBackups();
+  check('日快照只保留最近 2 个月（3 个月前的被删掉）',
+    !fs.existsSync(oldSnap) && pruned.removed.includes(path.basename(oldSnap)));
+  check('日快照 2 个月内的全部保留（不再只留 7 天 + 4 周）',
+    fs.existsSync(edgeSnap) && fs.existsSync(midSnap));
+
   // 主库被删 / 写坏：从快照一键恢复（评审验收：删掉 todo.db 后启动能救回来）
   const liveDbPath = db.getDbPath();
   const tasksBeforeCrash = db.listTasks({ status: 'all' }).length;

@@ -11,7 +11,7 @@ import { state } from './store.js';
 import { renderMarkdown } from './markdown.js';
 import { groupOptionsHtml } from './group-tree.js';
 import { openRecorder } from './recorder.js';
-import { openPanelModal } from './modal.js';
+import { openPanelModal, openPromptModal } from './modal.js';
 
 let notify = () => {};
 let onChanged = () => {};
@@ -330,12 +330,23 @@ function bindEvents(root) {
     }
     if (act === 'rename') {
       const cur = lastList.find((x) => x.id === id);
-      const name = window.prompt('会议名称', cur ? cur.title : '');
-      if (name === null) return;
-      try {
-        await api.meeting.update(id, { title: name.trim() || '未命名会议' });
-        await renderMeetings(root);
-      } catch (err) { notify(`${err && err.message ? err.message : '重命名失败'}`); }
+      if (!cur) return;
+      // 不能用 window.prompt：Electron 渲染层不实现它，调用即抛 "prompt() is not supported"，
+      // 异常又被异步事件吞掉，表现就是「点重命名完全没反应」。统一走自绘弹窗。
+      await openPromptModal({
+        title: '重命名会议',
+        label: '会议名称',
+        value: cur.title,
+        placeholder: '例如：1.12 版本评审会',
+        okText: '保存',
+        maxLength: 60,
+        // 返回字符串 = 校验/保存失败（弹窗内就地展示）；返回 undefined = 成功并关闭
+        onSubmit: async (value) => {
+          await api.meeting.update(id, { title: value.trim() || '未命名会议' });
+          await renderMeetings(root);
+          notify('已重命名');
+        },
+      });
       return;
     }
     if (act === 'open-file') {

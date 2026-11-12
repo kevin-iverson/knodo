@@ -196,6 +196,12 @@ function isNoteView() {
   return !!(view && view.projection && view.projection.kind === 'note');
 }
 
+/** 收起成 30px 竖条时「未完成 N」只留数字：标题已经写着「未完成」，
+    竖排再重复一遍是白占地方（左吸条只有 320px 高） */
+function pendText(n) {
+  return isSideDock() && isCollapsed() ? String(n) : `未完成 ${n}`;
+}
+
 /** 「保持展开」：dock 悬停展开后手动钉住，鼠标移开也不收回 */
 function isDockPinned() {
   return !!(view && view.projection && view.projection.dockPinned);
@@ -294,7 +300,7 @@ function render() {
       el.count.title = `逾期 ${over} 条（未勾掉）`;
       el.count.classList.toggle('is-overdue', over > 0);
       el.pend.hidden = false;
-      el.pend.textContent = `未完成 ${pend}`;
+      el.pend.textContent = pendText(pend);
       el.pend.title = `还有 ${pend} 条没勾掉`;
     } else {
       el.count.hidden = false;
@@ -941,7 +947,7 @@ function recount() {
     el.count.title = `逾期 ${view.overdue} 条（未勾掉）`;
     el.count.classList.toggle('is-overdue', view.overdue > 0);
     el.pend.hidden = false;
-    el.pend.textContent = `未完成 ${view.pending}`;
+    el.pend.textContent = pendText(view.pending);
     el.pend.title = `还有 ${view.pending} 条没勾掉`;
     paintSectionCounts();
   } else {
@@ -1277,31 +1283,38 @@ function bind() {
     api.desktop.size(projectionId, DEFAULT_W).catch(() => {});
   });
 
-  // 悬停置顶档：鼠标进出时临时置顶
+  // 悬停置顶档：鼠标进出时临时置顶（这一条只跟 pinMode 有关，普通浮窗与 dock 都适用）
   document.addEventListener('mouseenter', () => {
     api.desktop.hover(projectionId, true).catch(() => {});
-    // 贴顶 dock：进入 120ms 后展开（正常手速划过顶边约 80–150ms，没延迟每次路过都闪一下）
-    if (!isDock()) return;
-    clearDockTimers();
-    if (!isCollapsed()) return;
-    dockOpenTimer = setTimeout(() => {
-      dockOpenTimer = null;
-      if (!isDock() || !isCollapsed()) return;
-      setCollapsed(false);
-    }, DOCK_OPEN_DELAY);
   });
   document.addEventListener('mouseleave', () => {
     api.desktop.hover(projectionId, false).catch(() => {});
-    // 离开 400ms 后收回：窗口刚变高时鼠标会有一瞬间落在窗口外，太短就是「展开—收回—再展开」的抽搐
+  });
+
+  /* dock 的展开 / 收起由主进程驱动的指针位置决定（`desktop:pointer`），不用 DOM 事件：
+     吸边窗的标题栏是 drag 区（要能拖着换位置），**drag 区不派发 DOM 鼠标事件** ——
+     30px 宽的竖条整窗都是 drag，鼠标移上去连 mouseenter 都收不到，就是「悬停不展开」；
+     反过来，展开态指针停在标题栏（也是 drag 区）时 DOM 会误报 mouseleave，变成「展开就收回」。
+     主进程按系统指针是否落在窗口矩形里判断，两个方向都准。 */
+  api.on('desktop:pointer', (inside) => {
     if (!isDock()) return;
     clearDockTimers();
+    if (inside) {
+      // 进入 120ms 后展开：正常手速划过约 80–150ms，没延迟每次路过都闪一下
+      if (!isCollapsed()) return;
+      dockOpenTimer = setTimeout(() => {
+        dockOpenTimer = null;
+        if (!isDock() || !isCollapsed()) return;
+        setCollapsed(false);
+      }, DOCK_OPEN_DELAY);
+      return;
+    }
+    // 离开 400ms 后收回：窗口刚变宽 / 变高时指针可能一瞬间落在窗口外，
+    // 太短就是「展开—收回—再展开」的抽搐
     if (isCollapsed() || dockShouldStayOpen()) return;
     dockCloseTimer = setTimeout(() => {
       dockCloseTimer = null;
       if (!isDock() || dockShouldStayOpen()) return;
-      // 展开 / 收起时窗口自己会变高变宽，鼠标可能被「挤出」窗口而误触 mouseleave：
-      // 指针其实还在面板上就别收（否则会出现「展开—收起—再展开」的抽搐）
-      if (el.root.matches(':hover')) return;
       setCollapsed(true);
     }, DOCK_CLOSE_DELAY);
   });

@@ -19,6 +19,7 @@ import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
 import { flattenGroupTree, childGroups, descendantGroupIds, groupPath } from './group-tree.js';
 import {
   groupPickerOptionsHtml, createGroupSelect, destroyGroupSelectsIn, destroyAllGroupSelects,
+  priorityPickerOptionsHtml, createPrioritySelect,
 } from './group-select.js';
 import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { openSponsorAsk } from './sponsor.js';
@@ -232,6 +233,23 @@ function bindStaticEvents() {
       openSettings('')
         .catch((e) => toast(`打开设置失败：${(e && e.message) || e}`))
         .finally(() => btnSettings.classList.remove('is-open'));
+    });
+  }
+  // 标题栏「搭子」：打开工位搭子面板的「搭子」页（Ctrl+Alt+E 走同一条链路，默认也是这页）。
+  // 它不是视图，所以不碰 state.view —— 模态关掉后停在原来那个视图，符合「点一下看看就走」。
+  const btnBuddy = document.getElementById('btn-buddy');
+  if (btnBuddy) {
+    btnBuddy.addEventListener('click', () => {
+      // 面板已经开着（可能停在其他页签）：只切页，不叠第二个模态，按钮也别闪一下
+      if (document.querySelector('.modal-encourager')) {
+        openEncourager({ tab: 'buddy' }).catch(() => {});
+        return;
+      }
+      // 与齿轮同款：Promise 在关闭时才 resolve，正好拿来点亮 / 熄灭
+      btnBuddy.classList.add('is-open');
+      openEncourager({ tab: 'buddy' })
+        .catch((e) => toast(`打开工位搭子失败：${(e && e.message) || e}`))
+        .finally(() => btnBuddy.classList.remove('is-open'));
     });
   }
   // 标题栏品牌名右侧的版本号：只做弱提示，取不到就空着，绝不影响布局
@@ -547,6 +565,8 @@ async function render() {
   // 日历保留工具行但收起筛选栏（有自己的负载图例与控件）。
   const isTaskView = TASK_VIEWS.includes(state.view);
   const isCalendar = state.view === 'calendar';
+  // 新建编辑行是列表的尾项（在 #view 内），离开任务视图时随重绘一起消失，
+  // 不需要额外的收起动作 —— 这里只保留一句提示，免得后来人再去找那个面板。
   document.querySelector('.topbar-right').hidden = !(isTaskView || isCalendar);
   document.getElementById('filter-bar').hidden = !isTaskView;
   if (!isTaskView) document.getElementById('time-filter').hidden = true;
@@ -1695,7 +1715,9 @@ async function renderTasks() {
     html += pendingRecurringHtml();
   }
 
-  // 列表底部：就地新增入口（归档视图不提供新增）
+  // 列表底部：就地新增入口 / 新建编辑行（归档视图不提供新增）。
+  // 新建时编辑行**就长在最后一条任务下面**（不是固定的底部面板）：用户要的是
+  // 「在列表末尾接着写」，滚动交给 focusEditor → revealEditor，视口不整体跳。
   if (!isArchived) {
     html += state.addingTask ? newEditorHtml() : addRowHtml();
   }
@@ -2227,12 +2249,6 @@ function startInlineRename(span, id) {
 
 /* ---------------- 就地新增 / 编辑编辑器 ---------------- */
 
-function priorityOptionsHtml(selected) {
-  const sel = selected == null ? 1 : selected;
-  return [0, 1, 2, 3]
-    .map((p) => `<option value="${p}"${p === sel ? ' selected' : ''}>${PRIORITY_TEXT[p]}</option>`)
-    .join('');
-}
 
 /**
  * 分组下拉换成与 AI 报告同款的 Tom Select（单选）。
@@ -2245,12 +2261,32 @@ function initEditorGroupSelect(ed) {
   createGroupSelect(sel, { multiple: false });
 }
 
-/** 编辑器内部结构（新增与编辑共用）。计划开始/完成日期、分组直接放在主行表单中 */
+/**
+ * 优先级下拉：与分组同一个 Tom Select 组件、同一套 CSS（色点 + 圆角面板 + 自绘箭头）。
+ * 之前它是原生 <select>，紧挨着分组控件却长着系统箭头和直角，并排看着像两个产品。
+ * 组件会同步原始 select 的 value，collectEditorPayload 与自动保存都不用改。
+ */
+function initEditorPrioritySelect(ed) {
+  const sel = ed.querySelector('.editor-priority');
+  if (!sel) return;
+  createPrioritySelect(sel);
+}
+
+/**
+ * 编辑器内部结构（新增与编辑共用）。
+ *
+ * 主行：标题 → 优先级 → 分组 → 计划时间 →（删除 / 取消 / 保存）。
+ * 优先级原来和提醒 / 标签 / 备注一起藏在「⚙ 更多」里，新建时等于默认看不到 ——
+ * 它其实是填任务时最常改的字段之一，所以提到主行、紧跟标题（分组之前）；
+ * 「更多」这个折叠开关随之撤掉，详情区（提醒 / 标签 / 备注 / 重复）**恒展开**：
+ * 折叠省下的那点高度，换来的是「每次新建都要多点一下」。
+ */
 function taskEditorHtml(task) {
   const isEdit = !!task;
   const t = task || {};
-  const detailsHidden = isEdit ? '' : ' hidden';
   const showCompletedAt = isEdit && t.completed;
+  // 优先级：新建默认「中」（与 priorityPickerOptionsHtml 的兜底一致）
+  const priority = t.priority == null ? 1 : Number(t.priority);
   const defaultGroup = isEdit ? t.group_id : (state.currentGroup !== 'all' ? state.currentGroup : null);
   // 重复事项：计划日期 / 提醒由规则派生，编辑器里给只读展示，不留可编辑入口（P-01/P-02）
   const recurRule = isEdit && t.recurring_id != null
@@ -2266,21 +2302,24 @@ function taskEditorHtml(task) {
   <div class="task-editor" data-editor="${isEdit ? t.id : 'new'}"${derived ? ' data-derived="1"' : ''}>
     <div class="editor-row">
       <input class="editor-title" type="text" placeholder="任务标题（回车保存，Esc 取消）" value="${esc(t.title || '')}" />
+      <select class="editor-priority" data-pri="${priority}" title="优先级" aria-label="优先级">${priorityPickerOptionsHtml(t.priority)}</select>
       <select class="editor-group" title="分组" aria-label="分组">${groupPickerOptionsHtml(state.groups, defaultGroup)}</select>
       ${derived
     ? '<span class="editor-derived" title="重复事项的计划时间与提醒由规则派生，下方有只读明细；要改请改重复规则">🔁 按规则排期</span>'
     : dateRangeFieldHtml(range.start, range.end, rangeOpts)}
-      <button class="ghost-btn" data-act="editor-more" title="展开更多字段（优先级 / 提醒 / 标签 / 备注）">⚙ 更多</button>
       ${isEdit ? '<button class="danger-btn" data-act="editor-delete" title="删除任务">删除</button>' : ''}
-      <button class="ghost-btn" data-act="editor-cancel">取消</button>
-      <button class="primary-btn" data-act="editor-save">${isEdit ? '保存' : '添加'}</button>
-      ${isEdit ? '<span class="editor-save-state" hidden title="修改会自动保存"></span>' : ''}
     </div>
-    <div class="editor-details"${detailsHidden}>
-      <select class="editor-priority" title="优先级">${priorityOptionsHtml(t.priority)}</select>
+    <div class="editor-details">
       ${derived ? '' : reminderHtml(t.reminder_at, t.plan_end)}
       <input class="editor-tags" type="text" placeholder="标签（逗号分隔）" value="${esc((t.tag_names || []).join(', '))}" />
       ${showCompletedAt ? `<input class="editor-completed-at" type="datetime-local" value="${isoToLocal(t.completed_at)}" title="实际完成时间" />` : ''}
+      <!-- 取消 / 保存跟在「标签」右端（同一行）：主行留给标题 + 优先级 + 分组 + 计划时间，
+           1080 宽的老窗口下标题才不会被挤成 190px；也不额外占一行高度。 -->
+      <div class="editor-actions">
+        ${isEdit ? '<span class="editor-save-state" hidden title="修改会自动保存"></span>' : ''}
+        <button class="ghost-btn" data-act="editor-cancel">取消</button>
+        <button class="primary-btn" data-act="editor-save">${isEdit ? '保存' : '添加'}</button>
+      </div>
       <textarea class="editor-notes" rows="2" placeholder="备注">${esc(notesToPlain(t.notes).text)}</textarea>
     </div>
     ${repeatEditorHtml(t, recurRule)}
@@ -2292,9 +2331,9 @@ function editEditorHtml(t) {
   return `<li class="task-item editing" data-id="${t.id}">${taskEditorHtml(t)}</li>`;
 }
 
-/** 新增任务：列表底部编辑器 */
+/** 新增任务：编辑行本体（拼在列表末尾，替换掉「＋ 添加任务」那一行） */
 function newEditorHtml() {
-  return `<div class="task-editor-wrap">${taskEditorHtml(null)}</div>`;
+  return `<div class="task-editor-wrap is-new-editor">${taskEditorHtml(null)}</div>`;
 }
 
 function addRowHtml() {
@@ -2306,6 +2345,11 @@ function bindEditorEvents(container) {
     bindDateRangeFields(ed);
     bindReminder(ed);
     initEditorGroupSelect(ed);
+    initEditorPrioritySelect(ed);
+    // 优先级下拉在主行（标题右边、分组左边）：改值后同步 data-pri（原生降级态用它画色条）；
+    // Tom Select 会派发原生 change，所以这一条在两种形态下都成立
+    const priSel = ed.querySelector('.editor-priority');
+    if (priSel) priSel.addEventListener('change', () => { priSel.dataset.pri = priSel.value; });
     bindRepeatEditor(ed, {
       onInput: () => {
         // 开启重复后，完成日与提醒改由规则接管；一次性字段只置灰、不隐藏
@@ -2327,9 +2371,11 @@ function bindEditorEvents(container) {
     });
     ed.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
-      // 分组下拉展开时 Esc 只收起下拉，不能连带把整个任务编辑器关掉
-      const gWrap = ed.querySelector('.ts-wrapper');
-      if (gWrap && gWrap.classList.contains('dropdown-active')) return;
+      // 下拉（优先级 / 分组）展开时 Esc 只收起下拉，不能连带把整个任务编辑器关掉。
+      // 主行现在有两个 Tom Select，必须逐个查 —— 只取第一个会漏掉分组那一个。
+      const anyOpen = [...ed.querySelectorAll('.ts-wrapper')]
+        .some((w) => w.classList.contains('dropdown-active'));
+      if (anyOpen) return;
       cancelEditor();
     });
     ed.addEventListener('click', (e) => {
@@ -2339,10 +2385,6 @@ function bindEditorEvents(container) {
       if (act === 'editor-save') saveEditor(ed);
       else if (act === 'editor-cancel') cancelEditor();
       else if (act === 'editor-delete') deleteEditingTask(ed);
-      else if (act === 'editor-more') {
-        const d = ed.querySelector('.editor-details');
-        d.hidden = !d.hidden;
-      }
       else if (act === 'open-recur-inline') openRuleFromTask(Number(btn.dataset.ruleId));
     });
   });
@@ -2354,8 +2396,8 @@ function startAdd() {
   if (state.addingTask) {
     const live = document.querySelector('.task-editor[data-editor="new"] .editor-title');
     if (live) {
-      live.focus();
-      live.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      live.focus({ preventScroll: true });
+      revealEditor(live);
       return;
     }
   }
@@ -2406,13 +2448,39 @@ function cancelEditor() {
   renderTasks();
 }
 
+/**
+ * 把编辑行滚进可视区，但**只滚刚好够用的那一点**。
+ *
+ * 以前这里是 scrollIntoView({block:'center'})：新建行永远排在列表最末尾，想把它居中就得
+ * 滚过 maxScroll，浏览器 clamp 成「滚到最底」—— 点一下新建，整个列表唰地上移一大截；
+ * 更糟的是 scrollIntoView 会连文档一起滚（页面里有个逃出滚动容器的绝对定位元素把
+ * document 撑高了，见 styles.css 里 .ts-hidden-accessible 的注释），于是标题栏都被顶出视口。
+ * 现在只在 #view 上补差值，已经完整可见就一格都不动。
+ *
+ * 新建行（`.is-new-editor`）就是列表的最后一项，和编辑行走同一条路径：它通常有一部分
+ * 落在可视区外，补的那点差值正好等于「露出最后一行表单」所需，不会整屏上移。
+ */
+function revealEditor(input) {
+  const scroller = document.getElementById('view');
+  if (!scroller || !input || !input.isConnected) return;
+  const card = input.closest('.task-editor') || input;
+  const box = scroller.getBoundingClientRect();
+  const r = card.getBoundingClientRect();
+  const pad = 12; // 别贴着边缘，留一点呼吸
+  let delta = 0;
+  if (r.bottom > box.bottom - pad) delta = r.bottom - (box.bottom - pad);
+  else if (r.top < box.top + pad) delta = r.top - (box.top + pad);
+  if (!delta) return;
+  scroller.scrollBy({ top: delta, behavior: 'smooth' });
+}
+
 function focusEditor() {
   requestAnimationFrame(() => {
     const el = document.querySelector('.task-editor .editor-title');
-    if (el) {
-      el.focus();
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    if (!el) return;
+    // preventScroll：focus() 自己也会把元素滚进视野，那条路径同样会连文档一起滚
+    el.focus({ preventScroll: true });
+    revealEditor(el);
   });
 }
 

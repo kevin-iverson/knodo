@@ -26,6 +26,7 @@ const esc = (s) =>
  * @param {Array<{value:string,label:string,color?:string}>} [opts.choices] 可选的颜色/属性选项
  * @param {string} [opts.choicesLabel] 选项组标签
  * @param {string} [opts.okText] 确认按钮文案
+ * @param {number} [opts.maxLength=30] 输入框最大长度（会议标题这类长文本需要放宽）
  * @param {(value:string, choice:string) => Promise<string|void>} opts.onSubmit
  *        返回字符串表示校验/保存失败（内容作为错误提示展示），返回 undefined 表示成功并关闭
  * @returns {Promise<boolean>} 是否提交成功
@@ -33,7 +34,7 @@ const esc = (s) =>
 export function openPromptModal(opts) {
   const {
     title, label = '', value = '', placeholder = '',
-    choices = null, choicesLabel = '', okText = '确定', onSubmit,
+    choices = null, choicesLabel = '', okText = '确定', maxLength = 30, onSubmit,
   } = opts;
 
   return new Promise((resolve) => {
@@ -52,7 +53,7 @@ export function openPromptModal(opts) {
         <div class="modal-head">${esc(title)}</div>
         <div class="modal-body">
           <label class="field-label" for="modal-input">${esc(label)}</label>
-          <input class="modal-input" id="modal-input" type="text" value="${esc(value)}" placeholder="${esc(placeholder)}" maxlength="30" />
+          <input class="modal-input" id="modal-input" type="text" value="${esc(value)}" placeholder="${esc(placeholder)}" maxlength="${Math.max(1, Number(maxLength) || 30)}" />
           ${choicesHtml}
           <div class="modal-error" hidden></div>
         </div>

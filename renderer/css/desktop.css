@@ -544,8 +544,16 @@ html[data-theme='dark'] .dw-tail { color: #ff6b6e; }
   padding: 9px 0 7px;
   gap: 8px;
 }
-/* 30px 宽放不下三个 24px 按钮：收起态不给按钮，悬停就会展开，操作在展开态做 */
-.dw.is-dock-side.is-collapsed .dw-btns { display: none; }
+/* 30px 宽放不下三个 24px 按钮：收起态只留「展开」箭头（hover 万一不好用还有手可点的入口），
+   别的操作在展开态做。整条仍保持 drag（可以拖着沿边挪位置）——
+   悬停展开不靠 DOM 事件，由主进程按系统指针位置判定后发 desktop:pointer。 */
+.dw.is-dock-side.is-collapsed .dw-btns { display: flex; }
+/* 只有「展开」箭头在收起态有意义；📌 与 ⋯ 在 30px 宽里既挤又容易误点，展开后再给 */
+.dw.is-dock-side.is-collapsed .dw-pin,
+.dw.is-dock-side.is-collapsed #dw-more { display: none; }
+/* 箭头指向展开方向：左吸朝右、右吸朝左（⌃ 转 ±90°） */
+.dw.is-dock-left.is-collapsed .dw-btns #dw-collapse { transform: rotate(90deg); }
+.dw.is-dock-right.is-collapsed .dw-btns #dw-collapse { transform: rotate(-90deg); }
 .dw.is-dock-side.is-collapsed .dw-title {
   /* 竖排标题：一条 30px 宽的竖栏里，横排标题只能显示两个字 */
   writing-mode: vertical-rl;
@@ -560,19 +568,19 @@ html[data-theme='dark'] .dw-tail { color: #ff6b6e; }
   font-weight: 600;
   letter-spacing: 0.12em;
 }
-/* 收起态的读数是竖排的小胶囊（「1 / 5」）：一眼扫到进度，又不挤占标题 */
-.dw.is-dock-side.is-collapsed .dw-count {
+/* 收起态的读数是竖排小胶囊（「1 / 5」「未完成 12」）：一眼扫到进度，又不挤占标题。
+   两个徽标可能同时出现（有逾期），所以各自只给 26% 高度，剩下的留给标题 */
+.dw.is-dock-side.is-collapsed .dw-count,
+.dw.is-dock-side.is-collapsed .dw-pend {
   writing-mode: vertical-rl;
   flex: none;
-  max-height: 38%;
+  max-height: 26%;
   overflow: hidden;
   padding: 5px 2px;
   font-size: 10px;
   font-weight: 700;
   border-radius: 999px;
 }
-/* 「未完成 N」在 30px 宽里会拉成一长串，收起态只留进度徽标 */
-.dw.is-dock-side.is-collapsed .dw-pend { display: none; }
 
 /* 逾期徽标：常驻，滚动时也一直看得到最该看的那条 */
 .dw-count.is-overdue {

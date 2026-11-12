@@ -1124,7 +1124,7 @@ function dataHtml() {
       rows: [
         rowHtml({
           title: '日快照（仅数据库）',
-          desc: `<span class="st-sub">${esc(lastText)}</span>${pathLine(bk.dir)}`,
+          desc: `<span class="st-sub">${esc(lastText)}</span><span class="st-sub">每天 1 份，只保留最近 ${bk.keepMonths || 2} 个月；总量上限 500MB</span>${pathLine(bk.dir)}`,
           ctl: `${ctlButton('open-backup', '打开')}${ctlButton('backup-dialog', '备份与恢复…')}`,
           search: '快照 snapshot 恢复 还原 backup 每日',
           id: 'backup',
@@ -1138,7 +1138,7 @@ function dataHtml() {
         }),
       ],
     }),
-    `<div class="st-foot-note">日快照只保数据库（任务 / 笔记 / 会议记录 / 设置），保留最近 ${bk.dailyDays || 7} 天每日 1 份 + ${bk.weeklyCount || 4} 份周度快照；全量备份与主界面「📤 备份」导出同构，含附件与录音，每 ${(bk.full && bk.full.intervalDays) || 15} 天自动一份、只留最近 ${(bk.full && bk.full.keepMonths) || 2} 个月，可直接在「📥 导入」里恢复。恢复会用备份覆盖当前库，操作前会二次确认。</div>`,
+    `<div class="st-foot-note">日快照只保数据库（任务 / 笔记 / 会议记录 / 设置），每天启动 5 分钟后做一份；全量备份与主界面「📤 备份」导出同构，含附件与录音，每 ${(bk.full && bk.full.intervalDays) || 15} 天自动一份、只留最近 ${(bk.full && bk.full.keepMonths) || 2} 个月，可直接在「📥 导入」里恢复。恢复会用备份覆盖当前库，操作前会二次确认。</div>`,
   ].join('');
 }
 

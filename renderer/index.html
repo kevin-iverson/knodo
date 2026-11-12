@@ -65,10 +65,19 @@
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
       </button>
-      <!-- 日历入口：从侧栏搬到标题栏主区段左端（用户要求，侧栏那一项已移除）。
-           保留 .nav-item 类与 data-view —— 点击切换、active 高亮、视图重绘全都复用既有逻辑。 -->
-      <button type="button" class="nav-item tb-cal" data-view="calendar"
-              title="日历视图：月 / 周负载总览（Ctrl+Alt+M）"><span class="nav-ico">🗓</span>日历</button>
+      <!-- 标题栏主区段左端的快捷入口组：日历 + 搭子（顺序就是视觉顺序）。
+           .tb-nav 只负责定位与间距，按钮自带尺寸 —— 再加一个入口时不用重算绝对偏移。
+           日历：从侧栏搬来（侧栏那项已移除），保留 .nav-item 类与 data-view ——
+           点击切换、active 高亮、视图重绘全都复用既有逻辑。 -->
+      <div class="tb-nav" role="group" aria-label="快捷入口">
+        <button type="button" class="nav-item tb-cal" data-view="calendar"
+                title="日历视图：月 / 周负载总览（Ctrl+Alt+M）"><span class="nav-ico">🗓</span>日历</button>
+        <!-- 搭子：工位搭子面板（五页签主浮窗的「搭子」页）。
+             它不是视图，所以不挂 .nav-item / data-view —— 点击只开模态，不切 state.view。 -->
+        <button type="button" class="tb-buddy" id="btn-buddy"
+                title="搭子：工位搭子（戳一戳 / 抽签 / 抱团 / 牛马卡，Ctrl+Alt+E）"
+                aria-label="打开工位搭子"><span class="nav-ico">🐮</span>搭子</button>
+      </div>
       <!-- 窗口控制三键：自绘（系统 overlay 已撤，见 main/main.js 的注释）。
            46×40 是 Windows 的惯例尺寸；图标是 10px 细线 SVG，跟 currentColor 走，
            所以换主题 / 换风格不用重新推一次原生配色。最大化↔还原由 js/win-controls.js 切换。 -->
@@ -186,7 +195,7 @@
              与「添加任务」里的日期选择器保持同一套交互与样式 -->
         <div class="time-filter" id="time-filter" hidden></div>
 
-        <!-- 视图容器（任务列表 + 底部就地新增/编辑） -->
+        <!-- 视图容器：任务列表 + 末尾的就地新增 / 编辑（新建框长在最后一条任务下面） -->
         <div class="view" id="view"></div>
       </main>
     </div>
