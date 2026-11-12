@@ -651,26 +651,28 @@ async function paintDockBtn(force = false) {
     if (Array.isArray(live)) pins = live;
   } catch (e) { /* 主进程忙时退回缓存，不闪成「未钉」 */ }
   if (token !== dockBtnToken) return; // 只应用最后一次，避免并发回填旧状态
-  const pin = (pins || []).find((p) => p.kind === 'unfinished' && p.dock === 'top');
+  // 顶条与侧吸都算「便签开着」：同一个视图只该有一条便签，按钮不该因为换了条边就显示未开
+  const pin = (pins || []).find((p) => p.kind === 'unfinished' && p.dock);
   btn.classList.toggle('is-on', !!pin);
   btn.title = pin
-    ? '顶部便签已打开：点击取消（也可以在便签上点 📌 / Esc 收起）'
+    ? '便签已打开：点击取消（也可以在便签上点 📌 / Esc 收起）'
     : '把「未完成」钉到屏幕顶边（悬停展开成列表）';
 }
 
 /**
- * 贴顶便签（dock）的开关。
+ * 便签（吸边 dock，顶条或侧吸）的开关。
  * 它装的是「未完成」这一份口径 —— 用户要的是「我欠多少」而不是「现在做什么」，
  * 22 条对「今天」是噪音，对「未完成」才是答案。
+ * 已经在侧吸的也算「已打开」：再点一次是取消，不是又钉一条顶条出来。
  */
 async function toggleDock() {
-  const pin = desktopPins.find((p) => p.kind === 'unfinished' && p.dock === 'top');
+  const pin = desktopPins.find((p) => p.kind === 'unfinished' && p.dock);
   // 之前拖离过顶边的那个浮窗：直接把它贴回去，而不是再造一个同源的第二个窗
   const loose = desktopPins.find((p) => p.kind === 'unfinished' && !p.dock);
   try {
     if (pin) {
       await api.desktop.unpin(pin.id);
-      toast('已取消顶部便签');
+      toast('已取消便签');
     } else if (loose) {
       await api.desktop.redock(loose.id);
       toast('已贴回屏幕顶边：未完成（鼠标碰一下展开）');
@@ -1020,12 +1022,12 @@ function showViewContextMenu(view, e) {
   const items = [];
   // 「未完成」多一个顶边便签入口：它装的正是这张清单
   if (view === 'unfinished') {
-    const dockPin = desktopPins.find((p) => p.kind === 'unfinished' && p.dock === 'top');
+    const dockPin = desktopPins.find((p) => p.kind === 'unfinished' && p.dock);
     items.push({
-      label: dockPin ? '取消顶部便签' : '钉到屏幕顶边（悬停展开）',
+      label: dockPin ? '取消便签' : '钉到屏幕顶边（悬停展开）',
       icon: '📌',
       checked: !!dockPin,
-      hint: '贴在屏幕工作区顶部，收起 30px，鼠标碰一下展开成未完成列表',
+      hint: '贴在屏幕边缘，收起成一条，鼠标碰一下展开；拖到左/右边缘可改成侧吸',
       onClick: () => { toggleDock(); },
     });
     items.push({ type: 'sep' });

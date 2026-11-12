@@ -30,6 +30,7 @@
     "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --dir",
     "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis --no-portable",
     "release": "node scripts/release-gitee.js",
+    "release:github": "node scripts/release-github.js",
     "verify:appearance": "node scripts/verify-appearance.js",
     "smoke:theme-image": "node scripts/smoke-theme-image.js",
     "verify:calendar": "node scripts/verify-calendar-past-lock.js",

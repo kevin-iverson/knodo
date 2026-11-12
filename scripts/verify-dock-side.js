@@ -22,16 +22,29 @@ user32.func('bool __stdcall SetProcessDpiAwarenessContext(intptr_t v)')(-4);
 const SetCursorPos = user32.func('bool __stdcall SetCursorPos(int x, int y)');
 const mouseEvent = user32.func('void __stdcall mouse_event(uint32_t f, int dx, int dy, uint32_t d, intptr_t e)');
 
-async function nativeDrag(x1, y1, x2, y2, steps = 14) {
+async function nativeDrag(x1, y1, x2, y2, stepsHint) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  // 步长按距离自适应（每步约 25 物理像素）：一步跨 80px 时系统拖动循环会跟不上，
+  // 表现就是「拖了但窗口没动」
+  const steps = stepsHint || Math.max(14, Math.round(Math.hypot(dx, dy) / 25));
   SetCursorPos(x1 - 40, Math.max(0, y1 - 30)); await sleep(150);
   SetCursorPos(x1, y1); await sleep(200);
+  // 合成点击先把这个窗激活：窗口是 showInactive 出来的，第一次点到未激活窗口时
+  // 系统只做激活、不做移动
   mouseEvent(0x0002, 0, 0, 0, 0); await sleep(80);
   mouseEvent(0x0004, 0, 0, 0, 0); await sleep(250);
   SetCursorPos(x1, y1); await sleep(150);
   mouseEvent(0x0002, 0, 0, 0, 0); await sleep(150);
+  let mx = 0;
+  let my = 0;
   for (let i = 1; i <= steps; i += 1) {
-    mouseEvent(0x0001, Math.round((x2 - x1) / steps), Math.round((y2 - y1) / steps), 0, 0);
-    await sleep(40);
+    const tx = Math.round((dx * i) / steps);
+    const ty = Math.round((dy * i) / steps);
+    mouseEvent(0x0001, tx - mx, ty - my, 0, 0);
+    mx = tx;
+    my = ty;
+    await sleep(35);
   }
   await sleep(250);
   mouseEvent(0x0004, 0, 0, 0, 0);
@@ -264,13 +277,15 @@ async function pageOf(pred, tries = 50) {
     })()`);
     await sleep(1600);
     const beforeDrag = await diag(loose.id);
-    const scale = (await main.evaluate(`window.screen.width / window.screen.availWidth`)) || 1;
+    // 物理像素换算：nativeDrag 用的是屏幕物理坐标，窗口坐标是 DIP
+    const scale = (await main.evaluate(`window.devicePixelRatio`)) || 1;
     const dr = beforeDrag && beforeDrag.bounds;
     let autoDocked = null;
     if (dr) {
       const gx = Math.round((dr.x + dr.width / 2) * scale);
       const gy = Math.round((dr.y + 16) * scale);
-      await nativeDrag(gx, gy, 2, gy);
+      // 目标：窗口左边界落到屏幕左边（光标停在「半宽 + 3px」处）
+      await nativeDrag(gx, gy, Math.round((3 + dr.width / 2) * scale), gy);
       await sleep(1600);
       autoDocked = await diag(loose.id);
       for (let attempt = 0; attempt < 2 && (!autoDocked || autoDocked.proj.dock !== 'left'); attempt += 1) {
@@ -279,9 +294,8 @@ async function pageOf(pred, tries = 50) {
         await nativeDrag(
           Math.round((cur.bounds.x + cur.bounds.width / 2) * scale),
           Math.round((cur.bounds.y + 16) * scale),
-          2,
+          Math.round((3 + cur.bounds.width / 2) * scale),
           Math.round((cur.bounds.y + 16) * scale),
-          20,
         );
         await sleep(1600);
         autoDocked = await diag(loose.id);

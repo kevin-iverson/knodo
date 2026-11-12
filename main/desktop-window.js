@@ -579,7 +579,10 @@ function openWindow(p) {
   applyContentSize(win, w, h);
   // 吸边窗必须按**内容区**贴边：Windows 的透明无边框窗外框比内容宽 / 高 8px，
   // 按外框设坐标会在屏幕边缘露出一条缝（看起来像没吸住）。
-  if (isDock) win.setContentBounds({ x, y, width: w, height: h });
+  if (isDock) {
+    win.setContentBounds({ x, y, width: w, height: h });
+    if (sideDock) pinSideDockEdge(win, dock);
+  }
 
   win.loadFile(path.join(__dirname, '..', 'renderer', 'desktop.html'), { query: { id: p.id } });
 
@@ -652,6 +655,8 @@ function undock(id) {
   });
   const win = windowOf(id);
   if (win) {
+    // 先恢复普通浮窗的最小宽度，再放大：反过来会被 30px 的下限卡一下
+    applyMinSize(win, null);
     applyContentSize(win, DEF_W, 320);
     const b = win.getBounds();
     const wa = screen.getDisplayMatching(b).workArea;
@@ -767,6 +772,26 @@ function handleDockMoved(win, cur) {
  * 宽度 420 / 贴顶 30 这些 dock 规格在运行时补上（setContentBounds；宽度由 renderer 锁死）。
  */
 /**
+ * 侧吸窗贴边校正（按**实测**内容宽度重算，只做平移，不改尺寸）。
+ * Windows 的透明无边框窗在 setContentBounds 之后，读回来的内容宽度可能比请求值多 1~2px；
+ * 按请求宽度算「贴右边」的 x，右吸就会露出屏幕外 2px。所以设完必须按实际宽度再校一次。
+ */
+function pinSideDockEdge(win, dock) {
+  if (!win || win.isDestroyed() || !isSideDock(dock)) return;
+  // 最多校两轮：第一轮对齐，第二轮兜住「平移后系统又微调」的极端情况
+  for (let i = 0; i < 2; i += 1) {
+    const cb = win.getContentBounds();
+    const wa = screen.getDisplayMatching(cb).workArea;
+    const wantX = sideDockContentX(dock, wa, cb.width);
+    if (wantX === cb.x) return;
+    const b = win.getBounds();
+    win.setBounds({
+      x: b.x + (wantX - cb.x), y: b.y, width: b.width, height: b.height,
+    });
+  }
+}
+
+/**
  * 窗口最小尺寸跟着「是不是侧吸」走。
  * 侧吸收起只有 30px 宽，而普通浮窗建窗时写的是 minWidth 232 —— 原地转换时不放开它，
  * 窗口就永远缩不到 30（表现为「侧吸只是变窄到 232，一条厚边挡在屏幕上」）。
@@ -830,9 +855,12 @@ function convertToDock(id, side, along) {
         },
     });
     if (win) {
+      // 先放开最小尺寸再收窄，否则 setContentBounds 会被 232 的下限夹住
+      applyMinSize(win, dock);
       win.setContentBounds({
         x: geo.x, y: geo.y, width: geo.w, height: geo.h,
       });
+      pinSideDockEdge(win, dock);
       win.webContents.send('desktop:redocked', dock);
     } else {
       // 窗口还没建（例如启动阶段）：直接按 dock 规格开一个
@@ -1275,10 +1303,13 @@ function applySideDockWidth(win, p) {
   const w = p.collapsed ? SIDE_HEAD_W : SIDE_W;
   const wa = screen.getDisplayMatching(cb).workArea;
   const x = sideDockContentX(p.dock, wa, w);
-  if (cb.width === w && cb.x === x) return;
-  win.setContentBounds({
-    x, y: cb.y, width: w, height: cb.height,
-  });
+  if (cb.width !== w || cb.x !== x) {
+    win.setContentBounds({
+      x, y: cb.y, width: w, height: cb.height,
+    });
+  }
+  // 宽度变了，贴边位置要按实际宽度重算（右吸尤其：差 2px 就露出屏幕外）
+  pinSideDockEdge(win, p.dock);
 }
 
 function update(id, patch = {}) {
@@ -1330,6 +1361,7 @@ function fit(id, height) {
       win.setContentBounds({
         x, y, width: w, height: h,
       });
+      pinSideDockEdge(win, p.dock);
     }
   } else if (isDock) {
     // 用内容区坐标贴顶 + 按内容区定高：外框那 8px 隐形边框不能算进去，
@@ -1390,6 +1422,7 @@ function resetPosition(id) {
     win.setContentBounds({
       x: dg.x, y: dg.y, width: dg.w, height: dg.h,
     });
+    pinSideDockEdge(win, cur.dock);
     // 顺手清掉记住的沿边位置：重置就该回到默认落点
     patchProjection(id, sideMode ? { geometry: { y: dg.y } } : { geometry: { x: dg.x } });
     return true;

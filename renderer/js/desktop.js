@@ -1299,6 +1299,9 @@ function bind() {
     dockCloseTimer = setTimeout(() => {
       dockCloseTimer = null;
       if (!isDock() || dockShouldStayOpen()) return;
+      // 展开 / 收起时窗口自己会变高变宽，鼠标可能被「挤出」窗口而误触 mouseleave：
+      // 指针其实还在面板上就别收（否则会出现「展开—收起—再展开」的抽搐）
+      if (el.root.matches(':hover')) return;
       setCollapsed(true);
     }, DOCK_CLOSE_DELAY);
   });
@@ -1310,6 +1313,8 @@ function bind() {
     if (!view || !view.projection) return;
     view.projection.collapsed = !!v;
     render();
+    // 侧吸：宽度是主进程先改的，渲染层的 layout 可能还差一拍才跟上，补量一次高度
+    if (isSideDock()) setTimeout(fit, 80);
   });
   // 吸边窗被拖离那条边：主进程已清掉 dock，这里跟着变回普通浮窗（重新量高度）
   api.on('desktop:undocked', (from) => {
