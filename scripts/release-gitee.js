@@ -478,6 +478,16 @@ async function main() {
     console.error(`dist/release/ 下没有附件。先运行 npm run dist 并把要发布的文件放进去。`);
     process.exit(1);
   }
+  /* 版本号护栏：dist/release/ 是**手工暂存目录**（构建脚本不往里拷），
+     上一次发完忘了换，就会把旧版本的包当成新版本传上去 —— 2026-11-12 的 v2.5.1 差点这样发出去。
+     文件名必须含本次版本号，否则直接停下。 */
+  const stale = files.filter((f) => !f.includes(pkg.version));
+  if (stale.length) {
+    console.error(`✗ dist/release/ 里的文件与 package.json 版本（${pkg.version}）不符：${stale.join('、')}`);
+    console.error(`  先清空 dist/release/，再把本次产物拷进去：`);
+    console.error(`    Windows: del /q dist\\release\\*  &  copy dist\\${BRAND}-${pkg.version}-*.7z dist\\${BRAND}-${pkg.version}-*.exe dist\\release\\`);
+    process.exit(1);
+  }
   // Gitee 的附件列表有缓存：必须带时间戳绕过，否则重试复查会读到旧结果，把同一个文件传两遍
   const listAttach = async () => {
     const res = await fetch(`${API}/repos/${owner}/${repo}/releases/${releaseId}/attach_files?access_token=${encodeURIComponent(token)}&t=${Date.now()}`);
