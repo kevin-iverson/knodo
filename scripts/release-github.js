@@ -129,6 +129,11 @@ function releaseBody() {
       + '主窗刷新后那条会消失；现在记账与焦点解耦，浮窗勾选的完成态一定能被主窗接住',
     '- **浮窗里勾掉即时消失**：小窗只画未完成行，勾上后淡出移除、窗口自动变矮；'
       + '主窗口的「今日已完成」照旧保留，顶部 `1/5` 进度读数不受影响',
+    '- **便签也能吸到屏幕左右边缘**：把「未完成」便签拖到左 / 右边缘松手即可侧吸，'
+      + '不再只有顶部一条；侧吸宽度 232px，展开高度按内容量，'
+      + '右吸位置按实测窗宽校正（透明无边框窗读回的宽度常比请求值多 1~2px，否则会露出屏幕外）',
+    '- **修掉展开 / 收起时的抽搐**：便签展开时窗口自己变高变宽，会把鼠标「挤出」窗口触发 mouseleave，'
+      + '于是刚展开就收起；现在收起前先看指针是否真的还在面板上',
     '- **日历里早于今天的完成态改为只读**：过去那几天的勾选框变灰、光标提示不可点，'
       + '避免误把历史任务的归属日挪走或抹掉重复事项那天的打卡；改历史请走列表 / 详情 / 打卡日历',
     '',
@@ -143,14 +148,18 @@ function releaseBody() {
 }
 
 async function ensureTag() {
+  const ref = `refs/tags/${tag}`;
+  // 本地 tag 先建（方便 release-gitee.js 与本地核对）
+  try { run(`git tag -f ${tag} ${sha}`); } catch { /* 已存在或无权写 .git 时忽略 */ }
   try {
-    run(`git ls-remote --tags ${REMOTE_NAME} refs/tags/${tag} | grep -q ${tag}`);
+    await api('GET', `/repos/${slug}/git/ref/${ref}`);
     console.log(`① 远端已有 tag ${tag}，跳过打标签`);
-  } catch {
-    run(`git tag -f ${tag} ${sha}`);
-    run(`git push ${REMOTE_NAME} ${tag}`);
-    console.log(`① 已创建并推送 tag ${tag} → ${sha.slice(0, 8)}`);
+    return;
+  } catch (e) {
+    if (e.status !== 404) throw e;
   }
+  await api('POST', `/repos/${slug}/git/refs`, { ref, sha });
+  console.log(`① 已创建 tag ${tag} → ${sha.slice(0, 8)}（走 API，不依赖 git 传输）`);
 }
 
 async function ensureRelease() {
@@ -211,20 +220,39 @@ async function uploadAssets(releaseId) {
     const url = `${UPLOAD_API}/repos/${slug}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`;
     const started = Date.now();
     console.log(`③ 上传 ${name}（${(size / 1048576).toFixed(1)} MiB）…`);
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        ...headers,
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': String(buf.length),
-      },
-      body: buf,
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`上传 ${name} 失败：${res.status} ${text.slice(0, 300)}`);
+    let json = null;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 4 && !json; attempt += 1) {
+      if (attempt > 1) {
+        // 上一次可能其实已经落盘（网络中断但传到服务端），先复查再重传，避免挂出重复附件
+        const again = await listAssets(releaseId);
+        const landed = again.find((a) => a.name === name && a.size === size);
+        if (landed) {
+          console.log(`   ↺ 复查发现已上传成功（${(landed.size / 1048576).toFixed(1)} MiB），不重传`);
+          json = landed;
+          break;
+        }
+        const wait = 5000 * attempt;
+        console.log(`   ⚠ 第 ${attempt - 1} 次失败：${lastErr && lastErr.message}，${wait / 1000}s 后重试`);
+        await new Promise((r) => { setTimeout(r, wait); });
+      }
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'Content-Type': 'application/octet-stream',
+            'Content-Length': String(buf.length),
+          },
+          body: buf,
+        });
+        if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+        json = await res.json();
+      } catch (e) {
+        lastErr = e;
+      }
     }
-    const json = await res.json();
+    if (!json) throw new Error(`上传 ${name} 失败：${lastErr && lastErr.message}`);
     console.log(`   ✓ ${json.name} · ${(json.size / 1048576).toFixed(1)} MiB · ${((Date.now() - started) / 1000).toFixed(1)}s`);
     console.log(`     下载地址：${json.browser_download_url}`);
   }
