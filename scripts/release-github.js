@@ -89,21 +89,45 @@ async function api(method, url, body) {
   return json;
 }
 
+/**
+ * GitHub 的附件名只接受 ASCII —— 实测上传 `测试-中文.txt` 会被存成 `-.txt`（非 ASCII 字符直接滤掉，
+ * 不报错）。所以本地沿用 Gitee 的中文产物名，上传时映射成英文，两站的文件名因此不同但内容一致。
+ */
+const ASSET_ALIAS = [
+  [/便携版/, 'portable'],
+  [/安装版/, 'setup'],
+  [/卸载/, 'uninstall'],
+];
+
+function assetName(local) {
+  let out = local;
+  for (const [re, to] of ASSET_ALIAS) out = out.replace(re, to);
+  // 兜底：剩下的非 ASCII 一律去掉，避免静默改名
+  if (!/^[\x20-\x7e]+$/.test(out)) {
+    const cleaned = out.replace(/[^\x20-\x7e]/g, '').replace(/-+/g, '-').replace(/-\./g, '.');
+    console.warn(`   ⚠ 附件名含非 ASCII 字符，已按 GitHub 规则改为：${cleaned}`);
+    out = cleaned;
+  }
+  return out;
+}
+
 /** 发行说明。发新版本时改这一段（与 release-gitee.js 各自独立维护，措辞按站点受众微调）。 */
 function releaseBody() {
   return [
     `## ${BRAND} ${tag}`,
     '',
     '> **只是想用它，不想看代码？** 滑到本页最底部「Assets」，点 '
-      + `\`${BRAND}-${pkg.version}-便携版.7z\`，解压一次后双击里面的 Knodo.exe 就能用（免安装、免注册）。`,
+      + `\`${assetName(`${BRAND}-${pkg.version}-便携版.7z`)}\`，解压一次后双击里面的 Knodo.exe 就能用（免安装、免注册）。`,
     '> 若被 Windows 拦下：点「更多信息 → 仍要运行」。国内访问慢可走 '
-      + '[Gitee 镜像](https://gitee.com/kiverson/todo-task/releases/latest)，两边包完全一致。',
+      + '[Gitee 镜像](https://gitee.com/kiverson/todo-task/releases/latest)，两边包完全一致（那边文件名带「便携版 / 安装版」）。',
     '',
     '### 下载',
-    `- **${BRAND}-${pkg.version}-便携版.7z**（推荐）：**解压一次，之后双击即用**。`
-      + '数据写在 exe 同级的 `data/` 目录，不写系统 AppData，整个文件夹拷走即可换机。',
-    `- **${BRAND}-${pkg.version}-安装版.exe**：双击安装，可选安装目录、生成桌面与开始菜单快捷方式，可设开机自启。`
+    `- **${assetName(`${BRAND}-${pkg.version}-便携版.7z`)}**（推荐，Gitee 站内名为 \`${BRAND}-${pkg.version}-便携版.7z\`）：`
+      + '**解压一次，之后双击即用**。数据写在 exe 同级的 `data/` 目录，不写系统 AppData，整个文件夹拷走即可换机。',
+    `- **${assetName(`${BRAND}-${pkg.version}-安装版.exe`)}**（Gitee 站内名为 \`${BRAND}-${pkg.version}-安装版.exe\`）：`
+      + '双击安装，可选安装目录、生成桌面与开始菜单快捷方式，可设开机自启。'
       + '数据在 `%APPDATA%\\todo-desktop`，适合长期在同一台电脑上使用。',
+    '- GitHub 会把附件名里的中文滤掉，所以这里用英文名（portable / setup），包内容与 Gitee 上的中文名文件逐字节一致。',
     '- 两者功能完全一致，只是数据位置、安装方式不同；两者都未做代码签名，首次运行可能被 SmartScreen 拦一次。',
     '',
     '### 本版更新（v2.5.0）',
@@ -152,7 +176,8 @@ async function ensureTag() {
   // 本地 tag 先建（方便 release-gitee.js 与本地核对）
   try { run(`git tag -f ${tag} ${sha}`); } catch { /* 已存在或无权写 .git 时忽略 */ }
   try {
-    await api('GET', `/repos/${slug}/git/ref/${ref}`);
+    // 注意：查询接口的 ref 不带 refs/ 前缀（/git/ref/tags/v1.0.0），创建接口才要 refs/tags/...
+    await api('GET', `/repos/${slug}/git/ref/tags/${tag}`);
     console.log(`① 远端已有 tag ${tag}，跳过打标签`);
     return;
   } catch (e) {
@@ -207,8 +232,9 @@ async function uploadAssets(releaseId) {
     return;
   }
   const existing = await listAssets(releaseId);
-  for (const name of files) {
-    const full = path.join(RELEASE_DIR, name);
+  for (const local of files) {
+    const name = assetName(local);
+    const full = path.join(RELEASE_DIR, local);
     const size = fs.statSync(full).size;
     const hit = existing.find((a) => a.name === name);
     if (hit) {
@@ -219,7 +245,7 @@ async function uploadAssets(releaseId) {
     const buf = fs.readFileSync(full);
     const url = `${UPLOAD_API}/repos/${slug}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`;
     const started = Date.now();
-    console.log(`③ 上传 ${name}（${(size / 1048576).toFixed(1)} MiB）…`);
+    console.log(`③ 上传 ${local}${local === name ? '' : ` → ${name}`}（${(size / 1048576).toFixed(1)} MiB）…`);
     let json = null;
     let lastErr = null;
     for (let attempt = 1; attempt <= 4 && !json; attempt += 1) {
