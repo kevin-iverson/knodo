@@ -28,11 +28,30 @@ const KT = window.KnodoTheme;
 
 let toast = (msg) => console.warn('[settings]', msg);
 /** 需要壳层配合的外部动作（日历偏好改动要重绘日历视图） */
-const ext = { onCalendarPrefs: null };
+const ext = { onCalendarPrefs: null, onAction: null };
 
-export function setSettingsHandlers({ toast: t, onCalendarPrefs } = {}) {
+export function setSettingsHandlers({ toast: t, onCalendarPrefs, onAction } = {}) {
   if (typeof t === 'function') toast = t;
   if (typeof onCalendarPrefs === 'function') ext.onCalendarPrefs = onCalendarPrefs;
+  if (typeof onAction === 'function') ext.onAction = onAction;
+}
+
+/**
+ * 设置中心里「打开某个浮窗 / 执行某个维护动作」的统一出口。
+ * 这些动作原本只挂在应用菜单上（文本对比、JSON 查看器、重复事项、鼓励器、归档、
+ * 导入 Markdown），菜单栏撤掉后由 ui.js 的 runMenuAction() 承接，具体实现仍留在各模块。
+ * 没有注入实现时明确提示，不静默失败。
+ */
+function runAction(name, payload) {
+  if (!ext.onAction) {
+    toast('该功能暂时不可用（动作入口未注册）');
+    return;
+  }
+  try {
+    ext.onAction(name, payload);
+  } catch (e) {
+    toast(`操作失败：${(e && e.message) || e}`);
+  }
 }
 
 /* ------------------------------ 状态 ------------------------------ */
@@ -69,6 +88,7 @@ const ICON = {
   ai: svg('<path d="M8 2.2 9.3 5.7 12.8 7 9.3 8.3 8 11.8 6.7 8.3 3.2 7 6.7 5.7z"/><path d="M12.2 10.8l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z"/>'),
   calendar: svg('<rect x="1.8" y="3" width="12.4" height="11" rx="1.6"/><path d="M1.8 6.2h12.4M5 1.8v2.4M11 1.8v2.4"/>'),
   fun: svg('<circle cx="8" cy="8" r="6"/><path d="M5.6 7h.01M10.4 7h.01M5.8 10.2q2.2 1.6 4.4 0"/>'),
+  tools: svg('<path d="M9.6 2.6 6.2 6l1.8 1.8 3.4-3.4a2 2 0 0 0-2.8-2.8z"/><path d="M6.2 6 3 9.2a1.6 1.6 0 0 0 0 2.3l1.5 1.5a1.6 1.6 0 0 0 2.3 0L10 9.8"/><path d="M2.6 13.4l1.6-1.6"/>'),
   data: svg('<ellipse cx="8" cy="4" rx="4.6" ry="1.9"/><path d="M3.4 4v8c0 1 2 1.9 4.6 1.9s4.6-.9 4.6-1.9V4"/><path d="M3.4 8c0 1 2 1.9 4.6 1.9S12.6 9 12.6 8"/>'),
   about: svg('<circle cx="8" cy="8" r="6"/><path d="M8 7.4v3.8M8 5.4h.01"/>'),
 };
@@ -180,6 +200,7 @@ function appearanceHtml() {
   const r = KT.resolve(t);
   const bd = t.backdrop;
   const locked = r.style === 'contrast';
+  const dwOp = t.desktop.opacity;
   return `
   <div class="ap-top">
     <div class="ap-top-text">配色只换色相与质感，圆角、间距、字号不动；背景与面板透明度互不影响文字</div>
@@ -259,6 +280,20 @@ function appearanceHtml() {
         <span class="ap-adv-hint">跟随风格自动补偿（单滑块模式，不单独暴露）</span>
       </div>
     </div>
+    </div>
+  </section>
+
+  <section class="st-sec" data-search="${APPEARANCE_SEARCH} 桌面浮窗 贴纸 便签 钉图 不透明度 透明 浓度 dock desktop sticky">
+    <div class="st-sec-title">桌面浮窗<span class="ap-hint">钉到桌面的清单 / 便签（贴图纸）</span></div>
+    <div class="st-card ap-card-body">
+      <div class="ap-slider-row">
+        <span class="ap-slider-lab">不透明度</span>
+        <input type="range" id="ap-dw-opacity" min="55" max="100" step="5" value="${dwOp}"
+               aria-label="桌面浮窗不透明度">
+        <span class="ap-slider-val" data-role="dwval">${dwOp}%</span>
+      </div>
+      <div class="ap-scale"><span>55 通透</span><span>100 实心</span></div>
+      <div class="ap-note">浮窗底色跟随当前风格（现在是 <b>${esc(KT.STYLES[t.style].name)}</b>），只有材质浓淡可调；已钉的浮窗改完立即生效。</div>
     </div>
   </section>`;
 }
@@ -343,6 +378,12 @@ function refreshAppearance(pane) {
     glass.checked = bd.glass !== false && t.style !== 'contrast';
     glass.disabled = t.style === 'contrast';
   }
+
+  // 桌面浮窗不透明度：只在本分区重绘时校准，浮动窗口由主进程广播更新
+  const dw = pane.querySelector('#ap-dw-opacity');
+  if (dw) dw.value = String(t.desktop.opacity);
+  const dwval = pane.querySelector('[data-role="dwval"]');
+  if (dwval) dwval.textContent = `${t.desktop.opacity}%`;
 }
 
 function mountAppearance(pane) {
@@ -456,6 +497,16 @@ function mountAppearance(pane) {
 
   pane.querySelector('#ap-glass')?.addEventListener('change', (e) => {
     commit({ backdrop: { glass: e.target.checked } });
+  });
+
+  // 浮窗不透明度：拖动只改读数，松手才落库（落库后主进程会广播，已钉的浮窗立即变）
+  const dwSlider = pane.querySelector('#ap-dw-opacity');
+  dwSlider?.addEventListener('input', () => {
+    const val = pane.querySelector('[data-role="dwval"]');
+    if (val) val.textContent = `${dwSlider.value}%`;
+  });
+  dwSlider?.addEventListener('change', () => {
+    commit({ desktop: { opacity: Number(dwSlider.value) } });
   });
 }
 
@@ -763,6 +814,27 @@ function funHtml() {
   const s = S.salary || {};
   const buys = Object.entries(c.purchases).slice(0, 3);
   return [
+    // 原来在「趣味功能」菜单里的两个浮窗入口：菜单栏撤掉后落到这里
+    sectionHtml({
+      title: '浮窗入口',
+      desc: '上班鼓励器与今日牛马卡都是独立浮窗，随时可开；全局键 Ctrl+Alt+E 也能直接唤起鼓励器。',
+      rows: [
+        rowHtml({
+          title: '上班鼓励器',
+          desc: '今日进账 / 牛马币 / 工位搭子，边干活边冒话。',
+          ctl: ctlButton('open-encourager', '打开'),
+          search: '鼓励器 上班 进账 摸鱼 牛马币 encourager',
+          id: 'open-encourager',
+        }),
+        rowHtml({
+          title: '今日牛马卡',
+          desc: '把今天的工作量做成一张可保存的卡片。',
+          ctl: ctlButton('open-card', '打开'),
+          search: '牛马卡 卡片 分享 海报 card',
+          id: 'open-card',
+        }),
+      ],
+    }),
     sectionHtml({
       title: '薪资与班次',
       desc: '按「月薪 ÷ 当月工作日 ÷ 每日工时」换算，只统计上班到下班区间内的在岗时间。填一次，进账数字立刻生效；上班鼓励器浮窗右上角的 ⚙ 或「设置」页签改的也是这三项。',
@@ -852,6 +924,13 @@ function mountFun(pane) {
     const el = pane.querySelector(sel);
     if (el) el.addEventListener('change', () => saveEnc((c) => mutate(c, pane)));
   };
+  // 浮窗入口（原「趣味功能」菜单里的两项）
+  pane.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    if (btn.dataset.act === 'open-encourager') runAction('encourager');
+    else if (btn.dataset.act === 'open-card') runAction('encourager-card');
+  });
   bindChange('#st-enc-tone', (c, p) => { c.buddy.tone = p.querySelector('#st-enc-tone').value; });
   bindChange('#st-enc-coins', (c, p) => { c.coinsEnabled = !!p.querySelector('#st-enc-coins').checked; });
   bindChange('#st-enc-share-amount', (c, p) => { c.privacy.shareAmount = !!p.querySelector('#st-enc-share-amount').checked; });
@@ -864,6 +943,92 @@ function mountFun(pane) {
     });
   });
   bindSalaryInputs(pane);
+}
+
+/* ------------------------------ 分区：工具 ------------------------------ */
+
+/**
+ * 工具分区：接管原来「实用工具」菜单里的东西。
+ * 菜单栏撤掉之后这里是唯一入口 —— 重复事项管理与桌面浮窗。
+ * （文本对比 / JSON 查看器 两个独立小工具已整体下线，见 v2.5.0 变更）
+ * 桌面浮窗是异步数据（api.desktop.list()），HTML 先出骨架，mountTools 再填。
+ */
+function toolsHtml() {
+  return [
+    sectionHtml({
+      title: '重复事项与习惯',
+      desc: '统一管理所有重复规则：改周期、暂停、看打卡记录。',
+      rows: [
+        rowHtml({
+          title: '重复事项与习惯',
+          desc: '统一管理所有重复规则：改周期、暂停、看打卡记录。',
+          ctl: ctlButton('open-recurrence', '管理…'),
+          search: '重复 习惯 规则 周期 打卡 recurring repeat habit',
+          id: 'tool-recurrence',
+        }),
+      ],
+    }),
+    sectionHtml({
+      title: '桌面浮窗',
+      desc: '钉在桌面上的清单 / 视图。隐藏不等于删除，随时可以再显示；位置跑偏了点「复位」回到默认角。',
+      html: `<div id="st-desk-list"><span class="st-sub">读取中…</span></div>`,
+    }),
+  ].join('');
+}
+
+async function paintDeskList(pane) {
+  const box = pane.querySelector('#st-desk-list');
+  if (!box) return;
+  let items = [];
+  try {
+    items = await api.desktop.list();
+  } catch (e) {
+    box.innerHTML = `<span class="st-sub">读取桌面浮窗失败：${esc((e && e.message) || e)}</span>`;
+    return;
+  }
+  if (!Array.isArray(items) || !items.length) {
+    box.innerHTML = '<span class="st-sub">还没有钉到桌面的清单。在侧栏分组 / 「今天」/ 「即将到期」上右键 →「钉到桌面」即可。</span>';
+    return;
+  }
+  box.innerHTML = items.map((p) => {
+    const title = esc(p.title || '未命名');
+    const kindText = p.kind === 'note' ? '笔记' : `${p.done || 0}/${p.total || 0}`;
+    const missing = p.missing ? ' · 源已删除' : '';
+    const search = esc(`浮窗 ${p.title || ''} ${kindText}`.toLowerCase());
+    return `<div class="st-row" data-search="${search}" data-item="desk-${p.id}">
+      <div class="st-row-main">
+        <div class="st-row-title">${title}</div>
+        <div class="st-row-desc"><span class="st-sub">${kindText}${missing}${p.visible ? '' : ' · 已隐藏'}</span></div>
+      </div>
+      <div class="st-row-ctl">
+        <button type="button" class="st-btn" data-act="${p.visible ? 'desk-hide' : 'desk-show'}" data-id="${p.id}">${p.visible ? '隐藏' : '显示'}</button>
+        <button type="button" class="st-btn" data-act="desk-reset" data-id="${p.id}">复位</button>
+      </div>
+    </div>`;
+  }).join('');
+  // 异步填进来的行没有经过 build 时的搜索索引：补一次过滤，否则搜索状态下会一直显示
+  const root = pane.closest('.st-shell');
+  if (root) applyFilter(root);
+}
+
+function mountTools(pane) {
+  paintDeskList(pane);
+  pane.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act;
+    try {
+      if (act === 'open-recurrence') { runAction('recurrence'); return; }
+      const id = Number(btn.dataset.id);
+      if (act === 'desk-show') await api.desktop.show(id);
+      else if (act === 'desk-hide') await api.desktop.hide(id);
+      else if (act === 'desk-reset') await api.desktop.resetPosition(id);
+      else return;
+      paintDeskList(pane);
+    } catch (err) {
+      toast(`操作失败：${(err && err.message) || err}`);
+    }
+  });
 }
 
 /* ------------------------------ 分区：数据与备份 ------------------------------ */
@@ -886,8 +1051,30 @@ function fmtTime(ms) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** 只到日（全量备份按天命名的，显示 00:00 只会让人误以为「半夜自动跑」） */
+function fmtDay(ms) {
+  const t = Number(ms);
+  if (!t) return '';
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 /** 长路径单独占一行（右侧放按钮行得通，但路径会被挤成两行说明，看着很乱） */
 const pathLine = (text) => `<span class="st-path" title="${esc(text || '')}">${esc(text || '未知')}</span>`;
+
+/** 全量备份行的说明文字（dataHtml 与「立即备份」完成后的局部刷新共用） */
+function fullBackupDesc(bk) {
+  const full = (bk && bk.full) || {};
+  const text = full.latest
+    ? `最近一次 ${fmtDay(full.latest.time)} · 共 ${full.count} 份 · ${fmtBytes(full.totalBytes)}`
+    : '还没有全量备份（启动 6 分钟后自动检查）';
+  const next = full.nextDueTime
+    ? `每 ${full.intervalDays || 15} 天一份，下一份约 ${fmtDay(full.nextDueTime)}；只保留最近 ${full.keepMonths || 2} 个月`
+    : `每 ${full.intervalDays || 15} 天一份，只保留最近 ${full.keepMonths || 2} 个月`;
+  return `<span class="st-sub">${esc(text)}</span><span class="st-sub">${esc(next)}</span>${pathLine(full.dir || bk.dir)}`;
+}
 
 function dataHtml() {
   const st = S.storage || {};
@@ -913,18 +1100,45 @@ function dataHtml() {
       ],
     }),
     sectionHtml({
-      title: '备份',
+      title: '维护',
+      desc: '低频但需要能找得到的两个动作：归档是「从列表里收起来」，不是删除；导入 Markdown 是迁移入口。',
       rows: [
         rowHtml({
-          title: '自动备份',
-          desc: `<span class="st-sub">${esc(lastText)}</span>${pathLine(bk.dir)}`,
-          ctl: `${ctlButton('open-backup', '打开')}${ctlButton('backup-dialog', '备份与恢复…')}`,
-          search: '快照 snapshot 恢复 还原 backup',
-          id: 'backup',
+          title: '归档已完成任务',
+          desc: '把已完成的任务收进「归档」视图，任务列表里不再占行。随时可从侧栏「归档」取回。',
+          ctl: ctlButton('archive-done', '立即归档'),
+          search: '归档 archive 收起来 清理已完成',
+          id: 'archive-done',
+        }),
+        rowHtml({
+          title: '导入 Markdown 笔记',
+          desc: '从外部笔记工具迁移：正文原样入库，文中的本地图片一起搬进附件目录。',
+          ctl: ctlButton('import-md', '选择文件…'),
+          search: 'markdown md 导入 迁移 import 笔记',
+          id: 'import-md',
         }),
       ],
     }),
-    `<div class="st-foot-note">备份包含数据库与附件清单；保留策略为最近 ${bk.dailyDays || 7} 天每日一份、另有 ${bk.weeklyCount || 4} 份周度快照。恢复会用快照覆盖当前库，操作前会二次确认。</div>`,
+    sectionHtml({
+      title: '备份',
+      rows: [
+        rowHtml({
+          title: '日快照（仅数据库）',
+          desc: `<span class="st-sub">${esc(lastText)}</span>${pathLine(bk.dir)}`,
+          ctl: `${ctlButton('open-backup', '打开')}${ctlButton('backup-dialog', '备份与恢复…')}`,
+          search: '快照 snapshot 恢复 还原 backup 每日',
+          id: 'backup',
+        }),
+        rowHtml({
+          title: '全量备份（含附件与录音）',
+          desc: fullBackupDesc(bk),
+          ctl: `${ctlButton('open-full', '打开')}${ctlButton('full-backup-now', '立即备份')}`,
+          search: '全量 完整 zip 附件 录音 换机 迁移 半个月 两个月 full',
+          id: 'backup-full',
+        }),
+      ],
+    }),
+    `<div class="st-foot-note">日快照只保数据库（任务 / 笔记 / 会议记录 / 设置），保留最近 ${bk.dailyDays || 7} 天每日 1 份 + ${bk.weeklyCount || 4} 份周度快照；全量备份与主界面「📤 备份」导出同构，含附件与录音，每 ${(bk.full && bk.full.intervalDays) || 15} 天自动一份、只留最近 ${(bk.full && bk.full.keepMonths) || 2} 个月，可直接在「📥 导入」里恢复。恢复会用备份覆盖当前库，操作前会二次确认。</div>`,
   ].join('');
 }
 
@@ -934,13 +1148,39 @@ function mountData(pane) {
     if (!btn) return;
     const act = btn.dataset.act;
     try {
-      if (act === 'open-data' || act === 'open-backup') {
-        const r = await api.env.openPath(act === 'open-data' ? 'data' : 'backup');
+      if (act === 'open-data' || act === 'open-backup' || act === 'open-full') {
+        const kind = act === 'open-data' ? 'data' : act === 'open-full' ? 'backup-full' : 'backup';
+        const r = await api.env.openPath(kind);
         if (r && !r.ok) toast(r.reason || '无法打开目录');
       } else if (act === 'change-dir') {
         await api.app.openStorageDialog();
       } else if (act === 'backup-dialog') {
         await api.app.openBackupDialog();
+      } else if (act === 'archive-done') {
+        // 原 File 菜单项：只发动作，真正的归档仍由 ui.js 的 archiveCompleted() 执行
+        runAction('archive-done');
+      } else if (act === 'import-md') {
+        runAction('import-md');
+      } else if (act === 'full-backup-now') {
+        // 打包大包时主进程同步写盘，按钮先锁住并换文案，避免用户以为没反应连点
+        if (btn.disabled) return;
+        const label = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '备份中…';
+        try {
+          const r = await api.env.runFullBackup();
+          if (r && r.ok) {
+            toast(`全量备份完成 · ${fmtBytes(r.size)}`);
+            S.backup = await api.env.getBackupInfo().catch(() => S.backup);
+            const descEl = pane.querySelector('[data-item="backup-full"] .st-row-desc');
+            if (descEl) descEl.innerHTML = fullBackupDesc(S.backup || {});
+          } else {
+            toast((r && r.reason) || '全量备份失败');
+          }
+        } finally {
+          btn.disabled = false;
+          btn.textContent = label;
+        }
       }
     } catch (err) {
       toast(`操作失败：${(err && err.message) || err}`);
@@ -984,6 +1224,13 @@ function aboutHtml() {
           search: 'update 更新 升级 版本 检查更新 新版本',
         }),
         rowHtml({ title: '开源许可', ctl: ctlInfo('MIT', { mono: false }), search: 'license 协议' }),
+        rowHtml({
+          title: '退出 Knodo',
+          desc: '窗口右上角 ✕ 只是最小化到托盘（后台继续提醒）；要连托盘一起退掉用这里。',
+          ctl: ctlButton('quit', '退出'),
+          search: '退出 关闭 托盘 quit exit',
+          id: 'quit-app',
+        }),
         rowHtml({ title: '数据目录', desc: pathLine(st.dir), search: '路径' }),
         rowHtml({ title: '备份目录', desc: pathLine(bk.dir), search: '路径 snapshot' }),
       ],
@@ -1003,6 +1250,9 @@ function mountAbout(pane) {
         if (r && !r.ok) toast(r.reason || '无法打开链接');
       } else if (btn.dataset.act === 'check-update') {
         await api.app.checkUpdate();
+      } else if (btn.dataset.act === 'quit') {
+        // 原 File 菜单的 Exit：退出前主进程会走 isQuitting，托盘与定时器一起收
+        await api.app.quit();
       } else if (btn.dataset.act === 'qr') {
         openSponsorQr();
       }
@@ -1032,6 +1282,7 @@ const PANES = [
   { id: 'keys', group: 'base', label: '快捷键', icon: ICON.keys, build: keysPaneHtml, mount: null },
   { id: 'ai', group: 'feature', label: 'AI 与语音', icon: ICON.ai, build: aiHtml, mount: mountAi },
   { id: 'calendar', group: 'feature', label: '日历', icon: ICON.calendar, build: calendarHtml, mount: mountCalendar },
+  { id: 'tools', group: 'feature', label: '工具', icon: ICON.tools, build: toolsHtml, mount: mountTools },
   { id: 'fun', group: 'feature', label: '趣味功能', icon: ICON.fun, build: funHtml, mount: mountFun },
   { id: 'data', group: 'data', label: '数据与备份', icon: ICON.data, build: dataHtml, mount: mountData },
   { id: 'about', group: 'data', label: '关于', icon: ICON.about, build: aboutHtml, mount: mountAbout },
@@ -1174,7 +1425,8 @@ export async function openSettings(paneId = '') {
     : PANE_IDS.includes(remembered) ? remembered : 'general';
   query = '';
 
-  await openPanelModal({
+  // 返回弹窗的关闭 Promise：调用方（标题栏齿轮）靠它点亮 / 熄灭激活态
+  return openPanelModal({
     title: '设置',
     className: 'modal-settings',
     html: shellHtml(),

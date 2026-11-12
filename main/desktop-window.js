@@ -36,7 +36,8 @@ const MAX_W = 460;
 const MAX_H = 520;
 const HEAD_H = 42;
 /**
- * 贴顶 dock（dock: 'top'）：一条贴在屏幕工作区顶边的窄条，收起 30px、悬停展开 360px。
+ * 贴边 dock：贴在屏幕工作区某一条边上，静止时收成一条窄边、悬停展开。
+ * 三个方向（dock 字段）：'top' 横条 / 'left' 侧吸 / 'right' 侧吸。
  * 它复用同一套窗口 / 折叠 / 自适应高度，只是尺寸与位置另算一套。
  */
 const DOCK_W = 420;
@@ -44,7 +45,21 @@ const DOCK_HEAD_H = 30;
 const DOCK_H = 360;
 /** 窗口最小高度：dock 收起是 30，系统最小高度必须比它更小，否则会被卡回 40（"收起没生效"） */
 const DOCK_MIN_H = 28;
-/** 把 dock 拖离顶边超过这个距离 = 用户想解除贴顶 */
+/**
+ * 侧吸（dock: 'left' | 'right'）：贴屏幕左/右边缘的竖条。
+ * 收起 30px 宽（只有竖排标题与读数），悬停横向展开成 320px 的清单。
+ * 收起态高度保持在展开高度 —— 30×120 的一条既难点也不好找。
+ */
+const SIDE_W = 320;
+const SIDE_HEAD_W = 30;
+const SIDE_H = 420;
+const SIDE_MIN_H = 200;
+/** 窗口最小宽度（收起只有 30px，系统 minWidth 必须放得下它） */
+const SIDE_MIN_W = 28;
+/** 合法的吸边位置 */
+const DOCK_SIDES = ['top', 'left', 'right'];
+const isSideDock = (dock) => dock === 'left' || dock === 'right';
+/** 把 dock 拖离所吸的那条边超过这个距离 = 用户想解除吸边 */
 const DOCK_UNDOCK_GAP = 40;
 /** 圆角半径，必须与 renderer/css/desktop.css 的 --dw-r 一致（DIP） */
 const WINDOW_RADIUS = 14;
@@ -107,9 +122,9 @@ function normalizeProjection(raw) {
     },
     pinMode: ['always', 'hover', 'desktop'].includes(raw.pinMode) ? raw.pinMode : 'always',
     collapsed: !!raw.collapsed,
-    // 贴顶 dock：'top' 表示贴在屏幕工作区顶边；null = 普通浮窗。
+    // 贴边 dock：'top' / 'left' / 'right' 表示吸在工作区的那条边上；null = 普通浮窗。
     // 存进 projection 而不是运行时状态，重启后还在原位。
-    dock: raw.dock === 'top' ? 'top' : null,
+    dock: DOCK_SIDES.includes(raw.dock) ? raw.dock : null,
     // 「保持展开」：dock 悬停展开后手动钉住，鼠标移开也不收回
     dockPinned: !!raw.dockPinned,
   };
@@ -343,26 +358,51 @@ function windowOf(id) {
 }
 
 /**
- * dock 的落点：贴工作区顶边（y === wa.y，不留吸附缝），水平靠右留 24px。
- * 不做整宽 —— 整宽会压住浏览器的标签栏和窗口关闭按钮，而且看起来像系统栏而不是工具。
- * @param {number} height 高度（收起 30 / 展开按内容）
- * @param {number|null} [preferredX] 用户拖到顶部时的横向落点：记住它，别把便签甩回右上角
+ * 吸边窗的落点（**内容区**坐标）。
+ *  - top：贴工作区顶边（y === wa.y，不留吸附缝），水平靠右留 24px；
+ *  - left / right：贴工作区左/右边，纵向是用户摆的位置（默认从上三分之一处开始）。
+ * 不做整宽 / 整高 —— 整条会压住浏览器的标签栏和窗口关闭按钮，看起来像系统栏而不是工具。
+ * @param {'top'|'left'|'right'} dock
+ * @param {{h?: number, w?: number, along?: number|null}} [opts]
+ *        h 高度方向尺寸（top = 高度，side = 高度）；w 宽度（side 收起 30 / 展开 320）；
+ *        along 沿边方向的用户落点：top 是 x，side 是 y
  */
-function dockGeometry(height, preferredX) {
+function dockGeometry(dock, opts = {}) {
   const d = screen.getPrimaryDisplay();
   const wa = d.workArea;
-  const h = clamp(Math.round(height || DOCK_HEAD_H), DOCK_MIN_H, MAX_H);
+  const along = opts.along;
+  if (isSideDock(dock)) {
+    const w = clamp(Math.round(opts.w || SIDE_W), SIDE_MIN_W, SIDE_W);
+    const h = clamp(Math.round(opts.h || SIDE_H), SIDE_MIN_H, MAX_H);
+    // 纵向落点夹回工作区：换个分辨率 / 副屏拔掉后不能让它掉出去
+    const y = Number.isFinite(along)
+      ? clamp(Math.round(along), wa.y, wa.y + wa.height - h)
+      : wa.y + Math.round((wa.height - h) / 3);
+    return {
+      x: sideDockContentX(dock, wa, w),
+      y,
+      w,
+      h,
+      displayId: d.id,
+    };
+  }
+  const h = clamp(Math.round(opts.h || DOCK_HEAD_H), DOCK_MIN_H, MAX_H);
   const right = wa.x + wa.width - DOCK_W - 24;
-  const x = Number.isFinite(preferredX)
-    ? clamp(Math.round(preferredX), wa.x, wa.x + wa.width - DOCK_W)
+  const x = Number.isFinite(along)
+    ? clamp(Math.round(along), wa.x, wa.x + wa.width - DOCK_W)
     : right;
   return {
-    x,
-    y: wa.y,
-    w: DOCK_W,
-    h,
-    displayId: d.id,
+    x, y: wa.y, w: DOCK_W, h, displayId: d.id,
   };
+}
+
+/**
+ * 侧吸窗贴边时的**内容区** x。
+ * 不能用外框坐标：Windows 的透明无边框窗外框比内容各宽出约 4px，
+ * 按外框贴边会在屏幕边缘留一条缝（看起来像没吸住）。
+ */
+function sideDockContentX(dock, wa, w) {
+  return dock === 'left' ? wa.x : wa.x + wa.width - w;
 }
 
 /** 默认落点：主屏工作区右侧、距边 24px、垂直居中偏上；已有浮窗则向下错开 48px */
@@ -470,10 +510,19 @@ function openWindow(p) {
     show(p.id);
     return wins.get(p.id);
   }
-  const isDock = p.dock === 'top';
-  // dock 的落点每次重算：贴顶是它的定义，不该被上一次的坐标带偏（横向位置是用户摆的，要留）
+  const dock = p.dock;
+  const isDock = !!dock;
+  const sideDock = isSideDock(dock);
+  // 吸边窗的落点每次重算：贴哪条边是它的定义，不该被上一次的坐标带偏
+  // （沿边位置是用户摆的，要留：top 记 x，side 记 y）
   const geo = isDock
-    ? dockGeometry(p.collapsed ? DOCK_HEAD_H : DOCK_H, p.geometry.x)
+    ? dockGeometry(dock, sideDock
+      ? {
+        w: p.collapsed ? SIDE_HEAD_W : SIDE_W,
+        h: p.geometry.h || SIDE_H,
+        along: p.geometry.y,
+      }
+      : { h: p.collapsed ? DOCK_HEAD_H : DOCK_H, along: p.geometry.x })
     : (p.geometry.x == null || p.geometry.y == null
       ? defaultGeometry(p.geometry.h)
       : p.geometry);
@@ -482,27 +531,33 @@ function openWindow(p) {
     x: geo.x, y: geo.y, width: geo.w, height: geo.h,
   });
   const wa = d.workArea;
-  const w = isDock ? DOCK_W : clamp(geo.w, MIN_W, MAX_W);
-  const minH = isDock ? DOCK_MIN_H : HEAD_H;
-  const h = clamp(p.collapsed ? minH : geo.h, minH, MAX_H);
-  const x = clamp(geo.x, wa.x, wa.x + wa.width - w);
-  // dock 必须严丝合缝贴住顶边：clamp 的下界就是 wa.y，不会再被 SNAP_INSET 抬起
-  const y = isDock ? wa.y : clamp(geo.y, wa.y, wa.y + wa.height - h);
+  const w = isDock ? geo.w : clamp(geo.w, MIN_W, MAX_W);
+  const minH = sideDock ? SIDE_MIN_H : (isDock ? DOCK_MIN_H : HEAD_H);
+  // 侧吸收起时高度保持展开高度：30×120 的一条既难点也不好找
+  const h = sideDock
+    ? clamp(p.collapsed ? Math.max(SIDE_MIN_H, geo.h) : geo.h, SIDE_MIN_H, MAX_H)
+    : clamp(p.collapsed ? minH : geo.h, minH, MAX_H);
+  const x = isDock ? geo.x : clamp(geo.x, wa.x, wa.x + wa.width - w);
+  // 吸边窗必须严丝合缝贴住那条边：不再被 SNAP_INSET 抬起
+  const y = dock === 'top' ? wa.y : clamp(geo.y, wa.y, wa.y + wa.height - h);
 
   const win = new BrowserWindow({
     x, y, width: w, height: h,
     // 尺寸一律按「内容区」算：Windows 的无边框窗口仍有 3px 左右的隐形边框，
     // 按外框设 286 会得到 292 的内容宽，圆角与内描边就跟设计稿对不上。
     useContentSize: true,
-    // min/max 留 8px 余量（这几个参数按外框算），真正的上下限在 JS 里夹
-    minWidth: MIN_W - 8, minHeight: DOCK_MIN_H - 2,
-    maxWidth: MAX_W + 8, maxHeight: MAX_H + 8,
+    // min/max 留 8px 余量（这几个参数按外框算），真正的上下限在 JS 里夹。
+    // 侧吸收起只有 30px 宽，minWidth 必须放得下它，否则会被系统卡回 40+（"收起没生效"）
+    minWidth: isDock ? SIDE_MIN_W : MIN_W - 8,
+    minHeight: DOCK_MIN_H - 2,
+    maxWidth: MAX_W + 8,
+    maxHeight: MAX_H + 8,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
     hasShadow: false,
     thickFrame: false,
-    // dock 宽度固定 420：贴顶条拖宽没有意义，还会破坏「同一条」的视觉
+    // 吸边窗尺寸固定（顶条 420 宽 / 侧条 30~320 宽）：拖宽没有意义，还会破坏「同一条」的视觉
     resizable: !isDock,
     maximizable: false,
     minimizable: false,
@@ -522,9 +577,9 @@ function openWindow(p) {
   wins.set(p.id, win);
   applyPinMode(win, p);
   applyContentSize(win, w, h);
-  // dock 必须按**内容区**贴顶：Windows 的透明无边框窗外框比内容高 8px，
-  // 按外框设 y=wa.y 会在屏幕顶部露出一条 8px 的空隙（看起来像没贴住）。
-  if (isDock) win.setContentBounds({ x, y: wa.y, width: DOCK_W, height: h });
+  // 吸边窗必须按**内容区**贴边：Windows 的透明无边框窗外框比内容宽 / 高 8px，
+  // 按外框设坐标会在屏幕边缘露出一条缝（看起来像没吸住）。
+  if (isDock) win.setContentBounds({ x, y, width: w, height: h });
 
   win.loadFile(path.join(__dirname, '..', 'renderer', 'desktop.html'), { query: { id: p.id } });
 
@@ -547,8 +602,8 @@ function openWindow(p) {
   win.on('moved', () => {
     if (win.isDestroyed()) return;
     const cur = findProjection(p.id) || p;
-    // dock：拖离顶边 = 解除贴顶；还贴着就钉回 wa.y（拖动头部时系统会给出一条缝）
-    if (cur.dock === 'top') { handleDockMoved(win, cur); return; }
+    // dock：拖离所吸的那条边 = 解除吸边；还贴着就钉回原边（拖动时系统会给出一条缝）
+    if (cur.dock) { handleDockMoved(win, cur); return; }
     if (cur.pinMode === 'hover') win.setAlwaysOnTop(true, 'floating');
     // 推到屏幕顶边 → 自动变回便签条（用户明确要的手势）；顶边状态跳过吸附，否则会被内缩 12px
     if (!maybeAutoDock(win, cur)) snapWindow(win, cur);
@@ -584,13 +639,14 @@ function openWindow(p) {
 }
 
 /**
- * 解除贴顶（拖离顶边 / 菜单里主动取消）。
- * - 高度恢复成展开态、宽度回默认：dock 是 420 宽，普通浮窗是 286；
+ * 解除吸边（拖离那条边 / 菜单里主动取消）。
+ * - 高度恢复成展开态、宽度回默认：吸边窗是 30~420 宽，普通浮窗是 286；
  * - 通知渲染层重新量一次高度（它收到 desktop:undocked 会自己 fit）。
  */
 function undock(id) {
   const p = findProjection(id);
-  if (!p || p.dock !== 'top') return false;
+  if (!p || !p.dock) return false;
+  const from = p.dock;
   patchProjection(id, {
     dock: null, dockPinned: false, collapsed: false, geometry: { h: 320 },
   });
@@ -600,10 +656,11 @@ function undock(id) {
     const b = win.getBounds();
     const wa = screen.getDisplayMatching(b).workArea;
     win.setPosition(
-      clamp(b.x, wa.x, wa.x + wa.width - DEF_W),
+      clamp(b.x, wa.x, wa.x + wa.width - b.width),
       clamp(b.y, wa.y, wa.y + wa.height - b.height),
     );
-    win.webContents.send('desktop:undocked');
+    // 带上原来吸的那条边：渲染层的提示文案要区分「拖离顶边」和「拖离侧边」
+    win.webContents.send('desktop:undocked', from);
     schedulePersist(id, win);
   }
   notifyProjections();
@@ -611,13 +668,18 @@ function undock(id) {
 }
 
 /**
- * dock 横向被拖出所有显示器之外时，算一个能抓回来的落点（否则这条 30px 窄条就彻底失踪了）。
- * 判据是「在任意显示器上还露出 60px 以上」—— 只在真出界时动手，
- * 否则跨屏横向拖动会被夹在第一块屏上，表现为「拖不到另一个显示器」。
+ * 吸边窗沿边方向被拖出所有显示器之外时，算一个能抓回来的落点（否则这条 30px 窄条就彻底失踪了）。
+ * 判据是「沿边方向在任意显示器上还露出足够多」（顶条看宽度，侧条看高度）——
+ * 只在真出界时动手，否则跨屏拖动会被夹在第一块屏上，表现为「拖不到另一个显示器」。
  */
-function dockRescuePoint(b) {
+function dockRescuePoint(b, dock) {
+  const side = isSideDock(dock);
   const reachable = screen.getAllDisplays().some((d) => {
     const wa = d.workArea;
+    if (side) {
+      const h = Math.min(b.y + b.height, wa.y + wa.height) - Math.max(b.y, wa.y);
+      return h >= RESCUE_H * 4;
+    }
     return Math.min(b.x + b.width, wa.x + wa.width) - Math.max(b.x, wa.x) >= RESCUE_W;
   });
   if (reachable) return null;
@@ -626,34 +688,49 @@ function dockRescuePoint(b) {
     y: b.y + Math.round(b.height / 2),
   });
   const wa = d.workArea;
+  if (side) {
+    return {
+      x: sideDockContentX(dock, wa, b.width),
+      y: clamp(b.y, wa.y, wa.y + wa.height - b.height),
+    };
+  }
   return { x: clamp(b.x, wa.x, wa.x + wa.width - DOCK_W), y: wa.y };
 }
 
-/** dock 的横向位置是用户摆的（纵向永远贴顶）：单独落盘，schedulePersist 对 dock 整体跳过 */
-const dockXTimers = new Map();
-function scheduleDockX(id, win) {
-  const old = dockXTimers.get(id);
+/**
+ * 吸边窗的沿边位置是用户摆的（贴哪条边永远由工作区决定）：单独落盘。
+ * top 记 x，side 记 y —— schedulePersist 对吸边窗整体跳过。
+ */
+const dockAlongTimers = new Map();
+function scheduleDockAlong(id, win, dock) {
+  const old = dockAlongTimers.get(id);
   if (old) clearTimeout(old);
-  dockXTimers.set(id, setTimeout(() => {
-    dockXTimers.delete(id);
+  dockAlongTimers.set(id, setTimeout(() => {
+    dockAlongTimers.delete(id);
     if (!win || win.isDestroyed()) return;
-    patchProjection(id, { geometry: { x: win.getBounds().x } });
+    const b = win.getBounds();
+    patchProjection(id, { geometry: dock === 'top' ? { x: b.x } : { y: b.y } });
   }, 500));
 }
 
 let undocking = false;
 /**
- * dock 被拖动后的处理：
- *  - 还贴顶 → 原地钉回（dock 永远是「贴在顶边」的），横向位置照用户的来；
- *  - 往下拉超过 40px → 解除贴顶变回普通浮窗。
- * 「往下拉」按**累积**算：拖动时每个 moved 事件可能只走十几像素，单看一次会被门槛挡住，
- * 一钉回顶边又归零 —— 表现就是「慢慢拖，怎么都拖不下来」。
+ * 吸边窗被拖动后的处理：
+ *  - 还贴着那条边 → 原地钉回（吸边窗永远是「贴在那条边上」的），沿边位置照用户的来；
+ *  - 拖离超过 40px → 解除吸边变回普通浮窗（顶条往下拉、左条往右拉、右条往左拉）。
+ * 「拉离」按**累积**算：拖动时每个 moved 事件可能只走十几像素，单看一次会被门槛挡住，
+ * 一钉回边又归零 —— 表现就是「慢慢拖，怎么都拖不下来」。
  */
 function handleDockMoved(win, cur) {
   if (undocking || win.isDestroyed()) return;
-  const b = win.getBounds();
-  const wa = screen.getDisplayMatching(b).workArea;
-  const pull = b.y - wa.y;
+  const dock = cur.dock;
+  const side = isSideDock(dock);
+  // 一律按内容区判断：外框那圈隐形边框会把「贴住」误判成「拖离了 8px」
+  const cb = win.getContentBounds();
+  const wa = screen.getDisplayMatching(cb).workArea;
+  const pull = dock === 'top'
+    ? cb.y - wa.y
+    : (dock === 'left' ? cb.x - wa.x : (wa.x + wa.width) - (cb.x + cb.width));
   if (pull > 0) {
     win.__dwPull = Math.max(Number(win.__dwPull) || 0, pull);
     const t = win.__dwPullTimer;
@@ -661,10 +738,20 @@ function handleDockMoved(win, cur) {
     win.__dwPullTimer = setTimeout(() => { win.__dwPull = 0; }, 600);
   }
   if ((Number(win.__dwPull) || 0) < DOCK_UNDOCK_GAP) {
-    const rescue = dockRescuePoint(b);
-    const x = rescue ? rescue.x : b.x;
-    if (b.y !== wa.y || x !== b.x) win.setPosition(x, wa.y);
-    if (x !== b.x) scheduleDockX(cur.id, win);
+    let x = cb.x;
+    let y = cb.y;
+    if (dock === 'top') {
+      const rescue = dockRescuePoint(cb, dock);
+      y = wa.y;
+      if (rescue) x = rescue.x;
+    } else {
+      x = sideDockContentX(dock, wa, cb.width);
+      y = clamp(cb.y, wa.y, wa.y + wa.height - cb.height);
+    }
+    if (x !== cb.x || y !== cb.y) {
+      win.setContentBounds({ x, y, width: cb.width, height: cb.height });
+      scheduleDockAlong(cur.id, win, dock);
+    }
     return;
   }
   undocking = true;
@@ -679,40 +766,74 @@ function handleDockMoved(win, cur) {
  * 已销毁的句柄；而且原地转能保住滚动位置、没有重新加载的白闪。
  * 宽度 420 / 贴顶 30 这些 dock 规格在运行时补上（setContentBounds；宽度由 renderer 锁死）。
  */
+/**
+ * 窗口最小尺寸跟着「是不是侧吸」走。
+ * 侧吸收起只有 30px 宽，而普通浮窗建窗时写的是 minWidth 232 —— 原地转换时不放开它，
+ * 窗口就永远缩不到 30（表现为「侧吸只是变窄到 232，一条厚边挡在屏幕上」）。
+ * 转换回普通浮窗时再写回去，免得之后被拖成一条缝。
+ */
+function applyMinSize(win, dock) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.setMinimumSize(
+      isSideDock(dock) ? SIDE_MIN_W : MIN_W - 8,
+      DOCK_MIN_H - 2,
+    );
+  } catch (e) { /* 平台不支持 / 窗口正在关闭 */ }
+}
+
 let dockConverting = false;
-function convertToDock(id, xHint) {
+/**
+ * 普通浮窗 → 吸到指定边（顶边横条 / 左边缘 / 右边缘）。
+ * **原地转**，不重建窗口：拖动到边缘自动吸附依赖「窗口一直在」，重建会让原生拖动循环抓着一个
+ * 已销毁的句柄；而且原地转能保住滚动位置、没有重新加载的白闪。
+ * 尺寸（顶条 420×30、侧条 320×h / 收起 30×h）在运行时补上（setContentBounds；宽度由 renderer 锁死）。
+ * @param {string} id
+ * @param {'top'|'left'|'right'} side
+ * @param {number|null} [along] 沿边方向的落点（拖到边缘时的坐标），不传就取默认
+ */
+function convertToDock(id, side, along) {
   const cur = findProjection(id);
-  if (!cur || cur.dock === 'top' || dockConverting) return false;
-  // 同一视图已经有一条贴顶条：把人带到那一条，不造第二个同源窗口
-  const dup = readAll().find((p) => p.id !== id && p.kind === cur.kind && p.refId === cur.refId && p.dock === 'top');
+  const dock = DOCK_SIDES.includes(side) ? side : 'top';
+  if (!cur || cur.dock === dock || dockConverting) return false;
+  // 同一视图已经吸在同一条边上：把人带到那一条，不造第二个同源窗口
+  const dup = readAll().find((p) => p.id !== id && p.kind === cur.kind && p.refId === cur.refId && p.dock === dock);
   if (dup) {
     openWindow(dup);
     return true;
   }
   dockConverting = true;
   try {
-    const geo = dockGeometry(DOCK_HEAD_H, xHint);
+    const win = windowOf(id);
+    const sideMode = isSideDock(dock);
+    // 侧条是竖的：高度沿用当前窗口的内容高度（320 的浮窗 / 360 的顶条都合适），
+    // 否则会变成一条 200px 的小竖条，跟窗口原来的体量完全不搭
+    const contentH = win ? win.getContentSize()[1] : (cur.geometry.h || SIDE_H);
+    const h = clamp(Math.round(contentH) || SIDE_H, SIDE_MIN_H, MAX_H);
+    const geo = dockGeometry(dock, sideMode
+      ? { w: SIDE_HEAD_W, h, along }
+      : { h: DOCK_HEAD_H, along });
     // 先落投影再动窗口：后面的 setContentBounds 会触发 moved，那时必须已经知道自己是 dock，
     // 否则会被普通浮窗的吸附规则按 12px 内缩重摆一次。
     patchProjection(id, {
-      dock: 'top',
-      // dock 必须是「常在最前」：贴桌面档会被最大化的主窗口盖住，等于看不见
+      dock,
+      // 吸边窗必须是「常在最前」：贴桌面档会被最大化的主窗口盖住，等于看不见
       pinMode: 'always',
       collapsed: true,
       dockPinned: false,
-      geometry: {
-        x: geo.x, y: geo.y, w: DOCK_W, h: DOCK_HEAD_H, displayId: geo.displayId,
-      },
+      geometry: sideMode
+        ? {
+          x: geo.x, y: geo.y, w: SIDE_W, h: geo.h, displayId: geo.displayId,
+        }
+        : {
+          x: geo.x, y: geo.y, w: DOCK_W, h: DOCK_HEAD_H, displayId: geo.displayId,
+        },
     });
-    const win = windowOf(id);
     if (win) {
-      // 宽度改由 renderer 侧锁（dock 态隐藏缩放手柄、desktop:size 直接返回 false）：
-      // 这里不动 resizable —— 无边框窗本来就没有可抓的边，改了反而多一个「和 pin 出来的
-      // dock 不一样」的差异（原生 dock 建窗时是 resizable:false，实测拖动行为一致）
       win.setContentBounds({
-        x: geo.x, y: geo.y, width: DOCK_W, height: DOCK_HEAD_H,
+        x: geo.x, y: geo.y, width: geo.w, height: geo.h,
       });
-      win.webContents.send('desktop:redocked');
+      win.webContents.send('desktop:redocked', dock);
     } else {
       // 窗口还没建（例如启动阶段）：直接按 dock 规格开一个
       const next = findProjection(id);
@@ -725,9 +846,9 @@ function convertToDock(id, xHint) {
   return true;
 }
 
-/** 菜单 / 顶栏 📌 走这条：和拖拽自动贴边是同一个转换 */
-function redock(id) {
-  return convertToDock(id, null);
+/** 菜单 / 顶栏 📌 走这条：和拖拽自动吸边是同一个转换 */
+function redock(id, side) {
+  return convertToDock(id, side || 'top', null);
 }
 
 /** 鼠标左键是否还按着。原生拖动没有「松开」事件，只能问系统；
@@ -750,7 +871,7 @@ function isPrimaryButtonDown() {
   return mouseDownFn ? mouseDownFn() : null;
 }
 
-/** 拖到顶边就算「推到底」的范围（DIP）：比吸附的 12px 更紧，免得随手一放就变便签 */
+/** 拖到任一条边就算「推到底」的范围（DIP）：比吸附的 12px 更紧，免得随手一放就吸附 */
 const DOCK_AUTO_GAP = 6;
 /** 最后一次移动后等这么久再转：确认用户真的松手了 */
 const DOCK_AUTO_DELAY = 260;
@@ -758,22 +879,26 @@ const DOCK_AUTO_DELAY = 260;
 let autoDockTimer = null;
 
 /**
- * 拖到屏幕顶边 → 自动变回贴顶条。
+ * 拖到屏幕边缘 → 自动吸上去（顶边成横条、左右边成侧吸）。
  * 两个前提缺一不可：
  *  ① 动过的是**用户**（`will-move` 只在用户拖动时触发）—— 否则 fit() 把窗口顶到 wa.y、
  *     或者开窗时把越界坐标夹回工作区，都会莫名其妙变成便签；
- *  ② 已经松手（问 GetAsyncKeyState）—— 拖动中途转换会让窗口被 dock 规则按在顶边，
+ *  ② 已经松手（问 GetAsyncKeyState）—— 拖动中途转换会让窗口被 dock 规则按在边上，
  *     用户还攥着鼠标，下一次移动就变成「贴上去又掉下来」的闪烁。
  */
 function maybeAutoDock(win, cur) {
-  if (cur.dock === 'top') return false;
+  if (cur.dock) return false;
   const b = win.getBounds();
   const wa = screen.getDisplayMatching(b).workArea;
-  if (b.y > wa.y + DOCK_AUTO_GAP) { cancelAutoDock(); return false; }
+  // 三条边任意一条推到底都算想吸上去；角上按 顶 → 左 → 右 取一个（顶条最常用）
+  const near = b.y <= wa.y + DOCK_AUTO_GAP ? 'top'
+    : (b.x <= wa.x + DOCK_AUTO_GAP ? 'left'
+      : (b.x + b.width >= wa.x + wa.width - DOCK_AUTO_GAP ? 'right' : null));
+  if (!near) { cancelAutoDock(); return false; }
   const byUser = Date.now() - Number(win.__dwDragAt || 0) < 5000;
   if (!byUser) return false;
-  armAutoDock(win, cur);
-  return true; // 顶边状态不再走吸附（会内缩 12px，看着就没贴住）
+  armAutoDock(win, cur, near);
+  return true; // 贴边状态不再走吸附（会内缩 12px，看着就没贴住）
 }
 
 function cancelAutoDock() {
@@ -783,19 +908,25 @@ function cancelAutoDock() {
   }
 }
 
-function armAutoDock(win, cur) {
+function armAutoDock(win, cur, side) {
   cancelAutoDock();
   const attempt = (n) => {
     autoDockTimer = setTimeout(() => {
       autoDockTimer = null;
       const w = windowOf(cur.id);
       if (!w || w.isDestroyed()) return;
-      const b = w.getBounds();
-      const wa = screen.getDisplayMatching(b).workArea;
-      if (b.y > wa.y + DOCK_AUTO_GAP) return; // 又拖走了
+      const cb = w.getContentBounds();
+      const wa = screen.getDisplayMatching(cb).workArea;
+      // 又拖走了（三条边各自的方向）
+      const stillNear = side === 'top'
+        ? cb.y <= wa.y + DOCK_AUTO_GAP
+        : (side === 'left'
+          ? cb.x <= wa.x + DOCK_AUTO_GAP
+          : cb.x + cb.width >= wa.x + wa.width - DOCK_AUTO_GAP);
+      if (!stillNear) return;
       if (isPrimaryButtonDown() === true && n < 20) { attempt(n + 1); return; }
       win.__dwDragAt = 0;
-      convertToDock(cur.id, b.x);
+      convertToDock(cur.id, side, side === 'top' ? cb.x : cb.y);
     }, DOCK_AUTO_DELAY);
   };
   attempt(0);
@@ -840,9 +971,10 @@ function rescueOffscreen(win) {
 
 /** 落盘几何：拖拽过程可能有几十次 moved，松手 400ms 后写一次就够 */
 function schedulePersist(id, win) {
-  // dock 的位置与高度每次按工作区重算，记忆它反而会让它「跑位」（例如收起时的 30px 被当成展开高度）
+  // 吸边窗的位置与尺寸每次按工作区重算，记忆它反而会让它「跑位」
+  // （例如收起时的 30px 被当成展开高度 / 高度被记成 30 宽的布局结果）
   const cur = findProjection(id);
-  if (cur && cur.dock === 'top') return;
+  if (cur && cur.dock) return;
   const old = persistTimers.get(id);
   if (old) clearTimeout(old);
   persistTimers.set(id, setTimeout(() => {
@@ -1032,11 +1164,12 @@ function focusNth(n) {
  * 钉一个投影到桌面。
  * @param {string} kind KINDS 之一
  * @param {number|null} refId 分组 id / 笔记 id（只有 group 与 note 用）
- * @param {{dock?: 'top'}} [opts] dock='top' 时钉成贴顶条（默认收起 30px），否则是普通浮窗
+ * @param {{dock?: 'top'|'left'|'right'}} [opts] dock 有值时钉成吸边窗（默认收起），否则是普通浮窗
  */
 function pin(kind, refId, opts = {}) {
   if (!KINDS.includes(kind)) throw new Error('不支持的浮窗类型');
-  const dock = opts && opts.dock === 'top' ? 'top' : null;
+  const dock = DOCK_SIDES.includes(opts && opts.dock) ? opts.dock : null;
+  const sideDock = isSideDock(dock);
   const needsRef = kind === 'group' || kind === 'note';
   const rid = needsRef ? Number(refId) : null;
   if (kind === 'group') {
@@ -1051,7 +1184,7 @@ function pin(kind, refId, opts = {}) {
   const list0 = readAll();
   // 非 group 的 kind 的 refId 恒为 null，这条判断天然就是单例约束：
   // 再点一次「钉到桌面」只会 focus 已有窗口，不会贴出好几个一模一样的视图投影。
-  // dock 与普通浮窗分开算：同一个视图可以既有一条贴顶条、又有一个浮窗，互不顶替。
+  // 吸边窗与普通浮窗分开算：同一个视图可以既吸在边上、又有一个浮窗，互不顶替。
   const exist = list0.find((p) => p.kind === kind && p.refId === rid && (p.dock || null) === dock);
   if (exist) {
     openWindow(exist);
@@ -1062,19 +1195,22 @@ function pin(kind, refId, opts = {}) {
   }
   const p = normalizeProjection({
     id: newId(), kind, refId: rid,
-    // dock 必须总在最前：用「贴桌面」档会被最大化的主窗口盖住，等于看不见
+    // 吸边窗必须总在最前：用「贴桌面」档会被最大化的主窗口盖住，等于看不见
     pinMode: 'always',
     dock,
-    collapsed: !!dock,                 // 贴顶条默认收起成一条
+    collapsed: !!dock,                 // 吸边窗默认收起成一条
     dockPinned: false,
     geometry: {
-      w: dock ? DOCK_W : (kind === 'note' ? NOTE_W : DEF_W),
-      h: dock ? DOCK_H : (kind === 'note' ? NOTE_H : 320),
+      w: dock ? (sideDock ? SIDE_W : DOCK_W) : (kind === 'note' ? NOTE_W : DEF_W),
+      h: dock ? (sideDock ? SIDE_H : DOCK_H) : (kind === 'note' ? NOTE_H : 320),
     },
   });
   if (dock) {
-    const geo = dockGeometry(p.collapsed ? DOCK_HEAD_H : DOCK_H);
-    p.geometry.x = geo.x;
+    const geo = dockGeometry(dock, sideDock
+      ? { w: SIDE_HEAD_W, h: p.geometry.h }
+      : { h: DOCK_HEAD_H });
+    // 侧吸的横向永远由「贴哪条边」决定，记纵向位置；顶条反之
+    p.geometry.x = sideDock ? null : geo.x;
     p.geometry.y = geo.y;
     p.geometry.displayId = geo.displayId;
   } else {
@@ -1101,7 +1237,7 @@ function unpin(id) {
 }
 
 function togglePin(kind, refId, opts = {}) {
-  const dock = opts && opts.dock === 'top' ? 'top' : null;
+  const dock = DOCK_SIDES.includes(opts && opts.dock) ? opts.dock : null;
   const rid = (kind === 'group' || kind === 'note') ? Number(refId) : null;
   const exist = readAll().find((p) => p.kind === kind && p.refId === rid && (p.dock || null) === dock);
   if (exist) return unpin(exist.id);
@@ -1128,6 +1264,23 @@ function dropByNote(noteId) {
   return hit.map((p) => p.id);
 }
 
+/**
+ * 侧吸窗的宽度随「收起 / 展开」在 30 ↔ 320 之间切换，高度不动。
+ * 必须由主进程做：渲染层改不了窗口尺寸，而 30px 宽下量出来的内容高度是「文字挤成一列」的结果，
+ * 拿它当展开高度会让窗口变成一根奇怪的细长条。
+ */
+function applySideDockWidth(win, p) {
+  if (!win || win.isDestroyed() || !isSideDock(p.dock)) return;
+  const cb = win.getContentBounds();
+  const w = p.collapsed ? SIDE_HEAD_W : SIDE_W;
+  const wa = screen.getDisplayMatching(cb).workArea;
+  const x = sideDockContentX(p.dock, wa, w);
+  if (cb.width === w && cb.x === x) return;
+  win.setContentBounds({
+    x, y: cb.y, width: w, height: cb.height,
+  });
+}
+
 function update(id, patch = {}) {
   const cur = findProjection(id);
   if (!cur) throw new Error('浮窗不存在');
@@ -1145,25 +1298,40 @@ function update(id, patch = {}) {
   // 折叠状态被主进程侧改掉时（例如菜单里点「折叠」），要让渲染层跟着收 / 展，
   // 否则窗口高度变了、内容还停在上一个状态
   if (win && patch.collapsed != null && next.collapsed !== cur.collapsed) {
+    // 侧吸：先切窗口宽度（30 ↔ 320）再通知 —— 渲染层收到后要按新的宽度重新量高度
+    applySideDockWidth(win, next);
     win.webContents.send('desktop:collapsed', next.collapsed);
   }
   return saved;
 }
 
-/** 内容自适应高度：保持顶边不动，超出屏幕则整体上移 */
+/** 内容自适应高度：保持顶边（侧条保持纵向位置）不动，超出屏幕则整体上移 */
 function fit(id, height) {
   const p = findProjection(id);
   if (!p) return false;
   const win = windowOf(id);
-  const isDock = p.dock === 'top';
+  const sideDock = isSideDock(p.dock);
+  const isDock = !!p.dock;
   // dock 收起是 30px：下限必须低于它，否则 clamp 会把窗口顶回 42（表现为「收起没生效」）
-  const minH = isDock ? DOCK_MIN_H : HEAD_H;
+  const minH = sideDock ? SIDE_MIN_H : (isDock ? DOCK_MIN_H : HEAD_H);
   const h = clamp(Math.round(Number(height) || minH), minH, MAX_H);
   if (!win) return false;
   const b = win.getBounds();
   const size = win.getContentSize();
   const wa = screen.getDisplayMatching(b).workArea;
-  if (isDock) {
+  if (sideDock) {
+    // 侧条：宽度由「收起 30 / 展开 320」决定，高度按内容。
+    // 贴边一律按**内容区**算 —— 右吸用内容区右边界对齐，否则会留一条 8px 的框缝。
+    const cb = win.getContentBounds();
+    const w = p.collapsed ? SIDE_HEAD_W : SIDE_W;
+    const x = sideDockContentX(p.dock, wa, w);
+    const y = clamp(cb.y, wa.y, wa.y + wa.height - h);
+    if (cb.x !== x || cb.y !== y || cb.width !== w || cb.height !== h) {
+      win.setContentBounds({
+        x, y, width: w, height: h,
+      });
+    }
+  } else if (isDock) {
     // 用内容区坐标贴顶 + 按内容区定高：外框那 8px 隐形边框不能算进去，
     // 否则屏幕顶部会露出一条缝、收起高度也不等于 30。
     const cb = win.getContentBounds();
@@ -1180,8 +1348,9 @@ function fit(id, height) {
     if (size[0] !== w || size[1] !== h) applyContentSize(win, w, h);
   }
   if (typeof win.__dwShow === 'function') win.__dwShow();
-  // 高度记进 projection：下次启动先按上次高度开窗，少一次跳动（dock 除外，它每次重算）
-  if (!isDock && p.geometry.h !== h) {
+  // 高度记进 projection：下次启动先按上次高度开窗，少一次跳动
+  // （顶条除外 —— 它每次重算；侧条必须记，它的高度就是内容高度）
+  if ((sideDock || !isDock) && p.geometry.h !== h) {
     const t = persistTimers.get(id);
     if (t) clearTimeout(t);
     persistTimers.set(id, setTimeout(() => {
@@ -1200,7 +1369,7 @@ function resize(id, width) {
   const win = windowOf(id);
   if (!win) return false;
   const cur = findProjection(id);
-  if (cur && cur.dock === 'top') return false; // dock 宽度固定 420（贴顶条拖宽没有意义）
+  if (cur && cur.dock) return false; // 吸边窗尺寸固定（顶条 420 / 侧条 320，拖宽没有意义）
   const [cw, ch] = win.getContentSize();
   const w = clamp(Math.round(Number(width) || cw), MIN_W, MAX_W);
   applyContentSize(win, w, ch);
@@ -1212,16 +1381,20 @@ function resetPosition(id) {
   const win = windowOf(id);
   if (!win) return false;
   const cur = findProjection(id);
-  const ch = win.getContentSize()[1];
-  // dock 的位置由工作区决定：重置 = 重新贴顶
-  if (cur && cur.dock === 'top') {
-    const dg = dockGeometry(ch);
-    applyContentSize(win, dg.w, dg.h);
-    win.setPosition(dg.x, dg.y);
-    // 顺手清掉记住的横向位置：重置就该回到默认的右上角
-    patchProjection(id, { geometry: { x: dg.x } });
+  if (cur && cur.dock) {
+    // 吸边窗的位置由工作区决定：重置 = 重新贴回它那条边的默认落点
+    const sideMode = isSideDock(cur.dock);
+    const dg = dockGeometry(cur.dock, sideMode
+      ? { w: cur.collapsed ? SIDE_HEAD_W : SIDE_W, h: cur.geometry.h || SIDE_H }
+      : { h: cur.collapsed ? DOCK_HEAD_H : DOCK_H });
+    win.setContentBounds({
+      x: dg.x, y: dg.y, width: dg.w, height: dg.h,
+    });
+    // 顺手清掉记住的沿边位置：重置就该回到默认落点
+    patchProjection(id, sideMode ? { geometry: { y: dg.y } } : { geometry: { x: dg.x } });
     return true;
   }
+  const ch = win.getContentSize()[1];
   const geo = defaultGeometry(ch);
   applyContentSize(win, DEF_W, ch);
   win.setPosition(geo.x, geo.y);
@@ -1238,11 +1411,39 @@ function printMenu(id) {
   // 这是这一档原来被标成「实验性」的由来 —— 现在改成如实标注可用性。
   const canDesktop = desktopLevel.available();
   const template = [
-    // 贴顶 dock 的主形态是「贴在顶边」，这里给它一个回退出口（也可以直接拖离顶边）；
-    // 反过来，被拖离过的普通浮窗也要有一条贴回去的路 —— 否则「拖出去就贴不回来」。
-    ...(p.dock === 'top'
-      ? [{ label: '取消贴顶（变回普通浮窗）', click: () => undock(id) }, { type: 'separator' }]
-      : [{ label: '贴回屏幕顶边（悬停展开）', click: () => redock(id) }, { type: 'separator' }]),
+    // 吸边位置：顶边横条 / 左右侧吸 / 不吸边。做成 radio 一组，
+    // 三者之间可以直接互转，不用先「取消」再「贴」两步。
+    {
+      label: '吸边位置',
+      submenu: [
+        {
+          label: '顶边（横条）',
+          type: 'radio',
+          checked: p.dock === 'top',
+          click: () => convertToDock(id, 'top', null),
+        },
+        {
+          label: '左边缘（侧吸）',
+          type: 'radio',
+          checked: p.dock === 'left',
+          click: () => convertToDock(id, 'left', null),
+        },
+        {
+          label: '右边缘（侧吸）',
+          type: 'radio',
+          checked: p.dock === 'right',
+          click: () => convertToDock(id, 'right', null),
+        },
+        {
+          label: '不吸边（普通浮窗）',
+          type: 'radio',
+          checked: !p.dock,
+          enabled: !!p.dock,
+          click: () => undock(id),
+        },
+      ],
+    },
+    { type: 'separator' },
     {
       label: '置顶方式',
       submenu: [
@@ -1306,7 +1507,11 @@ function notifyChange(sender, payload) {
   }
   if (fromDesktop) {
     const mw = getMainWindow();
-    if (mw && !mw.isDestroyed()) mw.webContents.send('ui:data-changed', payload || {});
+    if (mw && !mw.isDestroyed()) {
+      // 带上 source：主窗口据此区分「自己点的」和「浮窗点的」——
+      // 浮窗发起的变更即使主窗口当前有焦点也必须处理（否则勾完的任务会从「今天」消失）
+      mw.webContents.send('ui:data-changed', { ...(payload || {}), source: 'desktop' });
+    }
   }
 }
 
@@ -1407,8 +1612,8 @@ function registerIpc() {
   }));
 
   ipcMain.handle('desktop:menu', wrap((_e, id) => printMenu(id)));
-  // 把普通浮窗贴回屏幕顶边（拖离顶边之后的回头路）
-  ipcMain.handle('desktop:redock', wrap((_e, id) => redock(id)));
+  // 把普通浮窗吸到屏幕的某条边（拖离之后的回头路 / 换一条边）
+  ipcMain.handle('desktop:redock', wrap((_e, id, side) => redock(id, side)));
   // 诊断：贴桌面到底挂上没有（用户报「没效果」时先看这里，不用远程连桌面）
   ipcMain.handle('desktop:diagnostics', wrap(() => ({
     level: desktopLevel.status(),

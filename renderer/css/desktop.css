@@ -12,41 +12,46 @@
   --dw-head-h: 42px;
   --dw-foot-h: 36px;
   --dw-row-h: 34px;
-  --dw-primary: #4f7cff;
-  --dw-primary-strong: #3a62e0;
+  /* 材质不透明度（0–1）：theme-core.paint() 按 settings.theme.desktop.opacity 写到根上，
+     设置中心「外观 → 桌面浮窗」可调。这里的值只是 theme-core 缺席时的兜底。 */
+  --dw-alpha: 0.95;
+  /* 强调色跟随风格（宣纸是暖棕、樱粉是玫红），不再固定品牌蓝 */
+  --dw-primary: rgb(var(--primary-rgb, 79 124 255));
+  --dw-primary-strong: rgb(var(--primary-strong-rgb, 58 98 224));
 }
 
 /* 深色（默认：壁纸透出来，余光可读但不刺眼） */
 html[data-theme='dark'] {
-  /* 设计稿是 55% + 背景模糊；Electron 的透明窗上做不了可靠的模糊，
-     纯 rgba 55% 压在浅色壁纸上会灰成一片、正文读不清，
-     所以把不透明度提到 72% —— 仍然能透出壁纸，但对比度守住了 */
-  --dw-bg: rgba(24, 26, 33, 0.72);
-  --dw-bg-solid: rgba(24, 26, 33, 0.97);
-  --dw-ring: rgba(255, 255, 255, 0.16);
-  --dw-hover: rgba(255, 255, 255, 0.09);
-  --dw-text: #f4f2f8;
-  --dw-text-2: #9d9aab;
-  --dw-text-3: #8f8c9c;
-  --dw-check: rgba(255, 255, 255, 0.32);
-  --dw-sep: rgba(255, 255, 255, 0.08);
-  --dw-scroll: rgba(255, 255, 255, 0.18);
-  --dw-grip: rgba(255, 255, 255, 0.45);
+  /* 底色取当前风格的 panel 三元组，不再写死 #181a21 —— 换风格浮窗要跟着变。
+     深色下 95% 已经很实，仍留一点点壁纸透过，和主窗口的玻璃感一致 */
+  --dw-bg: rgb(var(--panel-rgb, 36 29 21) / var(--dw-alpha));
+  --dw-bg-solid: rgb(var(--panel-rgb, 36 29 21));
+  --dw-ring: rgb(255 255 255 / 0.16);
+  --dw-hover: rgb(255 255 255 / 0.09);
+  --dw-text: rgb(var(--text-rgb, 238 227 209));
+  --dw-text-2: rgb(var(--text2-rgb, 179 164 140));
+  --dw-text-3: rgb(var(--text3-rgb, 130 118 100));
+  --dw-check: rgb(255 255 255 / 0.32);
+  --dw-sep: rgb(255 255 255 / 0.08);
+  --dw-scroll: rgb(255 255 255 / 0.18);
+  --dw-grip: rgb(255 255 255 / 0.45);
 }
 
 /* 浅色：结构与深色完全一致，只换颜色令牌 */
 html[data-theme='light'] {
-  --dw-bg: rgba(255, 255, 255, 0.93);
-  --dw-bg-solid: #ffffff;
-  --dw-ring: rgba(0, 0, 0, 0.08);
-  --dw-hover: rgba(20, 25, 40, 0.06);
-  --dw-text: #26262e;
-  --dw-text-2: #8b8899;
-  --dw-text-3: #8a8798;
-  --dw-check: rgba(0, 0, 0, 0.26);
-  --dw-sep: rgba(0, 0, 0, 0.07);
-  --dw-scroll: rgba(0, 0, 0, 0.18);
-  --dw-grip: rgba(0, 0, 0, 0.32);
+  /* 宣纸的 panel 是 #fdf8ee 暖米色。以前这里是纯白 0.93 —— 压在米色主窗口上
+     会跳出一块冷白纸片（用户报过「贴图纸跟主题不搭」） */
+  --dw-bg: rgb(var(--panel-rgb, 253 248 238) / var(--dw-alpha));
+  --dw-bg-solid: rgb(var(--panel-rgb, 253 248 238));
+  --dw-ring: rgb(var(--text-rgb, 44 36 24) / 0.12);
+  --dw-hover: rgb(var(--hover-rgb, 239 230 213) / 0.9);
+  --dw-text: rgb(var(--text-rgb, 44 36 24));
+  --dw-text-2: rgb(var(--text2-rgb, 109 97 80));
+  --dw-text-3: rgb(var(--text3-rgb, 156 144 128));
+  --dw-check: rgb(var(--text-rgb, 44 36 24) / 0.3);
+  --dw-sep: rgb(var(--text-rgb, 44 36 24) / 0.09);
+  --dw-scroll: rgb(var(--text-rgb, 44 36 24) / 0.2);
+  --dw-grip: rgb(var(--text-rgb, 44 36 24) / 0.35);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -137,7 +142,6 @@ body {
 }
 html[data-theme='dark'] .dw-count,
 html[data-theme='dark'] .dw-pend {
-  color: #9db4ff;
   background: color-mix(in srgb, var(--dw-primary) 26%, transparent);
 }
 
@@ -209,8 +213,18 @@ html[data-theme='dark'] .dw-pend {
 .dw-row.is-sel { background: var(--dw-hover); box-shadow: inset 0 0 0 1px var(--dw-ring); }
 .dw-row.is-new { animation: dw-row-new 400ms ease-out; }
 
+/* 勾掉即消失：淡出 + 轻微右移，180ms 后整表重建（桌面浮窗不留已完成行） */
+.dw-row.is-leaving {
+  pointer-events: none;
+  animation: dw-row-leave 180ms ease-in forwards;
+}
+
+@keyframes dw-row-leave {
+  to { opacity: 0; transform: translateX(8px); }
+}
+
 @keyframes dw-row-new {
-  from { background: rgba(79, 124, 255, 0.22); }
+  from { background: color-mix(in srgb, var(--dw-primary) 22%, transparent); }
   to { background: transparent; }
 }
 
@@ -511,6 +525,54 @@ html[data-theme='dark'] .dw-tail { color: #ff6b6e; }
 /* 收起态就是一个「读数条」：数字比标题重要 */
 .dw.is-dock.is-collapsed .dw-title { font-weight: 600; letter-spacing: 0.2px; }
 .dw.is-dock.is-collapsed .dw-row-acts { display: none; }
+
+/* ---------------- 侧吸 dock（dock: left / right）----------------
+   贴在屏幕左/右边缘的竖条：收起 30px 宽（竖排标题 + 读数），悬停横向展开成 320px。
+   贴边那一侧不画圆角（它贴着屏幕边缘），另一侧保留。
+   -------------------------------------------------------------- */
+.dw.is-dock-side .dw-grip { display: none; }
+.dw.is-dock-left { border-radius: 0 var(--dw-r) var(--dw-r) 0; }
+.dw.is-dock-right { border-radius: var(--dw-r) 0 0 var(--dw-r); }
+
+/* 收起态：整条竖栏。高度由窗口给（= 展开高度），这里只排内容 */
+.dw.is-dock-side.is-collapsed { height: 100%; }
+.dw.is-dock-side.is-collapsed .dw-head {
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: center;
+  height: 100%;
+  padding: 9px 0 7px;
+  gap: 8px;
+}
+/* 30px 宽放不下三个 24px 按钮：收起态不给按钮，悬停就会展开，操作在展开态做 */
+.dw.is-dock-side.is-collapsed .dw-btns { display: none; }
+.dw.is-dock-side.is-collapsed .dw-title {
+  /* 竖排标题：一条 30px 宽的竖栏里，横排标题只能显示两个字 */
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+/* 收起态的读数是竖排的小胶囊（「1 / 5」）：一眼扫到进度，又不挤占标题 */
+.dw.is-dock-side.is-collapsed .dw-count {
+  writing-mode: vertical-rl;
+  flex: none;
+  max-height: 38%;
+  overflow: hidden;
+  padding: 5px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 999px;
+}
+/* 「未完成 N」在 30px 宽里会拉成一长串，收起态只留进度徽标 */
+.dw.is-dock-side.is-collapsed .dw-pend { display: none; }
 
 /* 逾期徽标：常驻，滚动时也一直看得到最该看的那条 */
 .dw-count.is-overdue {

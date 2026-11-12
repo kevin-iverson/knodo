@@ -14,8 +14,9 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      background: #f5f6f8;
-      color: #1f2430;
+      /* 与出厂默认（宣纸）同一个底色：启动那一秒也不能是白的 */
+      background: #f6f0e4;
+      color: #2c2418;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
       -webkit-user-select: none;
       user-select: none;
@@ -43,7 +44,7 @@
       margin-top: 6px;
       font-size: 11px;
       letter-spacing: 0.18em;
-      color: #8b93a5;
+      color: #8d8069;
     }
     .bar {
       position: relative;
@@ -51,7 +52,7 @@
       height: 3px;
       margin-top: 22px;
       border-radius: 2px;
-      background: rgba(31, 36, 48, 0.10);
+      background: rgba(44, 36, 24, 0.10);
       overflow: hidden;
     }
     .bar i {
@@ -80,8 +81,8 @@
       50% { opacity: 0.86; transform: scale(0.97); }
     }
     @media (prefers-color-scheme: dark) {
-      body { background: #15181f; color: #e7e9ee; }
-      .tag, .hint { color: #8b93a5; }
+      body { background: #1b1610; color: #eee3d1; }
+      .tag, .hint { color: #827664; }
       .bar { background: rgba(255, 255, 255, 0.12); }
       .bar i { background: #e0553a; }
     }

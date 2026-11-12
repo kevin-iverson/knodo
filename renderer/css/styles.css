@@ -2,27 +2,31 @@
    外观 token（模式 × 风格 × 背景三层）
    ------------------------------------------------------------
    语义名不变（--bg / --bg-panel / --text…），值的来源换成「rgb 三元组 + alpha 合成」：
-     · --bg-*-rgb 由渲染层按 6 套风格 × 明暗注入（见 js/theme-core.js，这里是雾灰浅色兜底）
+     · --bg-*-rgb 由渲染层按 6 套风格 × 明暗注入（见 js/theme-core.js，这里是宣纸浅色兜底）
      · --surface-alpha 由背景透明度反推，无背景图时恒为 1
    这样 3400 行既有规则一句选择器都不用改，面板就自动变成半透明。
    铁律：透明度只作用在「面」（侧栏 / 内容区地面 / 卡片），文字与控件永远不透明。
    ============================================================ */
 :root {
-  /* 雾灰 · 浅色（未注入时的兜底，打印 / 冒烟 / 桌面浮窗都靠它） */
-  --bg-rgb: 245 246 248;
-  --panel-rgb: 255 255 255;
-  --sidebar-rgb: 251 251 253;
-  --hover-rgb: 238 241 246;
-  --active-rgb: 232 238 252;
-  --text-rgb: 31 36 48;
-  --text2-rgb: 107 114 128;
-  --text3-rgb: 154 161 173;
-  --border-rgb: 230 232 238;
-  --primary-rgb: 79 124 255;
-  --primary-strong-rgb: 58 98 224;
+  /* 宣纸 · 浅色（未注入时的兜底，打印 / 冒烟 / 桌面浮窗都靠它）
+     改这里必须同步 js/theme-core.js 的 STYLES.sepia.light —— 两处不一致就会出现
+     「启动那一帧是宣纸、注入后跳成别的色」的闪动。 */
+  --bg-rgb: 246 240 228;
+  --panel-rgb: 253 248 238;
+  --sidebar-rgb: 250 245 234;
+  --hover-rgb: 239 230 213;
+  --active-rgb: 242 228 201;
+  --text-rgb: 44 36 24;
+  --text2-rgb: 109 97 80;
+  --text3-rgb: 156 144 128;
+  --border-rgb: 232 220 200;
+  --primary-rgb: 165 100 44;
+  --primary-strong-rgb: 133 80 31;
 
   /* 背景层（JS 写入）：image / scrim / blur / fit / glass */
   --surface-alpha: 1;
+  /* 自绘标题栏高度：必须等于 main/theme.js 的 TITLEBAR_HEIGHT（三键按它对齐） */
+  --titlebar-h: 40px;
   --glass: 0;
   --bd-image: none;
   --bd-scrim: 0;
@@ -116,7 +120,132 @@ body {
   background: rgb(var(--bg-rgb) / var(--bd-scrim));
 }
 
-.app { display: flex; height: 100vh; position: relative; z-index: 1; }
+.app { display: flex; flex: 1 1 auto; min-height: 0; position: relative; z-index: 1; }
+
+/* ---------------- 自绘标题栏 ---------------- */
+/* 窗口用 titleBarStyle:"hidden" 且不挂 overlay：系统标题栏、菜单栏、窗口三键都不画，
+   这里画一条 40px 的替代品，右上角三颗按钮由 .tb-win 自绘（吃主题 token、能被遮罩压住）。
+   高度必须与 main/theme.js 的 TITLEBAR_HEIGHT 一致 —— 改一处就得改另一处。 */
+.app-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: 1;
+}
+.titlebar {
+  flex: none;
+  position: relative;
+  height: var(--titlebar-h);
+  display: flex; align-items: center; gap: 8px;
+  /* 右侧留出自绘三键的宽度（3 × 46 = 138px，取 146 留余量），内容不往那儿放 */
+  padding: 0 146px 0 12px;
+  /* 左段用侧栏色（见 ::before），整条先铺侧栏色，右侧再盖主区色 */
+  background: rgb(var(--sidebar-rgb));
+  border-bottom: 1px solid var(--border);
+  /* 整条可拖动窗口；双击 = 最大化 / 还原，由系统按标题栏（caption）处理 */
+  -webkit-app-region: drag;
+  user-select: none;
+}
+/* 主区那一段：颜色与窗口底色（--bg-rgb）完全相同，右上角三键才不会看出接缝 */
+.titlebar::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 0 var(--sidebar-width, 220px);
+  background: rgb(var(--bg-rgb));
+  border-left: 1px solid var(--border);
+}
+.titlebar > * { position: relative; z-index: 1; }
+.tb-logo { width: 18px; height: 18px; flex: none; overflow: hidden; border-radius: 4px; }
+.tb-logo svg { width: 100%; height: 100%; display: block; }
+.tb-name { font-size: 12.5px; font-weight: 600; color: var(--text-2); letter-spacing: 0.2px; }
+/* 标题栏设置齿轮：整颗落在「侧栏段」内、贴分界线左侧，不压线。
+   右边缘对齐侧栏导航行（.nav-item）的右边缘 —— 侧栏 padding 12 减
+   .sidebar-scroll 的负 margin 6 与右 padding 2，净右界 = --sidebar-width - 8px，
+   所以 left = 侧栏宽 - 8 - 26(按钮宽)。改侧栏 padding 时这里要跟着调。
+   左边界由变量反推，拖宽侧栏时齿轮跟着走。标题栏整条是 drag 区 —— 必须 no-drag。 */
+.titlebar > .tb-set {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--sidebar-width, 220px) - 34px);
+  transform: translateY(-50%);
+  flex: none;
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 7px; background: transparent; color: var(--text-2);
+  cursor: pointer; -webkit-app-region: no-drag;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.tb-set svg { width: 16px; height: 16px; display: block; }
+.tb-set:hover { background: var(--bg-hover); color: var(--text); }
+.tb-set:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; }
+.tb-set:active { background: var(--bg-active); color: var(--primary-strong); }
+/* 设置面板开着时齿轮保持点亮：遮罩让出了标题栏，一眼能看出「设置正在前台」 */
+.tb-set.is-open { background: var(--bg-active); color: var(--primary-strong); }
+
+/* 标题栏「日历」入口：坐在主区段左端，与分界线另一侧的齿轮对称（各留 8px）。
+   它仍带 .nav-item 类（复用点击切换与 active 同步），所以基础尺寸要在这里按标题栏的
+   高度重写：26px 高、横向自适应的软按钮。active / hover 用 (0,3,0) 压下 .nav-item 的默认样式。 */
+.titlebar > .tb-cal {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--sidebar-width, 220px) + 8px);
+  transform: translateY(-50%);
+  width: auto; height: 26px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 10px 0 8px;
+  border: 0; border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px; font-weight: 500; line-height: 1;
+  text-align: left;
+  cursor: pointer; -webkit-app-region: no-drag;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.titlebar > .tb-cal .nav-ico { width: auto; font-size: 13px; line-height: 1; }
+.titlebar > .tb-cal:hover { background: var(--bg-hover); color: var(--text); }
+.titlebar > .tb-cal.active { background: var(--bg-active); color: var(--primary-strong); font-weight: 600; }
+.titlebar > .tb-cal:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; }
+
+/* ---------------- 窗口控制三键（自绘） ---------------- */
+/* 系统 overlay 撤掉后，三键就是普通按钮：颜色吃 currentColor，换主题 / 换风格不用
+   再推一次原生配色；hover 半透明底 + 关闭键朱红，深色主题下同样成立。
+   尺寸取 Windows 惯例 46×40，右端贴齐窗口边（不设圆角，与系统观感一致）。
+   整组必须 no-drag —— 标题栏是一条 drag 区，否则按下去只会拖窗。 */
+.titlebar > .tb-win {
+  position: absolute;
+  top: 0; right: 0;
+  height: 100%;
+  display: flex;
+  z-index: 2;
+  -webkit-app-region: no-drag;
+}
+.tb-win-btn {
+  width: 46px; height: 100%;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: 0; border-radius: 0;
+  background: transparent; color: var(--text-2);
+  cursor: default;
+  -webkit-app-region: no-drag;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+/* 10×10 细线图标：1px 描边在 40px 高的条里与系统三键的视觉重量相当 */
+.tb-win-btn svg {
+  width: 10px; height: 10px;
+  display: block;
+  fill: none; stroke: currentColor; stroke-width: 1;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.tb-win-btn:hover { background: var(--bg-hover); color: var(--text); }
+.tb-win-btn:active { background: var(--bg-active); color: var(--text); }
+/* 关闭键：按 Windows 惯例变红（两种模式都用同一颗红 + 白图标，跟系统一致） */
+.tb-win-btn.is-close:hover { background: #e81123; color: #fff; }
+.tb-win-btn.is-close:active { background: #c50f1f; color: #fff; }
+.tb-win-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+/* 最大化 / 还原两个图标都在 DOM 里，按 data-max 切（由 js/win-controls.js 写） */
+.tb-win .ico-restore { display: none; }
+.tb-win[data-max="1"] .ico-max { display: none; }
+.tb-win[data-max="1"] .ico-restore { display: block; }
 
 /* ---------------- 侧边栏 ---------------- */
 /* 宽度可被拖拽调整：JS 会同时写 inline width 与 --sidebar-width */
@@ -127,8 +256,37 @@ body {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 16px 12px;
+  padding: 14px 12px 8px;
+  /* 滚动交给 .sidebar-scroll：侧栏自己滚会让底部设置条跟着滚走 */
+  overflow: hidden;
+}
+
+/* 导航 / 分组 / 标签的滚动区：负 margin 让滚动条贴近侧栏边缘，padding 把内容拉回来，
+   内容右边界与底栏按钮保持一致（padding-right 2 + 滚动条 4 = 左侧 6，对称） */
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
+  overflow-x: hidden;
+  margin: 0 -6px;
+  padding: 0 2px 6px 6px;
+}
+/* 侧栏滚动条压到 4px、平时只露一条淡线：8px 系统滚动条在这里太抢眼，
+   而且会把分组行挤得比底栏窄一截 */
+.sidebar-scroll::-webkit-scrollbar { width: 4px; }
+.sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
+.sidebar-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.sidebar-scroll::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* 版本号：挂在品牌名右侧（原来在侧栏底部，用户要求挪上来）。
+   只做弱提示，取不到就空着（asar 里 package.json 只剩 version，这个能读）。 */
+.tb-ver {
+  flex: none;
+  margin-left: -2px;
+  color: var(--text-3); font-size: 11px;
+  font-variant-numeric: tabular-nums; letter-spacing: 0.2px;
 }
 
 /* 拖拽把手：贴着侧边栏右边界，热区 8px、视觉只露一条 1px 的线 */
@@ -144,15 +302,6 @@ body {
 .sidebar:hover ~ .sidebar-resizer::after,
 .sidebar-resizer:hover::after { opacity: 0.6; }
 .sidebar-resizer.is-active::after { opacity: 1; background: var(--primary); }
-
-.brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 16px; }
-/* 品牌标识：内联 SVG（与 assets/knodo.svg 同一套几何），自带圆角与渐变底色，
-   所以这里只做尺寸约束，不要再画背景，否则会叠出双层圆角 */
-.brand-logo {
-  width: 26px; height: 26px; flex: none; overflow: hidden; border-radius: 6px;
-}
-.brand-logo svg { width: 100%; height: 100%; display: block; }
-.brand-name { font-weight: 600; font-size: 15px; letter-spacing: 0.2px; }
 
 .nav { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
 .nav-item {
@@ -272,7 +421,8 @@ body {
    不要给每一行任务都加 backdrop-filter —— 上百个模糊层会直接掉帧（设计方案·风险表）。 */
 [data-glass="1"] .sidebar,
 [data-glass="1"] .modal,
-[data-glass="1"] .detail-drawer {
+/* 同理：毛玻璃只能糊面板本身，挂在 inset:0 的抽屉容器上会把整个应用糊掉 */
+[data-glass="1"] .detail-panel {
   backdrop-filter: blur(12px) saturate(1.15);
 }
 
@@ -297,8 +447,8 @@ body {
 /* 侧栏「日历」首启提示：新功能不藏在标题旁的 chip 里，只在第一次进来时轻微脉冲一次 */
 .nav-item.is-hint { animation: nav-pulse 2s ease-in-out 1; }
 @keyframes nav-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(79, 124, 255, 0); }
-  30%, 70% { box-shadow: inset 0 0 0 2px rgba(79, 124, 255, .35); }
+  0%, 100% { box-shadow: 0 0 0 0 rgb(var(--primary-rgb) / 0); }
+  30%, 70% { box-shadow: inset 0 0 0 2px rgb(var(--primary-rgb) / .35); }
 }
 
 /* 顶栏「🔍 AI 检索」：紧贴搜索框，视图与「过滤列表」区分开，选中态用主色实心 */
@@ -438,7 +588,7 @@ body {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin: 0 0 10px; padding: 8px 12px;
   border: 1px dashed var(--border); border-left: 3px solid var(--green);
-  border-radius: 8px; background: var(--bg-panel);
+  border-radius: 8px; background: var(--bg-ground);
   color: var(--text-2); font-size: 12.5px;
 }
 .keep-done-bar b { color: var(--green); font-weight: 700; }
@@ -461,7 +611,11 @@ body {
 
 .task-item {
   display: flex; align-items: center; gap: 12px;
-  background: var(--bg-panel); border: 1px solid var(--border);
+  /* 卡片底 = 内容区地面色（--bg-ground）：用 --bg-panel 时在宣纸 / 苔绿 / 樱粉下
+     会比列表底色亮一大截，一块块白得像贴上去的（用户报过「历史任务那块白色很突兀」）。
+     地面是半透明的，卡片同色同 alpha 叠在同一张壁纸上，颜色才真正一致；
+     卡片的轮廓靠 border + hover 阴影，不靠底色。 */
+  background: var(--bg-ground); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 10px 12px;
   box-shadow: var(--shadow-sm); cursor: grab; transition: box-shadow 0.15s, transform 0.1s;
 }
@@ -530,7 +684,7 @@ body {
 /* 父任务不在当前列表时的可点链接：下划线 + 手型光标，表明"这个能点" */
 .meta-item.parent-link {
   cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
-  text-decoration-color: rgba(79, 124, 255, 0.45);
+  text-decoration-color: rgb(var(--primary-rgb) / 0.45);
   max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .meta-item.parent-link:hover { color: var(--primary-strong); text-decoration-color: currentColor; }
@@ -554,7 +708,7 @@ body {
 .task-item.done .task-note { opacity: .7; }
 .pri-badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; }
 .pri-0 { background: #eef1f6; color: var(--text-2); }
-.pri-1 { background: rgba(79, 124, 255, 0.12); color: var(--primary-strong); }
+.pri-1 { background: rgb(var(--primary-rgb) / 0.12); color: var(--primary-strong); }
 .pri-2 { background: rgba(245, 158, 11, 0.15); color: #c47f0a; }
 .pri-3 { background: rgba(229, 72, 77, 0.14); color: var(--danger); }
 .tag-chip {
@@ -597,7 +751,7 @@ body {
 /* 专注中的任务行：整行轻微高亮 */
 .task-item.is-focus {
   border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
-  background: color-mix(in srgb, var(--primary) 4%, var(--bg-panel));
+  background: color-mix(in srgb, var(--primary) 5%, var(--bg-ground));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent) inset;
 }
 /* 进度环：14px、2px 描边，主色填充（点击暂停/继续） */
@@ -730,7 +884,7 @@ li.focus-wrapup {
 .editor-row .ts-wrapper .ts-control, .editor-row .ts-wrapper .ts-control input { font-size: 13px; }
 .editor-row .ts-wrapper:hover .ts-control { border-color: var(--primary); }
 .editor-row .ts-wrapper.focus .ts-control {
-  border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.16);
+  border-color: var(--primary); box-shadow: 0 0 0 2px rgb(var(--primary-rgb) / 0.16);
 }
 /* 分组控件与右侧计划时间之间再留一点呼吸空间，避免两段文字连成一片 */
 .editor-row > .date-range-field { margin-left: 3px; }
@@ -858,7 +1012,7 @@ li.focus-wrapup {
   background: var(--bg-panel); color: var(--text); font-size: 13px; line-height: 1.5;
   font-family: inherit; outline: none;
 }
-.rp-extra textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.14); }
+.rp-extra textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgb(var(--primary-rgb) / 0.14); }
 .rp-extra-foot { display: flex; align-items: center; gap: 12px; }
 .rp-extra-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.4; flex: 1; }
 .rp-extra-count { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; flex-shrink: 0; }
@@ -888,7 +1042,7 @@ li.focus-wrapup {
   outline: none; overflow-wrap: break-word;
 }
 .rp-doc.is-editing {
-  border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 124, 255, .12);
+  border-color: var(--primary); box-shadow: 0 0 0 3px rgb(var(--primary-rgb) / .12);
 }
 .rp-doc > *:first-child { margin-top: 0; }
 .rp-doc h1 {
@@ -926,7 +1080,7 @@ li.focus-wrapup {
   border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel);
   color: var(--text); padding: 6px 8px; box-shadow: none; min-height: 36px; align-items: center;
 }
-.ts-wrapper.focus .ts-control { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.16); }
+.ts-wrapper.focus .ts-control { border-color: var(--primary); box-shadow: 0 0 0 2px rgb(var(--primary-rgb) / 0.16); }
 /* 组件自带样式里有三条把我们上面这条 `background` 顶掉的高特异性规则：
      .ts-control,.ts-wrapper.single.input-active .ts-control{background:#fff}
      .full .ts-control{background-color:#fff}
@@ -966,7 +1120,7 @@ li.focus-wrapup {
 .ts-dropdown .option { padding: 6px 8px; font-size: 13px; }
 .ts-dropdown .active { background: var(--bg-hover); color: var(--text); }
 .ts-dropdown .no-results { padding: 10px; color: var(--text-3); font-size: 12.5px; }
-.ts-dropdown .highlight { background: rgba(79, 124, 255, 0.18); }
+.ts-dropdown .highlight { background: rgb(var(--primary-rgb) / 0.18); }
 /* 挂到 body 的分组下拉：不能比控件还窄（树形名称会被挤断），也要盖住日期日历 */
 .group-picker-dropdown { min-width: 220px; z-index: 250; }
 /* 单选下拉自带的搜索框（dropdown_input 插件）跟着主题走 */
@@ -1111,8 +1265,11 @@ li.focus-wrapup {
 }
 
 /* ---------------- 模态框（新增分组 / 标签） ---------------- */
+/* 遮罩从自绘标题栏下沿开始：标题栏（logo / 齿轮 / 窗口三键）保持原样不被压暗，
+   弹窗开着时仍能最小化 / 关窗，也避免遮罩边缘正好切在三键下方、看起来像贴上去的补丁。
+   三键现在是自绘的（.tb-win），遮罩若盖住标题栏会连带盖掉它们，所以这条边界别动。 */
 .modal-mask {
-  position: fixed; inset: 0; z-index: 300; background: rgba(0, 0, 0, 0.35);
+  position: fixed; inset: var(--titlebar-h, 40px) 0 0 0; z-index: 300; background: rgba(0, 0, 0, 0.35);
   display: flex; align-items: center; justify-content: center; padding: 24px;
 }
 .modal {
@@ -1120,9 +1277,9 @@ li.focus-wrapup {
   width: 100%; max-width: 380px; background: var(--bg-panel);
   border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
   overflow: hidden;
-  /* 关键约束：弹窗高度不得超过视口（留出 .modal-mask 的 24px 上下内边距）。
+  /* 关键约束：弹窗高度不得超过可视区（留出标题栏 + .modal-mask 的 24px 上下内边距）。
      没有它时，字段一多就会顶出屏幕，底部按钮被裁掉、无法点击。 */
-  max-height: calc(100vh - 48px);
+  max-height: calc(100vh - var(--titlebar-h, 40px) - 48px);
   display: flex; flex-direction: column;
 }
 .modal-head {
@@ -1246,7 +1403,7 @@ li.focus-wrapup {
 }
 .color-swatch span { width: 14px; height: 14px; border-radius: 50%; background: var(--c); display: block; }
 .color-swatch:hover { border-color: var(--text-3); }
-.color-swatch.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.28); }
+.color-swatch.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgb(var(--primary-rgb) / 0.28); }
 .color-swatch.is-auto {
   width: auto; height: 22px; padding: 0 10px; border-radius: 999px;
   font-size: 12px; color: var(--text-2);
@@ -1267,7 +1424,7 @@ li.focus-wrapup {
 /* 新增成功后的短暂高亮，帮助用户确认"确实加进去了" */
 .group-item.just-added, .tag-item.just-added { animation: justAdded 1.2s ease-out; }
 @keyframes justAdded {
-  0% { background: rgba(79, 124, 255, 0.22); }
+  0% { background: rgb(var(--primary-rgb) / 0.22); }
   100% { background: transparent; }
 }
 
@@ -1285,7 +1442,7 @@ li.focus-wrapup {
 }
 .date-range-trigger:hover { border-color: var(--primary); }
 .date-range-trigger[aria-expanded="true"] {
-  border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.16);
+  border-color: var(--primary); box-shadow: 0 0 0 2px rgb(var(--primary-rgb) / 0.16);
 }
 .date-range-trigger.is-empty { color: var(--text-3); }
 .date-range-field.invalid .date-range-trigger { border-color: var(--danger); }
@@ -1345,7 +1502,7 @@ li.focus-wrapup {
 .flatpickr-day.today { border-color: var(--primary); color: var(--primary-strong); font-weight: 700; }
 .flatpickr-day.today:hover { background: var(--bg-hover); color: var(--primary-strong); }
 /* 区间内的连续底色：vendor 用 box-shadow 拼接，这里统一成一层淡蓝，避免毛刺 */
-.flatpickr-day.inRange { background: rgba(79, 124, 255, 0.14); border-color: transparent; box-shadow: none; }
+.flatpickr-day.inRange { background: rgb(var(--primary-rgb) / 0.14); border-color: transparent; box-shadow: none; }
 .flatpickr-day.selected, .flatpickr-day.startRange, .flatpickr-day.endRange,
 .flatpickr-day.selected:hover, .flatpickr-day.startRange:hover, .flatpickr-day.endRange:hover {
   background: var(--primary); border-color: var(--primary); color: #fff; box-shadow: none; font-weight: 600;
@@ -1374,10 +1531,13 @@ li.focus-wrapup {
 
 /* ---------------- 详情抽屉 ---------------- */
 .detail-drawer { position: fixed; inset: 0; z-index: 150; }
-.detail-mask { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.35); }
+/* 压制层只剩「点空白关闭抽屉」的命中区，不再压暗主界面：
+   详情是「边看边改」的侧栏，压成灰会把列表、侧栏一起糊掉，用户看不到自己在改哪条。
+   视觉分离交给 .detail-panel 的投影 + 左侧发丝线。 */
+.detail-mask { position: absolute; inset: 0; background: transparent; }
 .detail-panel {
   position: absolute; top: 0; right: 0; bottom: 0; width: var(--detail-width, 420px); max-width: 92vw;
-  background: var(--bg-panel); box-shadow: var(--shadow);
+  background: var(--bg-panel); border-left: 1px solid var(--border); box-shadow: var(--shadow);
   display: flex; flex-direction: column; animation: detailIn 0.2s ease;
 }
 @keyframes detailIn { from { transform: translateX(30px); opacity: 0; } to { transform: none; opacity: 1; } }
@@ -1771,7 +1931,7 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .sr-tried li::before { content: '·'; position: absolute; left: 4px; color: var(--text-3); }
 
 /* ---- 弹窗容器 ---- */
-.modal-search { width: 860px; max-width: 100%; height: min(620px, calc(100vh - 48px)); }
+.modal-search { width: 860px; max-width: 100%; height: min(620px, calc(100vh - var(--titlebar-h, 40px) - 48px)); }
 .modal-search .modal-head { padding: 12px 16px 12px 18px; }
 /* body 自己不能滚：滚动交给 .search-stage / .sh-list，否则两栏会一起被推走 */
 .modal-search .modal-body { padding: 12px 16px 10px; gap: 0; overflow: hidden; }
@@ -1866,7 +2026,7 @@ html.is-resizing .detail-foot { pointer-events: none; }
   font: inherit;
 }
 .rec-source:hover { border-color: var(--primary); }
-.rec-source.picked { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.18); }
+.rec-source.picked { border-color: var(--primary); box-shadow: 0 0 0 2px rgb(var(--primary-rgb) / 0.18); }
 .rec-source img { width: 100%; border-radius: 6px; background: var(--bg); display: block; }
 .rec-src-empty {
   display: flex; align-items: center; justify-content: center;
@@ -1911,7 +2071,7 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .mt-item-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; color: var(--text-3); font-size: 12px; }
 .mt-badge, .mt-status { padding: 2px 8px; border-radius: 999px; font-size: 11px; white-space: nowrap; }
 .st-gray { background: var(--bg-hover); color: var(--text-2); }
-.st-blue { background: rgba(79, 124, 255, 0.14); color: var(--primary); }
+.st-blue { background: rgb(var(--primary-rgb) / 0.14); color: var(--primary); }
 .st-green { background: rgba(35, 176, 126, 0.14); color: var(--green); }
 .st-amber { background: rgba(245, 158, 11, 0.16); color: #b45309; }
 [data-theme="dark"] .st-amber { color: #fbbf24; }
@@ -2764,7 +2924,7 @@ body.nt-fs-open { overflow: hidden; }
   width: min(1120px, 88vw);
   height: min(820px, 84vh);
   max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 48px);
+  max-height: calc(100vh - var(--titlebar-h, 40px) - 48px);
   display: flex; flex-direction: column;
 }
 .modal.modal-note-editor .modal-head { flex: 0 0 auto; padding: 10px 12px 10px 18px; }
@@ -2821,156 +2981,8 @@ body.nt-fs-open { overflow: hidden; }
   font-size: 11px; color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
-/* ---------------- 实用工具浮窗（非模态，见 js/tool-window.js） ----------------
-   与 .modal 的区别：没有遮罩、不接管键盘，开着它照样能点主界面；
-   z-index 由 JS 控制在 210~248，刻意低于 .modal-mask(300)，保证模态对话框永远盖在上面。 */
-.tool-win {
-  position: fixed; display: flex; flex-direction: column; overflow: hidden;
-  background: var(--bg-panel); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow);
-}
-.tool-win.is-dragging, .tool-win.is-resizing { user-select: none; }
-.tool-win.is-min .tool-win-body, .tool-win.is-min .tool-win-grip { display: none; }
-.tool-win-head {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-  padding: 7px 8px 7px 14px; border-bottom: 1px solid var(--border);
-  background: var(--bg-sidebar); cursor: move;
-}
-.tool-win.is-min .tool-win-head { border-bottom: none; }
-.tool-win-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
-.tool-win-btns { margin-left: auto; display: flex; gap: 2px; }
-.tool-win-btn {
-  border: none; background: none; cursor: pointer; color: var(--text-3);
-  width: 26px; height: 24px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1;
-}
-.tool-win-btn:hover { background: var(--bg-hover); color: var(--text); }
-.tool-win-btn[data-act="close"]:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
-.tool-win-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.tool-win-grip { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; }
-.tool-win-grip::after {
-  content: ''; position: absolute; right: 4px; bottom: 4px; width: 7px; height: 7px;
-  border-right: 2px solid var(--text-3); border-bottom: 2px solid var(--text-3); opacity: 0.55;
-}
-.tool-win-grip:hover::after { opacity: 1; }
-
-/* ---------------- 实用工具：公共小控件 ---------------- */
-.df-wrap {
-  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px;
-  padding: 10px 12px 12px; overflow: hidden;
-}
-.df-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.df-field { display: flex; align-items: center; gap: 4px; }
-.df-label { font-size: 12px; color: var(--text-2); white-space: nowrap; }
-.df-ctl {
-  padding: 4px 8px; font: inherit; font-size: 12.5px; outline: none; cursor: pointer;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--bg-panel); color: var(--text);
-}
-.df-ctl:focus { border-color: var(--primary); }
-.df-check {
-  display: flex; align-items: center; gap: 4px; font-size: 12.5px;
-  color: var(--text-2); cursor: pointer; user-select: none;
-}
-.df-check input { cursor: pointer; accent-color: var(--primary); }
-.df-spacer { flex: 1 1 auto; min-width: 0; }
-.df-panes {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; min-height: 0;
-}
-.df-pane {
-  display: flex; flex-direction: column; min-width: 0; min-height: 0;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--bg); overflow: hidden;
-}
-.df-pane-head {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-  padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar);
-}
-.df-pane-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
-.df-count {
-  margin-left: auto; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums;
-}
-.df-area {
-  flex: 1 1 auto; min-height: 0; width: 100%; resize: none; border: none; outline: none;
-  padding: 8px 10px; background: transparent; color: var(--text);
-  font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
-  font-size: 12.5px; line-height: 1.65; tab-size: 2;
-}
-.df-area:focus { background: color-mix(in srgb, var(--primary) 4%, transparent); }
-
-/* ---------------- 实用工具：文本对比 ---------------- */
-.df-panes { flex: 0 0 34%; min-height: 120px; }
-.df-sep { flex: 0 0 auto; width: 1px; height: 18px; background: var(--border); }
-.df-seg {
-  flex: 0 0 auto; display: inline-flex; overflow: hidden;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-}
-.df-seg .df-mode {
-  border: none; background: none; cursor: pointer; padding: 4px 10px;
-  font: inherit; font-size: 12.5px; color: var(--text-2);
-}
-.df-seg .df-mode + .df-mode { border-left: 1px solid var(--border); }
-.df-seg .df-mode.active { background: var(--bg-active); color: var(--primary); font-weight: 600; }
-.df-result {
-  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
-  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); overflow: hidden;
-}
-.df-result-head {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-  padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar);
-}
-.df-stat { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.df-n-add { color: var(--green); }
-.df-n-del { color: var(--danger); }
-.df-n-same { color: var(--text-3); font-weight: 400; }
-.df-view {
-  flex: 1 1 auto; min-height: 0; overflow: auto;
-  font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
-  font-size: 12.5px; line-height: 1.7;
-}
-.df-empty { padding: 22px 16px; text-align: center; font-size: 13px; color: var(--text-3); }
-.df-empty.err { color: var(--danger); }
-/* 并排：行号 | 内容 | 行号 | 内容；内联：左行号 | 右行号 | +/- | 内容 */
-.df-row { display: grid; grid-template-columns: 46px minmax(0, 1fr) 46px minmax(0, 1fr); }
-.df-row.inline { grid-template-columns: 46px 46px 18px minmax(0, 1fr); }
-.df-ln {
-  padding-right: 8px; text-align: right; color: var(--text-3);
-  font-variant-numeric: tabular-nums; user-select: none; background: var(--bg-sidebar);
-}
-.df-cell { padding: 0 8px; white-space: pre-wrap; word-break: break-word; }
-.df-ln.del, .df-cell.del { background: color-mix(in srgb, var(--danger) 14%, var(--bg-sidebar)); }
-.df-ln.add, .df-cell.add { background: color-mix(in srgb, var(--green) 14%, var(--bg-sidebar)); }
-.df-cell.pad { background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--border) 60%, transparent) 6px 8px); }
-.df-sign { text-align: center; color: var(--text-3); user-select: none; }
-.df-sign.del { color: var(--danger); }
-.df-sign.add { color: var(--green); }
-.df-w.del { background: color-mix(in srgb, var(--danger) 30%, transparent); border-radius: 2px; }
-.df-w.add { background: color-mix(in srgb, var(--green) 30%, transparent); border-radius: 2px; }
-@media (max-width: 720px) {
-  .df-panes { grid-template-columns: minmax(0, 1fr); }
-}
 
 /* ---------------- 语法高亮（highlight.js token 配色，跟着应用主题走） ---------------- */
-/* 编辑区与高亮层必须共用同一套字体度量，否则两层文字会逐行错位 */
-.jv-editor {
-  position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden;
-  font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
-  font-size: 12.5px; line-height: 1.65; tab-size: 2;
-}
-.jv-hl {
-  position: absolute; inset: 0; margin: 0; padding: 8px 10px;
-  overflow: hidden; pointer-events: none; white-space: pre;
-  font: inherit; color: var(--text); background: transparent;
-}
-/* textarea 只留光标：文字透明，看到的是下面 <pre> 里着色后的内容 */
-.jv-editor .jv-area {
-  position: relative; background: transparent; color: transparent; caret-color: var(--text);
-}
-.jv-editor .jv-area::placeholder { color: var(--text-3); }
-/* 聚焦反馈改画在容器上：直接给 textarea 上色会盖住高亮层 */
-.jv-editor .jv-area:focus { background: transparent; }
-.jv-editor:focus-within {
-  background: color-mix(in srgb, var(--primary) 5%, transparent);
-}
 /* token 配色（浅色：偏 One Light 的观感） */
 .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag { color: #a626a4; }
 .hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color: #2a9d5c; }
@@ -3006,96 +3018,6 @@ body.nt-fs-open { overflow: hidden; }
 [data-theme="dark"] .hljs-built_in,
 [data-theme="dark"] .hljs-tag { color: #56b6c2; }
 
-/* ---------------- 实用工具：JSON 查看器 ---------------- */
-.jv-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; overflow: hidden; }
-.jv-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.jv-field { display: flex; align-items: center; gap: 4px; }
-.jv-label { font-size: 12px; color: var(--text-2); white-space: nowrap; }
-.jv-ctl {
-  padding: 4px 8px; font: inherit; font-size: 12.5px; cursor: pointer;
-  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text);
-}
-.jv-check { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); }
-.jv-sep { flex: 0 0 auto; width: 1px; height: 18px; background: var(--border); }
-.jv-spacer { flex: 1 1 auto; }
-.jv-body {
-  flex: 1 1 auto; min-height: 0; display: grid; gap: 10px;
-  grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
-}
-.jv-pane {
-  display: flex; flex-direction: column; min-width: 0; min-height: 0;
-  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); overflow: hidden;
-}
-.jv-pane-head {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
-  padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar);
-}
-.jv-pane-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
-.jv-count { margin-left: auto; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-.jv-input {
-  flex: 1 1 auto; min-width: 90px; padding: 3px 8px; font: inherit; font-size: 12.5px; outline: none;
-  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text);
-}
-.jv-input:focus { border-color: var(--primary); }
-.jv-hits { font-size: 11.5px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.jv-area {
-  flex: 1 1 auto; min-height: 0; width: 100%; resize: none; border: none; outline: none;
-  padding: 8px 10px; background: transparent; color: var(--text);
-  font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
-  font-size: 12.5px; line-height: 1.65; tab-size: 2;
-}
-.jv-tree-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 6px 4px; }
-.jv-tree {
-  /* 组件是 Web Component（shadow DOM），外观只能靠它暴露的自定义属性调 */
-  --background-color: transparent;
-  --color: var(--text);
-  --font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
-  --font-size: 12.5px;
-  --line-height: 1.6;
-  --indent-size: 0.7em;
-  --indentguide-size: 1px;
-  --indentguide-style: solid;
-  --indentguide-color: var(--border);
-  --indentguide-color-active: var(--primary);
-  --outline-color: var(--border);
-  --string-color: #2a9d5c;
-  --number-color: #c18401;
-  --boolean-color: #4078f2;
-  --null-color: #a626a4;
-  --property-color: #0b7285;
-  --preview-color: var(--text-3);
-  --highlight-color: color-mix(in srgb, var(--primary) 30%, transparent);
-  display: block; min-height: 100%;
-}
-[data-theme="dark"] .jv-tree {
-  --string-color: #98c379;
-  --number-color: #d19a66;
-  --boolean-color: #61afef;
-  --null-color: #c678dd;
-  --property-color: #56b6c2;
-}
-.jv-query { flex: 0 0 auto; display: flex; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--border); background: var(--bg-sidebar); }
-.jv-result {
-  flex: 0 0 auto; max-height: 34%; overflow: auto; padding: 6px 10px;
-  border-top: 1px solid var(--border); background: var(--bg);
-}
-.jv-result-head { font-size: 11.5px; color: var(--text-3); margin-bottom: 4px; }
-.jv-result-code {
-  margin: 0; white-space: pre; font-family: Consolas, "SFMono-Regular", Menlo, "Courier New", monospace;
-  font-size: 12.5px; line-height: 1.6;
-}
-.jv-result-tip { font-size: 12px; color: var(--text-3); }
-.jv-result-tip.err { color: var(--danger); }
-.jv-status {
-  flex: 0 0 auto; padding: 5px 9px; border-radius: var(--radius-sm);
-  font-size: 12px; line-height: 1.5; color: var(--text-2); background: var(--bg);
-  max-height: 92px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
-}
-.jv-status[data-state="ok"] { color: var(--green); background: color-mix(in srgb, var(--green) 10%, var(--bg)); }
-.jv-status[data-state="err"] { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--bg)); }
-@media (max-width: 820px) {
-  .jv-body { grid-template-columns: minmax(0, 1fr); }
-}
 
 /* ---------------- 右键菜单（ctx-menu.js） ---------------- */
 /* 自绘菜单：定位由 JS 按视口夹取，层级压在模态遮罩（300）之上 ——
@@ -3164,11 +3086,12 @@ body.nt-fs-open { overflow: hidden; }
   width: 920px;
   height: 660px;
   max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 48px);
+  max-height: calc(100vh - var(--titlebar-h, 40px) - 48px);
   border-radius: 14px;
 }
 /* 所有设置项都是「改完即生效」，没有保存语义 → 不要底部按钮栏，只留右上角 ✕ 与 Esc */
 .modal.modal-settings .modal-foot { display: none; }
+/* 抬头的 ✕ 与标题栏三键不再上下紧贴（遮罩让出了标题栏），保持 12px 右侧内边距即可 */
 .modal.modal-settings .modal-head {
   height: 46px; padding: 0 12px 0 18px; flex: 0 0 auto;
 }
@@ -3488,7 +3411,10 @@ body.nt-fs-open { overflow: hidden; }
    统一把「浮起来的层」提到 --bg-elevated：background 越透它越实，最多到 0.97。
    ============================================================ */
 .modal,
-.detail-drawer,
+/* 只给 .detail-panel（右侧实体面板）上近实心底色。
+   .detail-drawer 是 position:fixed; inset:0 的全屏定位容器 —— 把底色挂在它身上，
+   等于整块视口被刷成面板色，主界面直接消失（v2.4.1 就是这么灰掉的）。 */
+.detail-panel,
 .ts-dropdown,
 .flatpickr-calendar,
 .ctx-menu,

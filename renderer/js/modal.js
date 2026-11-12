@@ -262,9 +262,16 @@ function mountResize(modal, { key = '', minWidth = 520, minHeight = 380 } = {}) 
   const defaultStyle = { width: modal.style.width, height: modal.style.height };
   let maximized = false;
 
+  // 遮罩从自绘标题栏下沿开始（见 styles.css 的 .modal-mask），可用的垂直空间要扣掉那 40px，
+  // 否则拖到最大时底部会被标题栏挤到看不见。
+  const titlebarH = () => {
+    const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--titlebar-h'));
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  };
+
   const clamp = (w, h) => {
     const maxW = Math.max(minWidth, window.innerWidth - 32);
-    const maxH = Math.max(minHeight, window.innerHeight - 32);
+    const maxH = Math.max(minHeight, window.innerHeight - titlebarH() - 32);
     return {
       w: Math.max(minWidth, Math.min(Math.round(w), maxW)),
       h: Math.max(minHeight, Math.min(Math.round(h), maxH)),
@@ -273,7 +280,7 @@ function mountResize(modal, { key = '', minWidth = 520, minHeight = 380 } = {}) 
   const apply = (w, h) => {
     const { w: W, h: H } = clamp(w, h);
     modal.style.maxWidth = `${window.innerWidth - 32}px`;
-    modal.style.maxHeight = `${window.innerHeight - 32}px`;
+    modal.style.maxHeight = `${window.innerHeight - titlebarH() - 32}px`;
     modal.style.width = `${W}px`;
     modal.style.height = `${H}px`;
     return { W, H };

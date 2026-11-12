@@ -20,7 +20,7 @@
  * - ```mermaid 换成占位 <div class="md-mermaid">，再由 enhanceMarkdown(root) 异步渲染成 SVG
  *   —— mermaid 包有数 MB，只在正文里真出现图时才动态 import 进来，不打开就不付解析成本；
  *   支持的图表类型只有流程图 / 时序图 / 类图 / 甘特图 / 饼图（构建期已裁掉其余图表代码，
- *   见 MERMAID_TYPES 与 scripts/build-tools.js）。
+ *   见 MERMAID_TYPES 与 scripts/build-vendor.js）。
  */
 import { renderMarkdown } from './markdown.js';
 
@@ -373,7 +373,7 @@ export function renderMarkdownBlocks(text) {
  * 支持的图表类型白名单：流程图 / 时序图 / 类图 / 甘特图 / 饼图。
  *
  * 为什么要有这份名单：mermaid 默认把 30 多种图（思维导图、看板、架构图、C4、ELK 布局…）
- * 都带上，整个库 5MB，而笔记里 99% 只用得到这五种。构建期（scripts/build-tools.js）会把
+ * 都带上，整个库 5MB，而笔记里 99% 只用得到这五种。构建期（scripts/build-vendor.js）会把
  * 其余图表模块替换成空桩，只打进来这五类 —— 所以这里的名单必须与构建期的 keep 列表一致，
  * 否则会出现「界面说支持、库却加载不出来」。
  *

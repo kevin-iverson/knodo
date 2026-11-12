@@ -49,8 +49,11 @@ const MAX_H = 520;
 const MIN_W = 240;
 const MAX_W = 460;
 const DEFAULT_W = 286;
-/** 贴顶 dock：收起高度 30（展开高度按内容自适应，宽度 420 由主进程锁死） */
+/** 顶条 dock：收起高度 30（展开高度按内容自适应，宽度 420 由主进程锁死） */
 const DOCK_HEAD_H = 30;
+/** 侧吸 dock：收起宽度 30（展开 320、高度按内容自适应，尺寸全部由主进程锁） */
+const SIDE_W = 320;
+const SIDE_MIN_H = 200;
 /** 笔记浮窗的最小高度：正文可能只有两行，但编辑要有个像样的画布 */
 const NOTE_MIN_H = 320;
 /** 悬停时序：进入 120ms 展开（手速划过顶边不闪），离开 400ms 收回（向下移动时不抽搐） */
@@ -166,9 +169,26 @@ function isCollapsed() {
   return !!(view && view.projection && view.projection.collapsed);
 }
 
-/** 这个窗是不是贴顶 dock */
+/** 这个窗吸在哪条边上：'top' 顶条 / 'left' | 'right' 侧吸 / null 普通浮窗 */
+function dockSide() {
+  const d = view && view.projection ? view.projection.dock : null;
+  return d === 'top' || d === 'left' || d === 'right' ? d : null;
+}
+
+/** 这个窗是不是吸边窗（顶条或侧吸） */
 function isDock() {
-  return !!(view && view.projection && view.projection.dock === 'top');
+  return !!dockSide();
+}
+
+/** 侧吸（贴左右边缘的竖条）：收起只有 30px 宽 */
+function isSideDock() {
+  const s = dockSide();
+  return s === 'left' || s === 'right';
+}
+
+/** 标题栏高度：顶条压到 30px，侧吸与普通浮窗都是完整的 42px */
+function headHeight() {
+  return dockSide() === 'top' ? DOCK_HEAD_H : HEAD_H;
 }
 
 /** 这个窗是不是「一篇笔记」（任务列表的那套渲染整条不走） */
@@ -216,10 +236,15 @@ function render() {
   if (!view) return;
   const collapsed = isCollapsed();
   const dock = isDock();
+  const side = dockSide();
   const note = isNoteView();
   el.root.classList.toggle('is-collapsed', collapsed);
-  // dock 态：标题栏压到 30px、上边不画圆角、隐藏缩放手柄（宽度固定 420）
-  el.root.classList.toggle('is-dock', dock);
+  // 顶条：标题栏压到 30px、上边不画圆角、隐藏缩放手柄（宽度固定 420）
+  el.root.classList.toggle('is-dock', side === 'top');
+  // 侧吸：贴边那一侧不画圆角；收起的 30px 竖条另有一套「竖排标题」布局
+  el.root.classList.toggle('is-dock-side', side === 'left' || side === 'right');
+  el.root.classList.toggle('is-dock-left', side === 'left');
+  el.root.classList.toggle('is-dock-right', side === 'right');
   // 笔记：底栏换成「字数 / 更新时间 + 编辑」，列表与新增待办都不出现
   el.root.classList.toggle('is-note', note);
   el.collapse.classList.toggle('is-rotated', collapsed);
@@ -443,9 +468,18 @@ function overdueDays(planEnd) {
   return Math.max(0, Math.round((today - d) / 86_400_000));
 }
 
+/**
+ * 浮窗只画未完成的行：勾掉即从这张小卡片消失。
+ * 已完成的数据仍由主进程下发（`1/5` 这个进度读数要算得对），只是不再渲染成行；
+ * 主窗口「今天」的「今日已完成」是另一条链路（recentlyDone），不受这里影响。
+ */
+function visibleTasks() {
+  return (Array.isArray(view && view.tasks) ? view.tasks : []).filter((t) => !t.completed);
+}
+
 function renderList() {
   const scrollTop = el.list.scrollTop;
-  const tasks = Array.isArray(view.tasks) ? view.tasks : [];
+  const tasks = visibleTasks();
   if (!tasks.length) {
     el.list.innerHTML = '';
     return;
@@ -511,7 +545,8 @@ function tickFocus() {
 }
 
 function renderHint() {
-  const tasks = Array.isArray(view.tasks) ? view.tasks : [];
+  const all = Array.isArray(view.tasks) ? view.tasks : [];
+  const open = all.filter((t) => !t.completed);
   if (view.missing) {
     el.hint.hidden = false;
     el.hint.className = 'dw-hint';
@@ -524,13 +559,13 @@ function renderHint() {
     el.hint.innerHTML = '数据未就绪，<b>点击重试</b>';
     return;
   }
-  if (!tasks.length || ((view.projection || {}).kind === 'unfinished' && !Number(view.pending))) {
+  if (!open.length || ((view.projection || {}).kind === 'unfinished' && !Number(view.pending))) {
     const kind = (view.projection && view.projection.kind) || 'group';
     el.hint.hidden = false;
     el.hint.className = 'dw-hint';
     if (kind === 'unfinished') {
       // 全部完成不是「暂无数据」，是一句收尾 + 今天的战果
-      const doneToday = tasks.filter((t) => t.completed).length;
+      const doneToday = all.filter((t) => t.completed).length;
       el.hint.innerHTML = '都做完了<b> · 今天到此为止</b>'
         + (doneToday ? `<br>今日完成 ${doneToday} 条` : '<br>在下方输入框直接加一条');
       return;
@@ -538,6 +573,11 @@ function renderHint() {
     // 空态直接告诉用户下一步，不写「暂无数据」。
     // 视图投影（今天 / 即将到期）用「这里」，分组投影用「这个清单」——文案跟着宿主走。
     const where = kind === 'group' ? '这个清单' : '这里';
+    // 勾完最后一条也走到这里：说「都完成了」，别用「还没有待办」否认刚做完的事
+    if (all.length) {
+      el.hint.innerHTML = `${where}都完成了<br><b>已完成的在主窗口里还能看到</b>`;
+      return;
+    }
     const tip = kind === 'upcoming' ? '在下方输入框添加，默认排在今天' : '在下方输入框直接添加';
     el.hint.innerHTML = `${where}还没有待办<br><b>${tip}</b>`;
     return;
@@ -749,10 +789,12 @@ async function paintNote() {
 /** 笔记高度：按正文自然高度算（offsetHeight 不受滚动容器影响，避免「只涨不缩」的棘轮） */
 function fitNote() {
   if (isCollapsed()) {
-    api.desktop.fit(projectionId, isDock() ? DOCK_HEAD_H : HEAD_H).catch(() => {});
+    api.desktop.fit(projectionId, isSideDock() ? Math.max(window.innerHeight, SIDE_MIN_H) : headHeight())
+      .catch(() => {});
     return;
   }
-  const headH = isDock() ? DOCK_HEAD_H : HEAD_H;
+  if (isSideDock() && window.innerWidth < SIDE_W * 0.6) return; // 还没展开成 320 宽，量了也不准
+  const headH = headHeight();
   const titleH = el.noteTitle.hidden ? 0 : el.noteTitle.offsetHeight + 8;
   const padTop = 6;
   const padBottom = 10;
@@ -777,10 +819,15 @@ function fit() {
   if (isNoteView()) { fitNote(); return; }
   const collapsed = isCollapsed();
   if (collapsed) {
-    // dock 收起成一条只有 30px；普通浮窗收起是完整标题栏 42px
-    api.desktop.fit(projectionId, isDock() ? DOCK_HEAD_H : HEAD_H).catch(() => {});
+    // 顶条收起成一条只有 30px；普通浮窗收起是完整标题栏 42px；
+    // 侧吸收起只改宽度（30px 竖条），高度原样保留 —— 传当前高度让主进程照抄
+    const h = isSideDock() ? Math.max(window.innerHeight, SIDE_MIN_H) : headHeight();
+    api.desktop.fit(projectionId, h).catch(() => {});
     return;
   }
+  // 侧吸刚展开：主进程还没把窗口加宽（此刻仍是 30px），这时量出来的高度是「文字挤成一列」的结果，
+  // 等加宽后再量（setCollapsed 里 await 之后会再调一次 fit）
+  if (isSideDock() && window.innerWidth < SIDE_W * 0.6) return;
   const listMax = MAX_H - HEAD_H - FOOT_H;
   // 提示区也要算进高度：空态/错误态不是 0 高度；底部新增行在「清单已删除」态是隐藏的
   const footH = el.foot.hidden ? 0 : FOOT_H;
@@ -820,6 +867,20 @@ function paintSectionCounts() {
   });
 }
 
+/** 勾掉的行先淡出 180ms 再整表重建：看得到「勾上了」，也不至于拖着不走 */
+let leaveTimer = null;
+let clickGuardUntil = 0;
+function rebuildAfterLeave() {
+  clearTimeout(leaveTimer);
+  leaveTimer = setTimeout(() => {
+    leaveTimer = null;
+    if (!view || isNoteView() || isCollapsed()) return;
+    renderList();
+    renderHint();
+    fit();
+  }, 180);
+}
+
 async function toggleTask(taskId) {
   const t = findTask(taskId);
   if (!t) return;
@@ -827,17 +888,39 @@ async function toggleTask(taskId) {
   t.completed = !prev;
   recount(); // 计数从本地列表直接算（乐观显示，主进程回来后以它为准）
   paintRow(t);
+  if (!prev) {
+    // 勾上 → 淡出并从列表移除（主窗口的「今日已完成」照旧保留，两条链路互不影响）
+    const row = el.list.querySelector(`.dw-row[data-id="${t.id}"]`);
+    if (row) row.classList.add('is-leaving');
+    // 行没了，键盘的选中锚点必须一起失效，否则空格会去动一条看不见的任务
+    if (selId === t.id) selId = null;
+    clickGuardUntil = Date.now() + 260;
+    rebuildAfterLeave();
+  }
   try {
     const saved = await api.desktop.toggleTask(t.id);
     if (saved) {
       t.completed = !!saved.completed;
       recount();
-      paintRow(t);
+      if (!t.completed) {
+        // 服务端没认这次勾选（例如重复事项被规则拒绝）：把行放回来
+        clearTimeout(leaveTimer);
+        leaveTimer = null;
+        renderList();
+        renderHint();
+        fit();
+      } else {
+        paintRow(t);
+      }
     }
   } catch (e) {
     t.completed = prev;
     recount();
-    paintRow(t);
+    clearTimeout(leaveTimer);
+    leaveTimer = null;
+    renderList();
+    renderHint();
+    fit();
     showQuickHint((e && e.message) || '操作失败');
   }
 }
@@ -933,6 +1016,21 @@ async function setCollapsed(next) {
   if (!view || !view.projection) return;
   if (!!view.projection.collapsed === !!next) return;
   view.projection.collapsed = !!next;
+  if (isSideDock()) {
+    // 侧吸：宽度由主进程在 30 ↔ 320 之间切换。**先切宽度再重排** ——
+    // 反过来会拿 30px 宽的布局去量高度（文字挤成一列），算出来的高度完全不是那个意思。
+    try {
+      await api.desktop.update(projectionId, { collapsed: !!next });
+    } catch (e) {
+      view.projection.collapsed = !next;
+    }
+    render();
+    fit();
+    // 窗口宽度变化要等一拍才反映到 layout（window.innerWidth 此时可能还是 30），
+    // 补量一次：展开态的高度必须按 320 宽的真实排版算
+    setTimeout(fit, 60);
+    return;
+  }
   render();
   try {
     await api.desktop.update(projectionId, { collapsed: !!next });
@@ -1033,6 +1131,8 @@ function bind() {
       }
     }
     if (view && view.missing) return;
+    // 刚勾掉一条时下面的行会上移，紧接着的第二下点击会落到邻居身上（连点误勾）——260ms 内不吃
+    if (Date.now() < clickGuardUntil) return;
     selId = Number(id);
     toggleTask(Number(id));
   });
@@ -1125,7 +1225,8 @@ function bind() {
       setCollapsed(true);
       return;
     }
-    const tasks = (view && view.tasks) || [];
+    // 只在「看得见的行」之间移动：已完成的不在列表里，选中它们等于让高亮消失
+    const tasks = visibleTasks();
     if (!tasks.length) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -1210,28 +1311,30 @@ function bind() {
     view.projection.collapsed = !!v;
     render();
   });
-  // dock 被拖离顶边：主进程已清掉 dock，这里跟着变回普通浮窗（重新量高度）
-  api.on('desktop:undocked', () => {
+  // 吸边窗被拖离那条边：主进程已清掉 dock，这里跟着变回普通浮窗（重新量高度）
+  api.on('desktop:undocked', (from) => {
     if (!view || !view.projection) return;
     view.projection.dock = null;
     view.projection.dockPinned = false;
     view.projection.collapsed = false;
     clearDockTimers();
     lastSig = '';
-    // 回头路要写出来：拖离之后没有任何手势能贴回去，只能走 ⋯ 菜单。
+    // 回头路要写出来：拖离之后没有任何手势能吸回去，只能走 ⋯ 菜单。
     // 必须等 refresh 画完再提示，否则 renderHint 会把这条提示盖掉。
-    refresh().then(() => showQuickHint('已拖离顶边 · ⋯ 菜单可「贴回屏幕顶边」'), () => {});
+    const where = from === 'left' || from === 'right' ? '屏幕边缘' : '屏幕顶边';
+    refresh().then(() => showQuickHint(`已拖离${where} · ⋯ 菜单可贴回`), () => {});
   });
-  // 被贴回顶边（拖到顶部自动贴边 / ⋯ 菜单）：变回 dock 形态并收起成 30px 读数列
-  api.on('desktop:redocked', () => {
+  // 被吸回某条边（拖到边缘自动吸附 / ⋯ 菜单）：变回吸边形态并收起
+  api.on('desktop:redocked', (side) => {
     if (!view || !view.projection) return;
-    view.projection.dock = 'top';
+    view.projection.dock = (side === 'left' || side === 'right') ? side : 'top';
     view.projection.dockPinned = false;
     view.projection.collapsed = true;
     clearDockTimers();
     lastSig = '';
-    // 主进程已经把窗口改成 420×30 并贴顶了，这里只负责把内容切成 dock 形态。
-    // 不给提示：30px 高的条上塞不进一行字，形态变化本身就是反馈（碰一下就会展开）。
+    // 主进程已经把窗口改成 420×30（顶条）或 320×h / 30×h（侧条）并贴好边了，
+    // 这里只负责把内容切成吸边形态。
+    // 不给提示：收起的窄条上塞不进一行字，形态变化本身就是反馈（碰一下就会展开）。
     refresh();
   });
 

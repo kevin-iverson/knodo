@@ -91,6 +91,17 @@ function taskSpan(t) {
   return r ? clamp(diffDays(r[0], r[1]) + 1, 1, 400) : 1;
 }
 const isOverdue = (t, today) => !!t.plan_end && t.plan_end < today && !t.completed && !t.archived;
+/**
+ * 历史日期（早于今天）→ 完成态只读。
+ *
+ * 日历回答的是「这天排得下吗」，不是「补勾昨天的卡」。在昨天的格子里点勾会真的改掉已发生的事：
+ * 一次性任务被挪去「当天」再勾，跨天任务的收尾日被改成历史日；重复事项更直接——
+ * 勾一下就是在 recurrence_completions 里删掉那天的打卡记录。这类改动用户在日历上看不出后果，
+ * 却会污染负载曲线与习惯统计，所以过去的格子一律不给勾。
+ * 要改历史请去任务列表 / 详情，或「重复事项」里的打卡日历（那里是本意上的编辑入口）。
+ */
+const isPastDay = (day) => !!day && day < todayStr();
+const LOCK_HINT = '历史日期只读：完成状态请在「今天」或任务列表里改';
 const priorityOf = (t) => clamp(Number(t.priority) || 0, 0, 3);
 const weightOf = (t) => WEIGHT[priorityOf(t)];
 
@@ -426,6 +437,8 @@ function taskCardHtml(entry, opts = {}) {
   const pri = priorityOf(t);
   const late = isOverdue(t, todayStr());
   const occ = entry.occ || '';
+  const day = opts.day || '';
+  const locked = isPastDay(day);
   const cls = [
     'cal-task', `p${pri}`,
     t.completed ? 'is-done' : '',
@@ -435,8 +448,9 @@ function taskCardHtml(entry, opts = {}) {
     opts.week ? 'is-wide' : '',
   ].filter(Boolean).join(' ');
   // 已完成条目不能再拖（拖了会改掉历史那天的排期，语义是错的）
-  const check = `<button type="button" class="cal-check${t.completed ? ' is-checked' : ''}" data-cal-act="toggle" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}
-    title="${t.completed ? '取消完成' : '标记完成'}">${t.completed ? '✓' : ''}</button>`;
+  const check = `<button type="button" class="cal-check${t.completed ? ' is-checked' : ''}${locked ? ' is-locked' : ''}" data-cal-act="toggle"
+    data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}${day ? ` data-cal-day="${day}"` : ''}${locked ? ' aria-disabled="true"' : ''}
+    title="${locked ? LOCK_HINT : (t.completed ? '取消完成' : '标记完成')}">${t.completed ? '✓' : ''}</button>`;
   const flag = pri === 3 ? '<span class="cal-flag" title="紧急">⚑</span>' : '';
   const dot = safeColor(t.group_color) ? `<span class="cal-gdot" style="background:${safeColor(t.group_color)}" title="${esc(t.group_name || '')}"></span>` : '';
   // 月视图格子只有 ~65px：长串「含 N 个子任务」会把标题挤到只剩一个字，只留 +N 角标。
@@ -530,7 +544,7 @@ function monthGridHtml() {
       st.rate >= 1 ? 'is-alert' : '',
       st.cls === 'is-critical' ? 'is-critical' : '',
     ].filter(Boolean).join(' ');
-    const cards = cell.tasks.slice(0, 2).map((e) => taskCardHtml(e)).join('');
+    const cards = cell.tasks.slice(0, 2).map((e) => taskCardHtml(e, { day: d })).join('');
     const more = cell.tasks.length > 2
       ? `<button type="button" class="cal-more" data-cal-act="more" data-date="${d}">+${cell.tasks.length - 2}</button>` : '';
     const badge = d === today && cfg.overdue.length
@@ -559,7 +573,7 @@ function weekGridHtml() {
     const d = addDays(start, i);
     const cell = cellData(d);
     const st = loadStateOf(cell.load, cfg.prefs.capacity);
-    const cards = cell.tasks.map((e) => taskCardHtml(e, { week: true })).join('')
+    const cards = cell.tasks.map((e) => taskCardHtml(e, { week: true, day: d })).join('')
       || '<div class="cal-week-empty">—</div>';
     html += `<div class="cal-week-col ${d === today ? 'is-today' : ''} ${cfg.selected === d ? 'is-selected' : ''} ${st.rate >= 1 ? 'is-alert' : ''}"
       data-date="${d}" data-load="${cell.load}">
@@ -641,16 +655,19 @@ function backlogListHtml() {
   </div>`;
 }
 
-function panelRowHtml(entry) {
+function panelRowHtml(entry, day) {
   const t = entry.task;
   const pri = priorityOf(t);
   const occ = entry.occ || '';
+  const locked = isPastDay(day);
   const opts = [3, 2, 1, 0].map((p) => `<option value="${p}"${p === pri ? ' selected' : ''}>${PRIORITY_TEXT[p]}</option>`).join('');
   const metaTail = occ
     ? '<span class="cal-occ-tag" title="重复事项在这一天的打卡记录">已完成 · 重复打卡</span>'
     : (isOverdue(t, todayStr()) ? '<span class="is-bad">已超期</span>' : PRIORITY_TEXT[pri]);
   return `<div class="cal-panel-row ${t.completed ? 'is-done' : ''}" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}>
-    <button type="button" class="cal-check${t.completed ? ' is-checked' : ''}" data-cal-act="toggle" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''} title="${t.completed ? '取消完成' : '标记完成'}">${t.completed ? '✓' : ''}</button>
+    <button type="button" class="cal-check${t.completed ? ' is-checked' : ''}${locked ? ' is-locked' : ''}" data-cal-act="toggle"
+      data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}${day ? ` data-cal-day="${day}"` : ''}${locked ? ' aria-disabled="true"' : ''}
+      title="${locked ? LOCK_HINT : (t.completed ? '取消完成' : '标记完成')}">${t.completed ? '✓' : ''}</button>
     <div class="cal-panel-main">
       <div class="cal-panel-title">${entry.continuation ? '↳ ' : ''}${esc(t.title || '未命名任务')}</div>
       <div class="cal-panel-meta">
@@ -675,7 +692,7 @@ function panelHtml() {
   });
   const list = [...groups.entries()].map(([name, entries]) => `<div class="cal-panel-group">
     <div class="cal-panel-group-name">${esc(name)}</div>
-    ${entries.map(panelRowHtml).join('')}
+    ${entries.map((e) => panelRowHtml(e, d)).join('')}
   </div>`).join('') || '<div class="cal-panel-empty">这一天还没有安排</div>';
   return `<aside class="cal-right ${cfg.showPanel ? '' : 'is-collapsed'}">
     ${cfg.showPanel ? `<div class="cal-card cal-day-panel">
@@ -876,6 +893,9 @@ async function patchTask(id, patch, label) {
 async function toggleTask(id, occ = '') {
   const t = cfg.tasks.find((x) => x.id === id);
   if (!t) return;
+  // 历史打卡（那一天早于今天）同样不给撤：删的是 recurrence_completions 里的历史记录，
+  // 日历上看不出痕迹，却会让习惯统计凭空少一天。改历史去「重复事项」的打卡日历。
+  if (occ && isPastDay(occ)) { ext.toast(LOCK_HINT); return; }
   if (occ && t.recurring_id != null && occ !== (t.occurrence_date || '')) {
     try {
       await api.recurrences.setCompletion(t.recurring_id, occ, false);
@@ -1087,7 +1107,11 @@ function onClick(e) {
   if (act) {
     const id = Number(act.dataset.taskId || 0);
     switch (act.dataset.calAct) {
-      case 'toggle': toggleTask(id, act.dataset.occ || ''); return;
+      case 'toggle': {
+        // 双保险：按钮本身带 is-locked，这里再挡一次（键盘 / 旧 DOM / 事件冒泡都不该改历史）
+        if (isPastDay(act.dataset.calDay)) { ext.toast(LOCK_HINT); return; }
+        toggleTask(id, act.dataset.occ || ''); return;
+      }
       case 'capacity': openCapacityDialog(); return;
       case 'more': selectDate(act.dataset.date || todayStr()); return;
       case 'overdue': selectDate(todayStr(), true); return;
@@ -1151,12 +1175,15 @@ function onContextMenu(e) {
   const occ = card.dataset.occ || '';
   const t = cfg.tasks.find((x) => x.id === id);
   if (!t) return;
+  // 过去格子里的完成态只读（与 cal-check 的 is-locked 同一条规则，见 isPastDay）
+  const host = card.closest('[data-date]');
+  const past = isPastDay(host ? host.dataset.date : '');
   // 历史打卡格子：排期 / 优先级 / 完成态都不属于"这一天"，只留详情与撤销
   if (occ) {
     openContextMenu([
       { label: '打开详情', icon: '↗', onClick: () => ext.openTaskDetail(id) },
       { type: 'sep' },
-      { label: `撤销 ${occ} 的打卡`, icon: '↺', onClick: () => toggleTask(id, occ) },
+      { label: `撤销 ${occ} 的打卡`, icon: '↺', disabled: past, onClick: () => toggleTask(id, occ) },
     ], { x: e.clientX, y: e.clientY });
     return;
   }
@@ -1171,7 +1198,7 @@ function onContextMenu(e) {
     { type: 'sep' },
     { label: '延期一天', icon: '→', disabled: !taskRange(t) || !!t.completed, onClick: () => deferOneDay(id) },
     { label: '移出排期', icon: '⌫', disabled: !taskRange(t), onClick: () => unschedule(id) },
-    { label: t.completed ? '取消完成' : '标记完成', icon: '✓', onClick: () => toggleTask(id) },
+    { label: past ? '完成状态（历史只读）' : (t.completed ? '取消完成' : '标记完成'), icon: '✓', disabled: past, onClick: () => toggleTask(id) },
   ], { x: e.clientX, y: e.clientY });
 }
 

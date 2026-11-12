@@ -1,21 +1,25 @@
 'use strict';
 /**
- * 把「实用工具」用到的第三方库打包进 renderer/vendor/tools/。
+ * 把笔记正文渲染要用的第三方库打包进 renderer/vendor/。
  *
- * 为什么不是直接拷 UMD 文件：prettier 3 / sql-formatter / xml-formatter / jsdiff 现在都只发
- * ESM + CJS（各自还依赖若干子包），没有可直接 <script> 引入的单文件；而打包后的应用只带
- * renderer/**（不含 node_modules），所以必须在构建期把它们压成自包含的 ESM 文件。
+ * 现在只剩两个产物：
+ *   · renderer/vendor/highlight/highlight.min.js —— highlight.js 裁到 11 种语言，打成 IIFE 挂 globalThis.hljs；
+ *   · renderer/vendor/mermaid/mermaid.mjs       —— mermaid 裁到 5 类图表，ESM 供动态 import。
  *
- * 产物随仓库提交（离线可运行），渲染层用动态 import() 按需加载 —— 不打开工具就不付解析成本。
+ * 为什么不是直接拷 UMD 文件：上游只发 ESM + CJS（还带若干子包），而打包后的应用只带
+ * renderer/**（不含 node_modules），所以必须在构建期压成自包含文件。
  *
- * 用法：npm run build:tools
+ * 产物随仓库提交（离线可运行）。
+ * 原「实用工具」（代码格式化 / 文本对比 / JSON 查看器）已整体下线，对应的
+ * format-core / format-java / diff / highlight(tools) / json-viewer / jsonpath 六个 target 一并删除。
+ *
+ * 用法：npm run build:vendor
  */
 const path = require('path');
 const fs = require('fs');
 const esbuild = require('esbuild');
 
 const ROOT = path.join(__dirname, '..');
-const OUT_DIR = path.join(ROOT, 'renderer', 'vendor', 'tools');
 
 /** renderer/vendor/ 下的子目录（按需懒加载的库） */
 const HL_DIR = path.join(ROOT, 'renderer', 'vendor', 'highlight');
@@ -75,7 +79,7 @@ function mermaidStubPlugin() {
   if (modOfId.size < MERMAID_KEEP.length || keepMods.size !== MERMAID_KEEP.length) {
     throw new Error(
       `mermaid 裁剪失败：在 mermaid.core.mjs 里没找到这些图表（${MERMAID_KEEP.join(', ')}）。`
-      + '上游打包结构可能变了，请检查 build-tools.js 的解析逻辑。',
+      + '上游打包结构可能变了，请检查 build-vendor.js 的解析逻辑。',
     );
   }
   const stubMods = new Set();
@@ -100,12 +104,6 @@ function mermaidStubPlugin() {
 }
 
 const TARGETS = [
-  { entry: 'format-core.mjs', out: 'format-core.mjs' },
-  { entry: 'format-java.mjs', out: 'format-java.mjs' },
-  { entry: 'diff.mjs', out: 'diff.mjs' },
-  { entry: 'highlight.mjs', out: 'highlight.mjs' },
-  { entry: 'json-viewer.mjs', out: 'json-viewer.mjs' },
-  { entry: 'jsonpath.mjs', out: 'jsonpath.mjs' },
   // 笔记正文渲染用：highlight.js 打成 IIFE 挂 globalThis.hljs（markdown-it 的
   // highlight 钩子是同步的，必须随页面一起就绪，不能动态 import）
   { entry: 'highlight-global.mjs', out: 'highlight.min.js', dir: HL_DIR, format: 'iife' },
@@ -118,7 +116,7 @@ async function build() {
   const jobs = TARGETS.map((t) =>
     esbuild.build({
       entryPoints: [path.join(__dirname, 'vendor', t.entry)],
-      outfile: path.join(t.dir || OUT_DIR, t.out),
+      outfile: path.join(t.dir, t.out),
       bundle: true,
       format: t.format || 'esm',
       platform: 'browser',
@@ -134,7 +132,7 @@ async function build() {
   const results = await Promise.all(jobs);
   [HL_DIR, MERMAID_DIR].forEach((d) => fs.mkdirSync(d, { recursive: true }));
   TARGETS.forEach((t) => {
-    const file = path.join(t.dir || OUT_DIR, t.out);
+    const file = path.join(t.dir, t.out);
     const kb = (fs.statSync(file).size / 1024).toFixed(0);
     console.log(`  ${t.out.padEnd(18)} ${kb.padStart(6)} KB`);
   });
@@ -143,7 +141,7 @@ async function build() {
 
 
 build().then(
-  (n) => console.log(`✓ vendor 工具库打包完成（${n} 个文件 → renderer/vendor/tools）`),
+  (n) => console.log(`✓ vendor 工具库打包完成（${n} 个文件 → renderer/vendor/{highlight,mermaid}）`),
   (e) => {
     console.error('✗ vendor 工具库打包失败：', (e && e.message) || e);
     process.exit(1);

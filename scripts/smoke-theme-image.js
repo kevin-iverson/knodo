@@ -78,7 +78,7 @@ app.whenReady().then(() => {
   // 旧值兼容
   store.theme = 'dark';
   const legacy = theme.read(db);
-  ok('旧值 "dark" 迁移为对象', legacy.mode === 'dark' && legacy.style === 'mist' && legacy.backdrop.type === 'none', JSON.stringify(legacy));
+  ok('旧值 "dark" 迁移为对象（风格落出厂默认宣纸）', legacy.mode === 'dark' && legacy.style === 'sepia' && legacy.backdrop.type === 'none', JSON.stringify(legacy));
 
   // 丢失判定
   fs.unlinkSync(path.join(dir, name));

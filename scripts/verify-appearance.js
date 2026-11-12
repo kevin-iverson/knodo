@@ -248,7 +248,7 @@ async function connect(wsUrl) {
       const saved = await window.api.theme.get();
       return { mode: saved.mode, style: saved.style, type: saved.backdrop.type, attr: document.documentElement.getAttribute('data-style') };
     })()`);
-    ok('恢复默认回到雾灰 / 跟随系统 / 无背景', reset.style === 'mist' && reset.mode === 'system' && reset.type === 'none', JSON.stringify(reset));
+    ok('恢复默认回到宣纸 / 跟随系统 / 无背景', reset.style === 'sepia' && reset.mode === 'system' && reset.type === 'none', JSON.stringify(reset));
 
     /* ---- 10) 分区内搜索：外壳的过滤不用为外观做特殊处理 ---- */
     const search = await page.evaluate(`(async () => {
@@ -263,8 +263,8 @@ async function connect(wsUrl) {
       await new Promise(r => setTimeout(r, 260));
       return { visible, total: secs.length, after: secs.filter((x) => !x.hidden).length };
     })()`);
-    ok('搜索「透明度」只剩背景图一节', search.visible === 1 && search.total === 3, JSON.stringify(search));
-    ok('清空搜索后三节全部回来', search.after === 3, search.after);
+    ok('搜索「透明度」命中背景图 + 桌面浮窗两节', search.visible === 2 && search.total === 4, JSON.stringify(search));
+    ok('清空搜索后四节全部回来', search.after === 4, search.after);
 
     /* ---- 11) 布局：设置面板没有溢出、风格卡不被压扁 ---- */
     const layout = await page.evaluate(`(() => {
@@ -282,6 +282,26 @@ async function connect(wsUrl) {
     ok('风格卡 3 列且宽度正常', layout.cols === 3 && layout.cardW > 120, JSON.stringify(layout));
     ok('外观分区无横向溢出', layout.overflowX === false);
     ok('无背景图时护栏提示隐藏', layout.guardHidden === true);
+
+    /* ---- 12) 桌面浮窗材质：不透明度是主题对象的一部分，且夹在安全区间 ---- */
+    const dw = await page.evaluate(`(() => {
+      const KT = window.KnodoTheme;
+      const plain = KT.resolve({ mode: 'light', style: 'sepia' });
+      const tuned = KT.resolve({ mode: 'light', style: 'sepia', desktop: { opacity: 70 } });
+      return {
+        def: plain.desktopAlpha,
+        norm: KT.normalize({}).desktop.opacity,
+        tuned: tuned.desktopAlpha,
+        low: KT.normalize({ desktop: { opacity: 10 } }).desktop.opacity,
+        high: KT.normalize({ desktop: { opacity: 500 } }).desktop.opacity,
+        varAlpha: getComputedStyle(document.documentElement).getPropertyValue('--dw-alpha').trim(),
+        panel: KT.triple(KT.STYLES.sepia.light['bg-panel']),
+      };
+    })()`);
+    ok('浮窗默认不透明度 95%', dw.def === 0.95 && dw.norm === 95, JSON.stringify(dw));
+    ok('浮窗不透明度可调且夹在 55–100', dw.tuned === 0.7 && dw.low === 55 && dw.high === 100, JSON.stringify(dw));
+    ok('--dw-alpha 已写到根上（浮窗读同一个变量）', dw.varAlpha === '0.95', dw.varAlpha);
+    ok('浮窗底色取当前风格的 panel（宣纸 #fdf8ee）', dw.panel === '253 248 238', dw.panel);
 
     /* ---- 结局 ---- */
     const failed = results.filter((r) => !r.pass);

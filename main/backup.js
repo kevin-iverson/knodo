@@ -9,6 +9,9 @@
  *  2. **自动快照**（每日一次，`.db`）：只保数据库（任务 / 笔记 / 会议记录 / 设置），
  *     走 SQLite 在线备份接口，体积小、可每天留。附件与录音本身就在数据目录里，
  *     磁盘故障要靠完整备份包搬到别处，这一点在界面上必须说清楚。
+ *  3. **自动全量备份**（每半个月一次，`.zip`，落在 `backups/full/`）：与手动导出的
+ *     完整备份包同构（db.json + 附件 + 录音），只保留最近两个月。日快照解决「误删回滚到昨天」，
+ *     全量包解决「磁盘坏了 / 换机器」——两套并存，各自独立清理。
  *
  * 本模块不依赖 Electron，可单独跑（脚本 / 冒烟测试）。
  */
@@ -28,6 +31,16 @@ const MAX_TOTAL_BYTES = 500 * 1024 * 1024;
 /** 启动后首次备份延迟 / 之后间隔 */
 const FIRST_DELAY_MS = 5 * 60 * 1000;
 const INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** 自动全量备份（含附件与录音）：存放子目录、间隔、保留期 */
+const FULL_DIR_NAME = 'full';
+const FULL_INTERVAL_DAYS = 15;
+const FULL_KEEP_MONTHS = 2;
+/** 全量备份的到期检查节奏（用户可能长期不重启，靠这个轮询） */
+const FULL_FIRST_DELAY_MS = 6 * 60 * 1000;
+const FULL_CHECK_MS = 60 * 60 * 1000;
+/** 失败后冷却，避免磁盘满 / 权限问题时每小时重打一次几百 MB 的包 */
+const FULL_RETRY_MS = 6 * 60 * 60 * 1000;
 /** 导入包体积保护（整包读入内存，超过就别硬来） */
 const MAX_IMPORT_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -48,6 +61,12 @@ function dataDir() {
 function backupDir() {
   const d = dataDir();
   return d ? path.join(d, BACKUP_DIR) : '';
+}
+
+/** 全量备份目录（`backups/full/`），与日快照分开，清理时不会互相误伤 */
+function fullBackupDir() {
+  const d = backupDir();
+  return d ? path.join(d, FULL_DIR_NAME) : '';
 }
 
 function dateStamp(d = new Date()) {
@@ -109,11 +128,12 @@ function buildEntries(onProgress) {
   const missingRecordings = [];
 
   // ---- 附件：目录里有什么就打包什么（含尚未被引用的，宁可多带也别让用户丢图） ----
+  // 用 load() 惰性读取：几百 MB 的包只在写到该条目时才把文件读进内存
   const attRoot = attachments.getRoot();
   const attFiles = attRoot ? walkFiles(attRoot) : [];
   for (const f of attFiles) {
     const rel = f.rel.split(path.sep).join('/');
-    entries.push({ name: `attachments/${rel}`, data: fs.readFileSync(f.abs), store: isStoreExt(f.rel) });
+    entries.push({ name: `attachments/${rel}`, load: () => fs.readFileSync(f.abs), store: isStoreExt(f.rel) });
   }
   if (onProgress) onProgress(`附件 ${attFiles.length} 个`);
 
@@ -127,7 +147,8 @@ function buildEntries(onProgress) {
       if (!abs.startsWith(prefix)) continue; // 不在本机录音目录里的（外链文件）跳过
       const rel = path.relative(recRoot, abs);
       if (!fs.existsSync(abs)) { missingRecordings.push(abs); continue; }
-      entries.push({ name: `recordings/${rel.split(path.sep).join('/')}`, data: fs.readFileSync(abs), store: true });
+      const at = abs;
+      entries.push({ name: `recordings/${rel.split(path.sep).join('/')}`, load: () => fs.readFileSync(at), store: true });
       recCount++;
     }
   }
@@ -383,6 +404,130 @@ function stopAutoBackup() {
   if (intervalTimer) { clearInterval(intervalTimer); intervalTimer = null; }
 }
 
+/* --------------------------- 自动全量备份 --------------------------- */
+/**
+ * 与日快照的分工：日快照只保数据库、天天有、用于「误删回滚到昨天」；
+ * 全量包带附件与录音、半月一份、留两个月，用于「磁盘坏了 / 换机器」。
+ * 判据用「距上一份已满 15 天」而不是「每月 1 号 / 16 号」——用户不天天开机，
+ * 固定日历日会静默漏掉，间隔判据下一次打开就能补上。
+ */
+
+/** 全量备份文件名 → 时间（日期粒度；解析不到退回 mtime） */
+function fullBackupTime(name, mtimeMs) {
+  const m = /knodo-full-(\d{4})(\d{2})(\d{2})\.zip$/.exec(name);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+  return mtimeMs;
+}
+
+/** 列出自动全量备份（按时间倒序） */
+function listFullBackups() {
+  const dir = fullBackupDir();
+  if (!dir || !fs.existsSync(dir)) return [];
+  const out = [];
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!ent.isFile() || !/^knodo-full-\d{8}\.zip$/.test(ent.name)) continue;
+    const abs = path.join(dir, ent.name);
+    let st;
+    try { st = fs.statSync(abs); } catch (e) { continue; }
+    out.push({ path: abs, name: ent.name, size: st.size, mtime: st.mtimeMs, time: fullBackupTime(ent.name, st.mtimeMs) });
+  }
+  out.sort((a, b) => b.time - a.time);
+  return out;
+}
+
+/**
+ * 清理两个月前的全量备份。
+ * 最新一份无条件保留：系统时钟被改回 / 时间戳异常时，别把唯一副本删掉。
+ * @returns {{removed:string[], totalBytes:number, count:number}}
+ */
+function pruneFullBackups() {
+  const files = listFullBackups();
+  if (!files.length) return { removed: [], totalBytes: 0, count: 0 };
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - FULL_KEEP_MONTHS);
+  cutoff.setHours(0, 0, 0, 0);
+  const cutoffMs = cutoff.getTime();
+
+  const removed = [];
+  files.forEach((f, i) => {
+    if (i === 0) return;
+    if (f.time >= cutoffMs) return;
+    try { fs.unlinkSync(f.path); removed.push(f.name); } catch (e) { /* 占用中，下次再说 */ }
+  });
+
+  const left = listFullBackups();
+  return { removed, totalBytes: left.reduce((s, f) => s + f.size, 0), count: left.length };
+}
+
+/** 防并发：一次全量打包可能几十秒，别让定时器和用户点击撞在一起 */
+let fullRunning = false;
+
+/**
+ * 立即做一次全量备份（完整 zip：db.json + 附件 + 录音）。
+ * 先写 `.tmp` 再改名，中途失败不会留下半截的「看起来能恢复」的包。
+ * @param {(msg:string)=>void} [onProgress]
+ */
+async function runFullBackup(onProgress) {
+  if (fullRunning) return { ok: false, reason: '已有一份全量备份正在进行' };
+  if (!db.isReady()) return { ok: false, reason: '数据库未就绪' };
+  const dir = fullBackupDir();
+  if (!dir) return { ok: false, reason: '数据目录未知' };
+  const check = db.quickCheck();
+  if (!check.ok) return { ok: false, reason: `数据库自检未通过（${check.message}），已跳过本次全量备份` };
+
+  fullRunning = true;
+  const dest = path.join(dir, `knodo-full-${dateStamp()}.zip`);
+  const tmp = `${dest}.tmp`;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const { manifest, entries } = buildEntries(onProgress);
+    writeZipFile(entries, tmp);
+    fs.renameSync(tmp, dest);
+    const pruned = pruneFullBackups();
+    return { ok: true, filePath: dest, size: fs.statSync(dest).size, manifest, pruned };
+  } catch (e) {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (e2) { /* 清理失败不影响报错 */ }
+    throw e;
+  } finally {
+    fullRunning = false;
+  }
+}
+
+/** 是否到期：没有全量备份，或最近一份距今已满 15 天 */
+function isFullBackupDue() {
+  const latest = listFullBackups()[0];
+  if (!latest) return true;
+  return (Date.now() - latest.time) / 86400000 >= FULL_INTERVAL_DAYS;
+}
+
+let fullFirstTimer = null;
+let fullIntervalTimer = null;
+let lastFullAttempt = 0;
+
+/** 启动自动全量备份：启动 6 分钟后检查一次，之后每小时检查是否到期 */
+function startFullBackup({ onError } = {}) {
+  if (fullIntervalTimer) return;
+  const run = () => {
+    if (!isFullBackupDue()) return;
+    if (Date.now() - lastFullAttempt < FULL_RETRY_MS) return;
+    lastFullAttempt = Date.now();
+    runFullBackup().catch((e) => {
+      const msg = e && e.message ? e.message : String(e);
+      console.error('[backup] 全量备份失败：', msg);
+      if (onError) onError(msg);
+    });
+  };
+  fullFirstTimer = setTimeout(run, FULL_FIRST_DELAY_MS);
+  if (fullFirstTimer.unref) fullFirstTimer.unref();
+  fullIntervalTimer = setInterval(run, FULL_CHECK_MS);
+  if (fullIntervalTimer.unref) fullIntervalTimer.unref();
+}
+
+function stopFullBackup() {
+  if (fullFirstTimer) { clearTimeout(fullFirstTimer); fullFirstTimer = null; }
+  if (fullIntervalTimer) { clearInterval(fullIntervalTimer); fullIntervalTimer = null; }
+}
+
 /**
  * 用某个快照覆盖当前数据库（危险操作，调用方必须先确认）。
  * 当前库不直接删掉，改名成 `.broken-<时间戳>` 留证，万一恢复的不是想要的那份还能救回来。
@@ -411,6 +556,8 @@ function restoreFromBackup(srcPath) {
 /** 设置页 / 菜单展示用的汇总信息 */
 function getInfo() {
   const list = listAutoBackups();
+  const full = listFullBackups();
+  const latestFull = full[0] || null;
   return {
     dir: backupDir(),
     count: list.length,
@@ -418,11 +565,24 @@ function getInfo() {
     latest: list[0] ? { path: list[0].path, name: list[0].name, time: list[0].time, size: list[0].size } : null,
     dailyDays: KEEP_DAILY_DAYS,
     weeklyCount: KEEP_WEEKLY_COUNT,
+    full: {
+      dir: fullBackupDir(),
+      count: full.length,
+      totalBytes: full.reduce((s, f) => s + f.size, 0),
+      latest: latestFull
+        ? { path: latestFull.path, name: latestFull.name, time: latestFull.time, size: latestFull.size }
+        : null,
+      intervalDays: FULL_INTERVAL_DAYS,
+      keepMonths: FULL_KEEP_MONTHS,
+      /** 下一份全量备份的计划日期（没有历史则为 null，表示「下次启动后会做」） */
+      nextDueTime: latestFull ? latestFull.time + FULL_INTERVAL_DAYS * 86400000 : null,
+    },
   };
 }
 
 module.exports = {
   BACKUP_DIR,
+  FULL_DIR_NAME,
   writeArchive,
   readArchive,
   importArchive,
@@ -433,6 +593,12 @@ module.exports = {
   runAutoBackup,
   startAutoBackup,
   stopAutoBackup,
+  listFullBackups,
+  pruneFullBackups,
+  runFullBackup,
+  isFullBackupDue,
+  startFullBackup,
+  stopFullBackup,
   restoreFromBackup,
   getInfo,
 };

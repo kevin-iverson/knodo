@@ -24,9 +24,12 @@ function clamp(v, winW = window.innerWidth) {
 
 function apply(w) {
   width = w;
+  // 写在 :root 上而不是 .app 上：自绘标题栏（.titlebar::before 用 --sidebar-width 决定
+  // 「侧栏色段 / 主区色段」的分界）是 .app 的兄弟节点，挂在 .app 上它读不到。
+  // .sidebar 仍然消费同一个变量，层级没变。
+  document.documentElement.style.setProperty('--sidebar-width', `${w}px`);
   const app = document.querySelector('.app');
-  if (!app) return;
-  app.style.setProperty('--sidebar-width', `${w}px`);
+  if (app) app.style.setProperty('--sidebar-width', `${w}px`);
   const bar = document.querySelector('.sidebar');
   if (bar) { bar.style.width = `${w}px`; bar.style.minWidth = `${w}px`; }
 }

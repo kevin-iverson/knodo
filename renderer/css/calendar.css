@@ -11,7 +11,10 @@
  * ------------------------------------------------------------------ */
 
 .cal-wrap {
-  --cal-line: #eef0f5;
+  /* 网格线与格子底跟主题走：写死 #eef0f5 / #ffffff 时，宣纸 / 苔绿 / 樱粉下
+     整块日历是冷白色，和米色内容区撞得很明显（用户报过「白色很突兀」）。
+     格子底 = 内容区地面色（与任务列表同一块纸），格线用 --border。 */
+  --cal-line: var(--border);
   --cal-ink: #1f2430;
   --cal-ink2: #6b7280;
   --cal-ink3: #9aa1ad;
@@ -23,7 +26,7 @@
   --cal-blue-bg: #f4f7ff;
   --cal-done-bg: #f1faf6;
   --cal-trough: #eef0f5;
-  --cal-card: #ffffff;
+  --cal-card: var(--bg-ground);
   --cal-radius: 12px;
   display: flex;
   flex-direction: column;
@@ -101,7 +104,7 @@
 }
 .cal-pool-empty { padding: 12px 2px; font-size: 12px; color: var(--cal-ink3); }
 .cal-pool-more { padding: 6px 2px 2px; font-size: 11px; color: var(--cal-ink3); }
-.cal-pool.is-drop-pool { border-color: var(--cal-blue); box-shadow: 0 0 0 2px rgba(79, 124, 255, .14); }
+.cal-pool.is-drop-pool { border-color: var(--cal-blue); box-shadow: 0 0 0 2px rgb(var(--primary-rgb) / .14); }
 
 /* ---------------- 左栏：负载怎么算 ---------------- */
 .cal-how { padding: 14px; }
@@ -148,14 +151,19 @@
 .cal-today:hover { text-decoration: underline; }
 .cal-seg {
   display: inline-flex; padding: 2px; gap: 2px;
-  background: #f2f3f7; border-radius: 8px;
+  background: var(--bg-hover); border-radius: 8px;
 }
 .cal-seg button {
   min-width: 30px; height: 24px; padding: 0 8px;
   border: 0; border-radius: 6px; background: transparent;
   color: var(--cal-ink3); font-size: 12px; cursor: pointer;
 }
-.cal-seg button.is-active { background: #fff; color: var(--cal-ink); box-shadow: 0 1px 3px rgba(20, 30, 60, .12); font-weight: 600; }
+/* 选中项要比轨道（--bg-hover）更"亮"一档，且跟着风格走：
+   混一点主色进面板色，宣纸下是暖白、石墨下是冷灰，不用再为深色写一套覆盖 */
+.cal-seg button.is-active {
+  background: color-mix(in srgb, var(--primary) 6%, var(--bg-panel));
+  color: var(--cal-ink); box-shadow: 0 1px 3px rgba(20, 30, 60, .12); font-weight: 600;
+}
 
 /* ---------------- 月视图网格 ---------------- */
 .cal-weekdays {
@@ -178,11 +186,11 @@
   overflow: hidden; cursor: pointer;
   background: var(--cal-card);
 }
-.cal-cell:hover { background: #fbfcff; }
-.cal-cell.is-other { background: #fcfcfd; color: var(--cal-ink3); }
+.cal-cell:hover { background: var(--bg-active); }
+.cal-cell.is-other { background: var(--bg-hover); color: var(--cal-ink3); }
 .cal-cell.is-past { background-image: linear-gradient(135deg, rgba(154, 161, 173, .035) 25%, transparent 25%, transparent 50%, rgba(154, 161, 173, .035) 50%); background-size: 8px 8px; }
 .cal-cell.is-today { background: var(--cal-blue-bg); outline: 1px solid var(--cal-blue); outline-offset: -1px; z-index: 1; }
-.cal-cell.is-selected { box-shadow: inset 0 0 0 2px rgba(79, 124, 255, .35); }
+.cal-cell.is-selected { box-shadow: inset 0 0 0 2px rgb(var(--primary-rgb) / .35); }
 .cal-cell.is-alert { background: var(--cal-red-soft); outline: 1px solid rgba(229, 72, 77, .55); outline-offset: -1px; }
 .cal-cell.is-critical { outline: 2px solid var(--cal-red); outline-offset: -2px; }
 .cal-cell.is-preview { box-shadow: inset 0 0 0 2px var(--cal-blue); }
@@ -237,7 +245,7 @@
 .cal-drop-tip {
   position: absolute; right: 5px; top: 26px; z-index: 6;
   padding: 3px 7px; border-radius: 5px; white-space: nowrap;
-  background: #fff; border: 1px solid var(--cal-line);
+  background: var(--bg-elevated); border: 1px solid var(--cal-line);
   box-shadow: 0 4px 12px rgba(20, 30, 60, .14);
   font-size: 10.5px; color: var(--cal-ink2);
 }
@@ -260,7 +268,7 @@
 }
 .cal-check {
   flex: 0 0 12px; width: 12px; height: 12px; padding: 0;
-  border: 1px solid #c9cede; border-radius: 3px; background: #fff;
+  border: 1px solid var(--border); border-radius: 3px; background: var(--bg-panel);
   color: #fff; font-size: 9px; line-height: 10px; text-align: center; cursor: pointer;
 }
 /* 勾选态只认 .is-checked：绿底白勾。以前只写了「格内卡片」的 .is-done .cal-check，
@@ -272,6 +280,14 @@
   font-weight: 700;
 }
 .cal-check:hover { border-color: var(--cal-green, #23b07e); }
+/* 历史日期（早于今天）：完成态只读。
+   已完成的绿勾是「那天确实做完了」的历史事实，照原样留住，只把光标改成禁用；
+   未完成的空框淡掉 —— 过去的格子不给补勾，也不给撤勾（见 calendar.js 的 isPastDay）。 */
+.cal-check.is-locked { cursor: not-allowed; }
+.cal-check.is-locked:not(.is-checked) { background: #f1f3f8; border-color: #e0e4ee; }
+.cal-check.is-locked:not(.is-checked):hover { border-color: #e0e4ee; }
+.cal-check.is-locked.is-checked { opacity: .88; }
+.cal-check.is-locked.is-checked:hover { border-color: var(--cal-green, #23b07e); }
 /* 完成态：淡绿底 + 常驻绿勾 + 次要字色。整卡 opacity 会把历史记录糊成一片（反馈：月视图看不清） */
 .cal-task.is-done {
   background: var(--cal-done-bg);
@@ -333,7 +349,7 @@
   background: var(--cal-card); cursor: pointer;
 }
 .cal-week-col.is-today { background: var(--cal-blue-bg); }
-.cal-week-col.is-selected { box-shadow: inset 0 0 0 2px rgba(79, 124, 255, .35); }
+.cal-week-col.is-selected { box-shadow: inset 0 0 0 2px rgb(var(--primary-rgb) / .35); }
 .cal-week-col.is-alert { background: var(--cal-red-soft); }
 .cal-week-col.is-preview { box-shadow: inset 0 0 0 2px var(--cal-blue); }
 .cal-week-head { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; }
@@ -403,7 +419,7 @@
   background: transparent; color: var(--cal-ink3); font-size: 18px; cursor: pointer;
 }
 .cal-panel-toggle:hover { background: var(--bg-hover); }
-.cal-panel-load { margin: 12px 0 14px; padding: 10px 12px; border-radius: 9px; background: #f7f8fc; }
+.cal-panel-load { margin: 12px 0 14px; padding: 10px 12px; border-radius: 9px; background: var(--bg-hover); }
 .cal-panel-load-num { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .cal-panel-load-num span { font-size: 13px; color: var(--cal-ink3); font-weight: 500; }
 .cal-panel-load-desc { margin: 2px 0 9px; font-size: 11px; color: var(--cal-ink2); }
@@ -471,7 +487,7 @@
 .cal-drag-ghost {
   position: fixed; left: 0; top: 0; z-index: 2147482000;
   display: flex; align-items: center; gap: 7px;
-  padding: 6px 10px; border-radius: 7px; background: #fff;
+  padding: 6px 10px; border-radius: 7px; background: var(--bg-elevated);
   border: 1px solid var(--cal-line); box-shadow: 0 6px 18px rgba(20, 30, 60, .18);
   font-size: 12px; color: var(--cal-ink); pointer-events: none;
 }
@@ -520,8 +536,9 @@
 [data-theme="dark"] .cal-hover-tip { box-shadow: 0 8px 26px rgba(0, 0, 0, .45); }
 
 /* ---------------- 暗色主题：只重映射底色，优先级色保持与列表一致 ---------------- */
+/* --cal-line / --cal-card 不在这里重映射：它们取 var(--border) / var(--bg-ground)，
+   深色 token 会自己跟着走（原来写死 #2a2f3a / #1d212a，换风格后是蓝黑、和棕黑底撞色） */
 [data-theme="dark"] .cal-wrap {
-  --cal-line: #2a2f3a;
   --cal-ink: #e7eaf0;
   --cal-ink2: #9aa3b2;
   --cal-ink3: #6c7482;
@@ -532,19 +549,14 @@
   --cal-blue-bg: #20283a;
   --cal-done-bg: #1a2a25;
   --cal-trough: #2a2f3a;
-  --cal-card: #1d212a;
 }
 [data-theme="dark"] .cal-task { --cal-soft: #262b36 !important; }
-[data-theme="dark"] .cal-cell.is-other { background: #1a1e26; }
-[data-theme="dark"] .cal-cell:hover { background: #222734; }
-[data-theme="dark"] .cal-seg { background: #262b36; }
-[data-theme="dark"] .cal-seg button.is-active { background: #333b4b; color: #e7eaf0; }
-[data-theme="dark"] .cal-panel-load { background: #222734; }
 [data-theme="dark"] .cal-preview-box { border-color: #5a3034; background: #2c2124; }
 [data-theme="dark"] .cal-preview-track { background: #503033; }
 [data-theme="dark"] .cal-backlog, [data-theme="dark"] .cal-backlog-row button { background: #332226; }
 [data-theme="dark"] .cal-drop-tip, [data-theme="dark"] .cal-drag-ghost { background: #262b36; border-color: #3a4150; }
 [data-theme="dark"] .cal-check:not(.is-checked) { background: #262b36; border-color: #4b5363; }
+[data-theme="dark"] .cal-check.is-locked:not(.is-checked) { background: #20242e; border-color: #343b48; }
 [data-theme="dark"] .cal-task.is-done { box-shadow: inset 0 0 0 1px rgba(35, 176, 126, .22); }
 [data-theme="dark"] .cal-lg.is-empty, [data-theme="dark"] .cal-trend-bar.is-empty { background: #3a4150; }
 [data-theme="dark"] .cal-cell.is-past { background-image: linear-gradient(135deg, rgba(255, 255, 255, .02) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .02) 50%); }

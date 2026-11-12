@@ -34,7 +34,9 @@ function crc32(buf) {
 
 /**
  * 把条目按 ZIP 结构依次交给 sink，避免一次性拼出整个包。
- * @param {Array<{name:string, data:string|Buffer, store?:boolean, level?:number}>} entries
+ * 条目可以给 `load()` 而不是 `data`：写到这里才去读文件，
+ * 这样几百 MB 的完整备份包不会把所有附件同时驻留内存。
+ * @param {Array<{name:string, data?:string|Buffer, load?:()=>Buffer|string, store?:boolean, level?:number}>} entries
  * @param {(chunk:Buffer)=>void} sink
  */
 function writeEntries(entries, sink) {
@@ -43,7 +45,8 @@ function writeEntries(entries, sink) {
 
   for (const e of entries) {
     const nameBuf = Buffer.from(String(e.name), 'utf8');
-    const raw = Buffer.isBuffer(e.data) ? e.data : Buffer.from(String(e.data), 'utf8');
+    const src = e.load ? e.load() : e.data;
+    const raw = Buffer.isBuffer(src) ? src : Buffer.from(String(src), 'utf8');
     // store：图片 / 音频 / 视频本身已压缩，再 deflate 只会白烧 CPU
     const store = !!e.store;
     const comp = store ? raw : zlib.deflateRawSync(raw, { level: e.level || 9 });

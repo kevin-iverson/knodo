@@ -87,13 +87,22 @@
 
   const ORDER = ['mist', 'graphite', 'moss', 'sepia', 'sakura', 'contrast'];
 
+  /**
+   * 出厂默认 = 宣纸（与主进程 main/theme.js 的 DEFAULT_THEME 必须一致）。
+   * 只有「从来没存过主题」才落到这里：normalize 对缺失 / 非法 style 的兜底值就是它，
+   * 所以老版本只存过 'light' / 'dark' 字符串的用户，也会得到宣纸而不是纯白雾灰。
+   */
   const DEFAULTS = {
     mode: 'system',
-    style: 'mist',
+    style: 'sepia',
     backdrop: {
       type: 'none', image: '', opacity: 60, blur: 0, fit: 'cover',
       scrim: 'auto', glass: true, luma: 0.5, missing: false,
     },
+    // 桌面浮窗材质：0–100 不透明度百分比。浮窗贴在别人窗口上，太透会和下面的
+    // 内容糊成一片，所以默认比主窗口面板块更实（95）。底色不走固定白，
+    // 而是取当前风格的 panel 色 —— 换宣纸 / 樱粉浮窗跟着变。
+    desktop: { opacity: 95 },
   };
 
   /** 语义 token → CSS 变量名（三元组） */
@@ -161,18 +170,24 @@
       return {
         ...DEFAULTS,
         backdrop: { ...DEFAULTS.backdrop },
+        desktop: { ...DEFAULTS.desktop },
         mode: ['system', 'light', 'dark'].includes(src) ? src : 'system',
       };
     }
     if (!src || typeof src !== 'object') {
-      return { ...DEFAULTS, backdrop: { ...DEFAULTS.backdrop } };
+      return { ...DEFAULTS, backdrop: { ...DEFAULTS.backdrop }, desktop: { ...DEFAULTS.desktop } };
     }
     const bd = src.backdrop && typeof src.backdrop === 'object' ? src.backdrop : {};
+    const dk = src.desktop && typeof src.desktop === 'object' ? src.desktop : {};
     const image = String(bd.image || '');
     const num = (v, fb) => (Number.isFinite(Number(v)) ? Number(v) : fb);
     return {
       mode: ['system', 'light', 'dark'].includes(src.mode) ? src.mode : 'system',
-      style: STYLES[src.style] ? src.style : 'mist',
+      style: STYLES[src.style] ? src.style : DEFAULTS.style,
+      desktop: {
+        // 5 的整数倍 + 55 起：再透下去浮窗里的正文就压不住任何壁纸了
+        opacity: clamp(Math.round(num(dk.opacity, DEFAULTS.desktop.opacity) / 5) * 5, 55, 100),
+      },
       backdrop: {
         type: image ? (bd.type === 'none' ? 'none' : 'image') : 'none',
         image,
@@ -213,7 +228,7 @@
     const theme = normalize(raw);
     const mode = resolveMode(theme);
     const styleId = theme.style;
-    const style = STYLES[styleId] || STYLES.mist;
+    const style = STYLES[styleId] || STYLES[DEFAULTS.style];
     const tokens = style[mode] || style.light;
     const bd = theme.backdrop;
 
@@ -269,6 +284,8 @@
       mode,
       style: styleId,
       tokens,
+      /** 浮窗材质不透明度（0–1）：desktop.css 里 --dw-bg 的 alpha 直接取它 */
+      desktopAlpha: Math.round((theme.desktop.opacity / 100) * 100) / 100,
       opacity,
       alpha: Math.round(alpha * 1000) / 1000,
       guardPct: styleId === 'contrast' ? 0 : guardPct,
@@ -294,6 +311,9 @@
       root.style.setProperty(CSS_VAR[k], triple(r.tokens[k]));
     });
     root.style.setProperty('--surface-alpha', String(r.alpha));
+    // 桌面浮窗（desktop.html）也加载本文件：不透明度走同一个变量，
+    // 换风格时底色自然跟着 --panel-rgb 变，不需要另外同步一套
+    root.style.setProperty('--dw-alpha', String(r.desktopAlpha));
     root.style.setProperty('--glass', r.glass ? '1' : '0');
     root.style.setProperty('--bd-scrim', String(r.scrim));
     root.style.setProperty('--bd-blur', `${r.blur}px`);
@@ -338,9 +358,14 @@
   };
 
   // 首帧对齐：module 脚本（js/theme.js）拿到主进程真值后会再 paint 一次，
-  // 这里只是让深色 / 石墨用户在启动瞬间不要先看到一帧雾灰浅色。
-  const boot = cached();
-  if (boot) {
-    try { paint(boot); } catch (e) { /* 缓存坏了就当没有 */ }
-  }
+  // 这里只是让首帧就是对的颜色。**没有缓存也要画** —— 新装用户走的是 DEFAULTS（宣纸），
+  // 不画的话首帧会落到 styles.css :root 的静态值上，白闪一下再变暖（用户报过「怎么是白的」）。
+  try { paint(cached() || DEFAULTS); } catch (e) { /* 缓存坏了就当没有，反正 theme.js 会补 */ }
+
+  // 侧栏宽度同理：自绘标题栏（.titlebar::before）要靠 --sidebar-width 决定侧栏色段的宽度。
+  // 等 sidebar-resize.js（module，defer）跑起来才写就晚了 —— 首帧会按 220px 画一次再跳。
+  try {
+    const w = parseInt(localStorage.getItem('ui.sidebarWidth'), 10);
+    if (w >= 180 && w <= 420) document.documentElement.style.setProperty('--sidebar-width', `${w}px`);
+  } catch (e) { /* 隐私模式 / 无缓存：用 CSS 兜底的 220px */ }
 })();

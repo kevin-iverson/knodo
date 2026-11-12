@@ -238,11 +238,23 @@ contextBridge.exposeInMainWorld('api', {
     // 上班鼓励器的月薪 + 上下班时间（设置 → 趣味功能；存 settings，下次打开直接回填）
     getSalary: () => call('ui:getSalary'),
     setSalary: (p) => call('ui:setSalary', p),
-    // 实用工具（代码格式化 / 文本对比）的选项：存 settings，下次打开直接回填
+    // 界面偏好键值（日历 / 上班鼓励器等）：存 settings，下次打开直接回填
     getToolPref: (key) => call('ui:getToolPref', key),
     setToolPref: (key, p) => call('ui:setToolPref', key, p),
     getCollapsedGroups: () => call('ui:getCollapsedGroups'),
     setCollapsedGroups: (keys) => call('ui:setCollapsedGroups', keys),
+  },
+  /**
+   * 窗口控制（标题栏右上角的三颗自绘按钮）。
+   * 主窗口是无边框窗口，系统不再画最小化 / 最大化 / 关闭，只能从这里叫；
+   * maximized 状态由主进程通过 win:state 事件推送，避免两边各算一份对不上。
+   * 关闭 = 隐藏到托盘（main.js 的既有行为），不是退出进程。
+   */
+  win: {
+    minimize: () => call('win:minimize'),
+    toggleMaximize: () => call('win:toggleMaximize'),
+    close: () => call('win:close'),
+    state: () => call('win:state'),
   },
   app: {
     quit: () => call('app:quit'),
@@ -269,6 +281,8 @@ contextBridge.exposeInMainWorld('api', {
   env: {
     getStorageInfo: () => call('app:getStorageInfo'),
     getBackupInfo: () => call('app:getBackupInfo'),
+    /** 立即做一次全量备份（db.json + 附件 + 录音），自动策略是每 15 天一次 */
+    runFullBackup: () => call('app:runFullBackup'),
     openPath: (kind) => call('app:openPath', kind),
   },
   /**
@@ -294,7 +308,7 @@ contextBridge.exposeInMainWorld('api', {
     show: (id) => call('desktop:show', id),
     hide: (id) => call('desktop:hide', id),
     resetPosition: (id) => call('desktop:resetPosition', id),
-    redock: (id) => call('desktop:redock', id),
+    redock: (id, side) => call('desktop:redock', id, side),
     // 贴桌面诊断（是否真的挂进桌面层 / 是否压在图标之上 / 原生能力是否可用），只读不改状态
     diagnostics: () => call('desktop:diagnostics'),
   },
@@ -359,20 +373,22 @@ contextBridge.exposeInMainWorld('api', {
   on: (channel, cb) => {
     const allowed = [
       'ui:quick-add', 'ui:focus-task', 'ui:ai-settings', 'ui:new-note',
-      'ui:text-diff', 'ui:json-viewer', 'ui:import-md',
+      'ui:import-md',
       // 全局快捷键 Ctrl+Shift+H：唤起主窗口并打开「笔记」弹窗
       'ui:notes-dock',
       // 主题（主进程已改好 nativeTheme，推一份当前值让界面跟进）
       'ui:theme-changed',
+      // 自绘三键：最大化 / 还原态由主进程推（拖边吸附、Win+方向键、双击标题栏都会变）
+      'win:state',
       // 全局快捷键：设置面板入口 / 快捷键变更（多条浮窗时同步刷新）/ 没有钉住清单时的提示
       'ui:settings', 'keys:changed', 'ui:no-desktop-pins',
       // 捕捉条显示（主进程在 show 之后推一份目标清单 / 草稿状态）
       'capture:show',
       // 桌面浮窗：浮窗重拉自己的投影 / 主窗口重绘 / 菜单里的已钉列表变化 / 清单被删除
       'desktop:invalidate', 'desktop:missing', 'desktop:collapsed', 'desktop:projection-changed',
-      // 贴顶 dock 被拖离顶边 → 变回普通浮窗，渲染层要重新量高度
+      // 吸边窗被拖离那条边 → 变回普通浮窗，渲染层要重新量高度
       'desktop:undocked',
-      // 普通浮窗被贴回顶边（拖到顶部自动贴边 / ⋯ 菜单）→ 变回 dock，渲染层要切 dock 形态并收起
+      // 普通浮窗被吸到某条边（拖到边缘自动吸附 / ⋯ 菜单）→ 变回吸边形态并收起，参数是 'top' | 'left' | 'right'
       'desktop:redocked',
       'ui:data-changed',
       // 重复事项：File 菜单打开管理面板 / 后台跨天生成后让列表跟上

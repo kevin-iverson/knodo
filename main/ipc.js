@@ -1174,18 +1174,69 @@ function registerIpc() {
   ipcMain.handle('app:getStorageInfo', () => storage.getInfo());
   ipcMain.handle('app:getBackupInfo', () => backup.getInfo());
   /**
-   * 在文件管理器里打开数据目录 / 备份目录。
-   * 只认这两个枚举值，不接受任意路径 —— 否则渲染层就拿到了一个万能 shell.openPath。
+   * 立即做一次全量备份（含附件与录音）。自动策略是每 15 天一次，
+   * 这里留给「换机前 / 自己动手备份一次」的场景，返回结果由界面提示。
+   */
+  ipcMain.handle('app:runFullBackup', async () => {
+    try {
+      const r = await backup.runFullBackup();
+      return r && r.ok
+        ? { ok: true, filePath: r.filePath, size: r.size, counts: r.manifest && r.manifest.counts, pruned: r.pruned }
+        : { ok: false, reason: (r && r.reason) || '未知原因' };
+    } catch (e) {
+      return { ok: false, reason: e && e.message ? e.message : String(e) };
+    }
+  });
+  /**
+   * 在文件管理器里打开数据目录 / 备份目录 / 全量备份目录。
+   * 只认这三个枚举值，不接受任意路径 —— 否则渲染层就拿到了一个万能 shell.openPath。
    */
   ipcMain.handle('app:openPath', async (_e, kind) => {
     const which = String(kind || '');
     const dir = which === 'data' ? storage.getInfo().dir
       : which === 'backup' ? backup.getInfo().dir
-        : '';
+        : which === 'backup-full' ? backup.getInfo().full.dir
+          : '';
     if (!dir) return { ok: false, reason: '未知的目录' };
     const msg = await shell.openPath(dir);
     return msg ? { ok: false, reason: msg } : { ok: true };
   });
+
+  /* ---------- 窗口控制（自绘三键） ---------- */
+  // 主窗口是无边框窗口（main.js 的 titleBarStyle:'hidden' 且不再挂 overlay），
+  // 最小化 / 最大化 / 关闭只能从渲染层叫过来。只认「发起方所在的那个窗口」，
+  // 不接受窗口 id —— 否则渲染层就拿到了一个能关任意窗口的口子。
+  const winOf = (event) => {
+    const w = event && event.sender ? BrowserWindow.fromWebContents(event.sender) : null;
+    return w && !w.isDestroyed() ? w : null;
+  };
+  ipcMain.handle('win:minimize', guard(async (event) => {
+    const w = winOf(event);
+    if (w) w.minimize();
+    return { ok: !!w };
+  }));
+  ipcMain.handle('win:toggleMaximize', guard(async (event) => {
+    const w = winOf(event);
+    if (!w) return { ok: false, maximized: false };
+    // 全屏态下先退全屏再切最大化，否则会出现「全屏 + 最大化」两层状态
+    if (w.isFullScreen()) w.setFullScreen(false);
+    else if (w.isMaximized()) w.unmaximize();
+    else w.maximize();
+    return { ok: true, maximized: w.isMaximized(), fullScreen: w.isFullScreen() };
+  }));
+  ipcMain.handle('win:close', guard(async (event) => {
+    const w = winOf(event);
+    // 主窗口的 close 走 main.js 里「最小化到托盘」那条老路：点 X 不退出进程
+    if (w) w.close();
+    return { ok: !!w };
+  }));
+  ipcMain.handle('win:state', guard(async (event) => {
+    const w = winOf(event);
+    return {
+      maximized: !!w && w.isMaximized(),
+      fullScreen: !!w && w.isFullScreen(),
+    };
+  }));
 
   /* ---------- 应用 / 主题 ---------- */
   // 主题是一份对象（mode × style × backdrop），不再是一个字符串。老值 'dark' 由
@@ -1198,6 +1249,8 @@ function registerIpc() {
   const applyThemeObject = (t) => {
     // 只存库不生效是这里以前的 bug：切换后标题栏 / 原生菜单 / 滚动条仍停在旧主题
     nativeTheme.themeSource = t.mode;
+    // 窗口三键已改成渲染层自绘（.tb-win 跟 CSS token 走），这里不再需要
+    // setTitleBarOverlay 重推原生配色 —— 深色主题下留浅色标题带的坑随之消失。
     broadcastTheme(t);
     return t;
   };
@@ -1305,12 +1358,11 @@ function registerIpc() {
     db.setSetting('tool.salary', JSON.stringify(cfg));
     return cfg;
   });
-  // 实用工具（文本对比 / JSON 查看器）的选项：语言 / 对比模式 / 缩进等。
-  // 同样是纯搬运——格式化与对比都在渲染层做（要按需加载第三方库、实时响应输入，没必要过主进程）。
+  // 界面偏好键值（calendar / encourager 等）：纯搬运，逻辑都在渲染层。
   // key 白名单：避免渲染层拿它当任意键值存储使用。
   // calendar：日历视图的容量 / 周起始 / 显示已完成 / 上次视图 / 首启提示（见设计方案 6.3）
   // encourager：上班鼓励器的玩法与隐私配置（不存月薪，月薪一律读 tool.salary）。零 DB 迁移。
-  const TOOL_PREF_KEYS = ['diff', 'json', 'calendar', 'encourager'];
+  const TOOL_PREF_KEYS = ['calendar', 'encourager'];
   ipcMain.handle('ui:getToolPref', (_e, key) => {
     const k = TOOL_PREF_KEYS.includes(String(key || '')) ? String(key) : '';
     if (!k) return null;

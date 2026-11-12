@@ -120,7 +120,8 @@ function createSplash() {
         alwaysOnTop: true,
         // 不抢焦点：启动瞬间抢焦点会打断用户正在输入的东西
         focusable: false,
-        backgroundColor: nativeTheme.shouldUseDarkColors ? '#15181f' : '#f5f6f8',
+        // 与出厂默认（宣纸）同色，splash.html 里也是这两个值
+        backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1610' : '#f6f0e4',
         webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
       });
       splashWindow.once('ready-to-show', () => {
@@ -149,6 +150,13 @@ function createWindow() {
     // 底色跟着「风格 × 明暗」走：石墨 / 苔绿 / 宣纸的底色和雾灰并不相同
     backgroundColor: themeBgColor(),
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+    // 无边框窗口：系统标题栏、菜单栏、窗口三键全都不画 —— 三键改由渲染层自绘
+    // （renderer/index.html 的 .tb-win），配色 / hover / 关闭红全走 CSS token，
+    // 也不会再出现「原生按钮永远压在最上层、盖住弹窗」的层级问题。
+    // 代价：Windows 11 的 Snap Layouts（悬停最大化键弹出分屏菜单）随之失去；
+    // 拖动贴边吸附、Win+方向键、双击标题栏最大化仍走系统 caption 处理（drag 区即 HTCAPTION）。
+    // 渲染层 .titlebar 的高度必须与 theme.TITLEBAR_HEIGHT 一致，否则三键会和自绘条错行。
+    titleBarStyle: 'hidden',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true,
@@ -174,6 +182,24 @@ function createWindow() {
   });
   mainWindow.webContents.on('will-attach-webview', (e) => e.preventDefault());
 
+  // 菜单栏整条撤掉后，原来 View 菜单里的「缩放 / 开发者工具」没有入口了，挂到窗口上：
+  // 缩放 = Ctrl+= / Ctrl+- / Ctrl+0，开发者工具 = F12（Ctrl+Shift+I 留给「导入 Markdown」）。
+  mainWindow.webContents.on('before-input-event', (e, input) => {
+    if (input.type !== 'keyDown' || mainWindow.isDestroyed()) return;
+    if (input.key === 'F12') {
+      mainWindow.webContents.toggleDevTools();
+      e.preventDefault();
+      return;
+    }
+    if (!input.control || input.alt || input.shift) return;
+    const k = input.key;
+    if (k !== '=' && k !== '+' && k !== '-' && k !== '0') return;
+    const cur = mainWindow.webContents.getZoomLevel();
+    const next = k === '0' ? 0 : k === '-' ? Math.max(-3, cur - 0.5) : Math.min(3, cur + 0.5);
+    mainWindow.webContents.setZoomLevel(next);
+    e.preventDefault();
+  });
+
   mainWindow.once('ready-to-show', () => {
     // 开机自启动唤起时只驻留托盘，不弹主窗口（用户想用时点托盘图标即可）
     if (!isSmoke && !silentLaunch) {
@@ -194,6 +220,22 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => { mainWindow = null; });
+
+  // 自绘三键：最大化 / 还原图标要跟着真实窗口状态换。状态只在主进程算，
+  // 渲染层拿事件照着切图（拖边吸附、Win+方向键、系统双击都会走到这里）。
+  const pushWinState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      mainWindow.webContents.send('win:state', {
+        maximized: mainWindow.isMaximized(),
+        fullScreen: mainWindow.isFullScreen(),
+      });
+    } catch (e) { /* 窗口正在销毁 */ }
+  };
+  mainWindow.on('maximize', pushWinState);
+  mainWindow.on('unmaximize', pushWinState);
+  mainWindow.on('enter-full-screen', pushWinState);
+  mainWindow.on('leave-full-screen', pushWinState);
 }
 
 function showWindow() {
@@ -450,7 +492,7 @@ async function silentUpdateCheck() {
   mainWindow.webContents.send('ui:update-available', { tag: res.tag, latest: res.latest });
 }
 
-/** 设置面板（Ctrl+, / 托盘 / 菜单三条入口都走这里）；paneId 可直接落到某个分区 */
+/** 设置中心（侧栏底部 ⚙ / Ctrl+, / 托盘三条入口都走这里）；paneId 可直接落到某个分区 */
 function openSettings(paneId = '') {
   showWindow();
   if (mainWindow) mainWindow.webContents.send('ui:settings', paneId);
@@ -470,10 +512,10 @@ function applyTheme() {
 /** 窗口底色：风格 × 明暗共同决定，用于创建窗口时防白闪 */
 function themeBgColor() {
   try {
-    if (!db.isReady()) return nativeTheme.shouldUseDarkColors ? '#15181f' : '#f5f6f8';
+    if (!db.isReady()) return nativeTheme.shouldUseDarkColors ? '#1b1610' : '#f6f0e4';
     return theme.bgColor(theme.read(db), nativeTheme);
   } catch (e) {
-    return nativeTheme.shouldUseDarkColors ? '#15181f' : '#f5f6f8';
+    return nativeTheme.shouldUseDarkColors ? '#1b1610' : '#f6f0e4';
   }
 }
 
@@ -487,6 +529,14 @@ function themeBgColor() {
  * 全局快捷键 CmdOrCtrl+Shift+N（新建笔记）继续保留 —— 它是窗口级快捷键，不属于某个菜单的功能入口。
  */
 function buildAppMenu() {
+  // Windows / Linux：整条应用菜单栏去掉 —— 顶栏已经换成自绘标题栏，再来一条
+  // File / Edit / View 就是两条工具栏叠在一起。
+  // 原菜单里的能力全部搬进了设置中心（工具 / 数据与备份 / 趣味功能 / 关于），
+  // 快捷组合（Ctrl+, / Ctrl+Shift+D / J / I）改在渲染层 bindInAppKeys() 里重绑。
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null);
+    return;
+  }
   const auto = autostart.getState();
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
@@ -580,36 +630,12 @@ function buildAppMenu() {
       },
     },
     {
-      // 实用工具：都是「弹窗形态的小工具」，不占视图，随时可用
-      label: '实用工具',
-      submenu: [
-        {
-          // 文本对比：非模态浮窗（不挡主界面），库按需加载
-          label: '文本对比',
-          accelerator: 'CmdOrCtrl+Shift+D',
-          click: () => {
-            showWindow();
-            if (mainWindow) mainWindow.webContents.send('ui:text-diff');
-          },
-        },
-        {
-          // JSON 查看器：树形展示 + 语法高亮 + 键名/值搜索 + JSONPath 查询
-          label: 'JSON 查看器',
-          accelerator: 'CmdOrCtrl+Shift+J',
-          click: () => {
-            showWindow();
-            if (mainWindow) mainWindow.webContents.send('ui:json-viewer');
-          },
-        },
-        { type: 'separator' },
-        {
-          // 桌面浮窗：主路径是「分组 / 今天 / 即将到期」右键 → 钉到桌面，这里是次要入口 ——
-          // 钉了三四个之后，从菜单里找窗比在桌面上翻快，也是位置跑偏后的兜底（见 E-08）。
-          // 原本占着菜单栏顶格，为给「主题」腾位并进实用工具（同属"不占视图的工具"）。
-          label: '桌面浮窗',
-          submenu: desktopMenuTemplate(),
-        },
-      ],
+      // 桌面浮窗：主路径是「分组 / 今天 / 即将到期」右键 → 钉到桌面，这里是次要入口 ——
+      // 钉了三四个之后，从菜单里找窗比在桌面上翻快，也是位置跑偏后的兜底（见 E-08）。
+      // 原「实用工具」顶格菜单（文本对比 Ctrl+Shift+D / JSON 查看器 Ctrl+Shift+J）已整体下线；
+      // Windows 侧 buildAppMenu 根本不挂菜单，这里只为 macOS 菜单栏留一个入口。
+      label: '桌面浮窗',
+      submenu: desktopMenuTemplate(),
     },
     // 「主题」顶格菜单已删除：它与设置中心「界面主题」写同一个 settings.theme 键，
     // 是重复入口。唯一入口收敛到 设置 → 通用 → 界面主题（Ctrl+,）。
@@ -655,6 +681,7 @@ function setThemeMode(mode) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('ui:theme-changed', t);
   }
+  syncTitleBarOverlay(t);
   buildAppMenu();
 }
 
@@ -766,18 +793,28 @@ async function openBackupDialog() {
     const latest = info.latest
       ? `${fmtTime(info.latest.time)}（${fmtSize(info.latest.size)}）`
       : '还没有备份（启动 5 分钟后会自动备份一次）';
+    const full = info.full || {};
+    const latestFull = full.latest
+      ? `${fmtTime(full.latest.time)}（${fmtSize(full.latest.size)}）`
+      : '还没有全量备份';
+    const nextDue = full.nextDueTime
+      ? `${fmtTime(full.nextDueTime).slice(0, 10)} 之后`
+      : '下次启动后自动做第一份';
     const { response } = await msgBox({
       type: 'info',
       title: '备份与恢复',
       message: `最近自动备份：${latest}`,
       detail: [
         `备份目录：${info.dir || '（数据目录未知）'}`,
-        `现有 ${info.count} 份，共 ${fmtSize(info.totalBytes)}；保留最近 ${info.dailyDays} 天每日 1 份 + 最近 ${info.weeklyCount} 周每周 1 份，总量上限 500MB。`,
+        `日快照 ${info.count} 份，共 ${fmtSize(info.totalBytes)}；保留最近 ${info.dailyDays} 天每日 1 份 + 最近 ${info.weeklyCount} 周每周 1 份，总量上限 500MB。`,
         '',
-        '注意：自动备份只保数据库（任务 / 笔记 / 会议记录 / 设置）。',
-        '附件与录音本体请用主界面工具栏「📤 备份」导出完整备份包，并放到别的磁盘或网盘。',
+        `全量备份（含附件与录音）：${latestFull}，现有 ${full.count || 0} 份，共 ${fmtSize(full.totalBytes)}。`,
+        `每 ${full.intervalDays || 15} 天自动一份，只保留最近 ${full.keepMonths || 2} 个月；下一份约在 ${nextDue}。`,
+        '',
+        '注意：日快照只保数据库（任务 / 笔记 / 会议记录 / 设置）。',
+        '需要连附件与录音一起带走时，用「立即全量备份」，或主界面工具栏「📤 备份」导出到别的磁盘 / 网盘。',
       ].join('\n'),
-      buttons: ['立即备份', '打开备份目录', '从备份恢复…', '关闭'],
+      buttons: ['立即全量备份', '立即备份（数据库）', '从备份恢复…', '关闭'],
       defaultId: 0,
       cancelId: 3,
       noLink: true,
@@ -785,7 +822,31 @@ async function openBackupDialog() {
 
     if (response === 3) return;
 
+    // 全量包（含附件与录音）通常几十到几百 MB，打包期间界面可能短暂卡顿，结果由对话框回报
     if (response === 0) {
+      let r;
+      try {
+        r = await backup.runFullBackup();
+      } catch (e) {
+        r = { ok: false, reason: e && e.message ? e.message : String(e) };
+      }
+      await msgBox({
+        type: r.ok ? 'info' : 'warning',
+        title: '全量备份',
+        message: r.ok ? '全量备份完成' : '本次全量备份未执行',
+        detail: r.ok
+          ? `已写入：${r.filePath}\n大小：${fmtSize(r.size)}\n`
+            + `任务 ${r.manifest.counts.tasks} · 笔记 ${r.manifest.counts.notes} · `
+            + `附件 ${r.manifest.counts.attachments} · 录音 ${r.manifest.counts.recordings}\n\n`
+            + (r.pruned && r.pruned.removed.length ? `已清理 ${r.pruned.removed.length} 份两个月前的旧包。` : '')
+          : (r.reason || '未知原因'),
+        buttons: ['好'],
+        noLink: true,
+      });
+      continue;
+    }
+
+    if (response === 1) {
       const r = await backup.runAutoBackup();
       await msgBox({
         type: r.ok ? 'info' : 'warning',
@@ -797,13 +858,6 @@ async function openBackupDialog() {
         buttons: ['好'],
         noLink: true,
       });
-      continue;
-    }
-
-    if (response === 1) {
-      if (!info.dir) continue;
-      fs.mkdirSync(info.dir, { recursive: true });
-      shell.openPath(info.dir);
       continue;
     }
 
@@ -1058,6 +1112,8 @@ app.whenReady().then(async () => {
   }
 
   applyTheme();
+  // 跟随系统明暗时：渲染层靠 matchMedia 自己换色，窗口三键是自绘的（吃 CSS token），
+  // 主进程这边不需要再补推任何原生配色。
   registerIpc();
   // 重复事项：启动即按规则补齐今天的实例，之后定时 / 跨天增量同步。
   // 生成的是普通 tasks 行，提醒仍由 reminders.js 的既有轮询触发，不另起一套通知。
@@ -1176,8 +1232,12 @@ app.whenReady().then(async () => {
   if (!isSmoke) setTimeout(() => desktopWindow.restoreAll(), 500);
 
   startReminderScheduler({ onFocusTask: focusTask });
-  // 自动备份：启动 5 分钟后首次，之后每 24 小时一份（只含数据库，附件靠完整备份包）
-  if (db.isReady()) backup.startAutoBackup();
+  // 自动备份：日快照启动 5 分钟后首次、之后每 24 小时一份（只含数据库）；
+  // 全量包启动 6 分钟后检查是否已满 15 天，之后每小时轮询（含附件与录音，留两个月）
+  if (db.isReady()) {
+    backup.startAutoBackup();
+    backup.startFullBackup();
+  }
   // 启动 8 秒后静默查一次更新：失败静默、有新版只给一条轻提示 + 菜单标记，不弹窗打断。
   // 冒烟测试跳过：跑的是干净环境，也不该引入网络请求。
   if (!isSmoke && db.isReady()) setTimeout(() => { silentUpdateCheck().catch(() => {}); }, 8000);
@@ -1241,11 +1301,12 @@ app.whenReady().then(async () => {
               out.titleFocused = !!(ed && document.activeElement === ed.querySelector('.editor-title'));
               out.planFields = !!(ed && ed.querySelector('.date-range-field'));
               out.detailDrawer = !!document.querySelector('#detail-drawer');
-              // 入口改版：日历进侧栏（今天下面），AI 检索从侧栏上移到顶栏搜索框旁
+              // 入口改版：日历进标题栏（主区段左端），AI 检索从侧栏上移到顶栏搜索框旁
               const navViews = [...document.querySelectorAll('.nav-item')].map((b) => b.dataset.view);
               out.aiSearchTopbar = !!document.getElementById('btn-ai-search');
               out.searchNavGone = !navViews.includes('search');
-              out.calendarAfterToday = navViews.indexOf('calendar') === navViews.indexOf('today') + 1;
+              out.calendarTopbar = !!document.querySelector('.titlebar .nav-item[data-view="calendar"]')
+                && !document.querySelector('.sidebar .nav-item[data-view="calendar"]');
               if (ed) {
                 // 日期范围控件（flatpickr range 模式）：点一次只弹一个日历，
                 // 两次点选 → 起点写入开始日期、终点写入完成日期，并自动关闭
@@ -1584,9 +1645,10 @@ app.whenReady().then(async () => {
             gcPersisted: gcOut.persisted === '#ff00aa', gcEditEcho: gcOut.editValue === '#ff00aa',
           });
 
-          /* ---- AI 配置：菜单栏「AI 设置」→ 弹窗 → 填表 → 保存 → 回读 ---- */
-          const aiMenuItem = Menu.getApplicationMenu().items.find((i) => i.label === 'AI 设置');
-          console.log(`[SMOKE] 菜单栏「AI 设置」= ${aiMenuItem ? '存在' : '缺失'}`);
+          /* ---- AI 配置：设置中心「AI 与语音」→ 弹窗 → 填表 → 保存 → 回读 ---- */
+          // 应用菜单栏已整条撤掉，这里不再找菜单项：入口改成设置中心 / 菜单事件，
+          // 事件通道（ui:ai-settings）本身没变，下面照旧验证弹窗与读写。
+          const aiMenuItem = null;
           mainWindow.webContents.send('ui:ai-settings');
           await new Promise(r => setTimeout(r, 500));
           const aiOut = await mainWindow.webContents.executeJavaScript(`
@@ -1631,7 +1693,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 点击后编辑器展开 = ${dom.editorShown ? '成功' : '失败'}`);
           console.log(`[SMOKE] 编辑器含日期范围控件 = ${dom.planFields ? '是' : '否'}`);
           console.log(`[SMOKE] 详情抽屉容器 = ${dom.detailDrawer ? '存在' : '缺失'}`);
-          console.log(`[SMOKE] 导航入口 = 顶栏 AI 检索=${dom.aiSearchTopbar ? '存在' : '缺失'}；侧栏旧项已移除=${dom.searchNavGone ? '是' : '否'}；日历紧随今天=${dom.calendarAfterToday ? '是' : '否'}`);
+          console.log(`[SMOKE] 导航入口 = 顶栏 AI 检索=${dom.aiSearchTopbar ? '存在' : '缺失'}；侧栏旧项已移除=${dom.searchNavGone ? '是' : '否'}；日历在标题栏=${dom.calendarTopbar ? '是' : '否'}`);
           console.log(`[SMOKE] 标题输入框聚焦 = ${dom.titleFocused ? '成功' : '失败'}`);
           console.log(`[SMOKE] 日期范围两次点选回填 = ${dom.rangeStart || '-'} ~ ${dom.rangeEnd || '-'}（文案：${dom.rangeLabel}）；期望 ${dom.expectStart} ~ ${dom.expectEnd} → ${dom.autoFilled ? '一致' : '不一致'}`);
           console.log(`[SMOKE] 日期范围弹窗自动关闭 = ${dom.rangePopClosed ? '是' : '否'}`);
@@ -1642,19 +1704,16 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 分组：新增=${dom.groupAdded ? '是' : '否'}（${dom.groupCountBefore} → ${dom.groupCount}）；重名错误=${dom.dupErrorShown ? '已提示' : '未提示'}`);
           console.log(`[SMOKE] 子分组：父行含箭头=${dom.hasArrow ? '是' : '否'}；上级默认带入=${dom.parentPresetMatched ? '是' : '否'}；子分组可见=${dom.childRowVisible ? '是' : '否'}；折叠后隐藏=${dom.childHiddenAfterCollapse ? '是' : '否'}；再展开回来=${dom.childBackAfterExpand ? '是' : '否'}；父筛选含子任务=${dom.parentFilterIncludesChildTask ? '是' : '否'}`);
           console.log(`[SMOKE] 分组移动 = 菜单含上移/下移/移动到分组=${dom.moveMenuHasUpdown ? '是' : '否'}；右键上移生效=${dom.moveReordered ? '是' : '否'}（${JSON.stringify(dom.moveBeforeOrder)} → ${JSON.stringify(dom.moveAfterOrder)}）；拖拽落点高亮=${dom.moveDropMarked ? '是' : '否'}；拖成子分组=${dom.moveIntoChild ? '是' : '否'}；侧边栏层级=${dom.moveIntoChildRow ? '1' : '未变'}`);
-          console.log(`[SMOKE] AI 设置（菜单栏）= 工具栏按钮已移除${dom.aiToolbarBtnGone ? '✓' : '✗'}；菜单项${dom.aiMenuItem ? '存在' : '缺失'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
+          console.log(`[SMOKE] AI 设置（设置中心 / 菜单事件）= 工具栏按钮已移除${dom.aiToolbarBtnGone ? '✓' : '✗'}；弹窗${dom.aiModalOpened ? '打开' : '未打开'}；保存后回读=${dom.aiSavedUrl || '-'} / ${dom.aiSavedModel || '-'}`);
           console.log(`[SMOKE] AI 设置排版 = ${dom.aiCols} 列；分区 ${dom.aiSections} 个；字段 ${dom.aiFieldCount} 个；弹窗高 ${dom.aiBox ? dom.aiBox.h : '-'}px / 视口 ${dom.aiBox ? dom.aiBox.vh : '-'}px；完整在视口内=${dom.aiInViewport ? '是' : '否'}；底部按钮可点=${dom.aiFootReachable ? '是' : '否'}；内容无需滚动=${dom.aiBodyScrolls ? '是' : '否'}；横向无溢出=${dom.aiNoHOverflow ? '是' : '否'}`);
           console.log(`[SMOKE] 标签新增弹窗 = ${dom.tagModalOpened ? '弹出' : '未弹出'}；新增后列表出现 = ${dom.tagAdded ? '是' : '否'}`);
 
-          // 菜单栏结构：File 里已无「同步到腾讯文档 / ima」；笔记导出只在笔记视图工具栏
+          // 菜单栏结构：Windows 下整条已移除（顶栏换成自绘标题栏），能力搬进设置中心。
           const appMenu = Menu.getApplicationMenu();
+          const appMenuGone = process.platform === 'darwin' ? false : appMenu === null;
           const topLabels = (appMenu ? appMenu.items : []).map((i) => i.label);
-          const fileItem = appMenu ? appMenu.items.find((i) => i.label === 'File') : null;
-          const fileLabels = fileItem ? fileItem.submenu.items.map((i) => i.label) : [];
-          const toolsItem = appMenu ? appMenu.items.find((i) => i.label === '实用工具') : null;
-          const toolsLabels = toolsItem ? toolsItem.submenu.items.map((i) => i.label) : [];
           const themeItem = appMenu ? appMenu.items.find((i) => i.label === '主题') : null;
-          console.log(`[SMOKE] 菜单栏结构 = 顶格「${topLabels.join(' / ')}」；File 菜单同步项已移除=${fileLabels.some((l) => l.startsWith('同步')) ? '否（仍在）' : '是'}；归档项在 File=${fileLabels.includes('归档已完成任务') ? '是' : '否'}；桌面浮窗已并入实用工具=${toolsLabels.includes('桌面浮窗') ? '是' : '否'}（顶格已移除=${topLabels.includes('桌面浮窗') ? '否' : '是'}）；重复「主题」顶格已删除=${themeItem ? '否（仍在）' : '是'}`);
+          console.log(`[SMOKE] 菜单栏 = ${appMenuGone ? '已移除（入口在设置中心）' : `顶格「${topLabels.join(' / ')}」；主题顶格已删=${themeItem ? '否' : '是'}`}`);
           const topbarOut = await mainWindow.webContents.executeJavaScript(`(() => {
             const nb = document.getElementById('btn-notes-dock');
             const ai = document.getElementById('btn-ai-search');
@@ -2785,15 +2844,39 @@ app.whenReady().then(async () => {
               return out;
             })()
           `);
-          // 主进程侧断言：File 菜单结构（存储位置无省略号 + 开机自启动已并入 + 顶层不再单独出现）
-          const fileMenu = (Menu.getApplicationMenu() || []).items.find((it) => it.label === 'File');
-          const fileItems = fileMenu ? fileMenu.submenu.items.map((it) => (it.type === 'separator' ? '—' : it.label)) : [];
-          const topItems = (Menu.getApplicationMenu() || []).items.map((it) => it.label);
+          // 主进程 + 渲染层联合断言：Windows 下应用菜单已移除，原菜单能力由设置中心接管
+          // （工具分区：文本对比 / JSON 查看器 / 桌面浮窗；数据与备份：归档 / 导入 Markdown）
+          const settingsOut = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              try {
+                window.__openSettings('tools');
+                await new Promise(r => setTimeout(r, 1000));
+                const pane = document.querySelector('.st-pane[data-pane="tools"]');
+                out.toolsPane = !!pane;
+                out.toolRows = [...(pane ? pane.querySelectorAll('.st-row-title') : [])].map(e => e.textContent);
+                out.secTitles = [...(pane ? pane.querySelectorAll('.st-sec-title') : [])].map(e => e.textContent);
+                const dataPane = document.querySelector('.st-pane[data-pane="data"]');
+                const dataTitles = [...(dataPane ? dataPane.querySelectorAll('.st-row-title') : [])].map(e => e.textContent);
+                out.dataHasArchive = dataTitles.includes('归档已完成任务');
+                out.dataHasImportMd = dataTitles.includes('导入 Markdown 笔记');
+                out.titlebar = !!document.querySelector('.titlebar .tb-logo');
+                const closeBtn = document.querySelector('.modal-settings [data-modal="close"]');
+                if (closeBtn) closeBtn.click();
+                await new Promise(r => setTimeout(r, 400));
+              } catch (e) { out.__err = String((e && e.message) || e); }
+              return out;
+            })()
+          `);
           const r13main = {
-            fileItems,
-            storageNoEllipsis: fileItems.includes('存储位置') && !fileItems.some((l) => l !== '存储位置' && l.startsWith('存储位置')),
-            autoStartInFile: fileItems.includes('开机自启动'),
-            autoStartNotTop: !topItems.includes('开机自启动'),
+            appMenuGone: process.platform === 'darwin' ? true : Menu.getApplicationMenu() === null,
+            toolsPane: !!settingsOut.toolsPane,
+            toolsRows: (settingsOut.toolRows || []).length,
+            hasRecurrence: (settingsOut.toolRows || []).includes('重复事项与习惯'),
+            deskSection: (settingsOut.secTitles || []).includes('桌面浮窗'),
+            dataHasArchive: !!settingsOut.dataHasArchive,
+            dataHasImportMd: !!settingsOut.dataHasImportMd,
+            titlebar: !!settingsOut.titlebar,
           };
           console.log(`[SMOKE] Toast 层级 = z:${r13.zMask ? `(遮罩 ${r13.zMask})` : '?'} 挂 body=${r13.toastInBody ? '是' : '否'}；高于遮罩=${r13.toastAboveMask ? '是' : '否'}；不拦点击=${r13.toastNoPointer ? '是' : '否'}`);
           console.log(`[SMOKE] 分组折叠 = 表头 ${r13.groupHeads} 个（按钮语义=${r13.headIsButton ? '是' : '否'}）；折叠=${r13.headCollapsed ? '是' : '否'}；任务行减少=${r13.rowsShrunk ? '是' : '否'}；记忆=${JSON.stringify(r13.collapsedSaved)}；再展开=${r13.expandedAgain ? '是' : '否'}；清除=${r13.collapsedCleared ? '是' : '否'}`);
@@ -2801,7 +2884,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 今天默认值 = ${r13.todayStart || '-'} ~ ${r13.todayEnd || '-'}（填今天=${r13.todayFilled ? '是' : '否'}）`);
           console.log(`[SMOKE] 详情描述 = 回填=${r13.notesFilled ? '是' : '否'}；状态「${r13.saveStateText}」（${r13.saveStateClass}）；标题落库=${r13.titleSaved ? '是' : '否'}；描述未被清空=${r13.notesKept ? '是' : '否'}；润色入口=${r13.polishBtn ? '有' : '无'}`);
           console.log(`[SMOKE] 工具栏清理 = 残留控件${r13.staleToolbarBtns && r13.staleToolbarBtns.length ? JSON.stringify(r13.staleToolbarBtns) : '无'}`);
-          console.log(`[SMOKE] File 菜单 = ${JSON.stringify(r13main.fileItems)}；存储位置无省略号=${r13main.storageNoEllipsis ? '是' : '否'}；开机自启动在 File 内=${r13main.autoStartInFile ? '是' : '否'}；顶层无自启动=${r13main.autoStartNotTop ? '是' : '否'}`);
+          console.log(`[SMOKE] 菜单栏接管 = 应用菜单${r13main.appMenuGone ? '已移除' : '仍在'}；自绘标题栏 logo=${r13main.titlebar ? '有' : '无'}；设置中心工具分区=${r13main.toolsPane ? '有' : '无'}（${r13main.toolsRows} 行：重复事项=${r13main.hasRecurrence ? '是' : '否'}、桌面浮窗=${r13main.deskSection ? '是' : '否'}）；数据与备份含归档=${r13main.dataHasArchive ? '是' : '否'}、导入 MD=${r13main.dataHasImportMd ? '是' : '否'}`);
           console.log(`[SMOKE] 历史弹窗尺寸 = 报告历史 ${r13.rpHisWidth}px（≥900=${r13.rpHisWidth >= 900 ? '是' : '否'}；完整在视口内=${r13.rpHisInViewport ? '是' : '否'}）；会议纪要历史入口=${r13.mthBtn ? '有' : '无'}`);
 
           /* ============ 第 14 轮：多任务详情编辑互不串改 ============ */
@@ -3282,188 +3365,6 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 检索联想（Top5）= ${r17.topCount} 条（≤5=${r17.topCapped ? '是' : '否'}；均带分值=${r17.topHasScore ? '是' : '否'}）`);
           console.log(`[SMOKE] 检索联想（界面）= 精确 ${JSON.stringify(r17.uiExact)}；联想 ${JSON.stringify(r17.uiAssoc)}；无关联 ${JSON.stringify(r17.uiNone)}`);
 
-          /* ============ 第 18 轮：实用工具（文本对比 / JSON 查看器浮窗 + 格式化引擎） ============ */
-          // 菜单快捷键走不了 CDP，这里直接调渲染层的入口（与菜单 ipc 触发的是同一条路径）：
-          // 1) 各语言格式化是否真出结果（代码格式化浮窗已下线，仍要守 format-lib 的引擎）
-          // 2) 浮窗是否非模态（无遮罩、开着还能操作主界面）
-          // 3) 最小化 / 最大化   4) 对比的增删行、内联视图、忽略大小写   5) 对比里复用格式化
-          const r18 = await mainWindow.webContents.executeJavaScript(`
-            (async () => {
-              const out = {};
-              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-              const q = (s) => document.querySelector(s);
-              try {
-                const lib = await import('./js/format-lib.js');
-                const dfm = await import('./js/text-diff.js');
-                out.modulesLoaded = !!lib && !!dfm;
-
-                /* ---- 1) 格式化引擎（format-lib 直测，不经界面） ---- */
-                const run = async (text, lang, extra) => (await lib.formatText(text, { lang, ...extra })).text;
-                const j = await run('{"b":2,"a":[1,2,{"c":3}]}', 'json');
-                out.jsonOk = /\\n/.test(j) && /"b": 2/.test(j) && /\\[/.test(j);
-                const x = await run('<root><a x="1">hi</a></root>', 'xml');
-                out.xmlOk = /\\n/.test(x) && /<a /.test(x);
-                const s = await run('select a,b from t where a=1', 'sql');
-                out.sqlOk = /from/.test(s) && /\\n/.test(s);
-                const jv = await run('public class A{public static void main(String[] a){System.out.println(1);}}', 'java');
-                out.javaOk = /public class A/.test(jv) && /\\n/.test(jv);
-                const au = await run('<r><i>1</i></r>', 'auto');
-                out.autoOk = /\\n/.test(au);
-                // 其余 prettier 语言也要「真出结果」：曾经把 out 初始化成原文，
-                // 导致这些语言的格式化静默失效（界面还显示已格式化），这里逐个守住
-                out.multi = {};
-                out.multiOk = true;
-                const multi = [
-                  ['javascript', 'function f(a){return a+1}'],
-                  ['typescript', 'interface A{x:number}const a:A={x:1}'],
-                  ['html', '<div   class="a"><p>hi</p><p>yo</p></div>'],
-                  ['css', '.a{color:red;margin:0}.b{padding:1px}'],
-                  ['scss', '.a{&>b{color:red}}'],
-                  ['markdown', '# t\\n\\n*  a\\n*  b'],
-                  ['yaml', 'a:   1\\nb:\\n  - x'],
-                ];
-                for (const [lg, code] of multi) {
-                  const got = await run(code, lg);
-                  const ok = String(got).trim() !== code.trim();
-                  out.multi[lg] = ok;
-                  if (!ok) out.multiOk = false;
-                }
-                try {
-                  await run('{"a":}', 'json'); // 语法错误必须抛出，不能静默返回原文
-                  out.errThrown = false;
-                } catch (e) {
-                  out.errThrown = true;
-                  out.statusText = String((e && e.message) || e).split('\\n')[0].slice(0, 50);
-                }
-                out.errShown = out.errThrown; // 断言沿用原字段名
-
-                /* ---- 2) 文本对比 ---- */
-                await dfm.openDiffWindow();
-                await wait(400);
-                const dwin = q('.tool-win[data-tool="text-diff"]');
-                out.diffOpened = !!dwin;
-                out.noMask = document.querySelectorAll('.modal-mask').length === 0;
-                out.winBtns = dwin ? dwin.querySelectorAll('.tool-win-btn').length : 0;
-                const aEl = dwin.querySelector('.df-a');
-                const bEl = dwin.querySelector('.df-b');
-                const view = dwin.querySelector('.df-view');
-                const feed = async (a, b) => {
-                  aEl.value = a; aEl.dispatchEvent(new Event('input', { bubbles: true }));
-                  bEl.value = b; bEl.dispatchEvent(new Event('input', { bubbles: true }));
-                  await wait(800);
-                };
-                await feed('line1\\nline2\\nline3', 'line1\\nline two\\nline3');
-                out.diffRows = view.querySelectorAll('.df-row').length;
-                out.diffAdd = view.querySelectorAll('.df-cell.add').length;
-                out.diffDel = view.querySelectorAll('.df-cell.del').length;
-                out.diffStat = (dwin.querySelector('.df-stat') || {}).textContent || '';
-                dwin.querySelector('.df-mode[data-mode="inline"]').click(); await wait(700);
-                out.inlineRows = view.querySelectorAll('.df-row.inline').length;
-                out.inlineSigns = view.querySelectorAll('.df-sign.del').length + view.querySelectorAll('.df-sign.add').length;
-                dwin.querySelector('.df-mode[data-mode="split"]').click(); await wait(700);
-                out.splitBack = view.querySelectorAll('.df-row').length >= 3 && view.querySelectorAll('.df-row.inline').length === 0;
-                // 忽略大小写：Hello / hello 判为一致
-                await feed('Hello', 'hello');
-                out.caseDiff = view.querySelectorAll('.df-cell.del').length;
-                const cb = dwin.querySelector('.df-case');
-                cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true }));
-                await wait(700);
-                out.caseIgnored = /一致/.test(view.textContent);
-                cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true }));
-                await wait(600);
-
-                /* ---- 3) 对比里复用格式化：同一段 JSON 排版不同 → 格式化后应当无差异 ---- */
-                await feed('{"a":1,"b":2}', '{\\n  "a": 1,\\n  "b": 2\\n}');
-                out.beforeFormat = view.querySelectorAll('.df-cell.del').length;
-                dwin.querySelector('.df-format').click();
-                await wait(1600);
-                out.afterFormat = view.querySelectorAll('.df-cell.del').length;
-                out.formatConverged = /一致/.test(view.textContent);
-                out.formattedA = (dwin.querySelector('.df-a') || {}).value || '';
-                // 语法高亮：差异行里应出现 highlight.js 的 token 节点
-                await feed('{"a":1}', '{"a":2}');
-                out.diffHl = view.querySelectorAll('.df-cell .hljs-attr').length;
-                const hlBox = dwin.querySelector('.df-hl-toggle');
-                out.diffHlToggle = !!hlBox;
-                if (hlBox) {
-                  hlBox.checked = false; hlBox.dispatchEvent(new Event('change', { bubbles: true }));
-                  await wait(700);
-                  out.diffHlOff = view.querySelectorAll('.hljs-attr').length === 0;
-                  hlBox.checked = true; hlBox.dispatchEvent(new Event('change', { bubbles: true }));
-                  await wait(700);
-                }
-
-                /* ---- 4) 浮窗控制：最小化 / 最大化 / 还原 / 非模态 ---- */
-                dwin.querySelector('[data-act="min"]').click(); await wait(200);
-                out.minApplied = dwin.classList.contains('is-min')
-                  && getComputedStyle(dwin.querySelector('.tool-win-body')).display === 'none';
-                dwin.querySelector('[data-act="min"]').click(); await wait(200);
-                out.minRestored = !dwin.classList.contains('is-min');
-                dwin.querySelector('[data-act="max"]').click(); await wait(300);
-                out.maxApplied = dwin.classList.contains('is-max')
-                  && dwin.getBoundingClientRect().width >= window.innerWidth - 40;
-                dwin.querySelector('[data-act="max"]').click(); await wait(300);
-                out.maxRestored = !dwin.classList.contains('is-max');
-
-                /* ---- 5) 非模态：开着工具窗照样能操作主界面 ---- */
-                document.querySelector('.nav-item[data-view="all"]').click();
-                await wait(500);
-                out.mainUsable = (q('#view-title') || {}).textContent === '全部任务' && !!dwin.isConnected;
-
-                /* ---- 6) JSON 查看器：树形渲染 + 搜索 + JSONPath ---- */
-                const jvm = await import('./js/json-view.js');
-                await jvm.openJsonViewWindow();
-                await wait(600);
-                const jwin = q('.tool-win[data-tool="json-view"]');
-                out.jvOpened = !!jwin;
-                out.bothOpen = document.querySelectorAll('.tool-win').length === 2;
-                const jArea = jwin && jwin.querySelector('.jv-area');
-                const jTree = jwin && jwin.querySelector('.jv-tree');
-                if (jArea) {
-                  jArea.value = '{"user":{"name":"ada","age":8},"items":[{"id":1},{"id":2}]}';
-                  jArea.dispatchEvent(new Event('input', { bubbles: true }));
-                  await wait(1200);
-                }
-                const jStatus = jwin && jwin.querySelector('.jv-status');
-                out.jvParsed = !!jStatus && jStatus.dataset.state === 'ok';
-                // 组件是 shadow DOM，只能从宿主元素判断"有没有渲染出内容"
-                out.jvTree = !!jTree && (jTree.shadowRoot ? jTree.shadowRoot.querySelectorAll('li[part="property"]').length : 0);
-                const jSearch = jwin && jwin.querySelector('.jv-search');
-                if (jSearch) {
-                  jSearch.value = 'ada';
-                  jSearch.dispatchEvent(new Event('input', { bubbles: true }));
-                  await wait(600);
-                  jwin.querySelector('.jv-next').click();
-                  await wait(400);
-                  out.jvHits = (jwin.querySelector('.jv-hits') || {}).textContent || '';
-                  jwin.querySelector('.jv-reset').click();
-                  await wait(300);
-                }
-                const jPath = jwin && jwin.querySelector('.jv-path');
-                if (jPath) {
-                  jPath.value = '$.items[1].id';
-                  jwin.querySelector('.jv-run-path').click();
-                  await wait(700);
-                }
-                const jRes = jwin && jwin.querySelector('.jv-result');
-                out.jvQuery = (jRes ? jRes.textContent : '').trim().slice(0, 40);
-                if (jwin) { jwin.querySelector('[data-act="close"]').click(); await wait(250); }
-
-                /* ---- 7) 关闭后不留残留 ---- */
-                dwin.querySelector('[data-act="close"]').click(); await wait(250);
-                out.closed = document.querySelectorAll('.tool-win').length === 0;
-              } catch (e) {
-                out.err = String((e && e.message) || e);
-              }
-              return out;
-            })()
-          `);
-          console.log(`[SMOKE] 实用工具·格式化引擎 = 无遮罩=${r18.noMask ? '是' : '否'}；JSON=${r18.jsonOk ? '✓' : '✗'} XML=${r18.xmlOk ? '✓' : '✗'} SQL=${r18.sqlOk ? '✓' : '✗'} Java=${r18.javaOk ? '✓' : '✗'} 自动识别=${r18.autoOk ? '✓' : '✗'}；其它语言全通过=${r18.multiOk ? '✓' : '✗'}${r18.multiOk ? '' : '（' + JSON.stringify(r18.multi) + '）'}；语法错误抛出=${r18.errThrown ? '是' : '否'}（${r18.statusText || '-'}）`);
-          console.log(`[SMOKE] 实用工具·浮窗 = 最小化=${r18.minApplied ? '✓' : '✗'} 还原=${r18.minRestored ? '✓' : '✗'}；最大化=${r18.maxApplied ? '✓' : '✗'} 还原=${r18.maxRestored ? '✓' : '✗'}；开着仍能操作主界面=${r18.mainUsable ? '是' : '否'}；两窗共存=${r18.bothOpen ? '是' : '否'}`);
-          console.log(`[SMOKE] 实用工具·对比 = 行 ${r18.diffRows}（增 ${r18.diffAdd} / 删 ${r18.diffDel}）统计「${r18.diffStat || '-'}」；内联=${r18.inlineRows} 行 / ${r18.inlineSigns} 个符号；忽略大小写生效=${r18.caseIgnored ? '是' : '否'}；格式化后收敛=${r18.formatConverged ? '是' : '否'}（前 ${r18.beforeFormat} → 后 ${r18.afterFormat}）；关闭=${r18.closed ? '✓' : '✗'}${r18.err ? '；异常=' + r18.err : ''}`);
-          console.log(`[SMOKE] 实用工具·高亮 = 差异行 token ${r18.diffHl} 个；开关=${r18.diffHlToggle ? '有' : '无'}；关掉后无 token=${r18.diffHlOff ? '是' : '否'}`);
-          console.log(`[SMOKE] 实用工具·JSON 查看器 = 开窗=${r18.jvOpened ? '是' : '否'}；解析=${r18.jvParsed ? '成功' : '失败'}；树节点 ${r18.jvTree} 个；搜索「ada」=${r18.jvHits || '-'}；JSONPath 结果「${r18.jvQuery || '-'}」`);
-
           // 日历视图：侧栏「今天」下的「日历」→ 月视图骨架 / 格子 / 负载条 / 待安排池 / 图例
           // → 日历内部切周（月 / 周不再占顶栏）→ 回任务列表；顺带验证顶栏「AI 检索」
           const calOut = await mainWindow.webContents.executeJavaScript(`(async () => {
@@ -3505,7 +3406,7 @@ app.whenReady().then(async () => {
             } catch (e) { out.err = String((e && e.message) || e); }
             return out;
           })()`);
-          console.log(`[SMOKE] 日历视图 = 侧栏项=${calOut.navExists ? '有' : '无'}；chip已移除=${calOut.chipGone ? '是' : '否'}；高亮=${calOut.navActive ? '是' : '否'}；标题「${calOut.title || '-'}」；骨架=${calOut.wrap ? '有' : '无'}；格子 ${calOut.cells} 个；负载条 ${calOut.loadBars} 条；待安排池=${calOut.pool ? '有' : '无'}；图例=${calOut.legend ? '有' : '无'}；月/周控件 ${calOut.segCount} 个；周视图 ${calOut.weekCols} 列；回列表=${calOut.backToList ? '成功' : '失败'}；描述「${calOut.desc || '-'}」${calOut.err ? '；异常=' + calOut.err : ''}`);
+          console.log(`[SMOKE] 日历视图 = 标题栏入口=${calOut.navExists ? '有' : '无'}；chip已移除=${calOut.chipGone ? '是' : '否'}；高亮=${calOut.navActive ? '是' : '否'}；标题「${calOut.title || '-'}」；骨架=${calOut.wrap ? '有' : '无'}；格子 ${calOut.cells} 个；负载条 ${calOut.loadBars} 条；待安排池=${calOut.pool ? '有' : '无'}；图例=${calOut.legend ? '有' : '无'}；月/周控件 ${calOut.segCount} 个；周视图 ${calOut.weekCols} 列；回列表=${calOut.backToList ? '成功' : '失败'}；描述「${calOut.desc || '-'}」${calOut.err ? '；异常=' + calOut.err : ''}`);
           console.log(`[SMOKE] 顶栏 AI 检索（弹窗）= 弹出=${calOut.aiPanel ? '成功' : '失败'}；单层=${calOut.aiSingle ? '是' : '否'}；视图不动=${calOut.aiKeepsView ? '是' : '否'}；再点不叠层=${calOut.aiNoStack ? '是' : '否'}；关闭移除=${calOut.aiBack ? '成功' : '失败'}`);
 
           /* ---- 第 20 轮：笔记也能钉到桌面（kind: 'note' 投影）----
@@ -3528,7 +3429,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 笔记浮窗投影 = 类型=${r19.kind || '-'}；重复钉不叠加=${r19.single ? '是' : '否'}；标题取自笔记=${r19.title ? '是' : '否'}；未标记缺失=${r19.missing ? '是' : '否'}；取消后清干净=${r19.gone ? '是' : '否'}${r19.err ? '；异常=' + r19.err : ''}`);
 
           const allOk = ready && dom.addRowExists && dom.noModal && dom.timeFilterBtn && dom.timeFilterPanel
-            && dom.editorShown && dom.planFields && dom.detailDrawer && dom.aiSearchTopbar && dom.searchNavGone && dom.calendarAfterToday && dom.titleFocused
+            && dom.editorShown && dom.planFields && dom.detailDrawer && dom.aiSearchTopbar && dom.searchNavGone && dom.calendarTopbar && dom.titleFocused
             && dom.editorClosed && dom.calDays >= 28 && dom.calendarsOpen === 1 && dom.calInBody
             && dom.pickingOpen && dom.autoFilled && dom.rangePopClosed
             && dom.rangeStart <= dom.rangeEnd
@@ -3539,15 +3440,14 @@ app.whenReady().then(async () => {
             && topbarOut.noteOutside && topbarOut.noteVisible && topbarOut.syncGone && topbarOut.themeGone
             && topbarOut.aiVisible && topbarOut.aiBesideSearch && topbarOut.zoomChipGone
             // 重复「主题」顶格菜单已删除；归档从顶栏收进 File；同步项不再出现；日历 / AI 检索走新入口
-            && !themeItem && fileLabels.includes('归档已完成任务')
-            && !fileLabels.some((l) => l.startsWith('同步'))
+            && r13main.appMenuGone
             && calOut.navExists && calOut.chipGone && calOut.navActive && calOut.wrap && calOut.segCount === 2
             && calOut.cells >= 28 && calOut.loadBars > 0
             && calOut.pool && calOut.legend && calOut.weekCols === 7 && calOut.backToList
             && calOut.aiPanel && calOut.aiSingle && calOut.aiKeepsView && calOut.aiNoStack && calOut.aiBack
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
-            && dom.aiToolbarBtnGone && dom.aiMenuItem && dom.aiModalOpened && dom.aiModalCount === 1
+            && dom.aiToolbarBtnGone && dom.aiModalOpened && dom.aiModalCount === 1
             && dom.aiCols === 2 && dom.aiSections === 2 && dom.aiFieldCount === 8
             && dom.aiInViewport && dom.aiFootReachable && dom.aiBodyScrolls && dom.aiNoHOverflow
             && dom.aiSavedUrl === 'https://smoke.example.com' && dom.aiSavedModel === 'smoke-model'
@@ -3633,7 +3533,8 @@ app.whenReady().then(async () => {
             && (!r13.staleToolbarBtns || r13.staleToolbarBtns.length === 0)
             && r13.rpHisBtn && r13.rpHisOpened && r13.rpHisWidth >= 900 && r13.rpHisInViewport
             && r13.mthBtn
-            && r13main.storageNoEllipsis && r13main.autoStartInFile && r13main.autoStartNotTop
+            && r13main.appMenuGone && r13main.titlebar && r13main.toolsPane
+            && r13main.hasRecurrence && r13main.dataHasArchive && r13main.dataHasImportMd
             // 第 14 轮：多任务详情编辑互不串改
             && r14.idsDistinct && r14.aRowFound && r14.bRowFound
             && r14.aOpened && r14.bUntouched && r14.aNotClonedFromB
@@ -3666,18 +3567,6 @@ app.whenReady().then(async () => {
             && r17.uiExact.items >= 1 && r17.uiExact.bannerUnique && !r17.uiExact.empty
             && r17.uiAssoc.items >= 1 && (r17.uiAssoc.reasons || []).some((s) => /缩写还原|同义词|关键词/.test(s))
             && r17.uiNone.empty && r17.uiNone.items === 0 && r17.uiNone.tried >= 1 && r17.uiClosed
-            // 第 18 轮：实用工具（代码格式化 / 文本对比 浮窗）
-            && r18.noMask && r18.winBtns >= 3
-            && r18.jsonOk && r18.xmlOk && r18.sqlOk && r18.javaOk && r18.autoOk && r18.multiOk && r18.errThrown
-            && r18.minApplied && r18.minRestored && r18.maxApplied && r18.maxRestored && r18.mainUsable
-            && r18.diffOpened && r18.bothOpen && r18.diffRows >= 3 && r18.diffAdd >= 1 && r18.diffDel >= 1
-            && r18.inlineRows >= 3 && r18.inlineSigns >= 2 && r18.splitBack
-            && r18.caseDiff >= 1 && r18.caseIgnored
-            && r18.beforeFormat >= 1 && r18.formatConverged && r18.closed && !r18.err
-            // 第 19 轮：语法高亮 + JSON 查看器
-            && r18.diffHl >= 1 && r18.diffHlToggle && r18.diffHlOff
-            && r18.jvOpened && r18.jvParsed && r18.jvTree >= 1 && /命中|个/.test(r18.jvHits || '')
-            && /2/.test(r18.jvQuery || '')
             // 第 20 轮：笔记浮窗投影
             && r19.kind === 'note' && r19.existed && r19.single && r19.title && r19.missing && r19.gone && !r19.err;
           if (!allOk) {
@@ -3691,7 +3580,6 @@ app.whenReady().then(async () => {
               'r10:tfNativeDates',         // 期望「原生 date 输入框 0 个」
               'r15:masksBefore',           // 提示用：期望润色前没有残留遮罩 = 0
               'r17:noneCount',             // 期望「确实无关联」时候选就是 0 条
-              'r18:afterFormat',           // 期望格式化后差异收敛到 0 处
             ]);
             let printed = 0;
             const dumpFalsy = (label, obj) => {
@@ -3720,7 +3608,6 @@ app.whenReady().then(async () => {
             dumpFalsy('r15', r15);
             dumpFalsy('r16', r16);
             dumpFalsy('r17', r17);
-            dumpFalsy('r18', r18);
             dumpFalsy('r19', r19);
             // 假值列表抓不到「值非假但不匹配」的条件（如 xx === '旧文案'），补一行提示免得对着 && 死磕。
             if (!printed) {
@@ -3746,6 +3633,7 @@ app.on('before-quit', () => {
   stopReminderScheduler();
   stopRecurrenceScheduler();
   backup.stopAutoBackup();
+  backup.stopFullBackup();
   destroyTray();
   // 浮窗随应用退出一起销毁（关主窗口不关它们：托盘常驻时浮窗要留着）
   desktopWindow.destroyAll();

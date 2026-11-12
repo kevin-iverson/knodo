@@ -31,9 +31,16 @@ const BG_HEX = {
   contrast: { light: '#ffffff', dark: '#000000' },
 };
 
+/**
+ * 出厂默认 = 宣纸（sepia），不是雾灰。
+ * 理由：雾灰浅色的面板是纯白（#ffffff），第一眼就是「又一个白底效率工具」；
+ * 宣纸的暖米色才是这个产品的气质（品牌暖墨底 + 象牙 + 朱砂）。
+ * 注意：只有「从来没设置过」才走这里 —— 用户存过 style（哪怕只是切过明暗，
+ * write() 会把当时的 style 一起写回）就一律尊重他的值，绝不强行改色。
+ */
 const DEFAULT_THEME = {
   mode: 'system',
-  style: 'mist',
+  style: 'sepia',
   backdrop: {
     type: 'none',
     image: '',
@@ -45,11 +52,12 @@ const DEFAULT_THEME = {
     luma: 0.5,
     missing: false,
   },
+  /** 桌面浮窗材质：不透明度百分比（55–100），默认 95 */
+  desktop: { opacity: 95 },
 };
 
 /** 单张背景图原图上限（20MB）：再大就是「把整个相册拖进来了」，压缩也会卡住主线程 */
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-/** 长边上限：2560 足够 2K 屏满铺，再大只是白占内存 */
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;/** 长边上限：2560 足够 2K 屏满铺，再大只是白占内存 */
 const MAX_EDGE = 2560;
 const JPEG_QUALITY = 82;
 
@@ -85,16 +93,20 @@ function normalize(raw) {
   }
   if (typeof src === 'string') {
     // 老版本：纯模式字符串
-    return { ...DEFAULT_THEME, backdrop: { ...DEFAULT_THEME.backdrop }, mode: normalizeMode(src) };
+    return { ...DEFAULT_THEME, backdrop: { ...DEFAULT_THEME.backdrop }, desktop: { ...DEFAULT_THEME.desktop }, mode: normalizeMode(src) };
   }
   if (!src || typeof src !== 'object') {
-    return { ...DEFAULT_THEME, backdrop: { ...DEFAULT_THEME.backdrop } };
+    return { ...DEFAULT_THEME, backdrop: { ...DEFAULT_THEME.backdrop }, desktop: { ...DEFAULT_THEME.desktop } };
   }
   const bd = src.backdrop && typeof src.backdrop === 'object' ? src.backdrop : {};
+  const dk = src.desktop && typeof src.desktop === 'object' ? src.desktop : {};
   const image = String(bd.image || '');
   const theme = {
     mode: normalizeMode(src.mode),
     style: oneOf(src.style, STYLES, DEFAULT_THEME.style),
+    desktop: {
+      opacity: clamp(Math.round(Number(dk.opacity != null ? dk.opacity : DEFAULT_THEME.desktop.opacity) / 5) * 5, 55, 100),
+    },
     backdrop: {
       type: image ? oneOf(bd.type, ['image', 'none'], 'image') : 'none',
       image,
@@ -139,9 +151,15 @@ function effectiveMode(theme, nativeTheme) {
 function bgColor(theme, nativeTheme) {
   const t = theme || DEFAULT_THEME;
   const mode = effectiveMode(t, nativeTheme);
-  const row = BG_HEX[t.style] || BG_HEX.mist;
+  const row = BG_HEX[t.style] || BG_HEX[DEFAULT_THEME.style];
   return row[mode] || row.light;
 }
+
+/**
+ * 自绘标题栏高度（DIP）。渲染层 styles.css 的 --titlebar-h 必须写同一个值，
+ * 否则标题栏内容会错行（三键也是按这个高度画的）。
+ */
+const TITLEBAR_HEIGHT = 40;
 
 /**
  * 合并写入（局部更新）：只传要改的字段，背景对象做浅合并。
@@ -154,6 +172,7 @@ function write(db, patch) {
   const next = normalize({
     mode: p.mode != null ? p.mode : cur.mode,
     style: p.style != null ? p.style : cur.style,
+    desktop: { ...cur.desktop, ...(p.desktop && typeof p.desktop === 'object' ? p.desktop : {}) },
     backdrop: { ...cur.backdrop, ...(p.backdrop && typeof p.backdrop === 'object' ? p.backdrop : {}) },
   });
   db.setSetting('theme', JSON.stringify(next));
@@ -313,6 +332,7 @@ module.exports = {
   reset,
   effectiveMode,
   bgColor,
+  TITLEBAR_HEIGHT,
   // 供冒烟脚本直接测压缩/亮度
   _encodeImage: encodeImage,
 };

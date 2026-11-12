@@ -28,12 +28,12 @@ import {
 } from './notes.js';
 import { bindRecordButton, setRecorderHandlers } from './recorder.js';
 // 趣味功能 → 上班鼓励器（薪资进账主界面）；不反向 import ui.js，toast / 统计走依赖注入
-import { listenEncouragerMenu, setEncouragerHandlers } from './encourager.js';
-import { openDiffWindow, setDiffHandlers } from './text-diff.js';
+import { listenEncouragerMenu, setEncouragerHandlers, openEncourager } from './encourager.js';
 import { setNoteExportHandlers } from './sync.js';
-import { openJsonViewWindow, setJsonViewHandlers } from './json-view.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
+// 标题栏右上角三颗自绘按钮（系统 overlay 已撤，见 main/main.js）
+import { initWindowControls } from './win-controls.js';
 import { openContextMenu, closeContextMenu } from './ctx-menu.js';
 import { openSettings, setSettingsHandlers } from './settings.js';
 // 外观：整份主题对象（模式 × 风格 × 背景）由主进程下发，渲染层不再自持副本
@@ -41,7 +41,7 @@ import { initTheme as initThemeState, getTheme, setThemeHook } from './theme.js'
 import { renderCalendar, setCalendarHandlers, openCalendar, backToList, disposeCalendar } from './calendar.js';
 import {
   repeatEditorHtml, bindRepeatEditor, readRepeatConfig, isRepeatOn,
-  setRecurrenceHandlers, listenRecurrenceMenu, openRuleFromTask,
+  setRecurrenceHandlers, listenRecurrenceMenu, openRuleFromTask, openRecurrenceManager,
   derivedScheduleHtml, recurStateBadgeHtml, recurState,
 } from './recurrence.js';
 
@@ -159,13 +159,8 @@ export async function init() {
   api.on('ui:notes-dock', () => {
     openNotesDock().catch((e) => toast(`打开笔记失败：${(e && e.message) || e}`));
   });
-  // 菜单栏「导入 Markdown 笔记…」：切到笔记视图后由 notes.js 接管导入流程
-  api.on('ui:import-md', async () => {
-    state.view = 'notes';
-    renderSidebar();
-    await render();
-    await importNotesFromDisk();
-  });
+  // 「导入 Markdown 笔记…」：菜单栏已撤，入口在设置中心「数据与备份」；两处共用这一条
+  api.on('ui:import-md', () => { importMarkdownNotes(); });
   setRecorderHandlers({
     toast,
     onMeetingSaved: async (m) => {
@@ -188,6 +183,8 @@ export async function init() {
     openTaskDetail: (id) => openDetail(id),
   });
   bindStaticEvents();
+  // 窗口三键：绑定点击 + 跟随主进程推来的最大化状态（图标在 最大化 / 还原 间切换）
+  initWindowControls();
   // 番茄钟：订阅主进程计时状态 + 初始快照 + 500ms 本地重算（进度环/剩余时间）
   initFocus();
   // 图片双击放大：事件委托挂在 document 上，动态重绘出来的图片自动生效
@@ -225,6 +222,26 @@ function bindStaticEvents() {
     });
   });
 
+  // 标题栏品牌名右侧的「设置」齿轮（另两条：Ctrl+, / 托盘菜单）
+  const btnSettings = document.getElementById('btn-settings');
+  if (btnSettings) {
+    btnSettings.addEventListener('click', () => {
+      if (document.querySelector('.modal-settings')) return; // 已经开着，别闪一下
+      // 面板开着时 openSettings 的 Promise 会在关闭时才 resolve，正好拿来点亮/熄灭
+      btnSettings.classList.add('is-open');
+      openSettings('')
+        .catch((e) => toast(`打开设置失败：${(e && e.message) || e}`))
+        .finally(() => btnSettings.classList.remove('is-open'));
+    });
+  }
+  // 标题栏品牌名右侧的版本号：只做弱提示，取不到就空着，绝不影响布局
+  Promise.resolve(api.app.getVersion())
+    .then((v) => {
+      const el = document.getElementById('sb-ver');
+      if (el && v) el.textContent = `v${v}`;
+    })
+    .catch(() => {});
+
   // 分组 / 标签新增
   document.getElementById('btn-add-group').addEventListener('click', () => promptAddGroup());
   document.getElementById('btn-add-tag').addEventListener('click', promptAddTag);
@@ -259,28 +276,19 @@ function bindStaticEvents() {
   // 后台跨天推进了重复事项：抽屉里那份「本次 / 截止 / 提醒」要跟着换；
   // 用户正在输入时不动（refreshDetailIfIdle 内部判断），避免丢光标
   api.on('ui:recurrence-generated', () => refreshDetailIfIdle());
-  // 实用工具 → 文本对比（非模态浮窗，开着也能继续操作主界面）
-  setDiffHandlers({ toast });
-  api.on('ui:text-diff', () => {
-    openDiffWindow().catch((e) => toast(`打开文本对比失败：${(e && e.message) || e}`));
-  });
   // 会议录制（工具栏按钮）
   bindRecordButton();
 
   // 笔记导出面板的 toast 注入（入口在笔记视图工具栏「📤 导出」，见 notes.js）
   setNoteExportHandlers({ toast });
 
-  // 实用工具 → JSON 查看器（顶部菜单栏入口）
-  setJsonViewHandlers({ toast });
-  api.on('ui:json-viewer', () => {
-    openJsonViewWindow().catch((e) => toast(`打开 JSON 查看器失败：${(e && e.message) || e}`));
-  });
-
   // 设置（Ctrl+, / 菜单 / 托盘三条入口都汇到这条事件）
   setSettingsHandlers({
     toast,
     // 设置中心的日历项与日历视图内的「调整每日容量」写同一个 tool.calendar 键
     onCalendarPrefs: () => { if (state.view === 'calendar') render(); },
+    // 菜单栏撤掉后，原来那些「打开工具 / 维护动作」改由设置中心发起，实现仍在本模块
+    onAction: runMenuAction,
   });
   api.on('ui:settings', (paneId) => {
     // 主进程可带分区 id（菜单「趣味功能 → 工位搭子设置…」直接落到 fun 分区）
@@ -403,14 +411,21 @@ function bindStaticEvents() {
   });
 
   // 桌面浮窗里改了数据（勾选 / 新增 / 删除）→ 主窗口跟上。
-  // 只有变化来自浮窗时主进程才会推这条事件，所以这里不用再判断来源；
-  // 但用户正在主窗口里操作（或开着弹窗）时宁可先不刷，免得把正在输入的编辑器冲掉。
+  // **记账（noteCompletionChange）必须与焦点无关**：浮窗勾掉的也是「今天完成」，
+  // 漏了这一步，等主窗下一次刷新「今天」就会按 status:'active' 把它剔掉 ——
+  // 用户看到的是「在小窗口勾完，任务界面里这条就没了」。
+  // 重绘才看焦点 / 忙碌状态：主窗口自己发起的变更不需要回灌（会丢焦点、丢滚动位置），
+  // 而用户正在主窗口里编辑（就地编辑器 / 详情抽屉 / 弹窗）时宁可先不刷，免得冲掉未保存的输入。
   api.on('ui:data-changed', async (payload) => {
-    if (document.hasFocus() || document.querySelector('.modal-mask')) return;
     if (payload && payload.taskId && payload.completed) {
-      // 在浮窗里勾掉的也算「今天完成」，回到今天视图时它要留在列表里
       noteCompletionChange(payload.taskId, true, payload.parentId);
     }
+    const fromDock = !!(payload && payload.source === 'desktop');
+    if (!fromDock && document.hasFocus()) return;
+    const busy = !!document.querySelector('.modal-mask')
+      || !!document.querySelector('.task-editor')
+      || !!document.querySelector('.detail-drawer:not([hidden]) .detail-panel');
+    if (busy) return;
     await refreshAll();
     renderSidebarList();
     if (TASK_VIEWS.includes(state.view)) await renderTasks();
@@ -553,7 +568,9 @@ async function render() {
 /** 侧栏「日历」首启提示：新功能不做成标题旁的小 chip，只在第一次进来时轻微脉冲一次 */
 let navHintChecked = false;
 function syncNavHint() {
-  const nav = document.querySelector('.nav-item[data-view="calendar"]');
+  // 日历入口已搬到标题栏（见 index.html 的 .tb-cal），这里只认侧栏里那一项；
+  // 搬走后查不到，静默跳过（以后若挪回侧栏，这段逻辑自动恢复）
+  const nav = document.querySelector('.sidebar .nav-item[data-view="calendar"]');
   if (!nav || navHintChecked) return;
   navHintChecked = true;
   api.ui.getToolPref('calendar').then((p) => {
@@ -1243,6 +1260,23 @@ function bindInAppKeys() {
     const key = e.key;
     const typing = isTypingTarget(e.target);
 
+    // 原菜单加速键：菜单栏整条撤掉后这些组合没人注册了，在这里重绑（行为与原菜单一致）
+    //   Ctrl+,         设置
+    //   Ctrl+Shift+I   导入 Markdown
+    if (mod && !e.altKey) {
+      const k = key.toLowerCase();
+      if (!e.shiftKey && k === ',') {
+        e.preventDefault();
+        openSettings('').catch((err) => toast(`打开设置失败：${(err && err.message) || err}`));
+        return;
+      }
+      if (e.shiftKey && k === 'i') {
+        e.preventDefault();
+        runMenuAction('import-md');
+        return;
+      }
+    }
+
     if (mod && !e.altKey && key.toLowerCase() === 'n') {
       if (e.shiftKey) {
         // 新建笔记：从任何位置都放行（它本身就是"换个地方做事"）
@@ -1303,6 +1337,49 @@ async function openNewNote() {
   renderSidebar();
   await render();
   await createNote();
+}
+
+/**
+ * 切到笔记视图并走导入流程（设置中心「数据与备份 → 导入 Markdown 笔记」与
+ * 主进程 ui:import-md 共用）。
+ */
+async function importMarkdownNotes() {
+  state.view = 'notes';
+  renderSidebar();
+  await render();
+  await importNotesFromDisk();
+}
+
+/**
+ * 设置中心的动作分发 —— 原应用菜单（File / 实用工具 / 趣味功能）里的能力都从这里走。
+ * 菜单栏已经整条撤掉（见 main.js buildAppMenu），实现不动，只换入口。
+ * 'archive-done' 之外的动作为了避免两个 modal 叠在一起，会先把设置面板收起来。
+ */
+function runMenuAction(name) {
+  const KEEP_SETTINGS_OPEN = new Set(['archive-done']);
+  if (!KEEP_SETTINGS_OPEN.has(name)) {
+    const closeBtn = document.querySelector('.modal-settings [data-modal="close"]');
+    if (closeBtn) closeBtn.click();
+  }
+  switch (name) {
+    case 'recurrence':
+      openRecurrenceManager();
+      return;
+    case 'encourager':
+      openEncourager({}).catch((e) => toast(`打开上班鼓励器失败：${(e && e.message) || e}`));
+      return;
+    case 'encourager-card':
+      openEncourager({ tab: 'card' }).catch((e) => toast(`打开今日牛马卡失败：${(e && e.message) || e}`));
+      return;
+    case 'archive-done':
+      archiveCompleted();
+      return;
+    case 'import-md':
+      importMarkdownNotes().catch((e) => toast(`导入 Markdown 失败：${(e && e.message) || e}`));
+      return;
+    default:
+      toast('未知动作');
+  }
 }
 
 /**

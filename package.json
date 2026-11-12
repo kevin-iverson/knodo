@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": {
@@ -16,7 +16,6 @@
     "smoke": "electron . --smoke-test",
     "smoke:packaged": "node scripts/smoke-packaged.js",
     "gen-icon": "node scripts/gen-icon.js",
-    "build:tools": "node scripts/build-tools.js",
     "test:db": "node scripts/smoke-db.js",
     "test:recur": "node scripts/smoke-recurrence.js",
     "verify:recur": "node scripts/verify-recurrence-ui.js",
@@ -27,37 +26,35 @@
     "verify:search": "node scripts/verify-search-modal.js",
     "verify:note": "node scripts/verify-note-desktop.js",
     "verify:dock": "node scripts/verify-dock.js",
-    "dist": "node scripts/gen-icon.js && node scripts/build-tools.js && node scripts/build-win.js",
+    "dist": "node scripts/gen-icon.js && node scripts/build-vendor.js && node scripts/build-win.js",
     "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --dir",
     "dist:installer": "node scripts/gen-icon.js && node scripts/build-win.js --target nsis --no-portable",
     "release": "node scripts/release-gitee.js",
     "verify:appearance": "node scripts/verify-appearance.js",
-    "smoke:theme-image": "node scripts/smoke-theme-image.js"
+    "smoke:theme-image": "node scripts/smoke-theme-image.js",
+    "verify:calendar": "node scripts/verify-calendar-past-lock.js",
+    "build:vendor": "node scripts/build-vendor.js",
+    "verify:drawer": "node scripts/verify-detail-mask.js",
+    "verify:dock-complete": "node scripts/verify-dock-complete.js",
+    "verify:dock-side": "node scripts/verify-dock-side.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "koffi": "^3.3.6"
   },
   "devDependencies": {
-    "@alenaksu/json-viewer": "^2.1.2",
     "7zip-bin": "^5.2.0",
-    "diff": "^8.0.4",
     "easymde": "^2.21.0",
     "electron": "^44.8.0",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.25.12",
     "flatpickr": "^4.6.13",
     "highlight.js": "^11.12.0",
-    "jsonpath-plus": "^11.2.1",
     "markdown-it": "^14.3.3",
     "mermaid": "^12.2.0",
-    "prettier": "^3.9.10",
-    "prettier-plugin-java": "2.6.6",
-    "sql-formatter": "^15.9.0",
     "tom-select": "^2.4.3",
     "turndown": "^7.2.5",
-    "turndown-plugin-gfm": "^1.0.2",
-    "xml-formatter": "^3.7.0"
+    "turndown-plugin-gfm": "^1.0.2"
   },
   "build": {
     "appId": "com.workbuddy.todo-desktop",

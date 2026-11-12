@@ -30,124 +30,166 @@
     <div class="bd-scrim"></div>
   </div>
 
-  <div class="app">
-    <!-- 侧边栏 -->
-    <aside class="sidebar">
-      <div class="brand">
-        <!-- Knodo 标识「一笔两色」（与 assets/knodo.svg 同一套几何）：朱砂短臂 = 待办，象牙长臂 = 知识，拐点圆点 = 节点 -->
-        <span class="brand-logo" aria-hidden="true">
-          <svg viewBox="0 0 256 256">
-            <defs>
-              <linearGradient id="knodoMark" x1="0" y1="0" x2="0.9" y2="1">
-                <stop offset="0" stop-color="#1E1A16" />
-                <stop offset="1" stop-color="#0F0C0A" />
-              </linearGradient>
-            </defs>
-            <rect width="256" height="256" rx="56" fill="url(#knodoMark)" />
-            <rect x="0.75" y="0.75" width="254.5" height="254.5" rx="55.25" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="1.5" />
-            <path d="M72 138 L110 175 L184 81" fill="none" stroke="#FFFBF0" stroke-width="31" stroke-linecap="round" stroke-linejoin="round" />
-            <path d="M72 138 L110 175" fill="none" stroke="#D9472E" stroke-width="31" stroke-linecap="round" />
-            <circle cx="110" cy="175" r="17" fill="#D9472E" />
+  <!-- 应用外壳：上面一条自绘标题栏，下面才是原本的 侧栏 + 主区。
+       窗口是 titleBarStyle:"hidden" 且不挂 overlay —— 系统标题栏、菜单栏、窗口三键
+       全部不画，三键由 .tb-win 自绘（见下方的图标与 titlebar 注释）。
+       .titlebar 的高度必须等于 main/theme.js 的 TITLEBAR_HEIGHT(40)。 -->
+  <div class="app-shell">
+    <!-- 整条都是拖拽区：按住空白处可拖窗，双击标题栏 = 最大化 / 还原（系统按 caption 处理） -->
+    <header class="titlebar">
+      <!-- Knodo 标识「一笔两色」：朱砂短臂 = 待办，象牙长臂 = 知识，拐点圆点 = 节点 -->
+      <span class="tb-logo" aria-hidden="true">
+        <svg viewBox="0 0 256 256">
+          <defs>
+            <linearGradient id="knodoMarkTitle" x1="0" y1="0" x2="0.9" y2="1">
+              <stop offset="0" stop-color="#1E1A16" />
+              <stop offset="1" stop-color="#0F0C0A" />
+            </linearGradient>
+          </defs>
+          <rect width="256" height="256" rx="56" fill="url(#knodoMarkTitle)" />
+          <path d="M72 138 L110 175 L184 81" fill="none" stroke="#FFFBF0" stroke-width="31" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M72 138 L110 175" fill="none" stroke="#D9472E" stroke-width="31" stroke-linecap="round" />
+          <circle cx="110" cy="175" r="17" fill="#D9472E" />
+        </svg>
+      </span>
+      <span class="tb-name" title="Knodo — 知识化待办（Knowledge + Todo）">Knodo</span>
+      <!-- 版本号跟着品牌名（只是弱提示，取不到就空着，不影响布局） -->
+      <span class="tb-ver" id="sb-ver"></span>
+      <!-- 设置入口：骑在标题栏「侧栏段 / 主区段」分界线上的齿轮（另有 Ctrl+, 与托盘菜单两条路）。
+           位置由 CSS 按 --sidebar-width 算，拖动侧栏宽度它会跟着走；
+           标题栏整条是 drag 区，按钮必须 no-drag，否则点不动只会拖窗。 -->
+      <button type="button" class="tb-set" id="btn-settings" title="设置（Ctrl+,）" aria-label="打开设置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3.2" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
+      <!-- 日历入口：从侧栏搬到标题栏主区段左端（用户要求，侧栏那一项已移除）。
+           保留 .nav-item 类与 data-view —— 点击切换、active 高亮、视图重绘全都复用既有逻辑。 -->
+      <button type="button" class="nav-item tb-cal" data-view="calendar"
+              title="日历视图：月 / 周负载总览（Ctrl+Alt+M）"><span class="nav-ico">🗓</span>日历</button>
+      <!-- 窗口控制三键：自绘（系统 overlay 已撤，见 main/main.js 的注释）。
+           46×40 是 Windows 的惯例尺寸；图标是 10px 细线 SVG，跟 currentColor 走，
+           所以换主题 / 换风格不用重新推一次原生配色。最大化↔还原由 js/win-controls.js 切换。 -->
+      <div class="tb-win" id="tb-win" role="group" aria-label="窗口控制">
+        <button type="button" class="tb-win-btn" data-win="min" title="最小化" aria-label="最小化">
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 5.5h7" /></svg>
+        </button>
+        <button type="button" class="tb-win-btn" data-win="max" title="最大化" aria-label="最大化">
+          <svg class="ico-max" viewBox="0 0 10 10" aria-hidden="true"><rect x="1.6" y="1.6" width="6.8" height="6.8" rx="0.8" /></svg>
+          <svg class="ico-restore" viewBox="0 0 10 10" aria-hidden="true">
+            <rect x="1.4" y="3.1" width="5.5" height="5.5" rx="0.8" />
+            <path d="M3.4 3.1V1.6h5v5H6.9" />
           </svg>
-        </span>
-        <span class="brand-name" title="Knodo — 知识化待办（Knowledge + Todo）">Knodo</span>
+        </button>
+        <button type="button" class="tb-win-btn is-close" data-win="close" title="关闭（最小化到托盘）" aria-label="关闭">
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" /></svg>
+        </button>
       </div>
+    </header>
 
-      <nav class="nav">
-        <button class="nav-item" data-view="today"><span class="nav-ico">📅</span>今天</button>
-        <!-- 日历紧挨「今天」：同一批任务的时间维度，月 / 周缩放放到日历内部的分段控件里 -->
-        <button class="nav-item" data-view="calendar" title="日历视图：月 / 周负载总览（Ctrl+Alt+M）"><span class="nav-ico">🗓</span>日历</button>
-        <button class="nav-item" data-view="upcoming"><span class="nav-ico">⏰</span>即将到期</button>
-        <button class="nav-item" data-view="all"><span class="nav-ico">📋</span>全部任务</button>
-        <button class="nav-item" data-view="completed"><span class="nav-ico">✅</span>已完成</button>
-        <button class="nav-item" data-view="archived"><span class="nav-ico">🗂</span>归档</button>
-        <button class="nav-item" data-view="notes"><span class="nav-ico">📝</span>笔记</button>
-        <button class="nav-item" data-view="stats"><span class="nav-ico">📊</span>统计</button>
-        <button class="nav-item" data-view="reports"><span class="nav-ico">🤖</span>AI 报告</button>
-        <button class="nav-item" data-view="meetings"><span class="nav-ico">🎙</span>会议纪要</button>
-      </nav>
+    <div class="app">
+      <!-- 侧边栏 -->
+      <aside class="sidebar">
+        <!-- 侧栏不再放品牌块：窗口标题栏已有图标 + 标题，再来一个 logo 就是两个。
+             导航 / 分组 / 标签放进独立滚动容器，底部只留版本号。 -->
+        <div class="sidebar-scroll">
+          <nav class="nav">
+            <button class="nav-item" data-view="today"><span class="nav-ico">📅</span>今天</button>
+            <button class="nav-item" data-view="upcoming"><span class="nav-ico">⏰</span>即将到期</button>
+            <button class="nav-item" data-view="all"><span class="nav-ico">📋</span>全部任务</button>
+            <button class="nav-item" data-view="completed"><span class="nav-ico">✅</span>已完成</button>
+            <button class="nav-item" data-view="archived"><span class="nav-ico">🗂</span>归档</button>
+            <button class="nav-item" data-view="notes"><span class="nav-ico">📝</span>笔记</button>
+            <button class="nav-item" data-view="stats"><span class="nav-ico">📊</span>统计</button>
+            <button class="nav-item" data-view="reports"><span class="nav-ico">🤖</span>AI 报告</button>
+            <button class="nav-item" data-view="meetings"><span class="nav-ico">🎙</span>会议纪要</button>
+          </nav>
 
-      <div class="sidebar-section">
-        <div class="section-head">
-          <span>分组</span>
-          <button class="mini-btn" id="btn-add-group" title="新增分组">＋</button>
-        </div>
-        <ul class="group-list" id="group-list"></ul>
-      </div>
-
-      <div class="sidebar-section">
-        <div class="section-head">
-          <span>标签</span>
-          <button class="mini-btn" id="btn-add-tag" title="新增标签">＋</button>
-        </div>
-        <ul class="tag-list" id="tag-list"></ul>
-      </div>
-    </aside>
-
-    <!-- 侧边栏与主区之间的拖拽把手：拖动调整侧边栏宽度（双击恢复默认） -->
-    <div class="sidebar-resizer" id="sidebar-resizer" title="拖拽调整侧边栏宽度（双击恢复默认）"
-         role="separator" aria-orientation="vertical" aria-label="调整侧边栏宽度"></div>
-
-    <!-- 主区域 -->
-    <main class="main">
-      <header class="topbar">
-        <div class="topbar-left">
-          <h1 id="view-title">今天</h1>
-          <span class="view-desc" id="view-desc"></span>
-        </div>
-        <div class="topbar-right">
-          <!-- 番茄钟今日格数：常驻、极小、无背景（不显示目标值，避免制造压力） -->
-          <span class="topbar-focus-count" id="topbar-focus-count" title="今天已完成的番茄格数"></span>
-          <!-- 搜索框 + AI 检索 + 笔记按钮：普通关键词过滤留在输入框，AI 检索是独立视图，
-               两个入口都紧贴搜索框（原侧栏「AI 检索」已上移）；笔记点开是弹窗，不切视图。
-               「同步」「主题」两个低频入口已收进顶部菜单栏，腾出的行宽给这里。 -->
-          <div class="search-box">
-            <input type="text" id="search-input" placeholder="搜索任务 / 标签…" />
+          <div class="sidebar-section">
+            <div class="section-head">
+              <span>分组</span>
+              <button class="mini-btn" id="btn-add-group" title="新增分组">＋</button>
+            </div>
+            <ul class="group-list" id="group-list"></ul>
           </div>
-          <button type="button" class="text-btn ai-search-btn" id="btn-ai-search"
-                  title="AI 检索：关键词检索全部任务并生成 AI 总结（再点一次返回任务列表）">🔍 AI 检索</button>
-          <button type="button" class="text-btn note-btn" id="btn-notes-dock"
-                  title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）">📝 笔记</button>
-          <!-- 贴顶便签：把「未完成」钉成屏幕顶边一条，悬停展开。只放图标，顶栏已排满 -->
-          <button type="button" class="text-btn dock-btn" id="btn-dock"
-                  title="把「未完成」钉到屏幕顶边（悬停展开成列表）">📌</button>
-          <button class="text-btn" id="btn-import" title="从完整备份包（.zip）或旧版 JSON 恢复">📥 导入</button>
-          <button class="text-btn" id="btn-export" title="导出完整备份包（任务 / 笔记 / 附件 / 录音都在里面）">📤 备份</button>
-          <!-- 「🗂 归档」已移入 File 菜单（低频维护动作），腾出的行宽给搜索框与 AI 检索 -->
-          <button class="text-btn" id="btn-record" title="录制会议音频（或屏幕），结束后转文字并生成纪要">⏺ 录制</button>
-          <!-- AI 设置 / 开机自启动 / 同步 / 主题 都在顶部菜单栏（主进程应用菜单） -->
-          <button class="primary-btn" id="btn-new-task">＋ 新建任务</button>
+
+          <div class="sidebar-section">
+            <div class="section-head">
+              <span>标签</span>
+              <button class="mini-btn" id="btn-add-tag" title="新增标签">＋</button>
+            </div>
+            <ul class="tag-list" id="tag-list"></ul>
+          </div>
         </div>
-      </header>
+      </aside>
 
-      <div class="filter-bar" id="filter-bar">
-        <span class="filter-label">优先级</span>
-        <button class="chip" data-priority="all">全部</button>
-        <button class="chip" data-priority="0">低</button>
-        <button class="chip" data-priority="1">中</button>
-        <button class="chip" data-priority="2">高</button>
-        <button class="chip" data-priority="3">紧急</button>
-        <span class="filter-sep"></span>
-        <button class="chip" id="btn-time-filter">⏱ 时间筛选</button>
-        <span class="filter-sep"></span>
-        <button class="chip chip-tag" id="tag-filter-chip" hidden title="点击清除标签筛选"></button>
-        <span class="filter-sep"></span>
-        <span class="filter-label">排序</span>
-        <select class="sort-select" id="sort-select" title="选择列表排序方式；选「手动」后可直接拖拽任务行调整顺序">
-          <option value="smart">智能</option>
-          <option value="priority">优先级</option>
-          <option value="due">截止日期</option>
-          <option value="manual">手动（可拖拽）</option>
-        </select>
-      </div>
+      <!-- 侧边栏与主区之间的拖拽把手：拖动调整侧边栏宽度（双击恢复默认） -->
+      <div class="sidebar-resizer" id="sidebar-resizer" title="拖拽调整侧边栏宽度（双击恢复默认）"
+           role="separator" aria-orientation="vertical" aria-label="调整侧边栏宽度"></div>
 
-      <!-- 时间筛选面板：内容由 ui.js 的 buildTimeFilter() 用 flatpickr 范围控件生成，
-           与「添加任务」里的日期选择器保持同一套交互与样式 -->
-      <div class="time-filter" id="time-filter" hidden></div>
+      <!-- 主区域 -->
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar-left">
+            <h1 id="view-title">今天</h1>
+            <span class="view-desc" id="view-desc"></span>
+          </div>
+          <div class="topbar-right">
+            <!-- 番茄钟今日格数：常驻、极小、无背景（不显示目标值，避免制造压力） -->
+            <span class="topbar-focus-count" id="topbar-focus-count" title="今天已完成的番茄格数"></span>
+            <!-- 搜索框 + AI 检索 + 笔记按钮：普通关键词过滤留在输入框，AI 检索是独立视图，
+                 两个入口都紧贴搜索框（原侧栏「AI 检索」已上移）；笔记点开是弹窗，不切视图。
+                 「同步」「主题」两个低频入口已收进顶部菜单栏，腾出的行宽给这里。 -->
+            <div class="search-box">
+              <input type="text" id="search-input" placeholder="搜索任务 / 标签…" />
+            </div>
+            <button type="button" class="text-btn ai-search-btn" id="btn-ai-search"
+                    title="AI 检索：关键词检索全部任务并生成 AI 总结（再点一次返回任务列表）">🔍 AI 检索</button>
+            <button type="button" class="text-btn note-btn" id="btn-notes-dock"
+                    title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）">📝 笔记</button>
+            <!-- 贴顶便签：把「未完成」钉成屏幕顶边一条，悬停展开。只放图标，顶栏已排满 -->
+            <button type="button" class="text-btn dock-btn" id="btn-dock"
+                    title="把「未完成」钉到屏幕顶边（悬停展开成列表）">📌</button>
+            <button class="text-btn" id="btn-import" title="从完整备份包（.zip）或旧版 JSON 恢复">📥 导入</button>
+            <button class="text-btn" id="btn-export" title="导出完整备份包（任务 / 笔记 / 附件 / 录音都在里面）">📤 备份</button>
+            <!-- 「🗂 归档」已移入 File 菜单（低频维护动作），腾出的行宽给搜索框与 AI 检索 -->
+            <button class="text-btn" id="btn-record" title="录制会议音频（或屏幕），结束后转文字并生成纪要">⏺ 录制</button>
+            <!-- AI 设置 / 开机自启动 / 同步 / 主题 都在顶部菜单栏（主进程应用菜单） -->
+            <button class="primary-btn" id="btn-new-task">＋ 新建任务</button>
+          </div>
+        </header>
 
-      <!-- 视图容器（任务列表 + 底部就地新增/编辑） -->
-      <div class="view" id="view"></div>
-    </main>
+        <div class="filter-bar" id="filter-bar">
+          <span class="filter-label">优先级</span>
+          <button class="chip" data-priority="all">全部</button>
+          <button class="chip" data-priority="0">低</button>
+          <button class="chip" data-priority="1">中</button>
+          <button class="chip" data-priority="2">高</button>
+          <button class="chip" data-priority="3">紧急</button>
+          <span class="filter-sep"></span>
+          <button class="chip" id="btn-time-filter">⏱ 时间筛选</button>
+          <span class="filter-sep"></span>
+          <button class="chip chip-tag" id="tag-filter-chip" hidden title="点击清除标签筛选"></button>
+          <span class="filter-sep"></span>
+          <span class="filter-label">排序</span>
+          <select class="sort-select" id="sort-select" title="选择列表排序方式；选「手动」后可直接拖拽任务行调整顺序">
+            <option value="smart">智能</option>
+            <option value="priority">优先级</option>
+            <option value="due">截止日期</option>
+            <option value="manual">手动（可拖拽）</option>
+          </select>
+        </div>
+
+        <!-- 时间筛选面板：内容由 ui.js 的 buildTimeFilter() 用 flatpickr 范围控件生成，
+             与「添加任务」里的日期选择器保持同一套交互与样式 -->
+        <div class="time-filter" id="time-filter" hidden></div>
+
+        <!-- 视图容器（任务列表 + 底部就地新增/编辑） -->
+        <div class="view" id="view"></div>
+      </main>
+    </div>
   </div>
 
   <div id="toast" class="toast" hidden></div>
