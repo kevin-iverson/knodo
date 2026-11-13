@@ -361,8 +361,7 @@ function bindStaticEvents() {
     openNotesDock().catch((e) => toast(`打开笔记失败：${(e && e.message) || e}`));
   });
 
-  // 贴顶便签：把「未完成」钉到屏幕顶边（再点取消）
-  document.getElementById('btn-dock')?.addEventListener('click', () => { toggleDock(); });
+  // 贴顶便签的开关已迁到侧栏「未完成」右键菜单（showViewContextMenu），顶栏不再有 📌 按钮
 
   // 顶栏标签筛选指示：点击即清除筛选
   const tagChip = document.getElementById('tag-filter-chip');
@@ -574,8 +573,6 @@ async function render() {
   const aiBtn = document.getElementById('btn-ai-search');
   if (aiBtn) aiBtn.title = 'AI 检索：关键词检索全部任务并生成 AI 总结（弹窗，不离开当前视图）';
   syncNavHint();
-  // 顶栏「贴顶便签」的选中态也跟着每次重绘校正一次（事件偶尔丢一拍时能自愈）
-  paintDockBtn();
   renderTagFilterChip();
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
@@ -647,36 +644,7 @@ async function refreshDesktopPins(rerender = true) {
     renderSidebarList();
     // 导航项（今天 / 即将到期 / 未完成）上的 📌 不随分组列表重绘，单独刷一次
     paintNavPins();
-    paintDockBtn(true);
   }
-}
-
-/**
- * 顶栏「贴顶便签」按钮的选中态。
- * 这里**实时查一次**而不是只读 desktopPins 缓存：钉 / 取消钉是异步的，
- * 缓存刷新与按钮重绘容易错一拍，表现为「已经钉了但图标没亮」。
- */
-let dockBtnToken = 0;
-let dockBtnAt = 0;
-async function paintDockBtn(force = false) {
-  const btn = document.getElementById('btn-dock');
-  if (!btn) return;
-  // 每次重绘都会调一次，节流 400ms：视图切换足够即时，又不会变成 IPC 洪水
-  if (!force && Date.now() - dockBtnAt < 400) return;
-  dockBtnAt = Date.now();
-  const token = ++dockBtnToken;
-  let pins = desktopPins;
-  try {
-    const live = await api.desktop.list();
-    if (Array.isArray(live)) pins = live;
-  } catch (e) { /* 主进程忙时退回缓存，不闪成「未钉」 */ }
-  if (token !== dockBtnToken) return; // 只应用最后一次，避免并发回填旧状态
-  // 顶条与侧吸都算「便签开着」：同一个视图只该有一条便签，按钮不该因为换了条边就显示未开
-  const pin = (pins || []).find((p) => p.kind === 'unfinished' && p.dock);
-  btn.classList.toggle('is-on', !!pin);
-  btn.title = pin
-    ? '便签已打开：点击取消（也可以在便签上点 📌 / Esc 收起）'
-    : '把「未完成」钉到屏幕顶边（悬停展开成列表）';
 }
 
 /**
@@ -684,6 +652,7 @@ async function paintDockBtn(force = false) {
  * 它装的是「未完成」这一份口径 —— 用户要的是「我欠多少」而不是「现在做什么」，
  * 22 条对「今天」是噪音，对「未完成」才是答案。
  * 已经在侧吸的也算「已打开」：再点一次是取消，不是又钉一条顶条出来。
+ * 入口只有侧栏「未完成」的右键菜单（顶栏的 📌 按钮已下线，避免紧挨「笔记」时像它的附属按钮）。
  */
 async function toggleDock() {
   const pin = desktopPins.find((p) => p.kind === 'unfinished' && p.dock);

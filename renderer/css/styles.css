@@ -25,8 +25,10 @@
 
   /* 背景层（JS 写入）：image / scrim / blur / fit / glass */
   --surface-alpha: 1;
-  /* 自绘标题栏高度：必须等于 main/theme.js 的 TITLEBAR_HEIGHT（三键按它对齐） */
-  --titlebar-h: 40px;
+  /* 自绘标题栏高度：必须等于 main/theme.js 的 TITLEBAR_HEIGHT（三键按它对齐）。
+     11-12 用户要求「再高 10px」→ 40 → 50；条内容（logo / 齿轮 / 快捷入口）一并加了一档，
+     否则 50px 的空条里 26px 的小按钮会显得飘。 */
+  --titlebar-h: 50px;
   --glass: 0;
   --bd-image: none;
   --bd-scrim: 0;
@@ -124,7 +126,7 @@ body {
 
 /* ---------------- 自绘标题栏 ---------------- */
 /* 窗口用 titleBarStyle:"hidden" 且不挂 overlay：系统标题栏、菜单栏、窗口三键都不画，
-   这里画一条 40px 的替代品，右上角三颗按钮由 .tb-win 自绘（吃主题 token、能被遮罩压住）。
+   这里画一条 50px 的替代品，右上角三颗按钮由 .tb-win 自绘（吃主题 token、能被遮罩压住）。
    高度必须与 main/theme.js 的 TITLEBAR_HEIGHT 一致 —— 改一处就得改另一处。 */
 .app-shell {
   height: 100vh;
@@ -156,37 +158,38 @@ body {
   border-left: 1px solid var(--border);
 }
 .titlebar > * { position: relative; z-index: 1; }
-.tb-logo { width: 18px; height: 18px; flex: none; overflow: hidden; border-radius: 4px; }
+.tb-logo { width: 22px; height: 22px; flex: none; overflow: hidden; border-radius: 5px; }
 .tb-logo svg { width: 100%; height: 100%; display: block; }
-.tb-name { font-size: 12.5px; font-weight: 600; color: var(--text-2); letter-spacing: 0.2px; }
+.tb-name { font-size: 13px; font-weight: 600; color: var(--text-2); letter-spacing: 0.2px; }
 /* 标题栏设置齿轮：整颗落在「侧栏段」内、贴分界线左侧，不压线。
    右边缘对齐侧栏导航行（.nav-item）的右边缘 —— 侧栏 padding 12 减
    .sidebar-scroll 的负 margin 6 与右 padding 2，净右界 = --sidebar-width - 8px，
-   所以 left = 侧栏宽 - 8 - 26(按钮宽)。改侧栏 padding 时这里要跟着调。
+   所以 left = 侧栏宽 - 8 - 30(按钮宽)。改侧栏 padding 时这里要跟着调。
    左边界由变量反推，拖宽侧栏时齿轮跟着走。标题栏整条是 drag 区 —— 必须 no-drag。 */
 .titlebar > .tb-set {
   position: absolute;
   top: 50%;
-  left: calc(var(--sidebar-width, 220px) - 34px);
+  left: calc(var(--sidebar-width, 220px) - 38px);
   transform: translateY(-50%);
   flex: none;
-  width: 26px; height: 26px;
+  width: 30px; height: 30px;
   display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 7px; background: transparent; color: var(--text-2);
   cursor: pointer; -webkit-app-region: no-drag;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.tb-set svg { width: 16px; height: 16px; display: block; }
+.tb-set svg { width: 17px; height: 17px; display: block; }
 .tb-set:hover { background: var(--bg-hover); color: var(--text); }
 .tb-set:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; }
 .tb-set:active { background: var(--bg-active); color: var(--primary-strong); }
 /* 设置面板开着时齿轮保持点亮：遮罩让出了标题栏，一眼能看出「设置正在前台」 */
 .tb-set.is-open { background: var(--bg-active); color: var(--primary-strong); }
 
-/* 标题栏主区段左端的快捷入口组（日历 / 搭子）：与分界线另一侧的齿轮对称（各留 8px）。
+/* 标题栏主区段左端的快捷入口组（日历 / 统计 / 搭子）：与分界线另一侧的齿轮对称（各留 8px）。
    组负责定位与间距，按钮自带尺寸 —— 以后再加入口只往组里塞，不用重算绝对偏移。
-   .tb-cal 仍带 .nav-item 类（复用点击切换与 active 同步），所以基础尺寸要在按钮上按标题栏
-   的高度重写：26px 高、横向自适应的软按钮。hover / active 用 (0,3,0) 压下 .nav-item 默认样式。 */
+   带 data-view 的入口（.tb-cal / .tb-stats）仍带 .nav-item 类（复用点击切换与 active 同步），
+   所以尺寸统一按 .nav-item 重写，不再逐个点名单个类：30px 高、横向自适应的软按钮。
+   hover / active 用 (0,3,0) 压下 .nav-item 默认样式。 */
 .titlebar > .tb-nav {
   position: absolute;
   top: 50%;
@@ -199,12 +202,11 @@ body {
   /* 组整体不可拖：里面全是按钮，漏一个就点不动只会拖窗 */
   -webkit-app-region: no-drag;
 }
-.titlebar > .tb-nav > .tb-cal,
+.titlebar > .tb-nav > .nav-item,
 .titlebar > .tb-nav > .tb-buddy {
-  width: auto; height: 26px;
-  /* 与 .tb-nav 同理：按钮永远单行、不收缩。.tb-cal 还带着 .nav-item 类（复用点击与
-     active 同步），侧栏那条 .nav-item 是 width:100% + 允许换行，标题栏一旦被它接管
-     就会竖排挤成一列 —— 这两条是防止该回归的最小保险 */
+  width: auto; height: 30px;
+  /* 与 .tb-nav 同理：按钮永远单行、不收缩。带 .nav-item 的入口（日历 / 统计）若被侧栏那条
+     width:100% + 允许换行的规则接管，标题栏里就会竖排挤成一列 —— 这两条是防该回归的最小保险 */
   flex: none; white-space: nowrap;
   display: inline-flex; align-items: center; gap: 6px;
   padding: 0 10px 0 8px;
@@ -216,11 +218,11 @@ body {
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.titlebar > .tb-nav > .tb-cal .nav-ico,
+.titlebar > .tb-nav > .nav-item .nav-ico,
 .titlebar > .tb-nav > .tb-buddy .nav-ico { width: auto; font-size: 13px; line-height: 1; }
-.titlebar > .tb-nav > .tb-cal:hover,
+.titlebar > .tb-nav > .nav-item:hover,
 .titlebar > .tb-nav > .tb-buddy:hover { background: var(--bg-hover); color: var(--text); }
-.titlebar > .tb-nav > .tb-cal.active,
+.titlebar > .tb-nav > .nav-item.active,
 .titlebar > .tb-nav > .tb-buddy.is-open {
   background: var(--bg-active); color: var(--primary-strong); font-weight: 600;
 }
@@ -248,7 +250,7 @@ body {
   -webkit-app-region: no-drag;
   transition: background 0.12s ease, color 0.12s ease;
 }
-/* 10×10 细线图标：1px 描边在 40px 高的条里与系统三键的视觉重量相当 */
+/* 10×10 细线图标：1px 描边在 50px 高的条里与系统三键的视觉重量相当 */
 .tb-win-btn svg {
   width: 10px; height: 10px;
   display: block;
@@ -470,14 +472,13 @@ body {
   30%, 70% { box-shadow: inset 0 0 0 2px rgb(var(--primary-rgb) / .35); }
 }
 
-/* 顶栏「🔍 AI 检索」：紧贴搜索框，视图与「过滤列表」区分开，选中态用主色实心 */
+/* 顶栏「🔍 AI 检索」：只是个弹窗入口，和「📝 笔记」同属一类 —— 不常亮。
+   曾经常驻主色描边 + 主色文字，看起来像"一直处于选中状态"；现在只保留布局，
+   配色与 hover 交回 .text-btn 默认态（点开弹窗即关，没有可表示的选中态）。 */
 .text-btn.ai-search-btn {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 8px 10px; font-size: 12.5px; white-space: nowrap;
-  border-color: var(--primary); color: var(--primary-strong); font-weight: 600;
 }
-.text-btn.ai-search-btn:hover { background: var(--bg-active); border-color: var(--primary-strong); }
-.text-btn.ai-search-btn.is-active { background: var(--primary); border-color: var(--primary); color: #fff; }
 
 /* 1080 左右的窗口：新增「AI 检索」后按钮更多，收紧内边距与描述上限换取一整行 */
 @media (max-width: 1250px) {
@@ -502,26 +503,15 @@ body {
   font-size: 13px; outline: none; transition: border-color .2s, box-shadow .2s;
 }
 .search-box input:focus { border-color: var(--primary); }
-/* 顶栏「📝 笔记」：紧贴搜索框的高亮按钮 —— 笔记是最容易被新用户忽略的核心功能，
-   用主色描边 + 主色文字让它从一排灰按钮里跳出来，悬停转实心 */
+/* 顶栏「📝 笔记」：只是个入口，点开是弹窗、不代表当前视图，所以保持普通 text-btn 外观。
+   曾经给它常驻主色边框 + 淡底（想强调新功能），结果看起来像"一直处于激活状态"，
+   和旁边的导入 / 备份 / 录制不是一套语言 —— 用户要求取消高亮，hover 交给 .text-btn 默认态。 */
 .text-btn.note-btn {
   display: inline-flex; align-items: center; gap: 4px;
-  border-color: var(--primary); background: var(--bg-active);
-  color: var(--primary-strong); font-weight: 600;
 }
-.text-btn.note-btn:hover { background: var(--primary); border-color: var(--primary); color: #fff; }
 
-/* 顶栏「📌 贴顶便签」：只放图标不写文字（顶栏 1080 已排满），已打开时主色高亮 */
-.text-btn.dock-btn {
-  padding: 8px 7px;
-  line-height: 1;
-  flex: none;
-}
-.text-btn.dock-btn.is-on {
-  border-color: var(--primary);
-  background: var(--primary);
-  color: #fff;
-}
+/* 顶栏「📌 贴顶便签」按钮已下线（入口迁到侧栏「未完成」右键菜单），
+   这里的 .dock-btn 样式随之移除；以后要恢复顶栏入口，记得一并恢复 .is-on 选中态。 */
 
 .icon-btn {
   width: 34px; height: 34px; border: 1px solid var(--border);
@@ -1338,7 +1328,7 @@ li.focus-wrapup {
    弹窗开着时仍能最小化 / 关窗，也避免遮罩边缘正好切在三键下方、看起来像贴上去的补丁。
    三键现在是自绘的（.tb-win），遮罩若盖住标题栏会连带盖掉它们，所以这条边界别动。 */
 .modal-mask {
-  position: fixed; inset: var(--titlebar-h, 40px) 0 0 0; z-index: 300; background: rgba(0, 0, 0, 0.35);
+  position: fixed; inset: var(--titlebar-h, 50px) 0 0 0; z-index: 300; background: rgba(0, 0, 0, 0.35);
   display: flex; align-items: center; justify-content: center; padding: 24px;
 }
 .modal {
@@ -1348,7 +1338,7 @@ li.focus-wrapup {
   overflow: hidden;
   /* 关键约束：弹窗高度不得超过可视区（留出标题栏 + .modal-mask 的 24px 上下内边距）。
      没有它时，字段一多就会顶出屏幕，底部按钮被裁掉、无法点击。 */
-  max-height: calc(100vh - var(--titlebar-h, 40px) - 48px);
+  max-height: calc(100vh - var(--titlebar-h, 50px) - 48px);
   display: flex; flex-direction: column;
 }
 .modal-head {
@@ -2000,7 +1990,7 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .sr-tried li::before { content: '·'; position: absolute; left: 4px; color: var(--text-3); }
 
 /* ---- 弹窗容器 ---- */
-.modal-search { width: 860px; max-width: 100%; height: min(620px, calc(100vh - var(--titlebar-h, 40px) - 48px)); }
+.modal-search { width: 860px; max-width: 100%; height: min(620px, calc(100vh - var(--titlebar-h, 50px) - 48px)); }
 .modal-search .modal-head { padding: 12px 16px 12px 18px; }
 /* body 自己不能滚：滚动交给 .search-stage / .sh-list，否则两栏会一起被推走 */
 .modal-search .modal-body { padding: 12px 16px 10px; gap: 0; overflow: hidden; }
@@ -2996,7 +2986,7 @@ body.nt-fs-open { overflow: hidden; }
   width: min(1120px, 88vw);
   height: min(820px, 84vh);
   max-width: calc(100vw - 48px);
-  max-height: calc(100vh - var(--titlebar-h, 40px) - 48px);
+  max-height: calc(100vh - var(--titlebar-h, 50px) - 48px);
   display: flex; flex-direction: column;
 }
 .modal.modal-note-editor .modal-head { flex: 0 0 auto; padding: 10px 12px 10px 18px; }
@@ -3158,7 +3148,7 @@ body.nt-fs-open { overflow: hidden; }
   width: 920px;
   height: 660px;
   max-width: calc(100vw - 48px);
-  max-height: calc(100vh - var(--titlebar-h, 40px) - 48px);
+  max-height: calc(100vh - var(--titlebar-h, 50px) - 48px);
   border-radius: 14px;
 }
 /* 所有设置项都是「改完即生效」，没有保存语义 → 不要底部按钮栏，只留右上角 ✕ 与 Esc */

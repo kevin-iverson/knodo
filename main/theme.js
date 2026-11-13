@@ -159,7 +159,7 @@ function bgColor(theme, nativeTheme) {
  * 自绘标题栏高度（DIP）。渲染层 styles.css 的 --titlebar-h 必须写同一个值，
  * 否则标题栏内容会错行（三键也是按这个高度画的）。
  */
-const TITLEBAR_HEIGHT = 40;
+const TITLEBAR_HEIGHT = 50;
 
 /**
  * 合并写入（局部更新）：只传要改的字段，背景对象做浅合并。

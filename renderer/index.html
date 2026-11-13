@@ -33,7 +33,7 @@
   <!-- 应用外壳：上面一条自绘标题栏，下面才是原本的 侧栏 + 主区。
        窗口是 titleBarStyle:"hidden" 且不挂 overlay —— 系统标题栏、菜单栏、窗口三键
        全部不画，三键由 .tb-win 自绘（见下方的图标与 titlebar 注释）。
-       .titlebar 的高度必须等于 main/theme.js 的 TITLEBAR_HEIGHT(40)。 -->
+       .titlebar 的高度必须等于 main/theme.js 的 TITLEBAR_HEIGHT(50)。 -->
   <div class="app-shell">
     <!-- 整条都是拖拽区：按住空白处可拖窗，双击标题栏 = 最大化 / 还原（系统按 caption 处理） -->
     <header class="titlebar">
@@ -65,13 +65,16 @@
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
       </button>
-      <!-- 标题栏主区段左端的快捷入口组：日历 + 搭子（顺序就是视觉顺序）。
+      <!-- 标题栏主区段左端的快捷入口组：日历 + 统计 + 搭子（顺序就是视觉顺序）。
            .tb-nav 只负责定位与间距，按钮自带尺寸 —— 再加一个入口时不用重算绝对偏移。
-           日历：从侧栏搬来（侧栏那项已移除），保留 .nav-item 类与 data-view ——
+           日历 / 统计：从侧栏搬来，保留 .nav-item 类与 data-view ——
            点击切换、active 高亮、视图重绘全都复用既有逻辑。 -->
       <div class="tb-nav" role="group" aria-label="快捷入口">
         <button type="button" class="nav-item tb-cal" data-view="calendar"
                 title="日历视图：月 / 周负载总览（Ctrl+Alt+M）"><span class="nav-ico">🗓</span>日历</button>
+        <!-- 统计：用户指定夹在日历与搭子中间（原先在侧栏底部） -->
+        <button type="button" class="nav-item tb-stats" data-view="stats"
+                title="统计视图：任务完成情况概览（按分组 / 标签 / 优先级看欠账与产出）"><span class="nav-ico">📊</span>统计</button>
         <!-- 搭子：工位搭子面板（五页签主浮窗的「搭子」页）。
              它不是视图，所以不挂 .nav-item / data-view —— 点击只开模态，不切 state.view。 -->
         <button type="button" class="tb-buddy" id="btn-buddy"
@@ -107,11 +110,13 @@
           <nav class="nav">
             <button class="nav-item" data-view="today"><span class="nav-ico">📅</span>今天</button>
             <button class="nav-item" data-view="upcoming"><span class="nav-ico">⏰</span>即将到期</button>
+            <!-- 「未完成」= 全部进行中任务，跨分组汇总（含逾期 / 未排期）。
+                 放在「即将到期」与「全部任务」之间：一个看将来，一个看欠账，再往下才是全量。 -->
+            <button class="nav-item" data-view="unfinished"><span class="nav-ico">📇</span>未完成</button>
             <button class="nav-item" data-view="all"><span class="nav-ico">📋</span>全部任务</button>
             <button class="nav-item" data-view="completed"><span class="nav-ico">✅</span>已完成</button>
             <button class="nav-item" data-view="archived"><span class="nav-ico">🗂</span>归档</button>
             <button class="nav-item" data-view="notes"><span class="nav-ico">📝</span>笔记</button>
-            <button class="nav-item" data-view="stats"><span class="nav-ico">📊</span>统计</button>
             <button class="nav-item" data-view="reports"><span class="nav-ico">🤖</span>AI 报告</button>
             <button class="nav-item" data-view="meetings"><span class="nav-ico">🎙</span>会议纪要</button>
           </nav>
@@ -158,9 +163,8 @@
                     title="AI 检索：关键词检索全部任务并生成 AI 总结（再点一次返回任务列表）">🔍 AI 检索</button>
             <button type="button" class="text-btn note-btn" id="btn-notes-dock"
                     title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）">📝 笔记</button>
-            <!-- 贴顶便签：把「未完成」钉成屏幕顶边一条，悬停展开。只放图标，顶栏已排满 -->
-            <button type="button" class="text-btn dock-btn" id="btn-dock"
-                    title="把「未完成」钉到屏幕顶边（悬停展开成列表）">📌</button>
+            <!-- 贴顶便签（📌）不再占顶栏位置：紧挨「笔记」看起来像笔记的附属按钮，
+                 而且它是低频开关、常驻图标只是噪音。入口保留在侧栏「未完成」的右键菜单里。 -->
             <button class="text-btn" id="btn-import" title="从完整备份包（.zip）或旧版 JSON 恢复">📥 导入</button>
             <button class="text-btn" id="btn-export" title="导出完整备份包（任务 / 笔记 / 附件 / 录音都在里面）">📤 备份</button>
             <!-- 「🗂 归档」已移入 File 菜单（低频维护动作），腾出的行宽给搜索框与 AI 检索 -->

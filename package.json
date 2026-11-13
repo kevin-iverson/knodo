@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": {
