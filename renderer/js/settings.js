@@ -70,6 +70,8 @@ const S = {
   ai: null,
   calendar: null,
   encourager: null,
+  /** 功能插件：工时开关（{ enabled, zenDefaultSec, dayAttr }） */
+  worklog: null,
 };
 
 /** 当前搜索词（列表重绘后要重跑过滤，所以留在模块级） */
@@ -91,6 +93,7 @@ const ICON = {
   tools: svg('<path d="M9.6 2.6 6.2 6l1.8 1.8 3.4-3.4a2 2 0 0 0-2.8-2.8z"/><path d="M6.2 6 3 9.2a1.6 1.6 0 0 0 0 2.3l1.5 1.5a1.6 1.6 0 0 0 2.3 0L10 9.8"/><path d="M2.6 13.4l1.6-1.6"/>'),
   data: svg('<ellipse cx="8" cy="4" rx="4.6" ry="1.9"/><path d="M3.4 4v8c0 1 2 1.9 4.6 1.9s4.6-.9 4.6-1.9V4"/><path d="M3.4 8c0 1 2 1.9 4.6 1.9S12.6 9 12.6 8"/>'),
   about: svg('<circle cx="8" cy="8" r="6"/><path d="M8 7.4v3.8M8 5.4h.01"/>'),
+  plugins: svg('<circle cx="8" cy="8.8" r="4.6"/><path d="M8 6.6v2.4l1.6 1"/><path d="M6.4 1.8h3.2M12.4 2.6l.9-.9"/>'),
 };
 
 /* ------------------------------ 行 / 控件构造器 ------------------------------ */
@@ -401,6 +404,19 @@ function mountAppearance(pane) {
       return null;
     }
   };
+
+  // 标题栏的「日 / 月 盘」与系统深浅色变化也能改 mode：面板开着时必须跟着回显，
+  // 否则会出现「面板上写着浅色、界面已经是深色」。事件从 document 派发，所以挂 document；
+  // 面板关掉后自己摘掉，避免每开一次面板就留一个闭包。
+  const onThemeChanged = () => {
+    if (!pane.isConnected) {
+      document.removeEventListener('app:theme-changed', onThemeChanged);
+      return;
+    }
+    S.theme = getTheme();
+    refreshAppearance(pane);
+  };
+  document.addEventListener('app:theme-changed', onThemeChanged);
 
   pane.addEventListener('click', async (e) => {
     const modeBtn = e.target.closest('[data-seg="mode"] button');
@@ -1275,11 +1291,125 @@ const GROUPS = [
  *   { id, group, label, icon, build: () => html, mount?: (paneEl) => void }
  * build 在打开面板时同步执行（只读内存里的 S），mount 在 DOM 插入后调用。
  */
+/* ------------------------------ 分区：功能插件 ------------------------------ */
+
+/**
+ * 功能插件分区（原型 ① 开关）。
+ *
+ * 这里是「关闭态唯一常驻的工时 UI」：卡片本身必须在插件未启用时也能看到，
+ * 否则用户永远找不到入口。卡片内的可选项只在启用后展开（与原型一致）。
+ */
+const WL_DEFAULTS = {
+  enabled: false, zenDefaultSec: 5400, dayAttr: 'start',
+};
+
+function wlChips(key, items, current) {
+  return `<div class="wl-chips">${items.map(([v, label]) => `<button type="button"
+    class="wl-chip${String(v) === String(current) ? ' is-active' : ''}"
+    data-wl-pref="${esc(key)}" data-v="${esc(v)}">${label}</button>`).join('')}</div>`;
+}
+
+function pluginsCardHtml() {
+  const p = { ...WL_DEFAULTS, ...(S.worklog || {}) };
+  const on = !!p.enabled;
+  return `<div class="st-card wl-set-card${on ? ' is-on' : ''}">
+    <div class="wl-set-head">
+      <div class="wl-set-ico">🕒</div>
+      <div class="wl-set-main">
+        <div class="wl-set-title">工时记录 <span class="wl-badge">插件</span></div>
+        <div class="wl-set-desc">给任务加上「开始 / 暂停 / 结束」计时，结果挂回任务；子任务时长自动向上累积成父任务合计，可按分组导出报工表。</div>
+      </div>
+      <label class="st-switch" title="${on ? '关闭工时插件' : '启用工时插件'}">
+        <input type="checkbox" id="wl-enabled"${on ? ' checked' : ''} aria-label="启用工时记录">
+        <span class="st-switch-track"><span class="st-switch-dot"></span></span>
+      </label>
+    </div>
+    <div class="wl-set-body"${on ? '' : ' hidden'}>
+      <div class="wl-field">
+        <span class="wl-field-label">计时入口</span>
+        <span class="wl-chip is-active is-static">任务行内 ▶ / ☯</span>
+        <span class="wl-field-hint">鼠标移到任务上即可看到两个按钮：▶ 计时、☯ 禅模式</span>
+      </div>
+      <div class="wl-field">
+        <span class="wl-field-label">禅模式默认</span>
+        ${wlChips('zenDefaultSec', [[3600, '60 分钟'], [5400, '90 分钟'], [7200, '120 分钟'], [0, '不限时']], p.zenDefaultSec)}
+      </div>
+      <div class="wl-field">
+        <span class="wl-field-label">日期归属</span>
+        <span class="wl-chip is-active is-static">按开始时间</span>
+        <span class="wl-field-hint">跨天记录归属开始日，不切分</span>
+      </div>
+      <div class="wl-set-note">${on
+    ? '已启用：任务行内出现 ▶ 计时与 ☯ 禅模式，计时中底部浮出「🕒 工时计时」条（与录制条同一形态），标题栏（「统计」右侧）的「工时」入口可看报工表。<br>关闭后计时与视图立即卸载、入口保留（点进去变成开启引导），历史记录留在数据库里，随时可再开启。'
+    : '当前为关闭状态 —— 主进程未注册工时 IPC，未启动计时器，渲染层没有加载任何工时模块；标题栏入口保留，点进去是开启引导。'}</div>
+    </div>
+  </div>`;
+}
+
+function pluginsHtml() {
+  return `<section class="st-sec"
+    data-search="功能插件 插件 工时 worklog 计时 报工 子任务 禅模式 行内计时 补录">
+    <div class="st-sec-title">功能插件</div>
+    <div class="st-sec-desc">默认全部关闭。关闭状态的插件不加载任何模块 —— 没有计时器、不写数据库；标题栏入口保留，点进去是开启引导。</div>
+    <div class="wl-set-host">${pluginsCardHtml()}</div>
+  </section>`;
+}
+
+function repaintPlugins(paneEl) {
+  const host = paneEl.querySelector('.wl-set-host');
+  if (host) host.innerHTML = pluginsCardHtml();
+}
+
+function mountPlugins(paneEl) {
+  if (paneEl.dataset.wlPluginBound === '1') return;
+  paneEl.dataset.wlPluginBound = '1';
+
+  // 开关：主进程负责注册 / 注销，渲染层由 app.js 动态 mount / unmount
+  paneEl.addEventListener('change', async (e) => {
+    const sw = e.target.closest('#wl-enabled');
+    if (!sw) return;
+    const want = sw.checked;
+    sw.disabled = true;
+    try {
+      const r = await api.features.setPref({ enabled: want });
+      if (!r || r.ok === false) throw new Error((r && r.reason) || '切换失败');
+      S.worklog = r.pref;
+      repaintPlugins(paneEl);
+      toast(want
+        ? '工时插件已启用 · 任务行内出现 ▶ 计时 / ☯ 禅模式'
+        : '工时插件已关闭 · 计时与视图已卸载，历史记录保留');
+    } catch (err) {
+      sw.checked = !want;
+      sw.disabled = false;
+      toast(`切换失败：${(err && err.message) || err}`);
+    }
+  });
+
+  // 配置项：改一项存一项（不需要「保存」按钮）
+  paneEl.addEventListener('click', async (e) => {
+    const chip = e.target.closest('[data-wl-pref]');
+    if (!chip) return;
+    const key = chip.dataset.wlPref;
+    let value = chip.dataset.v;
+    if (key === 'zenDefaultSec') value = Number(value);
+    try {
+      const r = await api.features.setPref({ [key]: value });
+      if (!r || r.ok === false) throw new Error((r && r.reason) || '保存失败');
+      S.worklog = r.pref;
+      repaintPlugins(paneEl);
+    } catch (err) {
+      toast(`保存失败：${(err && err.message) || err}`);
+    }
+  });
+}
+
 const PANES = [
   // 外观置顶：换主题是最常做、也最容易找不到的一件事（原来藏在「通用」里一个下拉框）
   { id: 'appearance', group: 'base', label: '外观', icon: ICON.appearance, build: appearanceHtml, mount: mountAppearance },
   { id: 'general', group: 'base', label: '通用', icon: ICON.general, build: generalHtml, mount: mountGeneral },
   { id: 'keys', group: 'base', label: '快捷键', icon: ICON.keys, build: keysPaneHtml, mount: null },
+  // 功能插件常驻第一位：默认全关，用户需要一个能找到开关的地方
+  { id: 'plugins', group: 'feature', label: '功能插件', icon: ICON.plugins, build: pluginsHtml, mount: mountPlugins },
   { id: 'ai', group: 'feature', label: 'AI 与语音', icon: ICON.ai, build: aiHtml, mount: mountAi },
   { id: 'calendar', group: 'feature', label: '日历', icon: ICON.calendar, build: calendarHtml, mount: mountCalendar },
   { id: 'tools', group: 'feature', label: '工具', icon: ICON.tools, build: toolsHtml, mount: mountTools },
@@ -1385,7 +1515,7 @@ function applyFilter(root) {
 
 async function loadState() {
   const soft = async (p, fb) => { try { return await p; } catch (e) { return fb; } };
-  const [themeRaw, autoStart, version, storage, backup, salary, ai, calendar, encourager] = await Promise.all([
+  const [themeRaw, autoStart, version, storage, backup, salary, ai, calendar, encourager, worklog] = await Promise.all([
     soft(api.theme.get(), null),
     soft(api.app.getAutoStart(), { enabled: false, supported: false, reason: '读取开机自启动状态失败' }),
     soft(api.app.getVersion(), ''),
@@ -1395,11 +1525,13 @@ async function loadState() {
     soft(api.ai.getConfig(), null),
     soft(api.ui.getToolPref('calendar'), null),
     soft(api.ui.getToolPref('encourager'), null),
+    soft(api.features.pref(), null),
   ]);
   Object.assign(S, {
     // 老库 / 读取失败时回落出厂值，界面永远有东西可渲染
     theme: KT.normalize(themeRaw),
     autoStart, version, storage, backup, salary, ai, calendar, encourager,
+    worklog: worklog || null,
   });
 }
 

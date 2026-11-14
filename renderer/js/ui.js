@@ -37,8 +37,12 @@ import { initSidebarResize } from './sidebar-resize.js';
 import { initWindowControls } from './win-controls.js';
 import { openContextMenu, closeContextMenu } from './ctx-menu.js';
 import { openSettings, setSettingsHandlers } from './settings.js';
+// 插件扩展点（关闭态全是空数组，三处调用零行为差异）
+import { EXT, ext, getExtView } from './ext.js';
 // 外观：整份主题对象（模式 × 风格 × 背景）由主进程下发，渲染层不再自持副本
 import { initTheme as initThemeState, getTheme, setThemeHook } from './theme.js';
+// 标题栏「日 / 月 盘」：两态明暗开关（视觉在 CSS，这里只管点击与回显）
+import { initThemeSwitch } from './theme-switch.js';
 import { renderCalendar, setCalendarHandlers, openCalendar, backToList, disposeCalendar } from './calendar.js';
 import {
   repeatEditorHtml, bindRepeatEditor, readRepeatConfig, isRepeatOn,
@@ -125,19 +129,6 @@ let lastDeleted = null;
 /** 上次同步给主进程（捕捉条）的当前清单，避免每次渲染都发一次 IPC */
 let lastSentContext;
 
-/* ---------------- 番茄钟（专注计时）渲染态 ---------------- */
-// 主进程权威快照（active/mode/pendingOutcome/...），由 focus:changed 事件驱动 + 本地 500ms tick 重算显示
-let focusSnap = { active: false, mode: 'idle', plannedSec: 1500, pendingOutcome: '', pendingReason: '' };
-// 当前列表任务 → 格数 { full, partial }（renderTasks 批量拉取）
-let focusCounts = {};
-// 今日等效格数（顶栏「今天 N 格」）
-let focusToday = 0;
-// 收尾态下的连续专注格数（含当前这一格，用于软提示）
-let focusConsecutive = 0;
-// 时长选项（秒）：15 / 30 / 45 分钟，记住上次选择（默认 30 —— 用户拍板，个人事务+工作混合，25 分钟偏碎）
-const FOCUS_DURATIONS = [900, 1800, 2700];
-let focusDurationSec = Number(localStorage.getItem('knodo.focusDurationSec')) || 1800;
-
 /* ---------------- 初始化 ---------------- */
 
 export async function init() {
@@ -186,13 +177,14 @@ export async function init() {
   bindStaticEvents();
   // 窗口三键：绑定点击 + 跟随主进程推来的最大化状态（图标在 最大化 / 还原 间切换）
   initWindowControls();
-  // 番茄钟：订阅主进程计时状态 + 初始快照 + 500ms 本地重算（进度环/剩余时间）
-  initFocus();
   // 图片双击放大：事件委托挂在 document 上，动态重绘出来的图片自动生效
   bindImageZoom();
   // 侧边栏宽度：读取上次保存值并绑定拖拽（不阻塞首屏渲染）
   initSidebarResize().catch((e) => console.warn('[ui] 侧边栏宽度初始化失败', e && e.message));
   await initTheme();
+  // 标题栏「日 / 月 盘」：等 initTheme 把真值落到 data-theme 之后再挂，
+  // 这样它第一次 paint 读到的 mode 就是对的（跟系统时也能显示实际那一态）
+  initThemeSwitch();
   // 恢复上次退出时的标签筛选（重启后仍保持选中态）
   state.currentTag = await api.ui.getTagFilter();
   // 恢复「今日已完成」：切走再回来、或重启应用，今天完成的那些任务仍然留在今天列表里
@@ -208,19 +200,7 @@ export async function init() {
 function bindStaticEvents() {
   // 导航
   document.querySelectorAll('.nav-item').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      // 记住最近的任务列表视图：从「日历 / AI 检索」这类非列表视图返回时回到原来那一项
-      const target = btn.dataset.view;
-      if (TASK_VIEWS.includes(target)) lastListView = target;
-      else if (TASK_VIEWS.includes(state.view)) lastListView = state.view;
-      // 「今日已完成」是持久化的：切换视图不清除，回到「今天」时列表依然完整
-      state.view = target;
-      state.currentGroup = 'all';
-      state.editingTaskId = null;
-      state.addingTask = false;
-      renderSidebar();
-      render();
-    });
+    btn.addEventListener('click', () => { navigateTo(btn.dataset.view); });
   });
 
   // 标题栏品牌名右侧的「设置」齿轮（另两条：Ctrl+, / 托盘菜单）
@@ -546,6 +526,24 @@ let lastListView = 'today';
 /** 任务 id → 关联笔记数（renderTasks 批量拉取，列表徽标用） */
 let noteCounts = {};
 
+/**
+ * 视图切换的唯一入口：静态导航项与插件自插的入口共用。
+ * 插件视图不能写死在 ui.js 里，所以导出这个函数让插件自己插的按钮来调。
+ */
+export async function navigateTo(target) {
+  if (!target) return;
+  // 记住最近的任务列表视图：从「日历 / AI 检索」这类非列表视图返回时回到原来那一项
+  if (TASK_VIEWS.includes(target)) lastListView = target;
+  else if (TASK_VIEWS.includes(state.view)) lastListView = state.view;
+  // 「今日已完成」是持久化的：切换视图不清除，回到「今天」时列表依然完整
+  state.view = target;
+  state.currentGroup = 'all';
+  state.editingTaskId = null;
+  state.addingTask = false;
+  renderSidebar();
+  await render();
+}
+
 async function render() {
   // #view 是共享容器：整块重绘前先回收挂在 body 上的 Tom Select 下拉，避免残留浮层
   destroyAllGroupSelects();
@@ -555,7 +553,16 @@ async function render() {
   if (lastView === 'notes' && state.view !== 'notes') disposeNotes();
   if (lastView === 'calendar' && state.view !== 'calendar') disposeCalendar();
   lastView = state.view;
-  const meta = VIEW_META[state.view] || VIEW_META.all;
+  // 插件视图（工时）：标题 / 描述由插件给；插件未开启时拿不到 extView，
+  // 但「工时」入口是常驻的（在标题栏），所以这里另给一份固定 meta + 未启用引导页，
+  // 否则会 fallback 到 VIEW_META.all，标题变成「全部任务」。
+  const extView = getExtView(state.view);
+  const wlOff = state.view === 'worklog' && !extView;
+  const meta = extView
+    ? { title: extView.title, desc: extView.desc || '', long: extView.long || extView.desc || '' }
+    : wlOff
+      ? { title: '工时', desc: '功能插件 · 未开启', long: '在 设置 → 功能插件 中开启「工时记录」后可用' }
+      : (VIEW_META[state.view] || VIEW_META.all);
   document.getElementById('view-title').textContent = meta.title;
   const descEl = document.getElementById('view-desc');
   descEl.textContent = meta.desc;
@@ -566,7 +573,8 @@ async function render() {
   const isCalendar = state.view === 'calendar';
   // 新建编辑行是列表的尾项（在 #view 内），离开任务视图时随重绘一起消失，
   // 不需要额外的收起动作 —— 这里只保留一句提示，免得后来人再去找那个面板。
-  document.querySelector('.topbar-right').hidden = !(isTaskView || isCalendar);
+  // 插件视图保留顶栏（工时页仍要用「＋ 新建任务」与搜索）。
+  document.querySelector('.topbar-right').hidden = !(isTaskView || isCalendar || !!extView);
   document.getElementById('filter-bar').hidden = !isTaskView;
   if (!isTaskView) document.getElementById('time-filter').hidden = true;
   // AI 检索已是弹窗：顶栏按钮只是入口，不再有「选中态」，也不占视图
@@ -574,12 +582,36 @@ async function render() {
   if (aiBtn) aiBtn.title = 'AI 检索：关键词检索全部任务并生成 AI 总结（弹窗，不离开当前视图）';
   syncNavHint();
   renderTagFilterChip();
+  if (extView) { await extView.render(document.getElementById('view')); return; }
+  if (wlOff) { renderWorklogOff(document.getElementById('view')); return; }
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
   if (state.view === 'meetings') { await renderMeetings(); return; }
   if (state.view === 'notes') { await renderNotes(); return; }
   if (isCalendar) { await renderCalendar(); return; }
   await renderTasks();
+}
+
+/**
+ * 工时页的「未启用」引导页。
+ * 入口常驻在标题栏，所以功能关闭时必须给一块能看懂的空态 —— 直接告诉用户去哪开启，
+ * 并给一个直达按钮（openSettings('plugins') 会落到「功能插件」面板）。
+ * 这里刻意不 import 工时插件的任何模块：关闭态下渲染层不该有插件代码。
+ */
+function renderWorklogOff(root) {
+  root.innerHTML = `
+    <div class="wl-off">
+      <div class="wl-off-ico" aria-hidden="true">🕒</div>
+      <div class="wl-off-title">工时记录未开启</div>
+      <div class="wl-off-text">请在 <b>设置 → 功能插件</b> 中开启「工时记录」</div>
+      <button type="button" class="primary-btn wl-off-btn" id="wl-off-open">去开启</button>
+    </div>`;
+  const btn = root.querySelector('#wl-off-open');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      openSettings('plugins').catch((e) => toast(`打开设置失败：${(e && e.message) || e}`));
+    });
+  }
 }
 
 /** 侧栏「日历」首启提示：新功能不做成标题旁的小 chip，只在第一次进来时轻微脉冲一次 */
@@ -1287,13 +1319,6 @@ function bindInAppKeys() {
       undoDelete();
       return;
     }
-    // 番茄钟：Ctrl+Enter 暂停 / 继续（专注进行中且不在收尾态时）
-    if (mod && !e.altKey && key === 'Enter') {
-      if (!focusSnap.active || focusSnap.mode === 'done') return;
-      e.preventDefault();
-      toggleFocusPause();
-      return;
-    }
     if (mod || e.altKey) return; // 其余组合留给系统 / 菜单加速键
     if (typing) return;
 
@@ -1386,211 +1411,6 @@ function syncCaptureContext() {
   try { api.capture.setContext(val).catch(() => {}); } catch (e) { /* 捕捉条不可用时忽略 */ }
 }
 
-/* ---------------- 番茄钟（专注计时） ---------------- */
-
-/** 当前视图是否会展示任务列表（消费分组/标签筛选） */
-function isTaskView() {
-  return TASK_VIEWS.includes(state.view);
-}
-
-/** 订阅主进程计时状态 + 初始快照 + 本地 500ms 重算（进度环/剩余时间） */
-function initFocus() {
-  api.on('focus:changed', (s) => {
-    if (!s) return;
-    if (s.notice) toast(s.notice);
-    focusSnap = s;
-    if (isTaskView()) renderTasks();
-  });
-  api.focus.state().then((s) => {
-    if (!s) return;
-    if (s.notice) toast(s.notice);
-    focusSnap = s;
-    if (isTaskView()) renderTasks();
-  }).catch(() => {});
-  // 本地 500ms：只重算进度环 / 剩余时间，不整表重绘（避免打断收尾条输入）
-  setInterval(tickFocusDisplay, 500);
-}
-
-/** 剩余毫秒（按 wall clock：段起点 + 当前时间；running 永远推进，不因失焦冻结） */
-function focusRemainMs() {
-  if (!focusSnap.active) return 0;
-  if (focusSnap.mode === 'running') {
-    return Math.max(0, focusSnap.plannedSec * 1000 - focusSnap.focusedMs - (Date.now() - focusSnap.segStart));
-  }
-  return Math.max(0, focusSnap.plannedSec * 1000 - focusSnap.focusedMs);
-}
-
-/** mm:ss 显示 */
-function fmtRemain(ms) {
-  const total = Math.ceil(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-/** 时长标签：25' / 15' / 45' */
-function focusDurLabel() {
-  return `${Math.round(focusDurationSec / 60)}'`;
-}
-
-/** 等效格数（full=1，partial=0.5），用于顶栏与行内「N 格」 */
-function focusEquivalent(c) {
-  if (!c) return 0;
-  return c.full + 0.5 * (c.partial || 0);
-}
-
-/** 格数标记 ●●◐ +「+N」；无格数时返回空串 */
-function focusDotsHtml(taskId) {
-  const c = focusCounts[taskId];
-  const total = c ? c.full + c.partial : 0;
-  if (!total) return '';
-  const eq = focusEquivalent(c);
-  const marks = [];
-  for (let i = 0; i < c.full; i++) marks.push('full');
-  for (let i = 0; i < c.partial; i++) marks.push('half');
-  const shown = marks.slice(0, 3);
-  let html = `<span class="focus-dots" title="已推进 ${eq} 格（${c.full} 整格 + ${c.partial} 半格）">`;
-  for (const m of shown) html += `<span class="dot-${m}">${m === 'full' ? '●' : '◐'}</span>`;
-  if (total > 3) html += `<span class="dot-more">+${total - 3}</span>`;
-  html += '</span>';
-  return html;
-}
-
-/** 进度环（14px SVG）。点击暂停/继续 */
-function focusRingHtml() {
-  const C = 2 * Math.PI * 5; // r = 5
-  const remain = focusRemainMs();
-  const progress = focusSnap.plannedSec > 0
-    ? Math.max(0, Math.min(1, (focusSnap.plannedSec * 1000 - remain) / (focusSnap.plannedSec * 1000)))
-    : 0;
-  return `<span class="focus-ring" data-act="focus-pause" title="暂停 / 继续（Ctrl+Enter）">
-    <svg width="14" height="14" viewBox="0 0 14 14">
-      <circle class="fr-bg" cx="7" cy="7" r="5"></circle>
-      <circle class="fr-fg" cx="7" cy="7" r="5"
-        stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - progress)}"></circle>
-    </svg>
-  </span>`;
-}
-
-/** 专注态右侧状态：剩余时间 + 结束按钮（常显） */
-function focusStatusHtml() {
-  return `<span class="focus-status">
-    <span class="focus-remain">${fmtRemain(focusRemainMs())}</span>
-    <button class="focus-end" data-act="focus-end" title="结束专注（不足 8 分钟不记录）">结束</button>
-  </span>`;
-}
-
-/** 收尾条：内联展开在刚结束的番茄所属任务行下方 */
-function focusWrapupHtml() {
-  const isFull = focusSnap.pendingOutcome === 'full';
-  const mark = isFull ? '●' : '◐';
-  const cls = isFull ? 'fw-full' : 'fw-half';
-  const mins = Math.round(focusSnap.plannedSec / 60);
-  const title = isFull
-    ? `这一格 ${mins} 分钟`
-    : (focusSnap.pendingReason || '被打断');
-  const hint = focusHintHtml();
-  return `<li class="focus-wrapup" data-focus-wrapup>
-    <div class="focus-wrapup-inner">
-      <div class="fw-head"><span class="fw-mark ${cls}">${mark}</span><span>${esc(title)}</span></div>
-      <input class="fw-input" type="text" placeholder="做到哪了？（回车 = 今天到这，Esc = 跳过）" maxlength="500" />
-      ${hint}
-      <div class="fw-actions">
-        <button class="fw-again" data-act="fw-again">再来一格</button>
-        <button data-act="fw-done">今天到这</button>
-        <span class="fw-spacer"></span>
-        <button class="fw-skip" data-act="fw-skip">跳过</button>
-      </div>
-    </div>
-  </li>`;
-}
-
-/** 连续专注软提示（方案 §创意5）：3 格 = 90 分钟 / ≥4 格各一句 */
-function focusHintHtml() {
-  if (focusConsecutive === 3) return '<div class="fw-hint">已经连续 90 分钟了，起来走两步？</div>';
-  if (focusConsecutive >= 4) return '<div class="fw-hint">连着 4 格了。要不要换个任务，让脑子转个方向？</div>';
-  return '';
-}
-
-/** 本地 500ms 重算：只更新进度环 stroke 与剩余时间文本，不整表重绘 */
-function tickFocusDisplay() {
-  if (!focusSnap.active || focusSnap.mode === 'done' || !isTaskView()) return;
-  const row = document.querySelector(`.task-item[data-id="${focusSnap.taskId}"]`);
-  if (!row) return;
-  const remainEl = row.querySelector('.focus-remain');
-  if (remainEl) remainEl.textContent = fmtRemain(focusRemainMs());
-  const fg = row.querySelector('.focus-ring .fr-fg');
-  if (fg) {
-    const C = 2 * Math.PI * 5;
-    const remain = focusRemainMs();
-    const progress = focusSnap.plannedSec > 0
-      ? Math.max(0, Math.min(1, (focusSnap.plannedSec * 1000 - remain) / (focusSnap.plannedSec * 1000)))
-      : 0;
-    fg.setAttribute('stroke-dashoffset', String(C * (1 - progress)));
-  }
-}
-
-/** 更新顶栏「今天 N 格」 */
-function updateTopbarFocusCount() {
-  const el = document.getElementById('topbar-focus-count');
-  if (!el) return;
-  const eq = focusToday;
-  el.textContent = eq > 0 ? `今天 ${eq} 格` : '';
-}
-
-/** 开钟（▶）：用当前记忆的时长开始专注该任务 */
-async function startFocus(taskId) {
-  try {
-    await api.focus.start({ taskId, plannedSec: focusDurationSec });
-  } catch (e) {
-    toast(`开始专注失败：${e && e.message ? e.message : e}`);
-  }
-}
-
-/** 暂停 / 继续（点进度环或 Ctrl+Enter） */
-async function toggleFocusPause() {
-  try { await api.focus.togglePause(); } catch (e) {
-    toast(`操作失败：${e && e.message ? e.message : e}`);
-  }
-}
-
-/** 手动结束：≥8 分钟记半格，<8 分钟不记录 */
-async function endFocus() {
-  try {
-    const r = await api.focus.manualEnd();
-    if (r && r.outcome === 'cancel') toast('不足 8 分钟，未记录');
-  } catch (e) {
-    toast(`结束失败：${e && e.message ? e.message : e}`);
-  }
-}
-
-/** 收尾条结算：again = 再来一格（结算后立即同任务重开）；skipNote = 跳过（不写那句） */
-async function settleWrapup(again, skipNote = false) {
-  const input = document.querySelector('.fw-input');
-  const note = skipNote ? '' : ((input && input.value ? input.value : '').trim());
-  const outcome = focusSnap.pendingOutcome || 'full';
-  const taskId = focusSnap.taskId;
-  try {
-    await api.focus.settle(outcome, note);
-    if (again && taskId != null) {
-      await api.focus.start({ taskId, plannedSec: focusDurationSec });
-    }
-  } catch (e) {
-    toast(`保存失败：${e && e.message ? e.message : e}`);
-  }
-}
-
-/** 切换时长（15' → 25' → 45'），记住上次选择 */
-function cycleFocusDuration() {
-  const i = FOCUS_DURATIONS.indexOf(focusDurationSec);
-  focusDurationSec = FOCUS_DURATIONS[(i + 1 + FOCUS_DURATIONS.length) % FOCUS_DURATIONS.length];
-  localStorage.setItem('knodo.focusDurationSec', String(focusDurationSec));
-  document.querySelectorAll('.focus-dur').forEach((el) => { el.textContent = focusDurLabel(); });
-  document.querySelectorAll('[data-act="focus-start"]').forEach((b) => {
-    b.title = `开始专注（${Math.round(focusDurationSec / 60)} 分钟）`;
-  });
-}
-
 /* ---------------- 任务列表 ---------------- */
 
 function hasTimeFilter() {
@@ -1611,21 +1431,10 @@ async function renderTasks() {
   // 展开的子节点可能被当前视图 / 筛选条件过滤掉（例如「今天」视图要求 plan_end <= 今天，
   // 而子任务往往没有日期）。为保证"点得开、看得见"，显式补拉已展开任务的子任务。
   await withExpandedChildren(tasks);
-  // 关联笔记 / 番茄格数：一次批量查询（避免每行一次 IPC）。
+  // 关联笔记：一次批量查询（避免每行一次 IPC）。
   // 「今天不发生」那几条不在 tasks 里，也要一起查，否则它们的角标会缺。
   const allIds = tasks.map((t) => t.id).concat(state.recurringPending.map((t) => t.id));
   noteCounts = await api.taskNotes.counts(allIds).catch(() => ({}));
-  // 番茄格数 + 今日格数：同样批量拉取
-  focusCounts = await api.focus.counts(allIds).catch(() => ({}));
-  focusToday = await api.focus.today().catch(() => 0);
-  // 收尾态下的连续专注格数（含当前这一格）：软提示用，只在该任务的番茄刚结束时算
-  focusConsecutive = 0;
-  if (focusSnap.mode === 'done' && focusSnap.taskId != null) {
-    const tl = await api.focus.timeline(focusSnap.taskId).catch(() => []);
-    let c = 0;
-    for (const s of tl) { if (s.outcome === 'full') c += 1; else break; }
-    focusConsecutive = c + 1;
-  }
   const viewEl = document.getElementById('view');
   const isArchived = state.view === 'archived';
   const hasFilters = state.currentGroup !== 'all' || !!state.search || state.priorityFilter !== 'all' || hasTimeFilter();
@@ -1714,16 +1523,17 @@ async function renderTasks() {
   }
   bindTaskListEvents(viewEl);
   bindEditorEvents(viewEl);
-  if (state.addingTask || state.editingTaskId != null) focusEditor();
-  // 收尾条输入框自动聚焦（RK-01：自动聚焦但可一键跳过）
-  if (focusSnap.mode === 'done') {
-    const wi = viewEl.querySelector('.fw-input');
-    if (wi) wi.focus();
+  // 插件扩展点：任务行内追加按钮（工时插件的行内计时）。关态 EXT 为空，这里是空循环。
+  if (EXT.taskRowExtra.length) {
+    const byId = new Map(tasks.map((t) => [Number(t.id), t]));
+    viewEl.querySelectorAll('.task-item[data-id]').forEach((el) => {
+      const task = byId.get(Number(el.dataset.id));
+      if (task) ext('taskRowExtra', { task, el });
+    });
   }
+  if (state.addingTask || state.editingTaskId != null) focusEditor();
   // 键盘选中的行在整表重绘后要接着亮着（否则按一下 ↓ 才有反馈，中间那一下看着像没反应）
   paintKbSelection();
-  // 顶栏「今天 N 格」
-  updateTopbarFocusCount();
   // 当前清单同步给主进程：捕捉条从主窗口按 C 时落到这里
   syncCaptureContext();
   // 「用了 N 天了」：只在今天真正清空时问一次，天数与去重都在主进程判定
@@ -1894,10 +1704,6 @@ function buildTaskList(nodes) {
     items.push(state.editingTaskId === t.id
       ? editEditorHtml(t)
       : taskItemHtml(t, depth, parentVisible));
-    // 收尾条：内联展开在刚结束的番茄所属任务行下方
-    if (focusSnap.mode === 'done' && focusSnap.taskId === t.id) {
-      items.push(focusWrapupHtml());
-    }
   }
   return `<ul class="task-list">${items.join('')}</ul>`;
 }
@@ -1969,10 +1775,6 @@ function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
   const recurRule = t.recurring_id != null ? recurringRuleMap.get(Number(t.recurring_id)) : null;
   const isRecur = t.recurring_id != null;
   const pendingRow = !!opts.pending;
-  // 该任务是否正在专注（running / paused；done 态走收尾条）
-  const isFocusing = focusSnap.active && focusSnap.taskId === t.id
-    && (focusSnap.mode === 'running' || focusSnap.mode === 'paused');
-  const isPaused = isFocusing && focusSnap.mode === 'paused';
   const meta = [];
   // 父任务提示：
   //  - 父任务就在上面（parentVisible）→ 缩进已说明层级，这里只给纯标识；
@@ -2022,13 +1824,12 @@ function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
     : '';
 
   return `
-  <li class="task-item${done}${isSub ? ' is-subtask' : ''}${isFocusing ? ' is-focus' : ''}${isPaused ? ' is-paused' : ''}${pendingRow ? ' is-recur-pending' : ''}" draggable="false" data-id="${t.id}" style="margin-left:${depth * 20}px">
+  <li class="task-item${done}${isSub ? ' is-subtask' : ''}${pendingRow ? ' is-recur-pending' : ''}" draggable="false" data-id="${t.id}" style="margin-left:${depth * 20}px">
     <span class="task-gutter">${isSub ? '' : '<span class="drag-handle" data-act="drag" title="按住拖拽调整顺序">⠿</span>'}</span>
     <!-- 展开箭头固定在完成按钮左侧，两者成组、间距固定；无子任务时槽位仍占同宽，
          这样每一行的完成按钮都落在同一条竖线上 -->
     <span class="task-leading">
       <span class="task-expand-slot">${!pendingRow && t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" aria-expanded="${state.expandedTasks.has(t.id)}" title="${state.expandedTasks.has(t.id) ? '收起子任务' : '展开子任务'}">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}</span>
-      ${isFocusing ? focusRingHtml() : ''}
       ${pendingRow
     ? `<button class="task-check" disabled title="今天不是发生日，不能打卡">${t.completed ? '✓' : ''}</button>`
     : `<button class="task-check" data-act="toggle" title="完成/取消">${t.completed ? '✓' : ''}</button>`}
@@ -2040,18 +1841,12 @@ function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
     ? `<span class="task-subtask-badge" title="子任务进度：已完成 ${t.subtask_done} / 共 ${t.subtask_count}"
          aria-label="子任务 ${t.subtask_done}/${t.subtask_count}">☑ ${t.subtask_done}/${t.subtask_count}</span>`
     : ''}
-        ${focusDotsHtml(t.id)}
         ${recurBadgeHtml(t)}
       </div>
       <div class="task-meta">${groupLabel}${meta.join('')}</div>
       ${noteSummaryHtml(t)}
     </div>
-    ${isFocusing ? focusStatusHtml() : ''}
     <div class="task-actions">
-      ${isFocusing ? '' : `<span class="focus-start">
-        <button class="focus-btn" data-act="focus-start" title="开始专注（${Math.round(focusDurationSec / 60)} 分钟）">▶</button>
-        <button class="focus-dur" data-act="focus-duration" title="切换专注时长（15 / 30 / 45 分钟）">${focusDurLabel()}</button>
-      </span>`}
       <button data-act="edit" title="编辑">✎ 编辑</button>
       ${state.view === 'archived'
         ? `<button data-act="unarchive" title="恢复">↩ 恢复</button>`
@@ -2102,27 +1897,9 @@ function bindTaskListEvents(container) {
       else if (act === 'del') deleteTaskConfirm(id);
       else if (act === 'archive') archiveTask(id);
       else if (act === 'unarchive') unarchiveTask(id);
-      else if (act === 'focus-start') startFocus(id);
-      else if (act === 'focus-duration') cycleFocusDuration();
-      else if (act === 'focus-pause') toggleFocusPause();
-      else if (act === 'focus-end') endFocus();
       else if (act === 'open-recur') openRuleFromTask(Number(btn.dataset.ruleId));
     });
     bindDrag(item);
-  });
-
-  // 收尾条：按钮 + 输入框（回车 = 今天到这，Esc = 跳过）
-  container.querySelectorAll('.focus-wrapup').forEach((wrap) => {
-    wrap.querySelectorAll('[data-act="fw-again"]').forEach((b) => b.addEventListener('click', () => settleWrapup(true)));
-    wrap.querySelectorAll('[data-act="fw-done"]').forEach((b) => b.addEventListener('click', () => settleWrapup(false)));
-    wrap.querySelectorAll('[data-act="fw-skip"]').forEach((b) => b.addEventListener('click', () => settleWrapup(false, true)));
-    const input = wrap.querySelector('.fw-input');
-    if (input) {
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); settleWrapup(false); }
-        else if (e.key === 'Escape') { e.preventDefault(); settleWrapup(false, true); }
-      });
-    }
   });
 
   // 底部“添加任务”入口

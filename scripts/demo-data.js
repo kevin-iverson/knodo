@@ -4,11 +4,11 @@
  *
  * 用途：给 README 截图 / 手工演示准备一份「看起来像真的在用」的数据 ——
  * 四个分组、一批带优先级 / 标签 / 计划日期的任务、几篇笔记、一场会议纪要、
- * 一份 AI 周报、若干番茄记录，以及日历需要的跨月排期。
+ * 一份 AI 周报、一周工时记录，以及日历需要的跨月排期。
  *
  * 为什么直接调 `main/db.js`：它是纯 Node 模块（不依赖 Electron），
  * 建数据走的是与线上完全相同的表结构与迁移，不会造出一份「截图能看、点开就崩」的假库。
- * 少量 `db.js` 没暴露的字段（历史完成时间、番茄段的起止时刻）用第二条 SQLite 连接补，
+ * 少量 `db.js` 没暴露的字段（历史完成时间、报告的创建时刻）用第二条 SQLite 连接补，
  * WAL 下多连接并发读没问题。
  *
  * 用法：
@@ -141,7 +141,7 @@ function seed(dir) {
   }));
   // 待安排池：日历左边那一栏，拖进格子才排期
   mk('看竞品的周报模板', { group: G.product.id, pri: 0, tags: [T.doc], createdAt: at(-2, 9, 10) });
-  mk('给「专注」加一个快捷键', { group: G.product.id, pri: 1, tags: [T.fe], createdAt: at(-2, 9, 20) });
+  mk('给工时补录配一个快捷键', { group: G.product.id, pri: 1, tags: [T.fe], createdAt: at(-2, 9, 20) });
   mk('整理 10 月工单高频问题', { group: G.support.id, pri: 1, tags: [T.doc], createdAt: at(-3, 9, 30) });
   mk('和 HR 对一下招聘节奏', { group: G.team.id, pri: 1, createdAt: at(-3, 9, 40) });
   mk('备份盘的更换计划', { group: G.growth.id, pri: 0, createdAt: at(-4, 9, 50) });
@@ -162,10 +162,10 @@ function seed(dir) {
     createdAt: at(-1, 18, 0),
   });
 
-  /* 子任务：父任务行显示 2/3 进度 */
-  mk('抽出单行的 memo 比较', { parent: tPerf.id, group: G.product.id, pri: 2, from: day(0), to: day(0), tags: [T.perf] });
-  mk('虚拟列表先只做今天视图', { parent: tPerf.id, group: G.product.id, pri: 2, from: day(0), to: day(0), tags: [T.perf] });
-  mk('补一组 2000 条的基准数据', { parent: tPerf.id, group: G.product.id, pri: 1, from: day(0), to: day(0) });
+  /* 子任务：父任务行显示 2/3 进度；工时视图要靠这三行演示「向上累积」 */
+  const tSubMemo = mk('抽出单行的 memo 比较', { parent: tPerf.id, group: G.product.id, pri: 2, from: day(0), to: day(0), tags: [T.perf] });
+  const tSubVirtual = mk('虚拟列表先只做今天视图', { parent: tPerf.id, group: G.product.id, pri: 2, from: day(0), to: day(0), tags: [T.perf] });
+  const tSubBench = mk('补一组 2000 条的基准数据', { parent: tPerf.id, group: G.product.id, pri: 1, from: day(0), to: day(0) });
 
   /* ---------- 日历：11 月铺开，含跨天、超载、已完成 ---------- */
   const cal = [
@@ -209,7 +209,7 @@ function seed(dir) {
     '分组拖拽排序', '重复事项打卡日历', '日历月 / 周缩放', '统计下钻明细',
     '快捷键冲突提示', '托盘菜单整理', '备份包瘦身', '笔记 Mermaid 导出',
     '详情抽屉自动保存', '导入 Markdown 目录', '标签筛选多选', '优先级的色点',
-    '空状态文案梳理', '提醒的富文本', '任务行备注摘要', '专注时间线展示',
+    '空状态文案梳理', '提醒的富文本', '任务行备注摘要', '工时按子任务累积',
     '打包含 7z 瘦身', '安装版签名流程', 'Release 脚本重试', '日志脱敏',
   ];
   const doneIds = [];
@@ -423,23 +423,47 @@ function seed(dir) {
     degraded: 0,
   });
 
-  /* ---------- 番茄钟记录（详情时间线 + 顶栏格数） ---------- */
-  const plan = [
-    { day: -6, sec: 1800, outcome: 'full', note: '先把渲染入口收敛到一个函数，再谈增量。' },
-    { day: -4, sec: 1800, outcome: 'full', note: '基准脚本跑通，2000 条 380ms 复现。' },
-    { day: -2, sec: 1200, outcome: 'partial', note: '被客户电话打断，先记一下当前进度。' },
-    { day: 0, sec: 1800, outcome: 'full', note: 'memo 比较抽出来了，单行 diff 有效。' },
-    { day: 0, sec: 1800, outcome: 'full', note: '今天视图走虚拟列表，滚动稳住了。' },
-    { day: 0, sec: 1800, outcome: 'full', note: '补完基准用例，准备收尾。' },
+  /* ---------- 工时（插件功能：打开开关，再播一周像真在报工的记录） ---------- */
+  // 开关必须先写进 settings：工时视图在关闭态只是一张「未启用」引导页，截图会空
+  db.setSetting('feature.worklog', JSON.stringify({ enabled: true, zenDefaultSec: 5400, dayAttr: 'start' }));
+  // store 是纯 Node（只 require ../db），可以像 db.js 一样直接调，不必起 Electron
+  const store = require('../main/worklog/store');
+  // [任务, 天偏移, 开始, 分钟, 来源, 备注] —— 一周铺满 Mon..Sat，父任务自身与三个子任务都有记录
+  const wl = [
+    [tPlan, -5, [9, 30], 120, 'timer', '把需求池 18 条按三档分完，周会上过一遍。'],
+    [tFeedback, -5, [14, 0], 70, 'timer', '仓储那家主要问权限模型，先给了 1.12 的排期。'],
+    [tPerf, -4, [9, 40], 85, 'zen', '先把 renderTasks 拆成「算 diff / 打补丁」两半。'],
+    [tSubMemo, -4, [14, 0], 90, 'timer', 'memo 比较抽出来，单行 diff 能拦住没变的行。'],
+    [tSubVirtual, -3, [9, 30], 150, 'zen', '虚拟列表只做今天视图，滚动位置用锚点行保住。'],
+    [tGarbled, -3, [14, 0], 50, 'manual', '拉着客服一起复现，确认是 GB18030 解错了一次。'],
+    [tWeek, -3, [16, 0], 40, 'timer', '周会：下周排期与两个风险（导入、性能）。'],
+    [tSubVirtual, -2, [9, 40], 90, 'timer', '补齐空行占位与键盘选中，滚动不再跳。'],
+    [tSubBench, -2, [14, 0], 45, 'timer', '2000 条基准数据脚本，跑完 380ms 复现。'],
+    [tReview, -1, [10, 0], 75, 'timer', '编辑态 / 只读态切换成本，工具条吸顶后的可视高度。'],
+    [tPerf, -1, [14, 0], 80, 'zen', '补丁下沉到行级，重绘从 380ms 降到 90ms。'],
+    [tBook, -1, [20, 0], 40, 'manual', '第 3 章：卡片不是摘抄，是自己的想法。'],
+    [tPlan, 0, [9, 30], 40, 'timer', '把三档结论写进 1.12 的计划文档。'],
+    [tPerf, 0, [10, 20], 40, 'timer', '收尾：基准用例进 CI，顺手补了注释。'],
   ];
-  for (const p of plan) {
-    const s = db.createFocusSession({ taskId: tPerf.id, groupId: G.product.id, plannedSec: p.sec });
-    // 结算时**不传 note**：`settleFocusSession` 会把那句话按时间戳反写进任务备注，
-    // 演示库要的是一段干净的描述 + 一份专注时间线，所以那句话只在下面的 SQL 里补回 focus_sessions
-    db.settleFocusSession(s.id, { outcome: p.outcome, actualSec: p.sec });
-    raw.prepare('UPDATE focus_sessions SET started_at = ?, ended_at = ?, note = ? WHERE id = ?')
-      .run(at(p.day, 9, 40), at(p.day, 9, 40 + Math.round(p.sec / 60)), p.note, s.id);
+  for (const [task, d, [hh, mm], mins, source, note] of wl) {
+    const startedAt = at(d, hh, mm);
+    const endedAt = new Date(new Date(startedAt).getTime() + mins * 60000).toISOString();
+    store.createEntry({
+      taskId: task.id,
+      groupId: task.group_id,
+      startedAt,
+      endedAt,
+      durationSec: mins * 60,
+      source,
+      status: 'done',
+      billable: 1,
+      note,
+      lastBeatAt: endedAt,
+    });
   }
+  // 「正在计时」那一段不在这里造：启动对账会把遗留的 running 行按最后心跳结算掉（service.reconcileOnStartup），
+  // 真要看计时中的样子，截图脚本用 `api.worklog.start()` 真开一段。
+
 
   // 任务 ↔ 笔记：详情抽屉底部会显示「关联笔记」
   db.linkTaskNote(tPerf.id, noteMain.id);

@@ -1,0 +1,302 @@
+/* ============================================================================
+   工时插件样式（开关开启时才注入 <link>）
+   ----------------------------------------------------------------------------
+   位置：renderer/css/worklog.css
+   令牌：全部取自 theme-core.js 的 --*-rgb 三元组，六套风格自动生效。
+   约定：内容区卡片用 var(--bg-ground) + border（不用 --bg-panel：浅风格下近纯白会出白斑）。
+   ========================================================================== */
+
+/* ---------------- 任务行内计时（▶ / ☯ / ■） ----------------
+   挂在 .task-actions 最前面，跟「✎ 编辑 / 🗂 归档 / 🗑 删除」同一行；
+   .task-actions 本身是 hover 才淡入，所以这里不再单独控制显隐。 */
+.wl-row-ico {
+  /* 覆盖 .task-actions button 的 4px 6px：三个图标要紧凑成一组，别把标题挤掉 */
+  padding: 3px 5px !important;
+  font-size: 12px !important;
+  line-height: 1;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.wl-row-ico:hover { color: var(--primary-strong) !important; }
+.wl-row-ico.is-run {
+  color: var(--primary-strong) !important;
+  background: rgb(var(--primary-rgb) / 0.12);
+  font-weight: 600;
+}
+.wl-row-ico.is-paused { color: var(--text-2) !important; }
+/* 计时读数：等宽数字，宽度不会随秒数跳动 */
+.wl-row-ico .wl-row-time {
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+}
+.wl-row-stop { color: var(--text-3); }
+.wl-row-stop:hover { color: var(--danger) !important; }
+/* 用 class 而不是 hidden 属性：.task-actions button 的 display 会被其它规则覆盖 */
+.wl-row-ico.is-off { display: none; }
+
+/* ---------------- 底部工时计时条 ----------------
+   与会议录制的 #rec-dock 同一套形态（fixed 底部居中 / 胶囊外壳 / var(--shadow)），
+   这样底部同时出现「录制中」和「工时计时中」时，视觉语言是一致的；
+   区分靠两处：本条的「🕒 工时计时」标签，以及主色脉冲点（录制是红点）。 */
+.wl-dock {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 210;                 /* 高于录制条的 200，两条并存时工时在上 */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 9px 8px 10px;
+  border-radius: 999px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wl-dock[hidden] { display: none; }
+
+/* 录制条也在底部正中：两条同时在场时把工时条整体上移，避免叠在一起 */
+body:has(#rec-dock) .wl-dock { bottom: 88px; }
+
+/* 详情抽屉打开时：底部条收起任务名（抽屉标题里已有），位置避让规则与录制条
+   共用一条，定义在 styles.css（#rec-dock, #wl-dock 一起避让）。 */
+body:has(.detail-drawer[data-opened="1"]:not([hidden])) .wl-dock-task { display: none; }
+
+/* 身份标记：一眼看出这是工时，不是录制 */
+.wl-dock-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 999px;
+  background: rgb(var(--primary-rgb) / 0.12);
+  border: 1px solid rgb(var(--primary-rgb) / 0.28);
+  color: var(--primary-strong);
+  font-size: 11.5px; font-weight: 600;
+}
+.wl-dock-time {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 15px; font-weight: 500; min-width: 76px;
+  font-variant-numeric: tabular-nums;
+}
+.wl-dock-task {
+  font-size: 12px; color: var(--text-2);
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wl-dock-btn {
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 4px 11px; font-size: 12px; cursor: pointer;
+  background: transparent; color: var(--text-2);
+}
+.wl-dock-btn:hover { background: var(--bg-hover); color: var(--text); }
+.wl-dock-btn.is-solid {
+  background: var(--primary); border-color: var(--primary); color: #fff;
+}
+.wl-dock-btn.is-solid:hover { background: var(--primary-strong); border-color: var(--primary-strong); }
+
+.wl-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--primary);
+  animation: wlPulse 1.6s infinite;
+  flex: 0 0 auto;
+}
+.wl-dock.is-paused .wl-dot { animation: none; opacity: 0.45; }
+@keyframes wlPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) {
+  .wl-dot { animation: none; }
+}
+
+/* ---------------- 工时视图 ---------------- */
+.wl-toolbar {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  margin: 4px 0 14px;
+}
+.wl-spacer { flex: 1 1 0; min-width: 0; }
+.wl-tb-label { color: var(--text-3); font-size: 11px; margin-right: 0; }
+.wl-select {
+  height: 26px; min-width: 74px; max-width: 124px;
+  padding: 0 22px 0 9px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-ground); color: var(--text-2);
+  font-size: 12px; cursor: pointer; outline: none;
+  appearance: none; -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 13px) 11px, calc(100% - 9px) 11px;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+.wl-select:hover { border-color: rgb(var(--primary-rgb) / 0.45); }
+.wl-select:focus { border-color: var(--primary); }
+
+/* 芯片（.wl-chips / .wl-chip）的底色与设置卡片共用一套，定义在 styles.css：
+   插件关闭时 worklog.css 不会加载，开关卡里的芯片也必须已经好看。 */
+
+.wl-btn {
+  border: 1px solid var(--border); background: var(--bg-ground); color: var(--text-2);
+  border-radius: 8px; padding: 4px 9px; font-size: 12.5px; cursor: pointer;
+  white-space: nowrap;
+}
+.wl-btn:hover { background: var(--bg-hover); color: var(--text); }
+
+/* 应用默认窗口（1082）工具栏本来就排满：加「补录」后必须再省一点，
+   否则右侧两个按钮会被挤到第二行。这里把「分组 / 标签」两个标签收起 ——
+   两个下拉各自带 title，范围与口径的芯片本身带文字，不影响辨识。 */
+@media (max-width: 1250px) {
+  .wl-toolbar > .wl-tb-label:nth-of-type(1),
+  .wl-toolbar > .wl-tb-label:nth-of-type(2) { display: none; }
+}
+
+.wl-custom-range { margin: -4px 0 14px; }
+.wl-custom-range .date-range-field { max-width: 320px; }
+
+/* 汇总卡 */
+.wl-sum-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px; margin-bottom: 14px;
+}
+.wl-sum-card {
+  background: var(--bg-ground); border: 1px solid var(--border);
+  border-radius: 11px; padding: 12px 14px;
+}
+.wl-sum-card .wl-k { color: var(--text-3); font-size: 11.5px; }
+.wl-sum-card .wl-v { font-size: 22px; font-weight: 660; letter-spacing: -0.3px; margin-top: 2px; }
+.wl-sum-card .wl-v small { font-size: 12px; font-weight: 500; color: var(--text-3); margin-left: 3px; }
+.wl-sum-card .wl-s { color: var(--text-3); font-size: 11px; margin-top: 2px; }
+.wl-sum-card.is-accent {
+  background: rgb(var(--primary-rgb) / 0.07);
+  border-color: rgb(var(--primary-rgb) / 0.28);
+}
+.wl-sum-card.is-accent .wl-v { color: var(--primary-strong); }
+
+/* 面板 */
+.wl-panel {
+  background: var(--bg-ground); border: 1px solid var(--border);
+  border-radius: 11px; overflow: hidden; margin-bottom: 12px;
+}
+.wl-panel-head {
+  display: flex; align-items: center; gap: 10px; padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.wl-panel-head h3 { margin: 0; font-size: 13px; font-weight: 650; }
+.wl-panel-head .wl-sub { color: var(--text-3); font-size: 11.5px; }
+
+/* 表 */
+table.wl-table { width: 100%; border-collapse: collapse; }
+table.wl-table th {
+  text-align: left; font-weight: 500; color: var(--text-3); font-size: 11.5px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+table.wl-table th.wl-r, table.wl-table td.wl-r { text-align: right; }
+table.wl-table td {
+  padding: 9px 14px; border-bottom: 1px solid rgb(var(--border-rgb) / 0.6);
+  vertical-align: middle;
+}
+table.wl-table tr:last-child td { border-bottom: 0; }
+table.wl-table tbody tr { cursor: pointer; }
+table.wl-table tbody tr:hover { background: var(--bg-hover); }
+
+.wl-task-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wl-twist {
+  width: 16px; height: 16px; flex: 0 0 auto;
+  border: 0; background: transparent; color: var(--text-3);
+  display: grid; place-items: center; border-radius: 4px; font-size: 10px; cursor: pointer;
+}
+.wl-twist:hover { background: var(--bg-active); color: var(--text); }
+.wl-twist.is-ph { visibility: hidden; }
+.wl-t-title {
+  font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text);
+}
+.wl-t-title.is-sub { font-weight: 500; color: var(--text-2); }
+.wl-t-group { color: var(--text-3); font-size: 11px; margin-left: 2px; }
+
+.wl-bar-cell { display: flex; align-items: center; gap: 8px; }
+.wl-bar-track { flex: 1; height: 5px; border-radius: 999px; background: var(--bg-hover); overflow: hidden; }
+.wl-bar-fill { height: 100%; border-radius: 999px; background: var(--primary); opacity: 0.75; }
+.wl-bar-fill.is-sub { opacity: 0.45; }
+.wl-pct { font-size: 11px; width: 32px; text-align: right; flex: 0 0 auto; }
+
+.wl-mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+.wl-muted { color: var(--text-3); }
+.is-own { font-weight: 600; }
+.is-agg { font-weight: 650; }
+
+.wl-mini-act {
+  border: 1px solid var(--border); background: var(--bg-ground);
+  border-radius: 6px; padding: 2px 8px; font-size: 11.5px;
+  color: var(--text-2); cursor: pointer; white-space: nowrap;
+}
+.wl-mini-act:hover { background: var(--bg-hover); color: var(--text); }
+.wl-mini-act.is-run {
+  color: var(--primary-strong);
+  border-color: rgb(var(--primary-rgb) / 0.35);
+  background: rgb(var(--primary-rgb) / 0.1);
+}
+
+.wl-empty-view { padding: 34px 0; text-align: center; color: var(--text-3); font-size: 12.5px; }
+
+/* 每日分布 */
+.wl-chart {
+  display: flex; align-items: flex-end; gap: 10px;
+  height: 108px; padding: 12px 14px 0;
+}
+.wl-chart-col {
+  flex: 1; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+}
+.wl-chart-bar {
+  width: 100%; max-width: 34px;
+  border-radius: 5px 5px 0 0;
+  background: rgb(var(--primary-rgb) / 0.28);
+  position: relative;
+}
+.wl-chart-bar.is-today { background: var(--primary); }
+.wl-chart-bar span {
+  position: absolute; top: -16px; left: 50%; transform: translateX(-50%);
+  font-size: 10px; color: var(--text-3); white-space: nowrap;
+}
+.wl-chart-x { display: flex; gap: 10px; padding: 4px 14px 12px; }
+.wl-chart-x div { flex: 1; text-align: center; font-size: 11px; color: var(--text-3); }
+.wl-chart-x div.is-today { color: var(--primary-strong); font-weight: 600; }
+
+/* ---------------- 禅模式 ---------------- */
+.wl-zen {
+  position: fixed; inset: 0; z-index: 500;
+  display: none;
+  flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+  background: #14100c; color: #f3e9d8;
+}
+.wl-zen.is-open { display: flex; animation: wlZenIn 0.3s ease; }
+@keyframes wlZenIn { from { opacity: 0; } to { opacity: 1; } }
+.wl-zen-label {
+  font-size: 12px; letter-spacing: 1.5px; color: #8d7d67; text-transform: uppercase;
+}
+.wl-zen-time {
+  font-size: 96px; font-weight: 200; letter-spacing: 2px; line-height: 1;
+  color: #f7efe1; font-variant-numeric: tabular-nums;
+}
+.wl-zen-task { font-size: 15px; color: #cbbca4; }
+.wl-zen-track { width: 320px; height: 2px; background: #2a2119; border-radius: 2px; overflow: hidden; }
+.wl-zen-fill { height: 100%; background: #b8793c; width: 0%; transition: width 1s linear; }
+.wl-zen-hint { font-size: 11.5px; color: #7d6f5c; letter-spacing: 0.5px; margin-top: 6px; }
+.wl-zen-actions { display: flex; gap: 10px; margin-top: 10px; }
+.wl-zen-btn {
+  border: 1px solid #3a2e22; background: transparent; color: #d9c9b0;
+  border-radius: 999px; padding: 7px 18px; font-size: 12.5px; cursor: pointer;
+}
+.wl-zen-btn:hover { background: #241c14; color: #fff; }
+.wl-zen-btn.is-main { background: #b8793c; border-color: #b8793c; color: #1a1410; font-weight: 600; }
+
+/* 窄窗口：四张汇总卡折成两行 */
+@media (max-width: 980px) {
+  .wl-sum-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* 极窄窗口（最小 860）：底部条要收一收，别顶到两侧边缘 */
+@media (max-width: 940px) {
+  .wl-dock { gap: 7px; padding: 7px 8px; }
+  .wl-dock-task { max-width: 96px; }
+  .wl-dock-btn { padding: 3px 9px; }
+}

@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.5.2",
+  "version": "2.6.0",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": {
@@ -32,8 +32,10 @@
     "release": "node scripts/release-gitee.js",
     "release:github": "node scripts/release-github.js",
     "verify:appearance": "node scripts/verify-appearance.js",
+    "verify:mode": "node scripts/verify-theme-switch.js",
     "smoke:theme-image": "node scripts/smoke-theme-image.js",
     "verify:calendar": "node scripts/verify-calendar-past-lock.js",
+    "verify:worklog": "node scripts/verify-worklog.js",
     "build:vendor": "node scripts/build-vendor.js",
     "verify:drawer": "node scripts/verify-detail-mask.js",
     "verify:dock-complete": "node scripts/verify-dock-complete.js",

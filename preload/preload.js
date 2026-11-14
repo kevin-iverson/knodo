@@ -355,19 +355,31 @@ contextBridge.exposeInMainWorld('api', {
     openMain: () => call('capture:openMain'),
   },
   /**
-   * 番茄钟（专注计时）。计时器在主进程（wall clock 对账），渲染层只发指令、
-   * 订阅 focus:changed 事件并按「当前时间 - 段起点」重算显示。
+   * 功能插件开关注册中心（常驻，与插件本身无关）。
+   * 关闭态下只有这一个命名空间可用 —— 插件自己的 worklog 命名空间虽然也在这里暴露，
+   * 但主进程没注册 handler，调用会立刻失败（这正是「关=零成本」的验收点）。
    */
-  focus: {
-    state: () => call('focus:state'),
-    start: (p) => call('focus:start', p || {}),
-    togglePause: () => call('focus:togglePause'),
-    settle: (outcome, note) => call('focus:settle', outcome, note),
-    cancel: () => call('focus:cancel'),
-    manualEnd: () => call('focus:manualEnd'),
-    counts: (taskIds) => call('focus:counts', taskIds || []),
-    today: () => call('focus:today'),
-    timeline: (taskId) => call('focus:timeline', taskId),
+  features: {
+    pref: () => call('worklog:pref/get'),
+    setPref: (patch) => call('worklog:pref/set', patch || {}),
+  },
+  /**
+   * 工时（插件，默认关闭）。全部为纯透传：渲染层不持有任何计时状态，
+   * 权威状态在主进程（wall clock 对账），这里只发指令 + 收快照。
+   */
+  worklog: {
+    state: () => call('worklog:state'),
+    start: (p) => call('worklog:start', p || {}),
+    pause: () => call('worklog:pause'),
+    resume: () => call('worklog:resume'),
+    stop: () => call('worklog:stop'),
+    task: (taskId) => call('worklog:task', taskId),
+    range: (p) => call('worklog:range', p || {}),
+    rangeEntries: (p) => call('worklog:rangeEntries', p || {}),
+    manualAdd: (p) => call('worklog:manualAdd', p || {}),
+    entryDelete: (id) => call('worklog:entryDelete', id),
+    exportCsv: (p) => call('worklog:export', p || {}),
+    notices: () => call('worklog:notices'),
   },
   // 主进程事件
   on: (channel, cb) => {
@@ -400,8 +412,10 @@ contextBridge.exposeInMainWorld('api', {
       'ui:calendar', 'ui:archive-done',
       // 启动时的静默检查更新：发现新版只推一条轻提示，详情由 File → 检查更新 打开
       'ui:update-available',
-      // 番茄钟：计时状态变化（开钟 / 暂停 / 结算 / 被打断）
-      'focus:changed',
+      // 功能插件：开关变化（渲染层据此动态 mount / unmount 工时模块）
+      'feature:changed',
+      // 工时：主进程计时状态变化（开始 / 暂停 / 继续 / 结束 / 崩溃对账后的提示）
+      'worklog:changed',
       // 趣味功能 → 上班鼓励器：主浮窗 / 卡片页
       'ui:encourager', 'ui:encourager-card',
     ];

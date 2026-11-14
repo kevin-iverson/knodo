@@ -229,13 +229,9 @@ function priOf(t) {
 function signature() {
   if (!view) return 'none';
   const t = (view.tasks || []).map((x) => `${x.id}:${x.completed ? 1 : 0}:${x.title}:${x.parent_id || ''}:${x.plan_end || ''}:${priOf(x)}`).join('|');
-  // 番茄钟：只把「哪个任务 / 什么状态 / 计划时长」放进指纹（不要放 focusedMs/segStart，
-  // 否则每 500ms 的本地 tick 都会触发整表重建）
-  const f = view.focus;
-  const fSig = f && f.active ? `${f.taskId}:${f.mode}:${f.plannedSec}` : '-';
   const p = view.projection || {};
   // 优先级必须进指纹：否则主列表改了优先级，浮窗不重绘 = 「色标永远不变」
-  return `${view.title}|${view.counts ? view.counts.done : 0}/${view.counts ? view.counts.total : 0}|${view.error || ''}|${view.missing ? 1 : 0}|${isCollapsed() ? 1 : 0}|${p.kind || ''}|${p.dock || ''}|${view.pending == null ? '' : view.pending}/${view.overdue == null ? '' : view.overdue}|${t}|${highlightId || ''}|${fSig}`;
+  return `${view.title}|${view.counts ? view.counts.done : 0}/${view.counts ? view.counts.total : 0}|${view.error || ''}|${view.missing ? 1 : 0}|${isCollapsed() ? 1 : 0}|${p.kind || ''}|${p.dock || ''}|${view.pending == null ? '' : view.pending}/${view.overdue == null ? '' : view.overdue}|${t}|${highlightId || ''}`;
 }
 
 function render() {
@@ -362,49 +358,9 @@ function dueLabel(planEnd) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-/* ---------------- 番茄钟（浮窗只做「看」：显示正在专注那一格的倒计时，不提供入口） ---------------- */
-
-/** 当前正在专注（running/paused）的任务 id；未专注或已进入收尾态返回 null */
-function focusedTaskId() {
-  const f = view && view.focus;
-  if (!f || !f.active) return null;
-  if (f.mode !== 'running' && f.mode !== 'paused') return null;
-  return f.taskId != null ? Number(f.taskId) : null;
-}
-
-/** 剩余毫秒（按 wall clock：段起点 + 当前时间；running 永远推进，不因失焦冻结） */
-function focusRemainMs(f) {
-  if (!f || !f.active) return 0;
-  if (f.mode === 'running') {
-    return Math.max(0, f.plannedSec * 1000 - f.focusedMs - (Date.now() - f.segStart));
-  }
-  return Math.max(0, f.plannedSec * 1000 - f.focusedMs);
-}
-
-function fmtRemain(ms) {
-  const total = Math.ceil(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-/** 进度环：14px、2px 描边，与主窗口同一套视觉 */
-function focusRingHtml(f) {
-  const C = 2 * Math.PI * 5;
-  const remain = focusRemainMs(f);
-  const progress = f.plannedSec > 0
-    ? Math.max(0, Math.min(1, (f.plannedSec * 1000 - remain) / (f.plannedSec * 1000)))
-    : 0;
-  return `<span class="dw-focus-ring" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 14 14">
-    <circle class="dw-fr-bg" cx="7" cy="7" r="5"></circle>
-    <circle class="dw-fr-fg" cx="7" cy="7" r="5" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - progress)}"></circle>
-  </svg></span>`;
-}
-
 /** 一行任务（不带分组） */
 function rowHtml(t, opts = {}) {
   const done = !!t.completed;
-  const isFocus = opts.focusId != null && Number(t.id) === opts.focusId;
   const pri = priOf(t);
   const cls = [
     'dw-row',
@@ -412,17 +368,11 @@ function rowHtml(t, opts = {}) {
     t.parent_id ? 'is-child' : '',
     t.id === selId ? 'is-sel' : '',
     t.id === highlightId ? 'is-new' : '',
-    isFocus ? 'is-focus' : '',
-    isFocus && opts.paused ? 'is-paused' : '',
     // 紧急行额外强化：左侧竖条 + 标题加粗 + 淡红底（色点太弱，一眼扫不到）
     pri === 3 && !done ? 'is-urgent' : '',
   ].filter(Boolean).join(' ');
   const due = opts.due || '';
   const tail = opts.tail || '';
-  // 专注行：进度环 + 倒计时成组放在右侧（环在倒计时左边），不占左侧复选框的位置
-  const focusGroup = isFocus
-    ? `<span class="dw-focus">${focusRingHtml(opts.focus)}<span class="dw-focus-remain">${fmtRemain(focusRemainMs(opts.focus))}</span></span>`
-    : '';
   return `<div class="${cls}" data-id="${t.id}"${opts.sec ? ` data-sec="${opts.sec}"` : ''} role="checkbox" aria-checked="${done}" title="${esc(t.title)}">
       <span class="dw-check${done ? ' on' : ''}"></span>
       <span class="dw-pri p${pri}" title="优先级：${['低', '中', '高', '紧急'][pri]}"></span>
@@ -430,7 +380,6 @@ function rowHtml(t, opts = {}) {
       <span class="dw-pri-tag p${pri}" title="优先级：${['低', '中', '高', '紧急'][pri]}">${['低', '中', '高', '紧急'][pri]}</span>
       ${due ? `<span class="dw-due${due === '今天' || due === '明天' ? ' is-soon' : ''}">${esc(due)}</span>` : ''}
       ${tail ? `<span class="dw-tail">${esc(tail)}</span>` : ''}
-      ${focusGroup}
       <span class="dw-row-acts">
         <button type="button" class="dw-row-btn" data-act="open" title="在主窗口打开">↗</button>
         <button type="button" class="dw-row-btn" data-act="del" title="删除任务">✕</button>
@@ -491,9 +440,7 @@ function renderList() {
     return;
   }
   const kind = (view.projection && view.projection.kind) || 'group';
-  const f = view.focus;
-  const fId = focusedTaskId();
-  const opts = { focusId: fId, paused: !!(f && f.mode === 'paused'), focus: f };
+  const opts = {};
 
   // 「未完成」全部做完了：整窗换成空态，不留一个只有灰行的空列表
   if (kind === 'unfinished' && !Number(view.pending)) {
@@ -528,25 +475,6 @@ function renderList() {
       if (row) row.classList.remove('is-new');
       highlightId = null;
     }, 420);
-  }
-}
-
-/** 本地 500ms：只更新倒计时文本与环，不重建列表（不打断滚动 / 悬停） */
-function tickFocus() {
-  const f = view && view.focus;
-  if (!f || !f.active || (f.mode !== 'running' && f.mode !== 'paused')) return;
-  const row = el.list.querySelector(`.dw-row[data-id="${f.taskId}"]`);
-  if (!row) return;
-  const remainEl = row.querySelector('.dw-focus-remain');
-  if (remainEl) remainEl.textContent = fmtRemain(focusRemainMs(f));
-  const fg = row.querySelector('.dw-focus-ring .dw-fr-fg');
-  if (fg) {
-    const C = 2 * Math.PI * 5;
-    const remain = focusRemainMs(f);
-    const progress = f.plannedSec > 0
-      ? Math.max(0, Math.min(1, (f.plannedSec * 1000 - remain) / (f.plannedSec * 1000)))
-      : 0;
-    fg.setAttribute('stroke-dashoffset', String(C * (1 - progress)));
   }
 }
 
@@ -1363,8 +1291,6 @@ function bind() {
     if (noteSaver) noteSaver.flush().catch(() => {});
   });
   setInterval(() => { if (!document.hidden) refresh(); }, 60_000);
-  // 番茄钟倒计时：500ms 本地重算（不依赖主进程推送，浮窗隐藏时也不会停摆）
-  setInterval(tickFocus, 500);
 }
 
 /* ---------------- 启动 ---------------- */

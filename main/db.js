@@ -509,6 +509,10 @@ const MIGRATIONS = [
       d.prepare('UPDATE recurring_rules SET task_id = ? WHERE id = ?').run(keep, r.id);
     }
   },
+  // v18：工时记录（插件功能）。空表，写入只发生在开关开启后；
+  // schema 版本必须对全体用户一致，所以这里不做惰性建表（否则备份 / user_version 会分叉）。
+  // DDL 放 main/worklog/schema.js：开关关闭的用户永远不会 require 到它。
+  (d) => { require('./worklog/schema').migrate(d); },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -3172,7 +3176,7 @@ function kbStats(kbId = 1) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 14,
+    schemaVersion: 15,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
@@ -3198,6 +3202,9 @@ function exportData() {
     knowledge_bases: db.prepare('SELECT * FROM knowledge_bases ORDER BY id').all(),
     // 番茄钟：与任务一样是用户产生的第一手数据，随备份走（不含「进行中未结算」的残留行）
     focus_sessions: db.prepare('SELECT * FROM focus_sessions WHERE ended_at IS NOT NULL ORDER BY id').all(),
+    // 工时：**无论插件开关是否开启都导出** —— 否则用户关一次插件再备份，历史工时静默丢失。
+    // 只导出已结算的行（running 是进程内状态，重启会由对账逻辑收尾）。
+    worklog_entries: db.prepare("SELECT * FROM worklog_entries WHERE status <> 'running' ORDER BY id").all(),
     settings: db
       .prepare('SELECT * FROM settings WHERE key NOT LIKE ?')
       .all('ai.apiKey%'),
@@ -3229,6 +3236,7 @@ function importData(data) {
     db.prepare('DELETE FROM kb_qa').run();
     db.prepare('DELETE FROM task_notes').run();
     db.prepare('DELETE FROM focus_sessions').run();
+    db.prepare('DELETE FROM worklog_entries').run();
     db.prepare('DELETE FROM note_tag_map').run();
     db.prepare('DELETE FROM notes').run();
     db.prepare('DELETE FROM note_tags').run();
@@ -3440,6 +3448,23 @@ function importData(data) {
         s.id, s.task_id, s.group_id ?? null,
         s.started_at || t0, s.ended_at ?? null, Number(s.planned_sec) || 1800,
         Number(s.actual_sec) || 0, s.outcome || 'full', s.note || '', s.created_at || t0
+      );
+    }
+
+    // 工时：task_id 原样保留（与 focus_sessions 同一处理：任务没了也要留痕），
+    // 旧备份没有这个键时按空数组跳过，不影响导入成功。
+    const insWorklog = db.prepare(
+      `INSERT INTO worklog_entries
+         (id, task_id, group_id, started_at, ended_at, duration_sec, source, status, billable, note, last_beat_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const w of data.worklog_entries || []) {
+      if (w.task_id == null || !w.started_at) continue;
+      insWorklog.run(
+        w.id ?? null, w.task_id, w.group_id ?? null, w.started_at, w.ended_at ?? null,
+        Number(w.duration_sec) || 0, w.source || 'timer', w.status || 'done',
+        w.billable == null ? 1 : (w.billable ? 1 : 0), w.note || '', w.last_beat_at ?? null,
+        w.created_at || t0
       );
     }
 

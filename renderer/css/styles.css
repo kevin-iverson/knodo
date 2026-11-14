@@ -228,6 +228,112 @@ body {
 }
 .titlebar > .tb-nav > button:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; }
 
+/* ---------------- 明暗滑块（标题栏右侧的「日 / 月 盘」） ---------------- */
+/* 位置：窗口三键（3 × 46 = 138px）之外再退 27px，右边缘距窗口 165px ——
+   用户截图里标定的空位（原先 175px，用户看过真机后要求再往右 10px 贴三键）。
+   与 .tb-nav 一样绝对定位、不参与 flex 流，拖侧栏宽度 / 缩放窗口都不会把它挤走
+   （860px 最小宽度下左侧仍有 160px 余量）。
+   尺寸 56×26：比 .tb-nav 的 30px 矮 4px —— 它是「仪器」不是「按钮」，
+   不跟日历 / 统计 / 搭子抢重量，也不跟右侧三键抢存在感。 */
+.tb-mode {
+  position: absolute;
+  top: 50%;
+  right: 165px;
+  transform: translateY(-50%);
+  width: 56px; height: 26px;
+  padding: 0; border: 0; border-radius: 999px;
+  background: transparent;
+  color: rgb(var(--text-rgb));
+  cursor: pointer;
+  /* 标题栏整条是 drag 区：漏了这条就点不动，按下去只会拖窗 */
+  -webkit-app-region: no-drag;
+  -webkit-tap-highlight-color: transparent;
+  /* 两态只动这一个变量：盘的位置。其余全靠 :root[data-theme] 换皮 */
+  --tbm-x: 0px;
+}
+:root[data-theme="dark"] .tb-mode { --tbm-x: 30px; }
+.tb-mode:focus-visible { outline: 2px solid rgb(var(--primary-rgb) / 0.9); outline-offset: 2px; }
+
+/* 轨道：一道浅凹槽。浅色是「纸上压出的印」，深色是「在黑里挖的槽」——
+   同一块凹槽用两种材质，才不至于在深色下糊成一块灰板 */
+.tbm-track {
+  position: relative; display: block;
+  width: 100%; height: 100%;
+  border-radius: inherit;
+  background: rgb(var(--text-rgb) / 0.07);
+  box-shadow: inset 0 1px 2px rgb(var(--text-rgb) / 0.1);
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+:root[data-theme="dark"] .tbm-track {
+  background: rgb(0 0 0 / 0.34);
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.5), inset 0 0 0 1px rgb(var(--text-rgb) / 0.08);
+}
+
+/* 盘：整条标题栏上唯一「浮起来」的东西。深色下带一圈暖白 bloom ——
+   视频里那轮月亮的光就是这一枚开关的唯一记忆点，全条只有它发光。
+   浅色下不给光，只压一道墨边：白纸上再发光只会显得脏。 */
+.tbm-orb {
+  position: absolute; left: 3px; top: 3px;
+  width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgb(var(--panel-rgb));
+  box-shadow: 0 0 0 1px rgb(var(--text-rgb) / 0.09),
+              0 1px 2px rgb(var(--text-rgb) / 0.18),
+              0 3px 7px rgb(var(--text-rgb) / 0.08);
+  transform: translateX(var(--tbm-x));
+  transition: transform 0.34s cubic-bezier(0.34, 1.28, 0.64, 1),
+              box-shadow 0.32s ease;
+}
+:root[data-theme="dark"] .tbm-orb {
+  box-shadow: inset 0 1px 0 rgb(var(--text-rgb) / 0.08),
+              0 0 0 1px rgb(var(--text-rgb) / 0.14),
+              0 1px 3px rgb(0 0 0 / 0.5),
+              0 0 10px rgb(var(--text-rgb) / 0.22),
+              0 0 22px rgb(var(--text-rgb) / 0.1);
+}
+/* 悬停只抬 1px（再多就成动画片），按下回弹 6% —— 手感来自这两下 */
+.tb-mode:hover .tbm-orb { transform: translateX(var(--tbm-x)) translateY(-1px); }
+.tb-mode:active .tbm-orb { transform: translateX(var(--tbm-x)) scale(0.94); }
+
+/* 字形：两枚都常驻 DOM，靠透明度 + 旋转互换。
+   太阳 = 墨印（纸上的深），月亮 = 光（黑里的亮）；都取当前风格的 ink，
+   所以换成樱粉 / 苔绿 / 高对比也自洽，不需要为这套开关单独配色。 */
+.tbm-ico {
+  position: absolute; inset: 0; margin: auto;
+  width: 12px; height: 12px;
+  display: block;
+  transition: opacity 0.2s ease, transform 0.32s cubic-bezier(0.34, 1.28, 0.64, 1);
+}
+.tbm-sun { color: rgb(var(--text-rgb) / 0.72); opacity: 1; transform: none; }
+.tbm-moon { color: rgb(var(--text-rgb) / 0.95); opacity: 0; transform: rotate(-72deg) scale(0.55); }
+:root[data-theme="dark"] .tbm-sun { opacity: 0; transform: rotate(72deg) scale(0.55); }
+:root[data-theme="dark"] .tbm-moon { opacity: 1; transform: none; }
+
+/* 空位上的「空槽」：悬停 / 聚焦时在盘将要去的那一端浮出一枚小圆环。
+   为什么不是「另一态的图标」：11px 的日月在 1× 下会糊成一团墨点，而一枚空槽
+   已经把「这里还有一格」说清楚了 —— 减法，别把两种语言塞进 56px。 */
+.tbm-track::after {
+  content: '';
+  position: absolute; top: 50%;
+  left: 35px;
+  width: 7px; height: 7px;
+  margin-top: -4.5px;
+  border: 1px solid rgb(var(--text-rgb) / 0.5);
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+/* 深色时盘在右，空槽换到左 */
+:root[data-theme="dark"] .tbm-track::after { left: 12px; }
+.tb-mode:hover .tbm-track::after,
+.tb-mode:focus-visible .tbm-track::after { opacity: 1; }
+
+/* 动画全关时：位置照旧（transform 立即生效），只去掉滑动与旋转 */
+@media (prefers-reduced-motion: reduce) {
+  .tbm-track, .tbm-orb, .tbm-ico, .tbm-track::after { transition-duration: 0.01ms; }
+}
+
 /* ---------------- 窗口控制三键（自绘） ---------------- */
 /* 系统 overlay 撤掉后，三键就是普通按钮：颜色吃 currentColor，换主题 / 换风格不用
    再推一次原生配色；hover 半透明底 + 关闭键朱红，深色主题下同样成立。
@@ -734,102 +840,6 @@ body {
 }
 .task-actions button:hover { background: var(--bg-hover); color: var(--text); }
 .task-actions button.del:hover { color: var(--danger); }
-
-/* ---------------- 番茄钟（专注计时） ---------------- */
-/* 悬停出现的「▶ 专注」+ 时长；格数标记 ●●◐ 与专注态进度环/剩余时间都挂在任务行上 */
-.focus-start { display: inline-flex; align-items: center; gap: 2px; }
-.focus-btn {
-  width: 20px; height: 20px; padding: 0; border: none; background: transparent;
-  color: var(--primary); cursor: pointer; font-size: 12px; line-height: 1;
-  display: inline-flex; align-items: center; justify-content: center; border-radius: 5px;
-}
-.focus-btn:hover { background: color-mix(in srgb, var(--primary) 14%, transparent); color: var(--primary-strong); }
-.focus-dur {
-  border: none; background: transparent; color: var(--text-3); cursor: pointer;
-  font-size: 11px; line-height: 1; padding: 2px 3px; border-radius: 4px; white-space: nowrap;
-}
-.focus-dur:hover { background: var(--bg-hover); color: var(--primary); }
-/* 格数标记：圆点，最多 3 个 + 「+N」；紧贴标题右侧，扫一眼知道推进了几格 */
-.focus-dots {
-  display: inline-flex; align-items: center; gap: 3px; margin-left: 8px;
-  color: var(--primary); font-size: 12px; line-height: 1; letter-spacing: 0;
-}
-.focus-dots .dot-full { color: var(--primary-strong); }
-.focus-dots .dot-half { color: #f59e0b; }
-.focus-dots .dot-more { color: var(--text-3); margin-left: 2px; font-size: 10px; }
-/* 专注中的任务行：整行轻微高亮 */
-.task-item.is-focus {
-  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
-  background: color-mix(in srgb, var(--primary) 5%, var(--bg-ground));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent) inset;
-}
-/* 进度环：14px、2px 描边，主色填充（点击暂停/继续） */
-.focus-ring {
-  width: 14px; height: 14px; flex: none; cursor: pointer; display: inline-flex;
-  align-items: center; justify-content: center; margin: 0 2px;
-}
-.focus-ring svg { display: block; transform: rotate(-90deg); }
-.focus-ring .fr-bg { fill: none; stroke: color-mix(in srgb, var(--primary) 22%, var(--border)); stroke-width: 2; }
-.focus-ring .fr-fg {
-  fill: none; stroke: var(--primary); stroke-width: 2; stroke-linecap: round;
-  transition: stroke-dashoffset 0.4s linear;
-}
-.task-item.is-focus.is-paused .focus-ring .fr-fg { stroke: var(--text-3); }
-/* 专注态右侧状态：剩余时间 + 结束按钮（常显，不随 hover） */
-.focus-status {
-  display: inline-flex; align-items: center; gap: 6px; flex: none;
-}
-.focus-remain {
-  font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600; color: var(--primary-strong);
-  white-space: nowrap;
-}
-.task-item.is-focus.is-paused .focus-remain { color: var(--text-3); }
-.focus-end {
-  border: none; background: transparent; cursor: pointer; color: var(--text-3);
-  font-size: 11px; padding: 2px 6px; border-radius: 5px; white-space: nowrap;
-}
-.focus-end:hover { background: var(--bg-hover); color: var(--danger); }
-/* 收尾条：内联展开在任务行下方，浅底色、不用阴影（避免像又一层浮层） */
-li.focus-wrapup {
-  list-style: none; margin: -4px 0 10px; padding: 0;
-}
-.focus-wrapup-inner {
-  background: color-mix(in srgb, var(--primary) 5%, var(--bg-panel));
-  border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border));
-  border-radius: var(--radius-sm); padding: 10px 12px;
-}
-.fw-head { font-size: 13px; color: var(--text-2); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
-.fw-head .fw-mark { font-size: 14px; }
-.fw-head .fw-mark.fw-full { color: var(--primary); }
-.fw-head .fw-mark.fw-half { color: #f59e0b; }
-.fw-hint { font-size: 12px; color: var(--text-3); margin-top: 6px; }
-.fw-input {
-  width: 100%; box-sizing: border-box; padding: 7px 10px; font: inherit; font-size: 13px;
-  border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); color: var(--text);
-  outline: none; resize: none;
-}
-.fw-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 14%, transparent); }
-.fw-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.fw-actions button {
-  border: 1px solid var(--border); background: var(--bg-panel); cursor: pointer;
-  font-size: 12px; padding: 5px 12px; border-radius: 6px; color: var(--text-2);
-}
-.fw-actions button:hover { border-color: var(--primary); color: var(--primary-strong); }
-.fw-actions button.fw-again { border-color: var(--primary); background: var(--primary); color: #fff; font-weight: 600; }
-.fw-actions button.fw-again:hover { background: var(--primary-strong); }
-.fw-actions .fw-spacer { flex: 1; }
-.fw-actions button.fw-skip { color: var(--text-3); }
-/* 顶栏今日格数：极小、无背景，降低存在感 */
-.topbar-focus-count { font-size: 11px; color: var(--text-3); white-space: nowrap; }
-/* 任务详情里的番茄时间线 */
-.focus-timeline { display: flex; flex-direction: column; gap: 6px; }
-.ft-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
-.ft-mark { font-size: 12px; flex: none; }
-.ft-mark.ft-full { color: var(--primary); }
-.ft-mark.ft-half { color: #f59e0b; }
-.ft-time { color: var(--text-3); font-variant-numeric: tabular-nums; flex: none; }
-.ft-note { color: var(--text); }
-.ft-dur { color: var(--text-3); font-size: 11px; flex: none; }
 
 .empty {
   text-align: center; color: var(--text-3); padding: 60px 0; font-size: 14px;
@@ -2067,6 +2077,15 @@ html.is-resizing .detail-foot { pointer-events: none; }
   font-size: 15px; font-weight: 500; min-width: 56px;
 }
 .rec-mode, .rec-size { color: var(--text-2); font-size: 12px; }
+
+/* 底部悬浮计时条（录制 / 工时）在详情抽屉打开时让位：
+   改在「侧栏右缘 ~ 抽屉左缘」之间居中，否则会直接压在抽屉的描述区与底部按钮上。
+   --detail-w 由 detail.js 写到 :root —— 它本来只挂在抽屉元素上，这里读不到。 */
+body:has(.detail-drawer[data-opened="1"]:not([hidden])) #rec-dock,
+body:has(.detail-drawer[data-opened="1"]:not([hidden])) #wl-dock {
+  left: calc(var(--sidebar-width, 220px)
+    + (100% - var(--sidebar-width, 220px) - var(--detail-w, 420px)) / 2);
+}
 
 .rec-setup { width: 560px; }
 .rec-source-grid {
@@ -3484,3 +3503,81 @@ body.nt-fs-open { overflow: hidden; }
 .img-zoom-mask > .img-zoom-inner {
   background-color: var(--bg-elevated);
 }
+
+/* ============================================================================
+   功能插件 · 设置卡片（工时）
+   ----------------------------------------------------------------------------
+   这段样式必须常驻：插件关闭时用户唯一能看到的就是这张卡及其开关，
+   而 worklog.css 只在插件开启时才注入。命名统一 wl- 前缀，避免与主样式串味。
+   ========================================================================== */
+.wl-set-card { overflow: hidden; }
+.wl-set-head { display: flex; align-items: flex-start; gap: 12px; padding: 15px 16px; }
+.wl-set-ico {
+  width: 32px; height: 32px; border-radius: 9px;
+  display: grid; place-items: center; flex: 0 0 auto;
+  background: rgb(var(--primary-rgb) / 0.10);
+  color: var(--primary-strong); font-size: 15px;
+}
+.wl-set-main { flex: 1 1 auto; min-width: 0; }
+.wl-set-title {
+  font-weight: 650; font-size: 13.5px; color: var(--text);
+  display: flex; align-items: center; gap: 7px;
+}
+.wl-badge {
+  font-size: 10.5px; font-weight: 500; color: var(--text-3);
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px;
+}
+.wl-set-desc { color: var(--text-2); font-size: 12px; margin-top: 3px; line-height: 1.6; }
+.wl-set-body {
+  margin: 0 16px 16px; padding-top: 13px;
+  border-top: 1px dashed var(--border);
+}
+.wl-set-body[hidden] { display: none; }
+.wl-field { display: flex; align-items: center; gap: 12px; margin-bottom: 11px; flex-wrap: wrap; }
+.wl-field:last-of-type { margin-bottom: 0; }
+.wl-field-label { width: 104px; flex: 0 0 auto; color: var(--text-2); font-size: 12px; }
+.wl-field-hint { color: var(--text-3); font-size: 11.5px; }
+.wl-set-note {
+  color: var(--text-3); font-size: 11.5px;
+  border-left: 2px solid var(--border);
+  padding-left: 10px; margin-top: 14px; line-height: 1.75;
+}
+
+.wl-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.wl-chip {
+  padding: 4px 9px; border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel); color: var(--text-2);
+  font-size: 12px; cursor: pointer;
+}
+.wl-chip:hover { background: var(--bg-hover); }
+.wl-chip.is-active {
+  background: rgb(var(--primary-rgb) / 0.12);
+  border-color: rgb(var(--primary-rgb) / 0.40);
+  color: var(--primary-strong);
+  font-weight: 600;
+}
+.wl-chip.is-static { cursor: default; }
+.wl-chip.is-static:hover { background: rgb(var(--primary-rgb) / 0.12); }
+
+/* ---------------- 工时页「未启用」引导页 ----------------
+   入口常驻在标题栏（.tb-worklog），功能关闭时点进来显示这块空态。
+   样式必须常驻 styles.css —— 关闭态不会注入 worklog.css。 */
+.view:has(> .wl-off) { display: flex; }
+.wl-off {
+  flex: 1;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 10px; padding: 40px 20px; text-align: center;
+}
+.wl-off-ico {
+  width: 46px; height: 46px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; line-height: 1;
+  background: rgb(var(--primary-rgb) / 0.10);
+  border: 1px solid rgb(var(--primary-rgb) / 0.28);
+}
+.wl-off-title { font-size: 15px; font-weight: 650; color: var(--text); }
+.wl-off-text { font-size: 12.5px; color: var(--text-3); }
+.wl-off-text b { color: var(--text-2); font-weight: 600; }
+.wl-off-btn { margin-top: 4px; }

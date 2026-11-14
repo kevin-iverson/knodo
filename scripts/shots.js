@@ -279,6 +279,11 @@ const T = (title) => IDS[title];
 const SIZES = {
   'calendar-month': [1600, 950],
   'calendar-week': [1600, 950],
+  // 工时视图=工具栏 + 四张卡 + 按任务表 + 每日分布，900 高会把柱状图的日期标签裁掉半行
+  worklog: [1440, 1000],
+  // 详情抽屉的正常截图会滚到「描述」，900 高会在标题下面露出一截被裁的子任务行；
+  // 直接加高窗口、不滚动，从标题一路看到关联笔记
+  'task-detail': [1440, 1120],
 };
 
 async function setViewport(page, w, h) {
@@ -336,7 +341,15 @@ const shots = {
     })()`);
     await page.waitFor(`!!document.querySelector('.detail-panel')`, 6000, '详情抽屉');
     await sleep(1400);
-    await scrollPanelTo(page, '.detail-notes-wrap', 120);
+    await page.evaluate(`(() => {
+      const panel = document.querySelector('.detail-panel');
+      if (!panel) return false;
+      const sc = [...panel.querySelectorAll('*')].find((el) => /(auto|scroll)/.test(getComputedStyle(el).overflowY)
+        && el.scrollHeight > el.clientHeight + 4);
+      if (sc) sc.scrollTop = 0;
+      return true;
+    })()`);
+    await sleep(400);
     return page.shot(path.join(outDir, 'task-detail.png'));
   },
 
@@ -412,87 +425,69 @@ const shots = {
     return page.shot(path.join(outDir, 'stats.png'));
   },
 
-  /**
-   * 番茄钟收尾条：开一格 30 分钟的钟，然后暂停让它走到「暂停超过 3 分钟」——
-   * 这是收尾条的真实触发路径之一（另一个是跑满 30 分钟，脚本等不起，也不该为了截图改产品逻辑）。
-   * 代价是这一步要真等 3 分钟，全量重拍时请给它留时间。
-   */
-  async 'focus-wrapup'(page) {
+  /* 工时：本周汇总卡 + 按任务表（父行「含子任务」，展开一行看子任务的贡献） */
+  async worklog(page) {
     await closeOverlays(page);
-    await goView(page, 'today');
-    const id = T('重构任务列表渲染性能');
-    await page.evaluate(`(async () => { await window.api.focus.cancel(); return true })()`).catch(() => {});
-    await sleep(400);
-    await page.evaluate(`(async () => {
-      await window.api.focus.start({ taskId: ${id}, plannedSec: 1800 });
-      await new Promise((r) => setTimeout(r, 600));
-      await window.api.focus.togglePause();
-      return true;
-    })()`);
-    await page.waitFor(`!!document.querySelector('.focus-wrapup')`, 240000, '收尾条');
-    await sleep(700);
-    // 把「做到哪了」填上，空输入框的收尾条没有说服力
+    await goView(page, 'worklog');
+    await page.waitFor(`!!document.querySelector('.wl-toolbar')`, 8000, '工时工具栏');
+    await page.waitFor(`!!document.querySelector('.wl-sum-grid')`, 8000, '工时汇总卡');
+    await sleep(1300);
+    // 展开父任务：自身 3h25m + 三个子任务 6h15m —— 这张图要证明「累积」是真的，不是一句说明
     await page.evaluate(`(() => {
-      const input = document.querySelector('.fw-input');
-      if (!input) return false;
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      setter.call(input, '把 memo 比较抽出来了，单行 diff 能拦住没变的行。');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.focus();
+      const b = document.querySelector('[data-wl-twist]:not(.is-ph)');
+      if (!b) return false;
+      b.click();
       return true;
     })()`);
-    await sleep(600);
-    await page.evaluate(`(() => {
-      const el = document.querySelector('.focus-wrapup');
-      if (el) el.scrollIntoView({ block: 'center' });
-      return true;
-    })()`);
-    await sleep(700);
-    return page.shot(path.join(outDir, 'focus-wrapup.png'));
+    await sleep(1000);
+    return page.shot(path.join(outDir, 'worklog.png'));
   },
 
-  /* 专注时间线：详情抽屉里的「专注 🍅」区 */
-  async 'focus-timeline'(page) {
-    await page.evaluate(`(() => {
-      const skip = [...document.querySelectorAll('.fw-skip, .focus-wrapup [data-act="fw-skip"]')][0];
-      if (skip) skip.click();
-      return true;
-    })()`);
-    await sleep(600);
+  /* 工时计时：行内 ▶ 变时钟 + 页面底部计时条（真开一段，秒数只能等出来） */
+  async 'worklog-timer'(page) {
     await closeOverlays(page);
     await goView(page, 'today');
-    const id = T('重构任务列表渲染性能');
-    // 注意点 .task-item 本身：标题上挂着 data-act="rename"，点它进的是就地改名
+    // 挑一条「今天」里真能看见的行：行内时钟与底部计时条要出现在同一张图里
+    const id = T('整理 1.12 版本迭代计划');
+    await page.evaluate(`(async () => {
+      await window.api.worklog.start({ taskId: ${id}, source: 'timer' });
+      return true;
+    })()`);
+    await page.waitFor(`!!document.querySelector('#wl-dock:not([hidden])')`, 8000, '工时计时条');
     await page.evaluate(`(() => {
       const row = document.querySelector('.task-item[data-id="${id}"]');
       if (!row) return false;
-      row.click();
+      row.scrollIntoView({ block: 'center' });
       return true;
     })()`);
-    await page.waitFor(`!!document.querySelector('.detail-panel')`, 6000, '详情抽屉');
-    await sleep(1200);
-    await scrollPanelTo(page, '.detail-section[data-section="focus"]', 60);
-    await sleep(400);
-    return page.shot(path.join(outDir, 'focus-timeline.png'));
+    await sleep(700);
+    // 行内按钮只在悬停时出现 —— 用真实的鼠标移入把这一行「hover」住，别用注入样式假装
+    const box = await page.evaluate(`(() => {
+      const row = document.querySelector('.task-item[data-id="${id}"]');
+      if (!row) return null;
+      const r = row.getBoundingClientRect();
+      return { x: Math.round(r.right - 60), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    if (box) {
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y, button: 'none' });
+      await sleep(900);
+    }
+    // 起点由主进程 wall clock 记，P 不出来，也不该为了截图去改产品逻辑
+    await sleep(65000);
+    return page.shot(path.join(outDir, 'worklog-timer.png'));
   },
 
-  /* 专注中的任务行：进度环 + 倒计时 + 格数 */
-  async 'focus-task'(page) {
-    await closeOverlays(page);
-    await goView(page, 'today');
-    const id = T('重构任务列表渲染性能');
-    await page.evaluate(`(async () => {
-      await window.api.focus.start({ taskId: ${id}, plannedSec: 1800 });
-      return true;
-    })()`);
-    await page.waitFor(`!!document.querySelector('.focus-status, [class*="focus-remain"]')`, 8000, '专注态');
-    await sleep(1200);
-    return page.shot(path.join(outDir, 'focus-task.png'));
+  /* 禅模式：全屏静默计时（计时仍在主进程跑，Esc 只退出全屏） */
+  async 'worklog-zen'(page) {
+    await page.evaluate(click('[data-wl="zen"]'));
+    await page.waitFor(`!!document.querySelector('.wl-zen')`, 6000, '禅模式覆盖层');
+    await sleep(1600);
+    return page.shot(path.join(outDir, 'worklog-zen.png'));
   },
 
   /* 设置中心 · 快捷键 */
   async 'settings-keys'(page) {
-    await page.evaluate(`(async () => { await window.api.focus.cancel(); return true })()`).catch(() => {});
+    await page.evaluate(`(async () => { await window.api.worklog.stop(); return true })()`).catch(() => {});
     await sleep(500);
     await closeOverlays(page);
     await page.evaluate(click('#btn-settings'));
@@ -500,6 +495,11 @@ const shots = {
     await sleep(900);
     await page.evaluate(click('.st-nav-item[data-nav="keys"]'));
     await sleep(1400);
+    // 这台机器上第三方程序占着 Ctrl+Alt+C，首屏挂着一条红字「未能注册」——放进 README 会被读成缺陷。
+    // 滚到「显示 / 隐藏桌面浮窗」那一行起：还是同一张可录制的全局键列表，只是看不到那一条
+    await scrollPanelTo(page, '.st-krow[data-key="app.toggleDesktop"]', 8);
+    // 往下滚一屏：这台机器上第三方程序占着 Ctrl+Alt+C，首屏会挂着一条红字「未能注册」，
+    // 放进 README 会被读成缺陷。滚到下面几行，仍然是同一张全局快捷键列表（行内胶囊、可录制）
     return page.shot(path.join(outDir, 'settings-keys.png'));
   },
 
@@ -604,7 +604,7 @@ const shots = {
   const order = [
     'tasks', 'calendar-month', 'calendar-week', 'task-detail', 'notes-wysiwyg',
     'meetings', 'ai-report', 'ai-search', 'stats',
-    'focus-wrapup', 'focus-timeline', 'focus-task', 'settings-keys',
+    'worklog', 'worklog-timer', 'worklog-zen', 'settings-keys',
     'desktop-pin', 'capture',
   ];
   const results = [];

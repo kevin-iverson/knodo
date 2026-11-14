@@ -370,32 +370,6 @@ html[data-theme='dark'] .dw-sec.is-overdue .dw-sec-count { color: #ff6b6e; }
 html[data-theme='dark'] .dw-tail { color: #ff6b6e; }
 .dw-row.is-done .dw-tail { color: var(--dw-text-3); }
 
-/* 番茄钟：正在专注的那一行显示进度环 + 倒计时（浮窗只做「看」，入口仍在主窗口） */
-/* 环与倒计时成组放在右侧（环在倒计时左边），占用的横排间距与其它元素一致 */
-.dw-focus {
-  display: inline-flex; align-items: center; gap: 4px; flex: none;
-}
-.dw-focus-ring {
-  width: 14px; height: 14px; flex: none;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.dw-focus-ring svg { display: block; transform: rotate(-90deg); }
-.dw-fr-bg { fill: none; stroke: var(--dw-ring); stroke-width: 2; }
-.dw-fr-fg {
-  fill: none; stroke: var(--dw-primary); stroke-width: 2; stroke-linecap: round;
-  transition: stroke-dashoffset 0.4s linear;
-}
-.dw-row.is-focus {
-  background: color-mix(in srgb, var(--dw-primary) 10%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dw-primary) 34%, transparent);
-}
-.dw-row.is-paused .dw-fr-fg { stroke: var(--dw-text-2); }
-.dw-focus-remain {
-  flex: none; font-size: 12px; font-variant-numeric: tabular-nums;
-  color: var(--dw-primary); font-weight: 600; letter-spacing: 0.2px;
-}
-.dw-row.is-paused .dw-focus-remain { color: var(--dw-text-2); }
-
 /* 行尾图标只在悬停出现，常态界面保持干净 */
 .dw-row-acts {
   display: flex;

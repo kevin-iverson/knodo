@@ -65,7 +65,7 @@
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
       </button>
-      <!-- 标题栏主区段左端的快捷入口组：日历 + 统计 + 搭子（顺序就是视觉顺序）。
+      <!-- 标题栏主区段左端的快捷入口组：日历 + 统计 + 工时 + 搭子（顺序就是视觉顺序）。
            .tb-nav 只负责定位与间距，按钮自带尺寸 —— 再加一个入口时不用重算绝对偏移。
            日历 / 统计：从侧栏搬来，保留 .nav-item 类与 data-view ——
            点击切换、active 高亮、视图重绘全都复用既有逻辑。 -->
@@ -75,12 +75,39 @@
         <!-- 统计：用户指定夹在日历与搭子中间（原先在侧栏底部） -->
         <button type="button" class="nav-item tb-stats" data-view="stats"
                 title="统计视图：任务完成情况概览（按分组 / 标签 / 优先级看欠账与产出）"><span class="nav-ico">📊</span>统计</button>
+        <!-- 工时：用户要求放在「统计」右侧，且不再标「插件」角标。
+             入口**常驻**（不随功能开关出现 / 消失）—— 功能关闭时点进来是「未启用」引导页，
+             否则用户既看不到入口、也无从知道该去哪儿开启（见 ui.js#renderWorklogOff）。 -->
+        <button type="button" class="nav-item tb-worklog" data-view="worklog"
+                title="工时：子任务向上累积，可按分组 / 标签筛选后导出报工表"><span class="nav-ico">🕒</span>工时</button>
         <!-- 搭子：工位搭子面板（五页签主浮窗的「搭子」页）。
              它不是视图，所以不挂 .nav-item / data-view —— 点击只开模态，不切 state.view。 -->
         <button type="button" class="tb-buddy" id="btn-buddy"
                 title="搭子：工位搭子（戳一戳 / 抽签 / 抱团 / 牛马卡，Ctrl+Alt+E）"
                 aria-label="打开工位搭子"><span class="nav-ico">🐮</span>搭子</button>
       </div>
+      <!-- 明暗滑块：一枚「日 / 月 盘」，落在主区段右端的空位（窗口三键左侧 37px）。
+           视觉两态只由 :root[data-theme] 驱动 —— 首帧就是对的，不靠 JS 补；
+           JS 只负责点击 / ←→ 改 mode 与 aria-checked，「跟随系统」仍留在设置中心。
+           标题栏整条是 drag 区，所以它必须 no-drag（见 styles.css 的 .tb-mode）。 -->
+      <button type="button" class="tb-mode" id="btn-theme-mode" role="switch"
+              aria-checked="false" aria-label="深色主题" title="切换明暗主题">
+        <span class="tbm-track" aria-hidden="true">
+          <span class="tbm-orb">
+            <!-- 两枚字形都常驻 DOM，靠透明度 / 旋转互换：太阳是实心圆盘 + 八道短线，
+                 月亮是实心月牙。都做「剪影」不做描边 —— 13px 下描边会糊成一团。 -->
+            <svg class="tbm-ico tbm-sun" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="4.3" fill="currentColor" />
+              <g stroke="currentColor" stroke-width="1.7" stroke-linecap="round" fill="none">
+                <path d="M12 2.4v2.3M12 19.3v2.3M2.4 12h2.3M19.3 12h2.3M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6" />
+              </g>
+            </svg>
+            <svg class="tbm-ico tbm-moon" viewBox="0 0 24 24">
+              <path d="M21 12.9A9 9 0 1 1 11.1 3a7.1 7.1 0 0 0 9.9 9.9z" fill="currentColor" />
+            </svg>
+          </span>
+        </span>
+      </button>
       <!-- 窗口控制三键：自绘（系统 overlay 已撤，见 main/main.js 的注释）。
            46×40 是 Windows 的惯例尺寸；图标是 10px 细线 SVG，跟 currentColor 走，
            所以换主题 / 换风格不用重新推一次原生配色。最大化↔还原由 js/win-controls.js 切换。 -->
@@ -151,8 +178,6 @@
             <span class="view-desc" id="view-desc"></span>
           </div>
           <div class="topbar-right">
-            <!-- 番茄钟今日格数：常驻、极小、无背景（不显示目标值，避免制造压力） -->
-            <span class="topbar-focus-count" id="topbar-focus-count" title="今天已完成的番茄格数"></span>
             <!-- 搜索框 + AI 检索 + 笔记按钮：普通关键词过滤留在输入框，AI 检索是独立视图，
                  两个入口都紧贴搜索框（原侧栏「AI 检索」已上移）；笔记点开是弹窗，不切视图。
                  「同步」「主题」两个低频入口已收进顶部菜单栏，腾出的行宽给这里。 -->

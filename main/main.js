@@ -4,7 +4,7 @@
  * 关闭窗口默认最小化到托盘，仅当显式退出时才真正退出。
  */
 const {
-  app, BrowserWindow, nativeTheme, ipcMain, session, Menu, dialog, shell, protocol, powerMonitor,
+  app, BrowserWindow, nativeTheme, ipcMain, session, Menu, dialog, shell, protocol,
 } = require('electron');
 const fs = require('fs');
 const os = require('os');
@@ -18,7 +18,7 @@ const { setupTray, destroyTray, refreshTrayMenu } = require('./tray');
 const desktopWindow = require('./desktop-window');
 const shortcuts = require('./shortcuts');
 const capture = require('./capture');
-const focus = require('./focus');
+const features = require('./features');
 const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
 const { startRecurrenceScheduler, stopRecurrenceScheduler } = require('./recurrence');
@@ -1112,6 +1112,9 @@ app.whenReady().then(async () => {
   }
 
   applyTheme();
+  // 功能插件：先读开关再注册 IPC —— 关闭态下这里只装一个 60 行的注册中心，
+  // main/worklog/ 整个目录不会进内存（方案 §四 第一层）。
+  features.init();
   // 跟随系统明暗时：渲染层靠 matchMedia 自己换色，窗口三键是自绘的（吃 CSS token），
   // 主进程这边不需要再补推任何原生配色。
   registerIpc();
@@ -1147,26 +1150,9 @@ app.whenReady().then(async () => {
   // 全局快捷键：必须在这里（whenReady 之后）注册，早于此时机 register() 静默失败
   shortcuts.init({ onAction: dispatchShortcut });
 
-  // 番茄钟（专注计时）：主进程计时器，状态变化推给主窗口渲染进度环 / 收尾条。
-  focus.init({
-    onStateChange: (snap) => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('focus:changed', snap);
-      // 桌面浮窗也同步：重拉自己的投影（buildView 已带 focus 快照，refresh 后行内显示倒计时）
-      try { desktopWindow.notifyChange(null); } catch (e) { /* 浮窗刷新失败不影响主窗口 */ }
-    },
-  });
-  // 崩溃 / 强杀残留的未结算会话，启动时对账（不足 8 分钟删除，否则记 partial 并提示）
-  focus.reconcileOnStartup();
-  // 系统休眠 / 唤醒：挂起时结算睡眠前专注，唤醒后按 wall clock 对账（方案 §6.3）
-  powerMonitor.on('suspend', () => focus.onPowerSuspend());
-  powerMonitor.on('resume', () => focus.onPowerResume());
-  // 任一 Knodo 窗口失焦 / 聚焦 → 只更新「是否聚焦」标记（计时照常走，不再因此冻结）
-  app.on('browser-window-blur', () => setImmediate(() => focus.onWindowFocusChanged()));
-  app.on('browser-window-focus', () => setImmediate(() => focus.onWindowFocusChanged()));
-
   // 退出前必须注销：否则系统里残留热键，下次启动可能注册失败
   app.on('will-quit', () => {
-    focus.handleWillQuit(); // 进行中的番茄按已跑时长记 partial
+    features.handleWillQuit(); // 进行中的工时按已跑时长落库
     capture.destroy();
     shortcuts.destroy();
   });

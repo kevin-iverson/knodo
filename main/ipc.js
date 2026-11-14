@@ -22,11 +22,11 @@ const mdImport = require('./md-import');
 const backup = require('./backup');
 const storage = require('./storage');
 const desktopWindow = require('./desktop-window');
-const focus = require('./focus');
 const recurRules = require('./recurrence-rules');
 const holidays = require('./holidays-cn');
 const dateU = require('./date-utils');
 const theme = require('./theme');
+const features = require('./features');
 
 /**
  * 附件相对路径 → 笔记正文里可引用的 todo-media:// URL。
@@ -1428,16 +1428,9 @@ function registerIpc() {
     }
   });
 
-  /* ---------- 番茄钟（专注计时） ---------- */
-  ipcMain.handle('focus:state', () => focus.getState());
-  ipcMain.handle('focus:start', withDb((p) => focus.start(p || {})));
-  ipcMain.handle('focus:togglePause', withDb(() => focus.togglePause()));
-  ipcMain.handle('focus:settle', withDb((outcome, note) => focus.settle(outcome, note || '')));
-  ipcMain.handle('focus:cancel', withDb(() => focus.cancel()));
-  ipcMain.handle('focus:manualEnd', withDb(() => focus.manualEnd()));
-  ipcMain.handle('focus:counts', withDb((taskIds) => db.focusCountsForTasks(Array.isArray(taskIds) ? taskIds : [])));
-  ipcMain.handle('focus:today', withDb(() => db.todayFocusCount()));
-  ipcMain.handle('focus:timeline', withDb((taskId) => db.listFocusSessions(taskId)));
+  /* ---------- 功能插件（默认关闭，关闭时不注册任何 worklog:* 通道） ---------- */
+  // 只有开关本身由 features.js 常驻注册；插件自己的 handler 由它按需挂上。
+  features.registerAll();
 }
 
 module.exports = { registerIpc };
