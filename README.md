@@ -20,7 +20,7 @@
 
 <sub>Windows 10/11 · 不用注册 · 免安装 · 不会装？看<a href="docs/下载与安装.md">三步图解</a></sub>
 
-<sub>下载镜像：<a href="https://github.com/kevin-iverson/knodo/releases/latest">GitHub</a> · <a href="https://gitee.com/kiverson/todo-task/releases/latest">Gitee</a>（两站同版本、同文件，挑打得开的那条）</sub>
+<sub>下载镜像：<a href="https://github.com/kevin-iverson/knodo/releases/latest">GitHub</a> · <a href="https://gitee.com/kiverson/todo-task/releases/latest">Gitee</a>（两站同版本、内容一致，挑打得开的那条）</sub>
 
 </div>
 
