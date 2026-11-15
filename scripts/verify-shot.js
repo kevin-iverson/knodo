@@ -582,6 +582,19 @@ async function main() {
   }
   check('提交后卡片关闭', submitted === true);
 
+  // 「点确定就立刻看到」：卡片关闭后宿主必须自己补刷一次列表。
+  // 这条守的是用户报过的问题：任务早就进库了，列表却停在旧数据上，得手动切一次视图才出来。
+  const wanted = JSON.stringify(MOCK_TASKS.tasks[0].title);
+  let shown = 0;
+  for (let i = 0; i < 30; i += 1) {
+    shown = await main.evaluate(`[...document.querySelectorAll('.task-item .task-title-text')]
+      .filter((e) => e.textContent.trim() === ${wanted}).length`);
+    if (shown === 1) break;
+    await sleep(100);
+  }
+  const listView = await main.evaluate('document.getElementById("view-title").textContent');
+  check('提交后不用切视图，列表里立刻出现这一条', shown === 1, `命中 ${shown} 行 · 当前视图 ${listView}`);
+
   console.log('\n[7] 落库结果');
   const tasks = await main.evaluate(`(async () => {
     const list = await window.api.tasks.list({ status: 'any' });

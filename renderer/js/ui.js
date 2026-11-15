@@ -137,7 +137,8 @@ export async function init() {
   setDetailHandlers({ refresh: () => { renderSidebar(); renderTasks(); }, toast });
   setSearchHandlers({ openDetail, toast });
   // 截图建任务的卡片也要 toast（"已添加 3 条到今天"）：注入而不是让它反向 import ui.js
-  setShotHandlers({ toast });
+  // onAdded：卡片确认提交并关闭后回调，用来把新任务立刻显示出来（见 refreshAfterShotAdd）
+  setShotHandlers({ toast, onAdded: (info) => refreshAfterShotAdd(info) });
   // 会议录制 / 纪要：录制归档后自动跳到会议视图查看。
   // refresh 只刷侧栏计数，绝不碰 #view —— 它是共享容器，会议里完成转写 / 出纪要 /
   // 删除记录 / 导入待办都会回调它，这里调 renderTasks() 会把整页换回任务列表
@@ -558,6 +559,34 @@ export async function navigateTo(target) {
   state.addingTask = false;
   renderSidebar();
   await render();
+}
+
+/**
+ * 截图建任务「已添加 N 条」之后的补刷。
+ *
+ * 为什么不能只靠 ui:data-changed：那条广播是给**别的窗口改了库**准备的，两条守则都会
+ * 把截图这条拦下来 —— 提交那一刻确认卡的遮罩还挂在页面上（busy 直接 return），而卡片
+ * 就在主窗口里，"添加到今天"点完窗口当然有焦点（非浮窗来源也 return）。于是列表停在
+ * 旧数据上：任务其实早就进库了，用户却得手动切一次视图（切走再切回）才看得见。
+ *
+ * 所以卡片关闭（遮罩已移除）之后由宿主显式补一次刷新。卡片只管回调，视图取舍在这里：
+ * 新建的任务全都落在「今天」，当前视图装不下它们（已完成 / 归档 / 日历等非列表视图）时
+ * 直接把用户带到「今天」，否则原地重绘 —— 只是建了几条任务，不该把人从正在看的页面踢走。
+ */
+async function refreshAfterShotAdd(info) {
+  await refreshAll();
+  // 侧栏正按某个分组筛着、新任务却落在别的分组：刷多少次都看不见它们，直接放开筛选。
+  // （落点由主进程 ui.lastAddGroupId 决定，确实可能和用户当前看的分组不一致）
+  const gid = info && info.group ? info.group.id : null;
+  if (state.currentGroup !== 'all' && gid != null && Number(state.currentGroup) !== Number(gid)) {
+    state.currentGroup = 'all';
+  }
+  renderSidebarList();
+  if (!TASK_VIEWS.includes(state.view) || state.view === 'completed' || state.view === 'archived') {
+    await navigateTo('today');
+    return;
+  }
+  await renderTasks();
 }
 
 async function render() {

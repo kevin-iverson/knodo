@@ -23,8 +23,16 @@ const esc = (s) =>
 
 /** 宿主注入的 toast（避免 shot-task → ui.js 的反向依赖） */
 let toast = () => {};
-export function setShotHandlers({ toast: t } = {}) {
+/**
+ * 宿主注入的「已经建好了，去把列表刷出来」回调。
+ * 为什么不由主进程广播解决：commit() 之后主进程确实推了 ui:data-changed，但那一刻
+ * 卡片的遮罩还在（宿主的 busy 判定会跳过）而且窗口有焦点（非浮窗来源也会跳过），
+ * 所以列表不会自己更新。这里在卡片**关闭之后**把结果交给宿主，由它决定刷哪个视图。
+ */
+let onAdded = () => {};
+export function setShotHandlers({ toast: t, onAdded: a } = {}) {
   if (typeof t === 'function') toast = t;
+  if (typeof a === 'function') onAdded = a;
 }
 
 /**
@@ -78,6 +86,8 @@ export function openShotCard(initialStatus) {
     imgW: 0,
     imgH: 0,
     source: '',
+    /** 提交成功的回执（created / group / imageErrors），关闭后交给宿主的 onAdded */
+    added: null,
   };
 
   if (S.status) {
@@ -449,6 +459,7 @@ export function openShotCard(initialStatus) {
       paint();
       try {
         const r = await shotApi(api.shot.commit({ tasks: chosen }));
+        S.added = r;
         if (r.imageErrors && r.imageErrors.length) {
           toast(`已添加 ${r.created} 条，但截图保存失败：${r.imageErrors[0]}`);
         } else {
@@ -488,5 +499,16 @@ export function openShotCard(initialStatus) {
     });
   }
 
-  return promise;
+  return promise.then((ok) => {
+    // 只有「确认提交成功」这一条路径需要补刷。放在这里而不是 onSubmit 里：
+    // 这一步遮罩已经移除，宿主的刷新不会被 busy 判定挡掉，也不拖慢关卡片
+    if (!ok || !S.added) return ok;
+    const r = S.added;
+    S.added = null;
+    try {
+      const p = onAdded(r);
+      if (p && typeof p.catch === 'function') p.catch(() => { /* 刷新失败不影响已经入库的任务 */ });
+    } catch (e) { /* 同上 */ }
+    return ok;
+  });
 }
