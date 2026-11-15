@@ -119,7 +119,7 @@ function releaseBody() {
     '> **只是想用它，不想看代码？** 滑到本页最底部「Assets」，点 '
       + `\`${assetName(`${BRAND}-${pkg.version}-便携版.7z`)}\`，解压一次后双击里面的 Knodo.exe 就能用（免安装、免注册）。`,
     '> 若被 Windows 拦下：点「更多信息 → 仍要运行」。国内访问慢可走 '
-      + '[Gitee 镜像](https://gitee.com/kiverson/todo-task/releases/latest)，两边包完全一致（那边文件名带「便携版 / 安装版」）。',
+      + '[Gitee 镜像](https://gitee.com/kiverson/todo-task/releases/latest)，两站内容一致（各自打包，字节数略有差别；那边文件名带「便携版 / 安装版」）。',
     '',
     '### 下载',
     `- **${assetName(`${BRAND}-${pkg.version}-便携版.7z`)}**（推荐，Gitee 站内名为 \`${BRAND}-${pkg.version}-便携版.7z\`）：`
@@ -127,7 +127,7 @@ function releaseBody() {
     `- **${assetName(`${BRAND}-${pkg.version}-安装版.exe`)}**（Gitee 站内名为 \`${BRAND}-${pkg.version}-安装版.exe\`）：`
       + '双击安装，可选安装目录、生成桌面与开始菜单快捷方式，可设开机自启。'
       + '数据在 `%APPDATA%\\todo-desktop`，适合长期在同一台电脑上使用。',
-    '- GitHub 会把附件名里的中文滤掉，所以这里用英文名（portable / setup），包内容与 Gitee 上的中文名文件逐字节一致。',
+    '- GitHub 会把附件名里的中文滤掉，所以这里用英文名（portable / setup），内容与 Gitee 上的中文名包一致（同一份代码、两站各自打包，字节数会有几十 KB 的差别）。',
     '- 两者功能完全一致，只是数据位置、安装方式不同；两者都未做代码签名，首次运行可能被 SmartScreen 拦一次。',
     '',
     '### 本版更新（v2.7.0）',
