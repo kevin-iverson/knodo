@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": {
@@ -41,6 +41,7 @@
     "verify:dock-complete": "node scripts/verify-dock-complete.js",
     "verify:dock-side": "node scripts/verify-dock-side.js",
     "verify:add-inline": "node scripts/verify-add-inline.js",
+    "verify:shot": "node scripts/verify-shot.js",
     "verify:meeting-rename": "node scripts/verify-meeting-rename.js",
     "shots": "node scripts/shots.js"
   },

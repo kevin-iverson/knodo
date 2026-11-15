@@ -223,3 +223,11 @@
 
 /* 分区内容统一套一层卡片（与「通用」等分区的视觉语言对齐） */
 .ap-card-body { padding: 14px; }
+
+/* 故宫风格的说明条：只在选中 palace 时由 settings.js 渲染 */
+.ap-palace-note {
+  margin-top: 9px; padding: 8px 10px; border-radius: 0 8px 8px 0;
+  border-left: 2px solid var(--primary);
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  font-size: 12px; line-height: 1.7; color: var(--text-2);
+}

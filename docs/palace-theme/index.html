@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>太和殿 · 脊兽 —— 故宫主题设计稿</title>
+<meta name="description" content="以太和殿檐角十一尊脊兽与两尊石狮为原型的卡通形象，与一套故宫主题界面：边沿陈列、悬停介绍、左右石狮。">
+<link rel="stylesheet" href="palace.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap mh-inner">
+    <div>
+      <div class="mh-kicker">故宫主题 · 界面边沿的陈设</div>
+      <h1 class="mh-title">太和殿 · <em>脊兽</em></h1>
+      <p class="mh-sub">把太和殿檐角的十只走兽、一位骑凤仙人，连同宫门前的两只石狮，请到界面边沿站成一队。鼠标经过，它会告诉你自己从哪里来、又护着什么。</p>
+      <ul class="mh-facts">
+        <li><b>10</b>只走兽 · 全国唯一</li>
+        <li><b>11</b>尊檐角形象</li>
+        <li><b>2</b>尊宫门石狮</li>
+        <li><b>1</b>套故宫色</li>
+      </ul>
+    </div>
+    <aside class="mh-side">
+      <div class="seal">太<br>和</div>
+      <p>屋脊兽原本只是钉住瓦片的铁钉帽，后来成了等级的语言：走兽越多，殿宇越尊。太和殿是全国唯一用满十只的建筑，多出来的那一位，叫「行什」。</p>
+      <p class="note">形象次序按《大清会典》与故宫博物院公布：骑凤仙人领队，其后龙、凤、狮子、天马、海马、狻猊、押鱼、獬豸、斗牛、行什。</p>
+    </aside>
+  </div>
+</header>
+
+<section class="parade">
+  <div class="wrap">
+    <div class="parade-head">
+      <div>
+        <h2>檐角上的一队</h2>
+        <p>十一位从檐角走到界面边沿，两只石狮在左右压阵。</p>
+      </div>
+      <span class="hint"><i></i>悬停查看 · 点击钉住</span>
+    </div>
+
+    <div class="ridge">
+      <div class="ridge-roof" aria-hidden="true"></div>
+      <div class="ridge-row" id="ridge-row" role="list" aria-label="太和殿脊兽队列"></div>
+      <div class="ridge-caption">
+        <span>太和殿 · 垂脊</span>
+        <span class="rank">十兽俱全 · 天下无二</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="sheet">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <h2>十三个形象 <small>CHARACTER SHEET</small></h2>
+      </div>
+      <p>统一比例：头大身小、端坐姿态；一只金铃、一道项圈、一撮腮红。各自的角、翼、尾、鳍，负责在 48 像素里也能认出是谁。</p>
+    </div>
+    <div class="sheet" id="sheet-grid"></div>
+  </div>
+</section>
+
+<section class="section" id="apps">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <h2>放回界面里 <small>IN THE INTERFACE</small></h2>
+      </div>
+      <p>以待办应用为例：边沿成为一道檐口，脊兽依次站在琉璃瓦上，介绍卡在鼠标经过时浮起；明暗两套配色都留了位置。</p>
+    </div>
+    <div class="apps">
+      <div class="app-label">浅色 · 宣纸</div>
+      <div id="mock-light"></div>
+      <div class="app-label">深色 · 紫檀</div>
+      <div id="mock-dark"></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="tokens">
+  <div class="wrap">
+    <div class="section-head">
+      <div>
+        <h2>色与形 <small>TOKENS</small></h2>
+      </div>
+      <p>取宫墙、琉璃、青绿彩画与汉白玉。朱红压场，赤金点睛，其余颜色都退半步。</p>
+    </div>
+    <div class="tokens">
+      <div class="swatches" id="swatches"></div>
+      <div class="notes">
+        <h3>形制与用法</h3>
+        <ul>
+          <li><b>脊线</b>：一道 2px 赤金，之上站兽，之下是琉璃瓦垄；<b>石狮</b>压两端，略大于走兽。</li>
+          <li><b>介绍卡</b>：悬停浮起，点击钉住；箭头始终指向被指的那一尊。</li>
+          <li><b>印章</b>：朱红底、金边，置于标题与卡片角落，是这套界面的落款。</li>
+          <li><b>落地</b>：十三个 SVG 直接可用；48–56px 为界面尺寸，120px 以上可作插画。</li>
+        </ul>
+        <div class="filelist">
+          <code>svg/xianren.svg</code><code>svg/long.svg</code><code>svg/feng.svg</code><code>svg/shizi.svg</code>
+          <code>svg/tianma.svg</code><code>svg/haima.svg</code><code>svg/suanni.svg</code><code>svg/yayu.svg</code>
+          <code>svg/xiezhi.svg</code><code>svg/douniu.svg</code><code>svg/xingshi.svg</code>
+          <code>svg/shishi-xiong.svg</code><code>svg/shishi-ci.svg</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="wrap">
+    <span>太和殿 · 脊兽 主题设计稿 · 卡通形象与界面为原创绘制，寓意整理自故宫博物院公开资料与《大清会典》。</span>
+    <span>脊兽次序：仙人 · 龙 · 凤 · 狮子 · 天马 · 海马 · 狻猊 · 押鱼 · 獬豸 · 斗牛 · 行什</span>
+  </div>
+</footer>
+
+<div class="tip" id="tip" role="tooltip" aria-hidden="true"></div>
+
+<script src="data.js"></script>
+<script src="page.js"></script>
+</body>
+</html>

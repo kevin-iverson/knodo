@@ -3,7 +3,7 @@
  * 任务详情页（右侧抽屉）：基础信息编辑、树形子任务层级（可拖拽排序）、
  * 所见即所得 Markdown 描述（支持快捷键与粘贴图片，图片直接插入光标处）。
  */
-import { api, PRIORITY_TEXT, fmtDateTime } from './api.js';
+import { api, fmtDateTime } from './api.js';
 import { state, loadGroups, loadTags, refreshAll, noteCompletionChange } from './store.js';
 import { renderMarkdown } from './markdown.js';
 import { renderStyledInline } from './markdown-lib.js';
@@ -15,7 +15,10 @@ import {
   reminderHtml, bindReminder, computeReminder, reminderNeedsPlanEnd,
 } from './controls.js';
 import { createAutoSave, SAVE_STATE_TEXT } from './autosave.js';
-import { groupOptionsHtml } from './group-tree.js';
+import {
+  groupPickerOptionsHtml, priorityPickerOptionsHtml,
+  createGroupSelect, createPrioritySelect, destroyGroupSelectsIn,
+} from './group-select.js';
 import { detailRepeatHtml, bindDetailRepeat, derivedScheduleHtml } from './recurrence.js';
 import { TOOLBAR_HTML, createWysiwyg } from './wysiwyg.js';
 
@@ -395,6 +398,8 @@ export function closeDetail() {
   disposeSavers(); // 主任务 + 所有子任务：flush 后 dispose，避免关掉后还有保存器在跑
   releaseNotesEditor(); // 编辑器同理：不销毁的话选区 / 色板监听会一直挂在 document 上
   const drawer = document.getElementById('detail-drawer');
+  // 下拉实例随抽屉一起回收：抽屉是常驻节点，只 hidden 不重建，实例留着会一直挂在 registry 里
+  if (drawer) destroyGroupSelectsIn(drawer);
   state.detailTaskId = null;
   if (drawer) {
     drawer.hidden = true;
@@ -449,22 +454,18 @@ async function resolveTagIds(namesStr) {
   return ids;
 }
 
-function priorityOptionsHtml(selected) {
-  const sel = selected == null ? 1 : selected;
-  return [0, 1, 2, 3]
-    .map((p) => `<option value="${p}"${p === sel ? ' selected' : ''}>${PRIORITY_TEXT[p]}</option>`)
-    .join('');
-}
-
 async function renderDetail() {
   const drawer = document.getElementById('detail-drawer');
   if (!drawer) return;
   const id = state.detailTaskId;
-  if (id == null) { drawer.hidden = true; return; }
+  if (id == null) { destroyGroupSelectsIn(drawer); drawer.hidden = true; return; }
   // 拖拽调宽期间不重建 DOM：innerHTML 一换，入场动画重播 + 宽度回到重建前的值，
   // 画面上就是“闪一下/抖一下”。推迟到指针抬起后再补一次重绘。
   if (resizing) { pendingRender = true; return; }
   const token = ++renderToken;
+  // Tom Select 实例必须赶在 innerHTML 覆盖**之前**销毁：覆盖后旧 <select> 已脱离文档，
+  // registry 里的 contains 判定就失效了，会留下永远清不掉的下拉面板。
+  destroyGroupSelectsIn(drawer);
   // 作废上一轮挂在抽屉上的监听器（抽屉是常驻节点，不清理会越挂越多）
   if (renderAbort) renderAbort.abort();
   // 同时回收上一轮的保存器：此时抽屉还是上一个任务的 DOM，flush 写的是它自己的数据；
@@ -517,10 +518,10 @@ async function renderDetail() {
         ${parentInfo}
         <div class="detail-row">
           <label class="detail-field">优先级
-            <select class="detail-priority">${priorityOptionsHtml(task.priority)}</select>
+            <select class="detail-priority">${priorityPickerOptionsHtml(task.priority)}</select>
           </label>
           <label class="detail-field">分组
-            <select class="detail-group">${groupOptionsHtml(state.groups, task.group_id)}</select>
+            <select class="detail-group">${groupPickerOptionsHtml(state.groups, task.group_id)}</select>
           </label>
         </div>
         <div class="detail-row">
@@ -542,7 +543,7 @@ async function renderDetail() {
           <div class="subtask-container">${subtreeHtml || '<div class="subtask-empty">暂无子任务</div>'}</div>
           <div class="subtask-add">
             <input class="subtask-input" placeholder="添加子任务，回车保存" />
-            <select class="subtask-new-priority" title="新子任务优先级">${priorityOptionsHtml(task.priority)}</select>
+            <select class="subtask-new-priority" title="新子任务优先级">${priorityPickerOptionsHtml(task.priority)}</select>
             ${dateRangeFieldHtml('', '', { placeholder: '起 ~ 止' })}
             <button class="ghost-btn" data-act="subtask-add">＋ 添加</button>
           </div>
@@ -594,6 +595,13 @@ async function renderDetail() {
   bindResizer(drawer);
   bindDateRangeFields(drawer); // 主任务 + 子任务新增区 + 各行内的日期范围控件
   bindReminder(drawer);
+  // 优先级 / 分组换成与任务行就地编辑同款的 Tom Select：同样的色点、层级缩进、
+  // 圆角面板与自绘箭头。组件会同步原始 <select> 的 value 并派发原生 change，
+  // 所以 bindDetailEvents 与抽屉级 autosave 都不用改。
+  const priSel = drawer.querySelector('.detail-priority');
+  if (priSel) createPrioritySelect(priSel);
+  const grpSel = drawer.querySelector('.detail-group');
+  if (grpSel) createGroupSelect(grpSel, { multiple: false });
   // 范围被清除/修改后同步提醒预设（依赖完成日期的预设会自动回到“不提醒”）
   drawer.addEventListener(DATE_RANGE_EVENT, (e) => syncReminderWithPlanEnd(drawer, e.detail.planEnd), { signal: renderAbort.signal });
   // 重复与提醒：独立的「保存重复设置」按钮，改动不进抽屉级 autosave
@@ -630,7 +638,7 @@ function subtaskItemHtml(s) {
     <span class="drag-handle" title="按住拖拽调整顺序">⠿</span>
     <button class="subtask-check" data-act="subtask-toggle">${s.completed ? '✓' : ''}</button>
     <input class="subtask-title-input" value="${esc(s.title)}" placeholder="子任务标题" title="直接编辑，自动保存" />
-    <select class="subtask-priority" title="优先级">${priorityOptionsHtml(s.priority)}</select>
+    <select class="subtask-priority" title="优先级">${priorityPickerOptionsHtml(s.priority)}</select>
     ${dateRangeFieldHtml(s.plan_start, s.plan_end, { placeholder: '起 ~ 止' })}
     ${s.subtask_count > 0 ? `<span class="subtask-badge">${s.subtask_done}/${s.subtask_count}</span>` : ''}
     <button class="subtask-del" data-act="subtask-del" title="删除">×</button>

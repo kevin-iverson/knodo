@@ -177,6 +177,321 @@ function parseRankReply(raw, allowedIds) {
     .map((x) => ({ id: Number(x.id), relevant: x.relevant !== false, reason: String(x.reason || '').trim() }));
 }
 
+/* ============================ 视觉模型（截图识别） ============================ */
+
+/**
+ * 视觉模型预设：只列**确定能看图**的模型。
+ *
+ * 与对话模型分成两份目录，是因为这两件事的选型标准完全不同：对话看语言质量与价格，
+ * 识图只看"能不能吃 image_url"。混在一起就会出现"在视觉分区里选了个文本模型"，
+ * 报错还发生在按了快捷键之后（那时用户已经截完图了）。
+ *
+ * models[].free 只是给用户看的额度提示，不参与任何逻辑判断。
+ */
+const VISION_PRESETS = [
+  {
+    id: 'zhipu',
+    label: '智谱 GLM',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    models: [
+      { id: 'glm-4v-flash', label: 'GLM-4V Flash', free: '免费额度大' },
+      { id: 'glm-4v-plus', label: 'GLM-4V Plus', free: '' },
+    ],
+  },
+  {
+    id: 'qwen',
+    label: '通义千问',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    models: [
+      { id: 'qwen-vl-max', label: 'Qwen-VL Max', free: '' },
+      { id: 'qwen-vl-plus', label: 'Qwen-VL Plus', free: '' },
+      // 原生多模态，名字里没有 vl / vision —— 放在目录里是为了下拉能选到，
+      // 但能力判定不依赖它是否在目录里（见下面的 visionCapability）
+      { id: 'qwen3.8-flash', label: 'Qwen3.8 Flash（多模态）', free: '' },
+    ],
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    baseUrl: 'https://api.openai.com/v1',
+    models: [
+      { id: 'gpt-4o-mini', label: 'GPT-4o mini', free: '' },
+      { id: 'gpt-4o', label: 'GPT-4o', free: '' },
+      { id: 'gpt-4.1-mini', label: 'GPT-4.1 mini', free: '' },
+      { id: 'gpt-4.1', label: 'GPT-4.1', free: '' },
+    ],
+  },
+  {
+    id: 'siliconflow',
+    label: '硅基流动',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    models: [
+      { id: 'Qwen/Qwen2.5-VL-72B-Instruct', label: 'Qwen2.5-VL-72B', free: '' },
+      { id: 'Qwen/Qwen2-VL-7B-Instruct', label: 'Qwen2-VL-7B', free: '' },
+    ],
+  },
+  {
+    id: 'moonshot',
+    label: 'Moonshot Kimi',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    models: [{ id: 'moonshot-v1-8k-vision-preview', label: 'Moonshot 8k Vision', free: '' }],
+  },
+  {
+    id: 'ollama',
+    label: 'Ollama（本地）',
+    baseUrl: 'http://localhost:11434/v1',
+    models: [
+      { id: 'qwen2.5vl:7b', label: 'Qwen2.5-VL 7B', free: '全程本机' },
+      { id: 'llava', label: 'LLaVA', free: '全程本机' },
+    ],
+  },
+];
+
+/** 模型名 → 展示名 / 是否免费额度（回落与自定义模型名都要靠它给文案） */
+const VISION_MODEL_MAP = new Map();
+VISION_PRESETS.forEach((p) => {
+  p.models.forEach((m) => {
+    VISION_MODEL_MAP.set(m.id, { label: m.label, free: m.free || '', preset: p.id, presetLabel: p.label });
+  });
+});
+
+/**
+ * 命名习惯兜底：目录里没有的名字（厂商刚出的 / 自建中转 / 私有部署）按名字猜。
+ *
+ * 注意边界：`\bvl\b` 能命中 qwen-vl-max，但命中不了 qwen3.8-flash 这类名字里
+ * 不带 vl / vision 的原生多模态模型。所以这个正则只用来**确认**能读图，
+ * 绝不能反过来当"不认识 = 不支持"的证据。
+ */
+const VISION_NAME_RE = /(\bvl\b|vision|llava|omni|gemini|claude-[34]|gpt-4o|gpt-4\.1|gpt-4-turbo|glm-4v|minicpm-v|step-1v|qwen3\.8-flash)/i;
+
+/**
+ * 这个模型能不能吃图片：'yes' = 目录或命名能确认；'unknown' = 没结论。
+ *
+ * 刻意**没有 'no'**。能力只有服务端说了算：不认识的名字一律放行，让
+ * 「测试读图」真发一张 256×256 图片去问 —— 服务端拒绝时再把错误翻译成人话。
+ * 老版本把"不认识"当成"不支持"，qwen3.8-flash 因此在配置页就被拦下，
+ * 连一次真实请求都没发出去。
+ */
+function visionCapability(model) {
+  const m = String(model || '').trim();
+  if (!m) return 'unknown';
+  if (VISION_MODEL_MAP.has(m)) return 'yes';
+  return VISION_NAME_RE.test(m) ? 'yes' : 'unknown';
+}
+
+function modelLabel(model) {
+  const m = String(model || '').trim();
+  const hit = VISION_MODEL_MAP.get(m);
+  return hit ? hit.label : m || '未配置模型';
+}
+
+/** 截图识别的系统提示：强调"只提取要动手的事"，并禁止推算日期 */
+const SHOT_SYSTEM_PROMPT = [
+  '你是把截图变成待办清单的助手。用户截的可能是聊天记录、邮件、表格、会议白板或网页。',
+  '只提取「需要有人动手去做」的事项；纯信息、结论、寒暄、已经完成的事都不要。',
+  '硬性要求：',
+  '1. 最多 8 条，按紧急 / 重要程度从高到低排序；一件要做的事都没有就返回空数组；',
+  '2. title 是一句可执行的动宾短语，不超过 30 字，不要「需要」「记得」这类前缀；',
+  '3. note 用一句话补上截图里明确写出的关键信息（时间、对方、金额、编号），没有就留空字符串；',
+  '4. priority 只能是 0（低）/ 1（中）/ 2（高）/ 3（紧急）；看不出来就给 1，不要瞎猜；',
+  '5. due 只填截图里**明写**的日期，格式 YYYY-MM-DD；没写就 null，绝不自己推算或补全；',
+  '6. summary 一句话概括这张图是什么（不超过 40 字）；',
+  '7. 只输出 JSON，不要 Markdown 代码块，不要任何解释文字。',
+  '输出格式：{"summary":"...","tasks":[{"title":"...","note":"...","priority":1,"due":null}]}',
+].join('\n');
+
+/**
+ * 兜底提示词：不要求拆出「要动手的事」，而是先把文字读出来，再提炼成一条草稿。
+ * 宁可多给一条可编辑的任务，也不要让用户对着「没识别到待办」空手而归。
+ */
+const OCR_SYSTEM_PROMPT = [
+  '你是把截图文字提取成任务的助手。用户截的可能是聊天记录、邮件、表格、会议白板或网页。',
+  '请先逐字识别图中所有可见文字；不要编造，不要补全看不清的内容，看不清就写「（看不清）」。',
+  '再把文字整理成一条可以执行的任务：',
+  '1. title 是一句不超过 24 字的动宾短语；实在看不出动作时，用文字主题做标题；',
+  '2. note 用 120 字以内概括关键信息（时间、对方、金额、编号）；',
+  '3. text 保留识别到的原文要点，最多 400 字；',
+  '4. 图片里一个字都没有时，返回 {"title":"","note":"","text":""}。',
+  '5. 只输出 JSON，不要 Markdown 代码块，不要任何解释文字。',
+  '输出格式：{"title":"...","note":"...","text":"..."}',
+].join('\n');
+
+/**
+ * 服务端明确拒绝图片输入时的文案特征。各家不一样，常见的有：
+ *   OpenAI / 兼容网关  "Invalid content type. image_url is only supported by certain models."
+ *   DashScope          "The model does not support image input."
+ *   智谱 / 其它        "model not support image"
+ * 命中后翻译成可操作的中文提示；没命中就原样抛出，不掩盖真实的网络 / Key 错误。
+ */
+const IMAGE_UNSUPPORTED_RE = new RegExp([
+  '(does\\s+not|doesn\'?t|not)\\s+support[^.\\n]{0,60}(image|vision|multimodal)',
+  'image(_url)?[^.\\n]{0,40}(is\\s+)?not\\s+supported',
+  'image(_url)?[^.\\n]{0,40}only\\s+supported',
+  'only\\s+supports?\\s+text',
+  // DashScope 兼容模式对纯文本 Qwen 传 image_url 时的原话
+  'unexpected\\s+item\\s+type\\s+in\\s+content',
+  '不支持(?:图片|图像|多模态)',
+  '无法识别图片',
+].join('|'), 'i');
+
+/**
+ * 识图 → 待办数组。
+ *
+ * 图片走 data URL 而非外链：CSP 与 file:// 都不适合给模型服务商访问本地文件，
+ * 各家 OpenAI 兼容接口也都支持 `image_url: { url: 'data:image/jpeg;base64,...' }`。
+ *
+ * "这个模型吃不吃图"不在这里预判：只有真发出去才知道。服务端明确拒绝时转成
+ * NO_VISION，让设置页和确认卡都能给出"去换一个视觉模型"这个唯一正确的下一步。
+ * @param {string} dataUrl 'data:image/jpeg;base64,...'
+ * @param {{baseUrl:string, apiKey:string, model:string}} cfg
+ * @returns {Promise<string>} 模型原文（解析交给 parseShotReply）
+ */
+async function recognizeTasksFromImage(dataUrl, cfg) {
+  if (!dataUrl) throw new Error('没有可识别的图片');
+  try {
+    return await callLLM({
+      ...cfg,
+      messages: [
+        { role: 'system', content: SHOT_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '这是我截的一张图，按约定输出 JSON。' },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+      temperature: 0.2,
+      // 识图比纯文本慢得多：90 秒拿不到就按超时处理，别让用户对着骨架屏干等
+      timeoutMs: 90000,
+    });
+  } catch (e) {
+    const raw = String((e && e.message) || '');
+    if (IMAGE_UNSUPPORTED_RE.test(raw)) {
+      const err = new Error(`「${modelLabel(cfg.model)}」不支持图片输入，请到 设置 → AI 与语音 → 视觉模型 换一个能吃图的模型`);
+      err.code = 'NO_VISION';
+      err.detail = raw; // 原始报错留给日志 / 排查，不直接糊到卡片上
+      throw err;
+    }
+    throw e;
+  }
+}
+
+/**
+ * 兜底：待办拆不出来时，至少把图里的文字读出来。
+ *
+ * 触发场景：模型正常回了一张图，但 tasks 是空数组，或者回复不是约定 JSON。
+ * 这一步仍然走视觉模型，只是把提示词从「提取待办」换成「逐字识别 + 提炼一条」。
+ * 输出一条可编辑的草稿，进确认卡让用户改；绝不直接落库。
+ * @param {string} dataUrl
+ * @param {{baseUrl:string, apiKey:string, model:string}} cfg
+ * @returns {Promise<string>} 模型原文（解析交给 parseTextShotReply）
+ */
+async function recognizeTextFromImage(dataUrl, cfg) {
+  if (!dataUrl) throw new Error('没有可识别的图片');
+  try {
+    return await callLLM({
+      ...cfg,
+      messages: [
+        { role: 'system', content: OCR_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '请识别这张图里的文字，并按约定输出 JSON。' },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+      temperature: 0.1,
+      timeoutMs: 90000,
+    });
+  } catch (e) {
+    const raw = String((e && e.message) || '');
+    if (IMAGE_UNSUPPORTED_RE.test(raw)) {
+      const err = new Error(`「${modelLabel(cfg.model)}」不支持图片输入，请到 设置 → AI 与语音 → 视觉模型 换一个能吃图的模型`);
+      err.code = 'NO_VISION';
+      err.detail = raw;
+      throw err;
+    }
+    throw e;
+  }
+}
+
+/**
+ * 解析识图回复。容错到「从回复里抠出第一个 { ... }」，再把每一条清洗成可直接建任务的结构。
+ * 标题为空的行直接丢弃 —— 空标题行提交时本来也要剔除，不如在这里就清掉。
+ */
+function parseShotReply(raw) {
+  const text = String(raw || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '');
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('AI 返回的内容看不懂，请重试');
+  let obj;
+  try {
+    obj = JSON.parse(text.slice(start, end + 1));
+  } catch (e) {
+    throw new Error('AI 返回的内容看不懂，请重试');
+  }
+  const arr = Array.isArray(obj && obj.tasks) ? obj.tasks : [];
+  const tasks = arr
+    .map((t) => {
+      const title = String((t && t.title) || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+      const note = String((t && t.note) || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      const p = Number(t && t.priority);
+      const priority = Number.isFinite(p) ? Math.max(0, Math.min(3, Math.round(p))) : 1;
+      const due = /^\d{4}-\d{2}-\d{2}$/.test(String((t && t.due) || '')) ? String(t.due) : '';
+      return { title, note, priority, due };
+    })
+    .filter((t) => t.title)
+    .slice(0, 8);
+  return {
+    summary: String((obj && obj.summary) || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    tasks,
+  };
+}
+
+/**
+ * 解析兜底识别的回复：优先取 JSON；模型没按 JSON 回时，把原文当文字用。
+ * 返回 null = 图里确实没字，或模型只回了一句拒绝/道歉，不要硬造任务。
+ */
+function parseTextShotReply(raw) {
+  const clean = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+  const text = String(raw || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  let obj = {};
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { obj = JSON.parse(text.slice(start, end + 1)); } catch (e) { /* 不是 JSON 就按纯文本处理 */ }
+  }
+
+  const body = clean(obj.text || obj.ocr || '').slice(0, 500);
+  const note = clean(obj.note || '').slice(0, 200);
+  let title = clean(obj.title || '').slice(0, 60);
+  let source = body || note;
+  if (!source && start < 0) source = clean(text).slice(0, 500);
+  if (!source) {
+    // 模型只给了标题也算有收获；标题为空才真的没东西可用
+    if (title) return { title: title.slice(0, 30), note: '', text: '' };
+    return null;
+  }
+
+  // 模型拒绝/道歉不当任务；图里只有一两个字的也不算识别成功
+  if (/^(抱歉|对不起|无法|不能|sorry|i\s*(can'?t|cannot))/i.test(source)) return null;
+  if (source.replace(/\s/g, '').length < 4) return null;
+
+  if (!title) {
+    const line = source.split(/[。\n；;]/).map((s) => s.trim()).find((s) => s.length >= 2) || source;
+    title = line.replace(/^[\s•·\-–—\d.、)）]+/, '').slice(0, 30);
+  }
+  if (!title) return null;
+
+  return {
+    title: title.slice(0, 30),
+    note: (body || note || (start < 0 ? source : '')).slice(0, 300),
+    text: source.slice(0, 500),
+  };
+}
+
 /**
  * 润色预设：内置几种常见改写取向，界面上直接下拉选，选中后填进「自定义提示词」可再改。
  * instruction 会作为补充要求拼进用户提示，因此每条都写成一句明确的动作指令。
@@ -263,6 +578,13 @@ module.exports = {
   DEFAULT_CONFIG,
   PRESETS,
   POLISH_PRESETS,
+  VISION_PRESETS,
+  visionCapability,
+  modelLabel,
+  recognizeTasksFromImage,
+  recognizeTextFromImage,
+  parseShotReply,
+  parseTextShotReply,
   callLLM,
   testConnection,
   summarizeSearch,

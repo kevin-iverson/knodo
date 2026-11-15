@@ -18,6 +18,7 @@ const { setupTray, destroyTray, refreshTrayMenu } = require('./tray');
 const desktopWindow = require('./desktop-window');
 const shortcuts = require('./shortcuts');
 const capture = require('./capture');
+const shot = require('./shot');
 const features = require('./features');
 const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
@@ -121,7 +122,7 @@ function createSplash() {
         // 不抢焦点：启动瞬间抢焦点会打断用户正在输入的东西
         focusable: false,
         // 与出厂默认（宣纸）同色，splash.html 里也是这两个值
-        backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1610' : '#f6f0e4',
+        backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1310' : '#f6eedc',
         webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
       });
       splashWindow.once('ready-to-show', () => {
@@ -354,6 +355,30 @@ function dispatchShortcut(actionId) {
       return;
     case 'app.capture':
       capture.toggle({ contextGroupId: captureContext() });
+      return;
+    // 截图建任务：两条路径共用同一条后续链路（识别 → 确认卡 → 落库），
+    // 区别只在取图方式，所以这里只调各自的入口，不在这里做任何识别逻辑
+    case 'app.screenshotPaste':
+      shot.shortcutClipboard().catch((e) => {
+        // 取图阶段的失败没有卡片可承载（卡片本身要靠图才能开），只能弹原生提示
+        msgBox({
+          type: 'info',
+          title: '没有读到图片',
+          message: (e && e.message) || '没有读到图片',
+          detail: `${(e && e.message) || e}\n\n先按 Win + Shift + S 截一下，再按 Ctrl + Alt + V；也可以直接按 Ctrl + Alt + S 框选屏幕。`,
+          buttons: ['好'],
+          noLink: true,
+        }).catch(() => {});
+      });
+      return;
+    case 'app.screenshot':
+      shot.shortcutRegion().catch((e) => {
+        console.error('[shot] 区域截图失败', e && e.message ? e.message : e);
+        showWindow();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('ui:shot-error', (e && e.message) || String(e));
+        }
+      });
       return;
     case 'app.toggleDesktop': {
       const r = desktopWindow.toggleAllVisible();
@@ -1147,6 +1172,13 @@ app.whenReady().then(async () => {
     onDataChange: (payload) => broadcastDataChanged(payload),
   });
 
+  // 截图建任务：常驻（不并入插件开关），空闲时只有一个 IPC 注册 + 一段内存，
+  // 没有定时器、没有监听剪贴板 —— 不想要就清空快捷键。
+  shot.init({
+    getMainWindow: () => mainWindow,
+    onDataChange: (payload) => broadcastDataChanged(payload),
+  });
+
   // 全局快捷键：必须在这里（whenReady 之后）注册，早于此时机 register() 静默失败
   shortcuts.init({ onAction: dispatchShortcut });
 
@@ -1154,6 +1186,7 @@ app.whenReady().then(async () => {
   app.on('will-quit', () => {
     features.handleWillQuit(); // 进行中的工时按已跑时长落库
     capture.destroy();
+    shot.destroy();
     shortcuts.destroy();
   });
 
@@ -3598,6 +3631,7 @@ app.whenReady().then(async () => {
               'r10:tfNativeDates',         // 期望「原生 date 输入框 0 个」
               'r15:masksBefore',           // 提示用：期望润色前没有残留遮罩 = 0
               'r17:noneCount',             // 期望「确实无关联」时候选就是 0 条
+              'dom:aiMenuItem',            // 菜单栏已整条撤掉，这一项恒为 null（入口改到设置中心），别再当失败
             ]);
             let printed = 0;
             const dumpFalsy = (label, obj) => {

@@ -15,7 +15,7 @@
  * 透明度调的是「背景透过面板的比例」，不是图片层的 opacity —— 后者会被主题底色洗成灰雾。
  */
 (function () {
-  /** 六套风格：只定义色相与饱和度；base = 图片全显时允许的最小面板不透明度 */
+  /** 七套风格：只定义色相与饱和度；base = 图片全显时允许的最小面板不透明度 */
   const STYLES = {
     mist: {
       name: '雾灰', en: 'MIST', base: 0.72, swatch: '#4f7cff',
@@ -72,6 +72,17 @@
         text: '#f0e4e7', 'text-2': '#b8a2a9', 'text-3': '#8a737b', border: '#33242a', primary: '#ec8ba0', 'primary-strong': '#d07087',
       },
     },
+    palace: {
+      name: '故宫', en: 'PALACE', base: 0.74, swatch: '#8E2B23',
+      light: {
+        bg: '#f6eedc', 'bg-panel': '#fbf6ea', 'bg-sidebar': '#f3e9d6', 'bg-hover': '#f0e2c8', 'bg-active': '#efd9b4',
+        text: '#2c211a', 'text-2': '#6b5544', 'text-3': '#9a8468', border: '#e4d5bc', primary: '#8e2b23', 'primary-strong': '#6f1f1b',
+      },
+      dark: {
+        bg: '#1b1310', 'bg-panel': '#241a16', 'bg-sidebar': '#1f1613', 'bg-hover': '#2f221c', 'bg-active': '#3a2a22',
+        text: '#f1e4ce', 'text-2': '#c4af94', 'text-3': '#8e7862', border: '#3a2a22', primary: '#d9584f', 'primary-strong': '#b0433a',
+      },
+    },
     contrast: {
       name: '高对比', en: 'CONTRAST', base: 0.86, swatch: '#111111',
       light: {
@@ -85,16 +96,16 @@
     },
   };
 
-  const ORDER = ['mist', 'graphite', 'moss', 'sepia', 'sakura', 'contrast'];
+  const ORDER = ['mist', 'graphite', 'moss', 'sepia', 'sakura', 'palace', 'contrast'];
 
   /**
-   * 出厂默认 = 宣纸（与主进程 main/theme.js 的 DEFAULT_THEME 必须一致）。
+   * 出厂默认 = 故宫（与主进程 main/theme.js 的 DEFAULT_THEME 必须一致）。
    * 只有「从来没存过主题」才落到这里：normalize 对缺失 / 非法 style 的兜底值就是它，
-   * 所以老版本只存过 'light' / 'dark' 字符串的用户，也会得到宣纸而不是纯白雾灰。
+   * 所以老版本只存过 'light' / 'dark' 字符串的用户，也会得到故宫这套暖色。
    */
   const DEFAULTS = {
     mode: 'system',
-    style: 'sepia',
+    style: 'palace',
     backdrop: {
       type: 'none', image: '', opacity: 60, blur: 0, fit: 'cover',
       scrim: 'auto', glass: true, luma: 0.5, missing: false,

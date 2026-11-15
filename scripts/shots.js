@@ -218,11 +218,11 @@ async function compose(page, { file, w, h, imgB64, drawW, drawH, x, y }) {
     c.style.cssText = 'position:fixed;left:0;top:0;width:' + (W / 2) + 'px;height:' + (H / 2) + 'px;z-index:2147483647;pointer-events:none';
     const g = c.getContext('2d');
 
-    // 壁纸：暖纸底 + 三团柔光（朱砂 / 苔绿 / 暖墨），低调但不至于像纯色
+    // 壁纸：夜里的宫墙 + 三团柔光（宫墙红 / 琉璃金 / 松绿），压得够暗才衬得出窗口
     const lg = g.createLinearGradient(0, 0, W, H);
-    lg.addColorStop(0, '#f8f3e9');
-    lg.addColorStop(0.5, '#f1e8d8');
-    lg.addColorStop(1, '#e7dac6');
+    lg.addColorStop(0, '#2c1b16');
+    lg.addColorStop(0.45, '#1d1411');
+    lg.addColorStop(1, '#130e0c');
     g.fillStyle = lg;
     g.fillRect(0, 0, W, H);
     const blob = (cx, cy, r, color) => {
@@ -232,17 +232,17 @@ async function compose(page, { file, w, h, imgB64, drawW, drawH, x, y }) {
       g.fillStyle = rg;
       g.fillRect(0, 0, W, H);
     };
-    blob(W * 0.16, H * 0.18, W * 0.52, 'rgba(217,71,46,0.10)');
-    blob(W * 0.88, H * 0.80, W * 0.55, 'rgba(74,124,67,0.10)');
-    blob(W * 0.62, H * 0.06, W * 0.42, 'rgba(165,100,44,0.09)');
+    blob(W * 0.14, H * 0.16, W * 0.55, 'rgba(196,66,44,0.24)');
+    blob(W * 0.86, H * 0.84, W * 0.55, 'rgba(201,154,60,0.17)');
+    blob(W * 0.64, H * 0.04, W * 0.40, 'rgba(56,86,78,0.18)');
 
     const img = new Image();
     await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = 'data:image/png;base64,' + ${JSON.stringify(imgB64)}; });
 
     g.save();
-    g.shadowColor = 'rgba(66,44,26,0.30)';
-    g.shadowBlur = 56;
-    g.shadowOffsetY = 20;
+    g.shadowColor = 'rgba(0,0,0,0.62)';
+    g.shadowBlur = 64;
+    g.shadowOffsetY = 24;
     g.drawImage(img, ${x}, ${y}, ${drawW}, ${drawH});
     g.restore();
 
@@ -480,8 +480,11 @@ const shots = {
   /* 禅模式：全屏静默计时（计时仍在主进程跑，Esc 只退出全屏） */
   async 'worklog-zen'(page) {
     await page.evaluate(click('[data-wl="zen"]'));
-    await page.waitFor(`!!document.querySelector('.wl-zen')`, 6000, '禅模式覆盖层');
-    await sleep(1600);
+    await page.waitFor(`!!document.querySelector('.wl-zen.is-open')`, 6000, '禅模式覆盖层');
+    // 覆盖层是 0.3s 淡入（wlZenIn）：只等元素出现会截到半透明的中间帧，
+    // 表现是「任务列表能透过禅模式看到」—— 必须等 calc 样式里 opacity 真的到 1
+    await page.waitFor(`getComputedStyle(document.getElementById('wl-zen')).opacity === '1'`, 6000, '禅模式淡入完成');
+    await sleep(1200);
     return page.shot(path.join(outDir, 'worklog-zen.png'));
   },
 

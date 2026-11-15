@@ -94,6 +94,8 @@ const ICON = {
   data: svg('<ellipse cx="8" cy="4" rx="4.6" ry="1.9"/><path d="M3.4 4v8c0 1 2 1.9 4.6 1.9s4.6-.9 4.6-1.9V4"/><path d="M3.4 8c0 1 2 1.9 4.6 1.9S12.6 9 12.6 8"/>'),
   about: svg('<circle cx="8" cy="8" r="6"/><path d="M8 7.4v3.8M8 5.4h.01"/>'),
   plugins: svg('<circle cx="8" cy="8.8" r="4.6"/><path d="M8 6.6v2.4l1.6 1"/><path d="M6.4 1.8h3.2M12.4 2.6l.9-.9"/>'),
+  // 摊开的书：两条书页 + 中缝，16px 下能认出「文档」
+  docs: svg('<path d="M2.4 3.4h4a1.6 1.6 0 0 1 1.6 1.6v7.6a1.6 1.6 0 0 0-1.6-1.6H2.4z"/><path d="M13.6 3.4h-4A1.6 1.6 0 0 0 8 5v7.6a1.6 1.6 0 0 1 1.6-1.6h4z"/>'),
 };
 
 /* ------------------------------ 行 / 控件构造器 ------------------------------ */
@@ -221,10 +223,11 @@ function appearanceHtml() {
     </div>
   </section>
 
-  <section class="st-sec" data-search="${APPEARANCE_SEARCH} 风格 雾灰 石墨 苔绿 宣纸 樱粉 高对比 style 夜间盯屏 护眼 笔记">
-    <div class="st-sec-title">风格<span class="ap-hint">六套气质，随时可换</span></div>
+  <section class="st-sec" data-search="${APPEARANCE_SEARCH} 风格 雾灰 石墨 苔绿 宣纸 樱粉 故宫 宫殿 脊兽 高对比 style 夜间盯屏 护眼 笔记">
+    <div class="st-sec-title">风格<span class="ap-hint">七套气质，随时可换</span></div>
     <div class="st-card ap-card-body">
       <div class="ap-styles" data-grid="styles" data-mode="${r.mode}" role="radiogroup" aria-label="风格">${styleCardsHtml(r.mode)}</div>
+      ${r.style === 'palace' ? '<div class="ap-palace-note">故宫风格会在窗口底部陈列太和殿的十一尊脊兽：悬停或点击任意一尊，可查看来历与寓意。切到其他风格时檐口会自动收起。</div>' : ''}
     </div>
   </section>
 
@@ -587,11 +590,56 @@ const keyStateText = (o) => (o && o.hasKey
   ? (o.encryptionDegraded ? 'Key 已保存（非加密降级）' : 'Key 已保存（本地加密）')
   : 'Key 未配置');
 
+/**
+ * 视觉模型的「生效状态」文案。
+ * 这一行是这组配置的全部意义所在：用户必须一眼看出**这次识图到底会打给谁**，
+ * 否则回落到对话模型（通常是 deepseek-chat，根本不支持图片）时，
+ * 报错会出现在按快捷键之后，那时用户已经截完图了。
+ */
+function visionStateText(v) {
+  if (!v || !v.effective) return '未读取到配置';
+  const e = v.effective;
+  if (!e.hasKey) {
+    return e.source === 'fallback'
+      ? `还没有可用的 Key：识别会提示先配置（当前会回落到对话模型 ${e.label}）`
+      : '视觉模型还没有可用的 Key：识别会提示先配置';
+  }
+  if (e.source === 'fallback') {
+    return e.imageCapability === 'yes'
+      ? `未单独配置，回落到对话模型 ${e.label}（能读图）`
+      : `未单独配置，回落到对话模型 ${e.label}（是否支持图片未确认，识别失败就换一个视觉模型）`;
+  }
+  const unconfirmed = e.imageCapability === 'yes' ? '' : '（未收录，点「测试读图」可验证）';
+  return e.keyReused
+    ? `使用视觉模型 ${e.label}，Key 复用对话模型（同一服务商）${unconfirmed}`
+    : `使用视觉模型 ${e.label}（独立 Key）${unconfirmed}`;
+}
+
+/** 视觉模型下拉：当前预设的模型 + 「自定义…」；手填过的名字回显为「自定义…」+ 输入框 */
+function visionModelCtl(presets, baseUrl, model) {
+  const preset = (presets || []).find((p) => p.baseUrl === baseUrl) || null;
+  const models = preset ? preset.models : [];
+  const known = models.some((m) => m.id === model);
+  const opts = models.map((m) => [m.id, m.free ? `${m.label} · ${m.free}` : m.label]);
+  opts.push(['__custom', '自定义…']);
+  const value = !model ? (models[0] ? models[0].id : '__custom') : (known ? model : '__custom');
+  return ctlSelect('st-vision-model', value, opts)
+    + `<input class="st-input" id="st-vision-model-custom" type="text" spellcheck="false"
+         placeholder="填模型名，如 qwen3.8-flash 或 glm-4v-flash" value="${esc(known ? '' : (model || ''))}"
+         style="max-width:210px;${value === '__custom' ? '' : 'display:none'}" />`;
+}
+
 function aiHtml() {
   const c = S.ai || {};
   const asr = c.asr || {};
+  const vision = c.vision || {};
   const presets = c.presets || [];
   const asrPresets = asr.presets || [];
+  const visionPresets = vision.presets || [];
+  const vPresetId = (() => {
+    const hit = visionPresets.find((p) => p.baseUrl === vision.baseUrl);
+    return hit ? hit.id : '';
+  })();
 
   return [
     sectionHtml({
@@ -630,6 +678,50 @@ function aiHtml() {
       ],
     }),
     sectionHtml({
+      title: '视觉模型',
+      desc: '截图建任务专用：只负责「看图」，与对话模型分开配置。不配也能用 —— 会回落到对话模型，前提是那个模型能读图。',
+      rows: [
+        rowHtml({
+          id: 'vision-state',
+          title: '当前生效',
+          desc: visionStateText(vision),
+          search: '识图 vision 视觉模型 生效 回落',
+        }),
+        rowHtml({
+          title: '接口预设',
+          desc: '选中后自动填好地址与默认模型，也可以手动改',
+          ctl: ctlSelect('st-vision-preset', vPresetId,
+            [['', '自定义']].concat(visionPresets.map((p) => [p.id, p.label]))),
+          search: '智谱 glm 通义 qwen openai ollama 硅基流动',
+        }),
+        rowHtml({
+          title: '视觉模型',
+          desc: '预设是省事的默认值，不是白名单：自建中转 / 私有部署直接选「自定义…」填名字',
+          ctl: visionModelCtl(visionPresets, vision.baseUrl, vision.model),
+          search: 'model 4v vl vision llava 自定义',
+        }),
+        rowHtml({
+          title: '视觉接口地址',
+          ctl: ctlInput('st-vision-baseurl', vision.baseUrl || '', { placeholder: '留空 = 用对话模型的地址', wide: true }),
+          search: 'base url 端点',
+        }),
+        rowHtml({
+          title: '视觉 API Key',
+          desc: vision.hasKey
+            ? `${keyStateText(vision)}；留空则保持不变`
+            : '与对话模型同一服务商时可留空（自动复用）；不同服务商必须单独填',
+          ctl: ctlInput('st-vision-key', '', { type: 'password', placeholder: vision.hasKey ? '已保存，留空则不变' : '输入 API Key', wide: true }),
+          search: '密钥 token key',
+        }),
+        rowHtml({
+          title: '连接测试',
+          desc: '会真发一张 256×256 白图，验的是「这个模型能读图」，不是「地址能通」',
+          ctl: ctlButton('test-vision', '测试读图'),
+          search: '连通 检测 测试 vision ping',
+        }),
+      ],
+    }),
+    sectionHtml({
       title: '语音转写',
       desc: '用于会议纪要与录音转写；不配置时录音仍可保存，但不会自动转文字。',
       rows: [
@@ -653,22 +745,62 @@ function aiHtml() {
         }),
       ],
     }),
+    sectionHtml({
+      title: '截图建任务',
+      desc: '把截图里的待办直接建成任务：识别结果先落一张可编辑的卡片，勾选后才进库。没拆出明确待办时，会把图里的文字识别成一条草稿，别让你空手而归。',
+      rows: [
+        rowHtml({
+          title: '读取剪贴板',
+          desc: '默认主入口：先用 Win + Shift + S 截好，再按这个键。不会隐藏窗口，也更快',
+          ctl: ctlInfo('Ctrl + Alt + V'),
+          search: '截图 快捷键 剪贴板 screenshot paste',
+        }),
+        rowHtml({
+          title: '框选屏幕区域',
+          desc: '直接在屏幕上拖一块，松手后还能拖动边角改大小、拖内部挪位置，回车确认',
+          ctl: ctlInfo('Ctrl + Alt + S'),
+          search: '框选 区域 截屏 screenshot region',
+        }),
+        rowHtml({
+          title: '图片去哪了',
+          desc: '截图只在你按键时截取，本地不保留原图；确认添加后才作为附件存进数据目录。识别时图片会发给你配置的视觉模型服务商。',
+          search: '隐私 安全 外发 附件',
+        }),
+        rowHtml({
+          title: '改键 / 关闭',
+          desc: '两个键都在「快捷键」分区里，可以改键，也可以清空 —— 清空后这个功能对你就不存在了',
+          search: '自定义 快捷键 keybinding',
+        }),
+      ],
+    }),
     `<div class="st-foot-note">Key 只在保存时写进本地数据库（加密存储），不会随导出 / 同步带出去。</div>`,
   ].join('');
 }
 
 async function saveAi(pane) {
   const val = (sel) => (pane.querySelector(sel)?.value || '').trim();
+  // 视觉模型是「下拉 + 自定义」二态：选到「自定义…」时真值在旁边的输入框里
+  const vSel = pane.querySelector('#st-vision-model');
+  const vCustom = pane.querySelector('#st-vision-model-custom');
+  const visionModel = vSel && vSel.value === '__custom'
+    ? (vCustom?.value || '').trim()
+    : (vSel?.value || '').trim();
+
   const payload = {
     baseUrl: val('#st-ai-baseurl'),
     model: val('#st-ai-model'),
     asrBaseUrl: val('#st-asr-baseurl'),
     asrModel: val('#st-asr-model'),
+    // 地址 / 模型允许清空：清空 = 回落（主进程侧按"留空即回落"解释）
+    visionBaseUrl: val('#st-vision-baseurl'),
+    visionModel,
   };
   const key = val('#st-ai-key');
   const asrKey = val('#st-asr-key');
+  const visionKey = val('#st-vision-key');
   if (key) payload.apiKey = key;       // 留空 = 保持原 Key 不变（主进程侧语义）
   if (asrKey) payload.asrKey = asrKey;
+  if (visionKey) payload.visionKey = visionKey;
 
   const r = await api.ai.saveConfig(payload);
   S.ai = r;
@@ -682,6 +814,14 @@ async function saveAi(pane) {
     asrKeyInput.value = '';
     asrKeyInput.placeholder = (r.asr && r.asr.hasKey) ? '已保存，留空则不变' : '输入 API Key';
   }
+  const vKeyInput = pane.querySelector('#st-vision-key');
+  if (vKeyInput) {
+    vKeyInput.value = '';
+    vKeyInput.placeholder = (r.vision && r.vision.hasKey) ? '已保存，留空则不变' : '输入 API Key';
+  }
+  // 「当前生效」这一行必须跟着变：它决定用户下一次按快捷键时请求打给谁
+  const vState = pane.querySelector('[data-item="vision-state"] .st-row-desc');
+  if (vState) vState.textContent = visionStateText(r.vision);
   // 状态文案就地更新，不整体重绘（重绘会丢焦点，用户可能正往里打字）
   pane.querySelectorAll('.st-row').forEach((row) => {
     const title = row.querySelector('.st-row-title')?.textContent || '';
@@ -706,8 +846,43 @@ function mountAi(pane) {
   bindPreset('#st-ai-preset', '#st-ai-baseurl', '#st-ai-model', (S.ai || {}).presets);
   bindPreset('#st-asr-preset', '#st-asr-baseurl', '#st-asr-model', ((S.ai || {}).asr || {}).presets);
 
+  /* ---- 视觉模型：预设换一组时，地址与「模型下拉」一起重建 ---- */
+  const vPresets = (S.ai && S.ai.vision && S.ai.vision.presets) || [];
+  const rebuildVisionModels = (models, selected) => {
+    const sel = pane.querySelector('#st-vision-model');
+    if (!sel) return;
+    sel.innerHTML = (models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.free ? `${m.label} · ${m.free}` : m.label)}</option>`).join('')
+      + '<option value="__custom">自定义…</option>';
+    sel.value = selected && (models || []).some((m) => m.id === selected)
+      ? selected
+      : ((models && models[0] && models[0].id) || '__custom');
+    const custom = pane.querySelector('#st-vision-model-custom');
+    if (custom) {
+      custom.value = '';
+      custom.style.display = sel.value === '__custom' ? '' : 'none';
+    }
+  };
+  pane.querySelector('#st-vision-preset')?.addEventListener('change', (e) => {
+    const p = vPresets.find((x) => x.id === e.target.value);
+    if (!p) return; // 选「自定义」：地址与模型都留给用户自己写，不清空已有内容
+    const urlInput = pane.querySelector('#st-vision-baseurl');
+    if (urlInput) urlInput.value = p.baseUrl;
+    rebuildVisionModels(p.models, null);
+    saveAi(pane).catch((err) => toast(`保存失败：${(err && err.message) || err}`));
+  });
+  pane.querySelector('#st-vision-model')?.addEventListener('change', (e) => {
+    const custom = pane.querySelector('#st-vision-model-custom');
+    const isCustom = e.target.value === '__custom';
+    if (custom) {
+      custom.style.display = isCustom ? '' : 'none';
+      if (isCustom) { custom.focus(); return; } // 等用户把名字填完再落库
+    }
+    saveAi(pane).catch((err) => toast(`保存失败：${(err && err.message) || err}`));
+  });
+
   // 文本类字段失焦 / 回车提交：WorkBuddy 的设置项没有「保存」按钮，改完即生效
-  ['#st-ai-model', '#st-ai-baseurl', '#st-ai-key', '#st-asr-model', '#st-asr-baseurl', '#st-asr-key']
+  ['#st-ai-model', '#st-ai-baseurl', '#st-ai-key', '#st-asr-model', '#st-asr-baseurl', '#st-asr-key',
+    '#st-vision-baseurl', '#st-vision-model-custom', '#st-vision-key']
     .forEach((sel) => {
       const el = pane.querySelector(sel);
       if (!el) return;
@@ -720,20 +895,46 @@ function mountAi(pane) {
   // 连接测试：结果就地写在说明行里，不弹窗打断（失败原因通常是「Key 错了 / 地址多了斜杠」这种短句）
   pane.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-act="test-ai"]');
-    if (!btn) return;
-    const desc = btn.closest('.st-row')?.querySelector('.st-row-desc');
-    btn.disabled = true;
-    if (desc) desc.textContent = '正在测试…';
-    try {
-      const r = await api.ai.test({
-        baseUrl: (pane.querySelector('#st-ai-baseurl')?.value || '').trim(),
-        model: (pane.querySelector('#st-ai-model')?.value || '').trim(),
-      });
-      if (desc) desc.textContent = r && r.ok ? `连接成功：${r.message || '模型响应正常'}` : `连接失败：${(r && r.message) || '未知错误'}`;
-    } catch (err) {
-      if (desc) desc.textContent = `连接失败：${(err && err.message) || err}`;
-    } finally {
-      btn.disabled = false;
+    if (btn) {
+      const desc = btn.closest('.st-row')?.querySelector('.st-row-desc');
+      btn.disabled = true;
+      if (desc) desc.textContent = '正在测试…';
+      try {
+        const r = await api.ai.test({
+          baseUrl: (pane.querySelector('#st-ai-baseurl')?.value || '').trim(),
+          model: (pane.querySelector('#st-ai-model')?.value || '').trim(),
+        });
+        if (desc) desc.textContent = r && r.ok ? `连接成功：${r.message || '模型响应正常'}` : `连接失败：${(r && r.message) || '未知错误'}`;
+      } catch (err) {
+        if (desc) desc.textContent = `连接失败：${(err && err.message) || err}`;
+      } finally {
+        btn.disabled = false;
+      }
+      return;
+    }
+    // 视觉模型自检：真发一张 256×256 白图，验"这个模型能吃图"
+    const vBtn = e.target.closest('[data-act="test-vision"]');
+    if (vBtn) {
+      const desc = vBtn.closest('.st-row')?.querySelector('.st-row-desc');
+      const vSel = pane.querySelector('#st-vision-model');
+      const vCustom = pane.querySelector('#st-vision-model-custom');
+      const model = vSel && vSel.value === '__custom'
+        ? (vCustom?.value || '').trim()
+        : (vSel?.value || '').trim();
+      vBtn.disabled = true;
+      if (desc) desc.textContent = '正在发一张测试图…';
+      try {
+        const r = await api.ai.testVision({
+          baseUrl: (pane.querySelector('#st-vision-baseurl')?.value || '').trim(),
+          model,
+          apiKey: (pane.querySelector('#st-vision-key')?.value || '').trim(),
+        });
+        if (desc) desc.textContent = r && r.ok ? (r.message || '读图正常') : `失败：${(r && r.message) || '未知错误'}`;
+      } catch (err) {
+        if (desc) desc.textContent = `失败：${(err && err.message) || err}`;
+      } finally {
+        vBtn.disabled = false;
+      }
     }
   });
 }
@@ -1204,6 +1405,129 @@ function mountData(pane) {
   });
 }
 
+/* ------------------------------ 分区：学习文档 ------------------------------ */
+
+/**
+ * 学习文档：把 Gitee 上的文档拆成可单独打开的条目。
+ *
+ * 换仓库 / 换分支只改这两个常量；文件路径全部集中在 DOC_ITEMS 里，
+ * 行的文案与搜索词也挂在那里 —— 加一篇文档就是往数组里加一项，不用碰模板。
+ *
+ * 为什么不在应用内渲染 Markdown：文档里全是相对路径图片与互相跳转的链接，
+ * 在应用内打开等于要重新实现一套解析 + 资源代理；而改完文档只想立刻看到效果的是
+ * 维护者，用系统浏览器性价比最高（也顺手能把链接发给别人）。
+ */
+const DOC_REPO = 'https://gitee.com/kiverson/todo-task';
+const DOC_BRANCH = 'main';
+/** 镜像：同一份内容在 GitHub。Gitee 打不开（企业网 / 杀软拦截）时给用户第二条路 */
+const DOC_REPO_MIRROR = 'https://github.com/kevin-iverson/knodo';
+
+/** 把仓库内路径拼成可打开的 blob 链接。中文文件名必须 encodeURI，否则会被当成本地路径 */
+function docUrl(path) {
+  return `${DOC_REPO}/blob/${DOC_BRANCH}/${encodeURI(path)}`;
+}
+
+/**
+ * 条目：只放**线上确实存在**的页面。
+ * docs/ 下目前只有 docs/README.md 与仓库根 README 提交过（其余分篇文档还在本地），
+ * 直接按文件名拼链接就是一堆 404 —— 所以这里宁少不假，等那些文档推上去再往里加。
+ * 每项二选一：path（仓库内文件，按分支拼 blob 链接）或 url（仓库外绝对地址）。
+ */
+const DOC_ITEMS = [
+  {
+    id: 'start',
+    title: '开始读',
+    rows: [
+      {
+        key: 'index', path: 'docs/README.md',
+        title: '文档目录',
+        desc: '按「安装 / 使用 / 开发维护」分好主题的目录页（分篇文档还在陆续补到仓库，个别条目暂时打不开）',
+        search: 'docs 文档 目录 首页 索引 手册 教程 学习 guide',
+      },
+      {
+        key: 'home', path: 'README.md',
+        title: '功能总览（项目主页）',
+        desc: '为什么这么设计，以及任务 / 日历 / 笔记 / 会议 / AI / 工时 / 快捷键每一块怎么用，含快速开始与源码运行',
+        search: 'readme 功能 总览 亮点 介绍 快速开始 上手 入门 源码 运行',
+      },
+    ],
+  },
+  {
+    id: 'get',
+    title: '安装与更新',
+    rows: [
+      {
+        key: 'download', url: `${DOC_REPO}/releases/latest`,
+        title: '下载最新版',
+        desc: '安装版 exe 与便携版 7z 都在这里；被 Windows 拦下时点「更多信息 → 仍要运行」',
+        search: '下载 安装 便携版 最新版 发行版 release download 拦截 未知发布者',
+      },
+      {
+        key: 'releases', url: `${DOC_REPO}/releases`,
+        title: '历史版本与更新记录',
+        desc: '每个版本改了什么；想回退旧版也从这里取',
+        search: '历史 版本 记录 更新日志 changelog 回退 releases',
+      },
+    ],
+  },
+  {
+    id: 'mirror',
+    title: '打不开的时候',
+    rows: [
+      {
+        key: 'mirror', url: DOC_REPO_MIRROR,
+        title: 'GitHub 镜像',
+        desc: '同一份代码与文档，两站同版本。Gitee 被企业网或杀软拦掉时用这条',
+        search: '镜像 github 打不开 备用 备用地址 mirror',
+      },
+    ],
+  },
+];
+
+const docBtn = (key, label = '打开') =>
+  `<button type="button" class="st-btn" data-act="open-doc" data-doc="${esc(key)}">${label}</button>`;
+
+function docsHtml() {
+  const sections = DOC_ITEMS.map((g) => sectionHtml({
+    title: g.title,
+    rows: g.rows.map((r) => rowHtml({
+      title: r.title, desc: r.desc, ctl: docBtn(r.key), search: r.search,
+    })),
+  }));
+  return [
+    ...sections,
+    '<div class="st-foot-note">文档都在浏览器里打开，需要联网；读到的始终是仓库里的最新版本，不用等应用升级。'
+      + '顺手可以把链接分享给别人。</div>',
+  ].join('');
+}
+
+function mountDocs(pane) {
+  pane.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-act="open-doc"]');
+    if (!btn) return;
+    const item = DOC_ITEMS.flatMap((g) => g.rows).find((r) => r.key === btn.dataset.doc);
+    if (!item) return;
+    const url = item.url || docUrl(item.path);
+    btn.disabled = true;
+    try {
+      const r = await api.app.openExternal(url);
+      if (r && r.ok === false) throw new Error(r.reason || '系统没有默认浏览器');
+    } catch (err) {
+      // 打不开就把地址复制走：toast 只是一行字，长链接塞不进去，用户也没法选中复制
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(url);
+        copied = true;
+      } catch (e) { /* 剪贴板不可用：下面照样给出原因 */ }
+      toast(copied
+        ? `打不开：${(err && err.message) || err}。链接已复制，可以粘到浏览器里`
+        : `打不开：${(err && err.message) || err}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 /* ------------------------------ 分区：关于 ------------------------------ */
 
 /** 爱发电主页。留空时「支持」入口整块不渲染，避免出现点了没反应的死链接。 */
@@ -1239,6 +1563,12 @@ function aboutHtml() {
           ctl: ctlButton('check-update', '检查更新…'),
           search: 'update 更新 升级 版本 检查更新 新版本',
         }),
+        rowHtml({
+          title: '学习文档',
+          desc: '功能怎么用、快捷键、出问题怎么办 —— 都在 Gitee 上的文档里，按主题分好',
+          ctl: ctlButton('open-docs', '去看看'),
+          search: '文档 教程 学习 帮助 手册 说明 docs help guide',
+        }),
         rowHtml({ title: '开源许可', ctl: ctlInfo('MIT', { mono: false }), search: 'license 协议' }),
         rowHtml({
           title: '退出 Knodo',
@@ -1266,6 +1596,10 @@ function mountAbout(pane) {
         if (r && !r.ok) toast(r.reason || '无法打开链接');
       } else if (btn.dataset.act === 'check-update') {
         await api.app.checkUpdate();
+      } else if (btn.dataset.act === 'open-docs') {
+        // 面板内跳转：切分区而不是重开设置，否则搜索词与滚动位置都丢了
+        const shell = pane.closest('.st-shell');
+        if (shell) paintActive(shell, 'docs');
       } else if (btn.dataset.act === 'quit') {
         // 原 File 菜单的 Exit：退出前主进程会走 isQuitting，托盘与定时器一起收
         await api.app.quit();
@@ -1284,6 +1618,8 @@ const GROUPS = [
   { id: 'base', label: '设置' },
   { id: 'feature', label: '功能' },
   { id: 'data', label: '数据与安全' },
+  // 帮助单列一组：学习文档与「关于」都属于「先看说明 / 看版本」，不该混进数据与备份
+  { id: 'help', label: '帮助' },
 ];
 
 /**
@@ -1415,7 +1751,9 @@ const PANES = [
   { id: 'tools', group: 'feature', label: '工具', icon: ICON.tools, build: toolsHtml, mount: mountTools },
   { id: 'fun', group: 'feature', label: '趣味功能', icon: ICON.fun, build: funHtml, mount: mountFun },
   { id: 'data', group: 'data', label: '数据与备份', icon: ICON.data, build: dataHtml, mount: mountData },
-  { id: 'about', group: 'data', label: '关于', icon: ICON.about, build: aboutHtml, mount: mountAbout },
+  // 帮助组：学习文档在「关于」之前 —— 找说明的人比看版本号的人多
+  { id: 'docs', group: 'help', label: '学习文档', icon: ICON.docs, build: docsHtml, mount: mountDocs },
+  { id: 'about', group: 'help', label: '关于', icon: ICON.about, build: aboutHtml, mount: mountAbout },
 ];
 
 const PANE_IDS = PANES.map((p) => p.id);
@@ -1563,6 +1901,9 @@ export async function openSettings(paneId = '') {
     className: 'modal-settings',
     html: shellHtml(),
     showClose: true,
+    // 设置是一张大表单：点外面就关掉，正在改的输入框、滚动位置、当前分区全没了，
+    // 而且遮罩面积远大于面板，误触概率很高。只认 ✕（Esc 仍在，见 escGuard）。
+    closeOnMask: false,
     resizable: true,
     resizeKey: 'settings-v2',
     minWidth: 760,

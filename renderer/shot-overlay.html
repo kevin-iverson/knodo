@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- 覆盖层是独立顶层面：只加载本地资源，背景图走 data: URL（主进程送进来） -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self';" />
+  <title>Knodo 框选</title>
+  <link rel="stylesheet" href="css/shot-overlay.css" />
+</head>
+<body>
+  <!-- 三层：背景截图 → 压暗层 → 选区（选区自己用 box-shadow 挖洞）。
+       状态机写在 js/shot-overlay.js 的 setMode()：idle → new → selected → move / resize → done -->
+  <div class="so" id="so" data-state="idle">
+    <img class="so-bg" id="so-bg" alt="" draggable="false" />
+    <div class="so-scrim" id="so-scrim"></div>
+
+    <!-- 选区：pointer-events:none，只有内部 .so-move 与 8 个手柄接管指针 -->
+    <div class="so-sel" id="so-sel" hidden>
+      <div class="so-move" id="so-move" title="拖动移动选区"></div>
+
+      <span class="so-h so-h-n"  data-h="n"  aria-hidden="true"></span>
+      <span class="so-h so-h-s"  data-h="s"  aria-hidden="true"></span>
+      <span class="so-h so-h-w"  data-h="w"  aria-hidden="true"></span>
+      <span class="so-h so-h-e"  data-h="e"  aria-hidden="true"></span>
+      <span class="so-h so-h-nw" data-h="nw" aria-hidden="true"></span>
+      <span class="so-h so-h-ne" data-h="ne" aria-hidden="true"></span>
+      <span class="so-h so-h-sw" data-h="sw" aria-hidden="true"></span>
+      <span class="so-h so-h-se" data-h="se" aria-hidden="true"></span>
+    </div>
+
+    <!-- 尺寸标签放在选区**外面**（兄弟节点）：坐标按画布算，不必再减选区偏移 -->
+    <div class="so-size" id="so-size" hidden><span id="so-size-w">0</span><i>×</i><span id="so-size-h">0</span></div>
+
+    <!-- 一条底栏走完整个流程：未选区 = 说明，选中后 = 动作 -->
+    <div class="so-bar" id="so-bar">
+      <div class="so-bar-idle" id="so-bar-idle">
+        <span class="so-kbd">拖动</span>
+        <span>框选要识别的区域</span>
+      </div>
+      <div class="so-bar-act" id="so-bar-act" hidden>
+        <span class="so-bar-hint"><b>拖动边角</b>改大小 · <b>拖动内部</b>移动</span>
+        <button type="button" class="so-btn" data-act="cancel" title="放弃这次截图（Esc）">取消</button>
+        <button type="button" class="so-btn is-primary" data-act="ok" title="用这块区域识别（Enter）">完成</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="js/shot-overlay.js"></script>
+</body>
+</html>

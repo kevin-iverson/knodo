@@ -1,0 +1,226 @@
+/* ============================================================
+   框选覆盖层
+   ------------------------------------------------------------
+   设计约束（三条，别破坏）：
+   1. 截图本身是主角：所有 chrome 都压在选区**外面**，选区内不出现任何常驻控件；
+   2. 一个强调色：朱砂（品牌色）只用于选区边框 / 角点 / 主按钮，其余全是墨色与象牙；
+   3. 任何背景下都要看得见：边框是饱和朱砂 + 1px 暗描边（亮底靠朱砂、暗底靠象牙角点）。
+   ============================================================ */
+
+:root {
+  /* 朱砂：品牌标识里的 #D9472E 在屏幕上偏低，这里提亮一档保证小尺寸边框也扎眼 */
+  --accent: #e2452b;
+  --accent-lit: #ff6a4d;
+  --ivory: #fffbf0;
+  --ink: #14110d;
+  /* 暖墨压暗层：与宣纸 / 墨的主题底同族，比中性黑更贴这套外观 */
+  --scrim: rgba(18, 14, 10, 0.52);
+  --font: "Segoe UI", "Microsoft YaHei", -apple-system, Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  font-family: var(--font);
+  /* 覆盖层里不需要选中文本，也不需要系统右键菜单 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.so {
+  position: fixed;
+  inset: 0;
+  cursor: crosshair;
+  /* 拖拽过程中不要让浏览器把指针事件变成滚动/缩放 */
+  touch-action: none;
+  overflow: hidden;
+}
+.so[data-state="selected"],
+.so[data-state="move"],
+.so[data-state="resize"] { cursor: default; }
+.so[data-state="move"] { cursor: grabbing; }
+.so[data-state="done"] { cursor: default; }
+
+.so-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* fill 而不是 cover：背景图就是这块屏的原样，任何裁切都会让选区与像素错位 */
+  object-fit: fill;
+  display: block;
+  pointer-events: none;
+}
+
+/* 还没开始框选时整屏压暗；一开始框选就交给 .so-sel 的 box-shadow 挖洞 */
+.so-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  pointer-events: none;
+}
+
+/* ---------------- 选区 ---------------- */
+.so-sel {
+  position: absolute;
+  /* 坐标全部由 JS 用 transform 写（translate + 宽高），这里只定基准点 */
+  left: 0; top: 0;
+  /* 9999px 投影 = 选区外全部压暗（比拼四个 div 稳，也不会漏出缝） */
+  box-shadow: 0 0 0 9999px var(--scrim);
+  border: 1.5px solid var(--accent);
+  /* 暗描边：亮背景（白底表格）上单靠朱砂边框会和背景糊在一起 */
+  outline: 1px solid rgba(10, 7, 4, 0.45);
+  border-radius: 2px;
+  pointer-events: none;
+  will-change: left, top, width, height;
+}
+
+/* 内部可拖动区：整块选区的「抓手」。它透明，不盖住底图 */
+.so-move {
+  position: absolute;
+  inset: 0;
+  cursor: move;
+  pointer-events: auto;
+}
+.so[data-state="move"] .so-move { cursor: grabbing; }
+
+/* ---------------- 8 个手柄 ----------------
+   命中区比可见标记大得多（12px），否则精确拖动得靠运气。
+   角点 = 象牙方块 + 朱砂细边；边中点 = 朱砂短棒。 */
+.so-h {
+  position: absolute;
+  pointer-events: auto;
+  z-index: 2;
+}
+.so-h::after {
+  content: '';
+  position: absolute;
+  background: var(--accent);
+}
+
+/* 四角 */
+.so-h-nw, .so-h-ne, .so-h-sw, .so-h-se { width: 16px; height: 16px; }
+.so-h-nw { left: -8px; top: -8px; cursor: nwse-resize; }
+.so-h-ne { right: -8px; top: -8px; cursor: nesw-resize; }
+.so-h-sw { left: -8px; bottom: -8px; cursor: nesw-resize; }
+.so-h-se { right: -8px; bottom: -8px; cursor: nwse-resize; }
+.so-h-nw::after, .so-h-ne::after, .so-h-sw::after, .so-h-se::after {
+  left: 50%; top: 50%; width: 9px; height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  background: var(--ivory);
+  border: 1.5px solid var(--accent);
+  border-radius: 1.5px;
+  box-shadow: 0 1px 3px rgba(10, 7, 4, 0.5);
+}
+
+/* 四边中点：命中条沿整条边铺开（"拖边界改大小"就是靠它），可见标记只留 22px 短棒 */
+.so-h-n, .so-h-s { left: 12px; right: 12px; height: 12px; cursor: ns-resize; }
+.so-h-w, .so-h-e { top: 12px; bottom: 12px; width: 12px; cursor: ew-resize; }
+.so-h-n { top: -7px; }
+.so-h-s { bottom: -7px; }
+.so-h-w { left: -7px; }
+.so-h-e { right: -7px; }
+.so-h-n::after, .so-h-s::after {
+  left: 50%; top: 50%; width: 22px; height: 3px; margin: -1.5px 0 0 -11px;
+  border-radius: 2px;
+  box-shadow: 0 1px 3px rgba(10, 7, 4, 0.5);
+}
+.so-h-w::after, .so-h-e::after {
+  left: 50%; top: 50%; width: 3px; height: 22px; margin: -11px 0 0 -1.5px;
+  border-radius: 2px;
+  box-shadow: 0 1px 3px rgba(10, 7, 4, 0.5);
+}
+/* 选区太小的时候角点会盖住整块，藏掉边中点只留四角 */
+.so-sel.is-tiny .so-h-n,
+.so-sel.is-tiny .so-h-s,
+.so-sel.is-tiny .so-h-w,
+.so-sel.is-tiny .so-h-e { display: none; }
+
+/* 尺寸标签：跟着选区左上角，等宽数字（读数字时不跳字宽） */
+.so-size {
+  position: absolute;
+  left: 0; top: 0;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: rgba(20, 17, 13, 0.9);
+  color: var(--ivory);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.so-size i {
+  font-style: normal;
+  font-weight: 400;
+  opacity: 0.5;
+  margin: 0 1px;
+}
+
+/* ---------------- 底栏 ---------------- */
+.so-bar {
+  position: absolute;
+  /* 位置由 JS 用 transform 写：贴着选区上下翻，放不下才压进选区 */
+  left: 0; top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px 7px 13px;
+  border-radius: 10px;
+  background: rgba(20, 17, 13, 0.9);
+  color: var(--ivory);
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+  pointer-events: auto;
+  z-index: 5;
+  transition: opacity 0.12s ease;
+}
+.so-bar-idle, .so-bar-act { display: flex; align-items: center; gap: 10px; }
+.so-bar-hint { color: rgba(255, 251, 240, 0.62); }
+.so-bar-hint b { font-weight: 600; color: rgba(255, 251, 240, 0.9); }
+.so-kbd {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 251, 240, 0.14);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.so-btn {
+  appearance: none;
+  border: 1px solid rgba(255, 251, 240, 0.24);
+  background: transparent;
+  color: var(--ivory);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
+}
+.so-btn:hover { background: rgba(255, 251, 240, 0.12); border-color: rgba(255, 251, 240, 0.4); }
+.so-btn:active { transform: translateY(0.5px); }
+.so-btn:focus-visible { outline: 2px solid var(--accent-lit); outline-offset: 1px; }
+.so-btn.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.so-btn.is-primary:hover { background: var(--accent-lit); border-color: var(--accent-lit); }
+
+@media (prefers-reduced-motion: reduce) {
+  .so-bar, .so-btn { transition: none; }
+}

@@ -36,6 +36,8 @@ import { initSidebarResize } from './sidebar-resize.js';
 // 标题栏右上角三颗自绘按钮（系统 overlay 已撤，见 main/main.js）
 import { initWindowControls } from './win-controls.js';
 import { openContextMenu, closeContextMenu } from './ctx-menu.js';
+// 截图建任务确认卡：只管渲染与提交，取图 / 识别都在主进程
+import { openShotCard, setShotHandlers } from './shot-task.js';
 import { openSettings, setSettingsHandlers } from './settings.js';
 // 插件扩展点（关闭态全是空数组，三处调用零行为差异）
 import { EXT, ext, getExtView } from './ext.js';
@@ -134,6 +136,8 @@ let lastSentContext;
 export async function init() {
   setDetailHandlers({ refresh: () => { renderSidebar(); renderTasks(); }, toast });
   setSearchHandlers({ openDetail, toast });
+  // 截图建任务的卡片也要 toast（"已添加 3 条到今天"）：注入而不是让它反向 import ui.js
+  setShotHandlers({ toast });
   // 会议录制 / 纪要：录制归档后自动跳到会议视图查看。
   // refresh 只刷侧栏计数，绝不碰 #view —— 它是共享容器，会议里完成转写 / 出纪要 /
   // 删除记录 / 导入待办都会回调它，这里调 renderTasks() 会把整页换回任务列表
@@ -397,6 +401,18 @@ function bindStaticEvents() {
   // 主题：唯一入口在设置中心（也可用 Ctrl+, 打开），菜单栏重复项已删除
 
   // 主进程事件：托盘菜单“快速添加” → 展开底部编辑器
+  /**
+   * 截图建任务（Ctrl+Alt+V / Ctrl+Alt+S）：
+   * 主进程取完图后会推一条状态过来，这里只负责把卡片拉起来。
+   * 同一时刻只允许一张卡 —— 再按一次快捷键先把旧的关掉，否则会叠出两个遮罩。
+   */
+  api.on('ui:screenshot', (st) => {
+    openShotCard(st).catch((e) => toast(`截图识别失败：${(e && e.message) || e}`));
+  });
+  // 取图失败（系统权限 / 屏幕采集被拦）与框选超时：只有一句话，没有卡片可开
+  api.on('ui:shot-error', (msg) => { toast(msg || '截图失败，换个方式再试一次'); });
+  api.on('ui:shot-timeout', () => { toast('框选超时，已取消（再按一次可以重新框选）'); });
+
   api.on('ui:quick-add', () => {
     ensureTaskView();
     startAdd();

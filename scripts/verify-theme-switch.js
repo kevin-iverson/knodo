@@ -261,7 +261,7 @@ async function connect(wsUrl) {
       const cs = getComputedStyle(document.getElementById('btn-theme-mode')).webkitAppRegion;
       return { mode: saved.mode, style: saved.style, title: document.getElementById('btn-theme-mode').title, cs };
     })()`);
-    ok('恢复默认后回到跟随系统', reset.mode === 'system' && reset.style === 'sepia', JSON.stringify(reset));
+    ok('恢复默认后回到跟随系统', reset.mode === 'system' && reset.style === 'palace', JSON.stringify(reset));
     ok('跟随系统时 title 标注「跟随系统」', /跟随系统/.test(reset.title), reset.title);
 
     /* ---- 7) 极端风格抽查（只出图，不断言）：高对比浅色 / 樱粉深色 ----

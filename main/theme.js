@@ -18,8 +18,8 @@ const fs = require('fs');
 const path = require('path');
 const { nativeImage } = require('electron');
 
-/** 六套风格：只定义色相与饱和度，圆角 / 间距 / 字号沿用现值（切风格零布局抖动） */
-const STYLES = ['mist', 'graphite', 'moss', 'sepia', 'sakura', 'contrast'];
+/** 七套风格：只定义色相与饱和度，圆角 / 间距 / 字号沿用现值（切风格零布局抖动） */
+const STYLES = ['mist', 'graphite', 'moss', 'sepia', 'sakura', 'palace', 'contrast'];
 
 /** 每套风格的底色（窗口背景 / 启动防白闪只需 bg 这一个值，其余 token 在渲染层） */
 const BG_HEX = {
@@ -28,19 +28,20 @@ const BG_HEX = {
   moss: { light: '#eef2e9', dark: '#131a14' },
   sepia: { light: '#f6f0e4', dark: '#1b1610' },
   sakura: { light: '#fbf1f3', dark: '#1a1417' },
+  palace: { light: '#f6eedc', dark: '#1b1310' },
   contrast: { light: '#ffffff', dark: '#000000' },
 };
 
 /**
- * 出厂默认 = 宣纸（sepia），不是雾灰。
- * 理由：雾灰浅色的面板是纯白（#ffffff），第一眼就是「又一个白底效率工具」；
- * 宣纸的暖米色才是这个产品的气质（品牌暖墨底 + 象牙 + 朱砂）。
+ * 出厂默认 = 故宫（palace），不是雾灰。
+ * 理由：故宫这套红墙 + 宣纸 + 赤金是产品现在的主视觉；窗口底部的檐口脊兽
+ * 也只在故宫风格出现，默认即是最完整的一眼。
  * 注意：只有「从来没设置过」才走这里 —— 用户存过 style（哪怕只是切过明暗，
  * write() 会把当时的 style 一起写回）就一律尊重他的值，绝不强行改色。
  */
 const DEFAULT_THEME = {
   mode: 'system',
-  style: 'sepia',
+  style: 'palace',
   backdrop: {
     type: 'none',
     image: '',

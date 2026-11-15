@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="獬豸">
+  <ellipse cx="64" cy="117" rx="29" ry="4" fill="#7B5334" opacity=".16"/>
+
+  <!-- 尾 -->
+  <path d="M84 104c10 3 15-2 14-9-1-4-4-6-7-4" fill="none" stroke="#3B2A20" stroke-width="7.4" stroke-linecap="round"/>
+  <path d="M84 104c10 3 15-2 14-9-1-4-4-6-7-4" fill="none" stroke="#4A6353" stroke-width="3.8" stroke-linecap="round"/>
+  <circle cx="91.6" cy="90" r="4.2" fill="#E7BC5E" stroke="#A97A26" stroke-width="1.6"/>
+
+  <!-- 身体 -->
+  <path d="M46.5 112C42 99.5 45 87 56 82h16C83 87 86 99.5 81.5 112Z" fill="#46604F" stroke="#3B2A20" stroke-width="2.2" stroke-linejoin="round"/>
+  <ellipse cx="64" cy="99.5" rx="12.4" ry="10" fill="#EFE2C4"/>
+
+  <!-- 蹄 -->
+  <path d="M46 108h12v6H46zM70 108h12v6H70z" fill="#4A6353" stroke="#3B2A20" stroke-width="1.8"/>
+
+  <!-- 耳 -->
+  <path d="M42.6 38c-5-4-9-2.6-9.4 1.8 3 .4 5.8 2 7.8 4.6z" fill="#46604F" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M85.4 38c5-4 9-2.6 9.4 1.8-3 .4-5.8 2-7.8 4.6z" fill="#46604F" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- 头 -->
+  <ellipse cx="64" cy="53.5" rx="29.5" ry="28.5" fill="#46604F" stroke="#3B2A20" stroke-width="2.2"/>
+
+  <!-- 独角 -->
+  <path d="M64 30c-1-8 2-14 8-18-1 7 1 12 5 16-4 3-8 4-13 2z" fill="#E7BC5E" stroke="#A97A26" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M66 28c1-6 4-10 8-12" fill="none" stroke="#F7E3B4" stroke-width="1.6" stroke-linecap="round" opacity=".8"/>
+
+  <!-- 眉（严峻） -->
+  <path d="M46 44.6c3.2-3 6.6-3 8.8-.4M82 44.6c-3.2-3-6.6-3-8.8-.4" fill="none" stroke="#E7BC5E" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- 眼 -->
+  <ellipse cx="53.4" cy="53.4" rx="5.2" ry="5.6" fill="#F8DFA0"/>
+  <ellipse cx="74.6" cy="53.4" rx="5.2" ry="5.6" fill="#F8DFA0"/>
+  <ellipse cx="53.4" cy="53.8" rx="2.8" ry="3.9" fill="#2B211A"/>
+  <ellipse cx="74.6" cy="53.8" rx="2.8" ry="3.9" fill="#2B211A"/>
+  <circle cx="52.2" cy="52" r="1.5" fill="#FFF"/><circle cx="73.4" cy="52" r="1.5" fill="#FFF"/>
+
+  <!-- 吻部 -->
+  <ellipse cx="64" cy="66.4" rx="12.6" ry="8.8" fill="#EFE2C4"/>
+  <circle cx="59.4" cy="63.6" r="1.8" fill="#8A7043"/><circle cx="68.6" cy="63.6" r="1.8" fill="#8A7043"/>
+  <path d="M58.6 70c2.6 2.6 8.4 2.6 11 0" fill="none" stroke="#3B2A20" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- 山羊须 -->
+  <path d="M60 74c-1 4-2.6 6.6-5 8M64 75v9M68 74c1 4 2.6 6.6 5 8" fill="none" stroke="#EFE2C4" stroke-width="2.4" stroke-linecap="round"/>
+
+  <!-- 项圈 + 明镜 -->
+  <path d="M51.5 84.4c7.6 4.4 17.4 4.4 25 0" fill="none" stroke="#D9A441" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="64" cy="90.6" r="5.6" fill="#F0C05A" stroke="#A97A26" stroke-width="1.5"/>
+  <circle cx="64" cy="90.6" r="2.4" fill="none" stroke="#A97A26" stroke-width="1.2"/>
+  <path d="M64 96.2v3.4" stroke="#C2543F" stroke-width="2" stroke-linecap="round"/>
+</svg>

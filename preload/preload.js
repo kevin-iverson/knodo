@@ -16,6 +16,9 @@ function call(channel, ...args) {
       if (res && typeof res === 'object' && res.__error) {
         const err = new Error(res.__error);
         err.channel = channel;
+        // 业务错误码（NO_VISION / NO_API_KEY / STALE …）：渲染层靠它决定给哪个出口，
+        // 只透传 message 的话卡片就只能一律显示"失败"两个字
+        if (res.__code) err.code = res.__code;
         throw err;
       }
       return res;
@@ -26,6 +29,22 @@ function call(channel, ...args) {
       err.channel = channel;
       throw err;
     }
+  );
+}
+
+/**
+ * 截图建任务专用信封。
+ * 不能用 call()：contextBridge 跨世界复制 Error 时只保留 message / stack，
+ * 自定义的 err.code（NO_API_KEY / NO_VISION / STALE …）会被丢掉 ——
+ * 而卡片要靠这个码决定是"去配置"还是"重试"。所以这里把结果原样带回来，
+ * 由 renderer/js/shot-task.js#shotApi 还原成异常。
+ */
+function envelope(channel, ...args) {
+  return ipcRenderer.invoke(channel, ...args).then(
+    (res) => (res && typeof res === 'object' && res.__error
+      ? { ok: false, code: res.__code || '', message: res.__error }
+      : { ok: true, data: res }),
+    (e) => ({ ok: false, code: 'IPC', message: String((e && e.message) || e) })
   );
 }
 
@@ -103,6 +122,9 @@ contextBridge.exposeInMainWorld('api', {
     test: (p) => call('ai:test', p),
     clearAsrKey: () => call('ai:clearAsrKey'),
     testAsr: (p) => call('ai:testAsr', p),
+    // 视觉模型（截图识别）：与对话模型、语音转写并列的第三组配置，可整组不配（回落到对话模型）
+    testVision: (p) => call('ai:testVision', p),
+    clearVisionKey: () => call('ai:clearVisionKey'),
     polish: (p) => call('ai:polish', p),
     savePolish: (p) => call('ai:savePolish', p),
   },
@@ -338,6 +360,20 @@ contextBridge.exposeInMainWorld('api', {
     health: () => call('keys:health'),
   },
   /**
+   * 截图建任务（Ctrl+Alt+V 剪贴板 / Ctrl+Alt+S 框选）。
+   * 图片字节只在主进程里流转：这里拿到的 preview 是 420px 缩略图，
+   * 要看原图得单独调 image()。
+   */
+  shot: {
+    status: () => envelope('shot:status'),
+    clipboard: () => envelope('shot:clipboard'),
+    screen: () => envelope('shot:screen'),
+    recognize: () => envelope('shot:recognize'),
+    commit: (p) => envelope('shot:commit', p),
+    discard: () => envelope('shot:discard'),
+    image: () => envelope('shot:image'),
+  },
+  /**
    * 快速捕捉条（Ctrl+Alt+C）。
    * 捕捉条是独立窗口：它自己调 save / cycle / undo，主窗口只负责把"当前选中的清单"
    * 同步过去（setContext），让「从主窗口按 C」落到对的地方。
@@ -418,6 +454,8 @@ contextBridge.exposeInMainWorld('api', {
       'worklog:changed',
       // 趣味功能 → 上班鼓励器：主浮窗 / 卡片页
       'ui:encourager', 'ui:encourager-card',
+      // 截图建任务：取图成功 → 开确认卡；取图失败 / 框选超时 → 只要一句提示
+      'ui:screenshot', 'ui:shot-error', 'ui:shot-timeout',
     ];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));

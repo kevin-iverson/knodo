@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="海马">
+  <ellipse cx="64" cy="117" rx="29" ry="4" fill="#7B5334" opacity=".16"/>
+
+  <!-- 鱼尾 -->
+  <g transform="translate(82 101)">
+    <g transform="rotate(24) scale(.94 1)"><path d="M0 0c3.4-9 5-25 4-39-1.2-6-7.4-6-8.6 0-2.4 14-1.4 28 1.4 39z" fill="#7FB6C4" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/></g>
+    <g transform="rotate(50) scale(1 1)"><path d="M0 0c3.4-9 5-25 4-39-1.2-6-7.4-6-8.6 0-2.4 14-1.4 28 1.4 39z" fill="#A9D4DD" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/></g>
+    <g transform="rotate(78) scale(1 .9)"><path d="M0 0c3.4-9 5-25 4-39-1.2-6-7.4-6-8.6 0-2.4 14-1.4 28 1.4 39z" fill="#7FB6C4" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/></g>
+    <g fill="none" stroke="#DCEFF2" stroke-width="1.5">
+      <path d="M0 -8v-24" transform="rotate(50)"/><path d="M0 -8v-20" transform="rotate(78)"/>
+    </g>
+  </g>
+
+  <!-- 背鳍 -->
+  <path d="M78 82c7.4-1 13-6 16-14-8 1-14 6-18 12z" fill="#7FB6C4" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- 身体 -->
+  <path d="M46.5 112C42 99.5 45 87 56 82h16C83 87 86 99.5 81.5 112Z" fill="#4E7E9C" stroke="#3B2A20" stroke-width="2.2" stroke-linejoin="round"/>
+  <ellipse cx="64" cy="99.5" rx="12.4" ry="10" fill="#DCEFF2"/>
+  <g fill="none" stroke="#9EC7D2" stroke-width="1.6" opacity=".9">
+    <path d="M55 95c3 1.6 6 1.6 9 0M58 100c3 1.6 6 1.6 9 0M55 105c3 1.6 6 1.6 9 0"/>
+  </g>
+  <g fill="none" stroke="#37617B" stroke-width="1.8" opacity=".85">
+    <path d="M43.4 91c2.4 3.4 3 6.8 2.4 10.4M84.6 91c-2.4 3.4-3 6.8-2.4 10.4"/>
+  </g>
+
+  <!-- 前鳍 -->
+  <ellipse cx="52" cy="109.4" rx="7.4" ry="5.2" fill="#4E7E9C" stroke="#3B2A20" stroke-width="2"/>
+  <ellipse cx="76" cy="109.4" rx="7.4" ry="5.2" fill="#4E7E9C" stroke="#3B2A20" stroke-width="2"/>
+
+  <!-- 头 -->
+  <ellipse cx="64" cy="53.5" rx="29.5" ry="28.5" fill="#4E7E9C" stroke="#3B2A20" stroke-width="2.2"/>
+
+  <!-- 鳍耳 -->
+  <path d="M41 36c-7-6-12-5-13.6-.6 4 1 7.4 3.4 9.6 7z" fill="#7FB6C4" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M87 36c7-6 12-5 13.6-.6-4 1-7.4 3.4-9.6 7z" fill="#7FB6C4" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+  <g fill="none" stroke="#DCEFF2" stroke-width="1.4" opacity=".9">
+    <path d="M32 33.4c3 1 5.4 2.8 7.2 5.4M96 33.4c-3 1-5.4 2.8-7.2 5.4"/>
+  </g>
+
+  <!-- 眼 -->
+  <ellipse cx="53.4" cy="52.6" rx="5.8" ry="6.4" fill="#FFF"/>
+  <ellipse cx="74.6" cy="52.6" rx="5.8" ry="6.4" fill="#FFF"/>
+  <ellipse cx="53.4" cy="53" rx="3.2" ry="4.2" fill="#2B211A"/>
+  <ellipse cx="74.6" cy="53" rx="3.2" ry="4.2" fill="#2B211A"/>
+  <circle cx="52" cy="51" r="1.6" fill="#FFF"/><circle cx="73.2" cy="51" r="1.6" fill="#FFF"/>
+
+  <!-- 吻部 -->
+  <ellipse cx="64" cy="66.4" rx="13" ry="9" fill="#DCEFF2"/>
+  <circle cx="59.2" cy="63.6" r="1.8" fill="#37617B"/><circle cx="68.8" cy="63.6" r="1.8" fill="#37617B"/>
+  <path d="M58.4 70c2.8 2.8 8.4 2.8 11.2 0" fill="none" stroke="#3B2A20" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- 辔头 -->
+  <path d="M51.4 63c8 2.6 17.2 2.6 25.2 0" fill="none" stroke="#E7BC5E" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M52 62.4c-2.6-3.6-3.4-7.4-2.4-11.2M76 62.4c2.6-3.6 3.4-7.4 2.4-11.2" fill="none" stroke="#E7BC5E" stroke-width="2.2" stroke-linecap="round"/>
+
+  <!-- 水泡 -->
+  <g fill="#DCEFF2" stroke="#9EC7D2" stroke-width="1.4">
+    <circle cx="34.5" cy="52" r="4.2"/><circle cx="28.8" cy="40.6" r="2.6"/><circle cx="93.4" cy="58" r="3.2"/>
+  </g>
+
+  <!-- 项圈与铃铛 -->
+  <path d="M51.5 84.4c7.6 4.4 17.4 4.4 25 0" fill="none" stroke="#D9A441" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="64" cy="89.6" r="4.4" fill="#F0C05A" stroke="#A97A26" stroke-width="1.4"/>
+  <path d="M61.8 91.4h4.4" stroke="#A97A26" stroke-width="1.3" stroke-linecap="round"/>
+</svg>

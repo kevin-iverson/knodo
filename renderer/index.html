@@ -21,6 +21,10 @@
   <link rel="stylesheet" href="css/calendar.css" />
   <link rel="stylesheet" href="css/encourager.css" />
   <link rel="stylesheet" href="css/recurrence.css" />
+  <!-- 截图建任务确认卡（.shot-*）：只在卡片打开时才有 DOM，样式独立成文件免得 styles.css 再长 -->
+  <link rel="stylesheet" href="css/shot.css" />
+  <!-- 故宫主题 · 檐口脊兽（只在 :root[data-style="palace"] 时显示） -->
+  <link rel="stylesheet" href="css/palace-ridge.css" />
 </head>
 <body>
   <!-- 背景层：L1 图片 + L2 scrim（内容全在 .app 里，z-index 压在它上面）。
@@ -228,6 +232,14 @@
         <div class="view" id="view"></div>
       </main>
     </div>
+
+    <!-- 故宫主题 · 檐角脊兽：只在 data-style="palace" 时显示（见 css/palace-ridge.css），
+         13 尊形象由 js/palace-rail.js 注入，悬停浮起来历与寓意。 -->
+    <div class="palace-rail" id="palace-rail" role="group" aria-label="太和殿脊兽">
+      <div class="pr-row" id="pr-row"></div>
+      <span class="pr-seal" aria-hidden="true">太<br>和</span>
+      <span class="pr-caption" aria-hidden="true">太和殿 · 十脊兽</span>
+    </div>
   </div>
 
   <div id="toast" class="toast" hidden></div>
@@ -254,6 +266,8 @@
        升级来源见 package.json devDependencies：turndown / turndown-plugin-gfm。 -->
   <script src="vendor/turndown/turndown.js"></script>
   <script src="vendor/turndown/turndown-plugin-gfm.js"></script>
+  <!-- 故宫主题的脊兽檐口：经典脚本，只读 DOM，不依赖 app.js 的模块启动顺序 -->
+  <script src="js/palace-rail.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

@@ -469,6 +469,9 @@ function seed(dir) {
   db.linkTaskNote(tPerf.id, noteMain.id);
 
   /* ---------- 界面偏好 ---------- */
+  // 主题写死「故宫 + 深色」：README 的图要的就是这套主视觉（宫墙红 / 琉璃黄 / 檐口脊兽），
+  // 不能指望「当前机器刚好是深色」—— 显式落到 settings 里，截图脚本不必再改配置。
+  db.setSetting('theme', JSON.stringify({ mode: 'dark', style: 'palace' }));
   // 「今天」列表保留刚完成的任务：靠这份 id 集合，不是靠放宽查询
   db.setSetting('ui.todayDone', JSON.stringify({ day: day(0), ids: [tReview.id] }));
 

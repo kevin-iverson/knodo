@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="仙人骑凤">
+  <ellipse cx="62" cy="117" rx="32" ry="4" fill="#7B5334" opacity=".16"/>
+
+  <!-- 凤尾 -->
+  <g transform="translate(86 103)">
+    <g transform="rotate(40) scale(1 .92)"><path d="M0 0c4-10 6-25 4.4-38-1.2-6-7.6-6-8.8 0-2.6 13-1.6 26 1.4 38z" fill="#E7BC5E" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/></g>
+    <g transform="rotate(66) scale(1 .96)"><path d="M0 0c4-10 6-25 4.4-38-1.2-6-7.6-6-8.8 0-2.6 13-1.6 26 1.4 38z" fill="#5E8E7C" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/></g>
+    <g transform="rotate(92) scale(1 .8)"><path d="M0 0c4-10 6-25 4.4-38-1.2-6-7.6-6-8.8 0-2.6 13-1.6 26 1.4 38z" fill="#C0503C" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/></g>
+  </g>
+
+  <!-- 凤翼（展开在骑者身后） -->
+  <path d="M78 100c14-10 20-26 18-42-12 7-20 20-24 34z" fill="#E7BC5E" stroke="#3B2A20" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M80 99c10-9 15-21 16-33-9 7-15 17-18 27z" fill="#C0503C" opacity=".85"/>
+  <g fill="none" stroke="#C79C3F" stroke-width="1.6">
+    <path d="M82 96c6-7 10-16 12-26M88 100c5-6 8-13 10-21"/>
+  </g>
+
+  <!-- 凤身 -->
+  <path d="M38 98c-5 2-7 7-6 12 1 4 5 6 10 6h42c8 0 13-4 13-11 0-6-5-10-13-10H46c-4 0-7 1-8 3z" fill="#E7BC5E" stroke="#3B2A20" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M44 108c8 2.6 16 2.6 24 0" fill="none" stroke="#F7E3B4" stroke-width="2" stroke-linecap="round" opacity=".8"/>
+
+  <!-- 凤颈与头 -->
+  <path d="M41 101c-8-4-11-13-7-19 3-4 9-4 11 1 1 3 0 6-2 8l4 8z" fill="#E7BC5E" stroke="#3B2A20" stroke-width="2.2" stroke-linejoin="round"/>
+  <circle cx="30" cy="81" r="10" fill="#E7BC5E" stroke="#3B2A20" stroke-width="2.2"/>
+  <path d="M21.5 81.5l-11 3.6 11 3.6z" fill="#C0503C" stroke="#3B2A20" stroke-width="1.6" stroke-linejoin="round"/>
+  <circle cx="27" cy="79.4" r="1.9" fill="#2B211A"/>
+  <path d="M26 71.6c0-6 3-9.6 7.6-10.6-2.4 4.4-2.4 8 0 10.4z" fill="#C0503C" stroke="#3B2A20" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M33 72.6c2.6-4.4 6-6 9.6-5.6-2.6 3-4 6-4.4 9z" fill="#5E8E7C" stroke="#3B2A20" stroke-width="1.6" stroke-linejoin="round"/>
+
+  <!-- 仙人：下身与腿 -->
+  <path d="M52 90c-4 2-6 6-6 10h10zM76 90c4 2 6 6 6 10H72z" fill="#F3EBD8" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+  <ellipse cx="53" cy="101.4" rx="4.8" ry="3.2" fill="#3B2A20"/>
+  <ellipse cx="75" cy="101.4" rx="4.8" ry="3.2" fill="#3B2A20"/>
+
+  <!-- 仙人：身躯 -->
+  <path d="M54 76c-4 3-6 8-6 13 0 4 2 6 6 6h20c4 0 6-2 6-6 0-5-2-10-6-13z" fill="#F3EBD8" stroke="#3B2A20" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M50 88c9 4 19 4 28 0" fill="none" stroke="#C2543F" stroke-width="3.4" stroke-linecap="round"/>
+  <path d="M52 76l4 4M76 76l-4 4" stroke="#3B2A20" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- 仙人的臂与如意 -->
+  <path d="M78 80c4 2 6 5 7 9" fill="none" stroke="#3B2A20" stroke-width="5.4" stroke-linecap="round"/>
+  <path d="M78 80c4 2 6 5 7 9" fill="none" stroke="#F3EBD8" stroke-width="3" stroke-linecap="round"/>
+  <g transform="rotate(-24 84 82)">
+    <rect x="82.4" y="74" width="3.6" height="20" rx="1.8" fill="#E7BC5E" stroke="#A97A26" stroke-width="1.1"/>
+    <path d="M84.2 74c-3.4-2-4.4-6.4-1.4-8.2 2-1.2 4.4-.4 5 1.6.8-2 3.2-2.8 5.2-1.6 3 1.8 2 6.2-1.4 8.2z" fill="#E7BC5E" stroke="#A97A26" stroke-width="1.1" stroke-linejoin="round"/>
+  </g>
+
+  <!-- 仙人：头 -->
+  <circle cx="64" cy="65" r="15.6" fill="#F6E7CC" stroke="#3B2A20" stroke-width="2.2"/>
+  <path d="M64 51c-3.4-1.2-5.4-4.4-4.2-7.6 2.2 1.2 4.4 1.8 6.6 1.8s4.4-.6 6.6-1.8c1.2 3.2-.8 6.4-4.2 7.6z" fill="#3B2A20"/>
+  <circle cx="64" cy="45.4" r="3.8" fill="#3B2A20"/>
+  <path d="M62.4 41.4l3.2-6 3.2 6z" fill="#E7BC5E" stroke="#A97A26" stroke-width="1" stroke-linejoin="round"/>
+
+  <!-- 眉眼与长须 -->
+  <path d="M55.6 62.6c2.4-1.8 5-1.8 7.2 0M65.2 62.6c2.4-1.8 5-1.8 7.2 0" fill="none" stroke="#FBF6EA" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M56.4 66.4q3.6 3.2 7.2 0M64.4 66.4q3.6 3.2 7.2 0" fill="none" stroke="#5A4330" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M60 76.6c.4 4.6-1 8.4-3.6 11.4M68 76.6c-.4 4.6 1 8.4 3.6 11.4M64 77.4v9.6" fill="none" stroke="#FBF6EA" stroke-width="2" stroke-linecap="round" opacity=".95"/>
+
+  <!-- 飘带 -->
+  <path d="M54 84c-7-1-11-6-12-12 6 1 10 5 12 11zM51 92c-7 2-11 7-12 13 6-1 10-5 12-11z" fill="#C2543F" stroke="#3B2A20" stroke-width="1.8" stroke-linejoin="round"/>
+</svg>

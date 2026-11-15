@@ -27,6 +27,10 @@ const ACTIONS = [
   { id: 'app.notes', label: '显示 / 隐藏笔记', hint: '按一次唤起并打开笔记，再按一次收起', def: 'Control+Shift+H' },
   { id: 'app.quickAdd', label: '快速添加任务', hint: '在当前清单里就地新建一条，不切视图', def: 'Control+Alt+N' },
   { id: 'app.capture', label: '快速捕捉', hint: '屏幕顶部弹一条输入条，回车即存', def: 'Control+Alt+C' },
+  // 截图建任务：V 是主入口（先 Win+Shift+S 截好，再按 V 读剪贴板），
+  // S 是备选（直接框选，会短暂隐藏主窗口）
+  { id: 'app.screenshotPaste', label: '截图建任务（剪贴板）', hint: '读剪贴板里的图片 → 识别成待办', def: 'Control+Alt+V' },
+  { id: 'app.screenshot', label: '截图建任务（框选区域）', hint: '拖拽框选屏幕区域 → 识别成待办', def: 'Control+Alt+S' },
   // 桌面浮窗用 D（Desktop）而不是原来的 H：H 与「显示 / 隐藏笔记」的 Ctrl+Shift+H
   // 只差一个修饰键，实机上很容易按混、也会被输入法/键盘宏串到一起
   { id: 'app.toggleDesktop', label: '显示 / 隐藏桌面浮窗', hint: '演示 / 共享屏幕前一键收起', def: 'Control+Alt+D' },
@@ -451,7 +455,14 @@ function init(opts = {}) {
     console.error('[shortcuts] powerMonitor 订阅失败', e && e.message ? e.message : e);
   }
   const missing = ACTION_IDS.filter((id) => effective(id) && !registered.has(id));
-  if (missing.length) console.log(`[shortcuts] 启动时有 ${missing.length} 个热键未注册成功（可能被占用）`);
+  if (missing.length) {
+    // 带上具体是哪几个键：用户报「按了没反应」时，第一句话就该能判断是不是被别的软件占了
+    const detail = missing.map((id) => {
+      const a = ACTIONS.find((x) => x.id === id);
+      return `${id}（${(a && a.def) || '?'}）`;
+    }).join('、');
+    console.log(`[shortcuts] 启动时有 ${missing.length} 个热键未注册成功（可能被占用）：${detail}`);
+  }
 }
 
 /** 退出前必须注销，否则系统里残留热键，下次启动可能注册失败 */

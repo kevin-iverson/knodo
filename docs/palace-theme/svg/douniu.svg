@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="斗牛">
+  <ellipse cx="64" cy="117" rx="29" ry="4" fill="#7B5334" opacity=".16"/>
+
+  <!-- 尾（龙尾） -->
+  <path d="M82 104c12-1 18-8 19-18" fill="none" stroke="#3B2A20" stroke-width="8.4" stroke-linecap="round"/>
+  <path d="M82 104c12-1 18-8 19-18" fill="none" stroke="#8A6134" stroke-width="4.8" stroke-linecap="round"/>
+  <path d="M101 90c-3-4-2.4-8.4 1.4-10.6-1 4 1 5.8 3.6 6.2-1.4 4.6-3 6.4-5 4.4z" fill="#E7BC5E" stroke="#A97A26" stroke-width="1.2" stroke-linejoin="round"/>
+
+  <!-- 身体 -->
+  <path d="M46.5 112C42 99.5 45 87 56 82h16C83 87 86 99.5 81.5 112Z" fill="#A9773F" stroke="#3B2A20" stroke-width="2.2" stroke-linejoin="round"/>
+  <ellipse cx="64" cy="99.5" rx="12.4" ry="10" fill="#F1E2BC"/>
+  <g fill="none" stroke="#C99A3C" stroke-width="1.6" opacity=".55">
+    <path d="M55 95c3 1.8 6 1.8 9 0M58 100c3 1.8 6 1.8 9 0M55 105c3 1.8 6 1.8 9 0"/>
+    <path d="M45.4 92c2 2.6 2.6 5.4 2.2 8.6M82.6 92c-2 2.6-2.6 5.4-2.2 8.6"/>
+  </g>
+
+  <!-- 云纹 -->
+  <path d="M40 84c-4 0-6 3-6 6 2-1 4-1 5.6.6M88 84c4 0 6 3 6 6-2-1-4-1-5.6.6" fill="none" stroke="#E7BC5E" stroke-width="2" stroke-linecap="round" opacity=".8"/>
+
+  <!-- 前蹄 -->
+  <ellipse cx="52" cy="109.4" rx="7.4" ry="5.2" fill="#8A6134" stroke="#3B2A20" stroke-width="2"/>
+  <ellipse cx="76" cy="109.4" rx="7.4" ry="5.2" fill="#8A6134" stroke="#3B2A20" stroke-width="2"/>
+
+  <!-- 牛角 -->
+  <path d="M52 38C40 39 30 32 26 20c11-1 20 4 27 12 2 2.4 1.4 5-1 6z" fill="#C99A3C" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M76 38c12 1 22-6 26-18-11-1-20 4-27 12-2 2.4-1.4 5 1 6z" fill="#C99A3C" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M31 23c5.6 4 10.6 8.4 14.4 13.4M97 23c-5.6 4-10.6 8.4-14.4 13.4" fill="none" stroke="#F3D9A0" stroke-width="1.6" stroke-linecap="round" opacity=".7"/>
+
+  <!-- 耳 -->
+  <path d="M41 45c-6-3-10 0-9.6 4.4 3-.6 6 .4 8.2 2.6z" fill="#A9773F" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M87 45c6-3 10 0 9.6 4.4-3-.6-6 .4-8.2 2.6z" fill="#A9773F" stroke="#3B2A20" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- 头 -->
+  <ellipse cx="64" cy="53.5" rx="29.5" ry="28.5" fill="#A9773F" stroke="#3B2A20" stroke-width="2.2"/>
+
+  <!-- 眼 -->
+  <ellipse cx="53.4" cy="52.6" rx="5.6" ry="6.2" fill="#2B211A"/>
+  <ellipse cx="74.6" cy="52.6" rx="5.6" ry="6.2" fill="#2B211A"/>
+  <circle cx="51.8" cy="50.6" r="1.9" fill="#FFF"/><circle cx="73" cy="50.6" r="1.9" fill="#FFF"/>
+
+  <!-- 牛鼻 -->
+  <ellipse cx="64" cy="66.6" rx="14" ry="9.6" fill="#F1E2BC"/>
+  <ellipse cx="58.6" cy="64.4" rx="2.2" ry="2.8" fill="#8A6134"/>
+  <ellipse cx="69.4" cy="64.4" rx="2.2" ry="2.8" fill="#8A6134"/>
+  <path d="M56.8 71.4c4.6 3 9.8 3 14.4 0" fill="none" stroke="#3B2A20" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- 腮红 -->
+  <ellipse cx="45" cy="63.6" rx="5.4" ry="3.2" fill="#E07A62" opacity=".3"/>
+  <ellipse cx="83" cy="63.6" rx="5.4" ry="3.2" fill="#E07A62" opacity=".3"/>
+
+  <!-- 项圈与铃铛 -->
+  <path d="M51.5 84.4c7.6 4.4 17.4 4.4 25 0" fill="none" stroke="#D9A441" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="64" cy="89.6" r="4.4" fill="#F0C05A" stroke="#A97A26" stroke-width="1.4"/>
+  <path d="M61.8 91.4h4.4" stroke="#A97A26" stroke-width="1.3" stroke-linecap="round"/>
+</svg>

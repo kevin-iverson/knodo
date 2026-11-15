@@ -8,20 +8,22 @@
    铁律：透明度只作用在「面」（侧栏 / 内容区地面 / 卡片），文字与控件永远不透明。
    ============================================================ */
 :root {
-  /* 宣纸 · 浅色（未注入时的兜底，打印 / 冒烟 / 桌面浮窗都靠它）
-     改这里必须同步 js/theme-core.js 的 STYLES.sepia.light —— 两处不一致就会出现
-     「启动那一帧是宣纸、注入后跳成别的色」的闪动。 */
-  --bg-rgb: 246 240 228;
-  --panel-rgb: 253 248 238;
-  --sidebar-rgb: 250 245 234;
-  --hover-rgb: 239 230 213;
-  --active-rgb: 242 228 201;
-  --text-rgb: 44 36 24;
-  --text2-rgb: 109 97 80;
-  --text3-rgb: 156 144 128;
-  --border-rgb: 232 220 200;
-  --primary-rgb: 165 100 44;
-  --primary-strong-rgb: 133 80 31;
+  /* 故宫 · 浅色（未注入时的兜底，打印 / 冒烟 / 桌面浮窗都靠它）
+     必须与「出厂默认风格」一致：`main/theme.js#DEFAULT_THEME` 与 `theme-core.js#DEFAULTS`
+     现在都是 palace，所以这里跟着写 palace.light。改这里要同步
+     `js/theme-core.js` 的 STYLES.palace.light —— 两处不一致就会出现
+     「启动那一帧是宣纸、注入后跳成宫墙红」的闪动。 */
+  --bg-rgb: 246 238 220;
+  --panel-rgb: 251 246 234;
+  --sidebar-rgb: 243 233 214;
+  --hover-rgb: 240 226 200;
+  --active-rgb: 239 217 180;
+  --text-rgb: 44 33 26;
+  --text2-rgb: 107 85 68;
+  --text3-rgb: 154 132 104;
+  --border-rgb: 228 213 188;
+  --primary-rgb: 142 43 35;
+  --primary-strong-rgb: 111 31 27;
 
   /* 背景层（JS 写入）：image / scrim / blur / fit / glass */
   --surface-alpha: 1;
@@ -1191,7 +1193,14 @@ body {
 .ts-dropdown .no-results { padding: 10px; color: var(--text-3); font-size: 12.5px; }
 .ts-dropdown .highlight { background: rgb(var(--primary-rgb) / 0.18); }
 /* 挂到 body 的分组下拉：不能比控件还窄（树形名称会被挤断），也要盖住日期日历 */
-.group-picker-dropdown { min-width: 220px; z-index: 250; }
+.group-picker-dropdown { min-width: 220px; }
+/* 挂到 body 的下拉（分组 / 优先级同源）必须压住它所在的那一层：
+   Tom Select 自带样式只给 .ts-dropdown 一个 z-index:10，而详情抽屉是 150
+   （从 AI 检索弹窗里打开时抬到 320）。漏写这一条的表现不是「没打开」，而是
+   面板已经 display:block 了、却被抽屉的实体面板整个盖住 —— 用户看到的就是
+   「点了没反应、没有下拉选项」。340 = 高于抽屉最高态 320，低于右键菜单 360。 */
+.group-picker-dropdown,
+.pri-picker-dropdown { z-index: 340; }
 /* 单选下拉自带的搜索框（dropdown_input 插件）跟着主题走 */
 .group-picker-dropdown .dropdown-input-wrap {
   padding: 8px 8px 6px; border-bottom: 1px solid var(--border);
@@ -1667,6 +1676,40 @@ html.is-resizing .detail-foot { pointer-events: none; }
   background: var(--bg); color: var(--text); font-size: 13px; outline: none; width: 100%;
 }
 .detail-field.grow { flex: 2; min-width: 160px; }
+
+/* 详情抽屉的优先级 / 分组 = 与任务行就地编辑同款 Tom Select（色点 + 圆角面板 + 自绘箭头）。
+   组件把原 <select> 藏成 .ts-hidden-accessible，并把它的 class 复制到 .ts-wrapper，
+   所以上面那条 `.detail-field select` 只在降级态生效，真机尺寸与配色落在下面这套上。 */
+.detail-field .ts-wrapper {
+  position: relative; width: 100%; padding: 0;
+  --ts-pr-min: 26px; /* vendor 给 padding-right 带 !important，靠变量给箭头留位置 */
+}
+.detail-field .ts-wrapper .ts-control {
+  /* 36 = 原生 select 的 8+18+8+2（与旁边的输入框、日期控件同高），
+     Tom Select 默认更矮，不顶齐会让同一行看着高低不齐 */
+  min-height: 36px; box-sizing: border-box; flex-wrap: nowrap;
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--text); box-shadow: none;
+}
+.detail-field .ts-wrapper .ts-control,
+.detail-field .ts-wrapper .ts-control input { font-size: 13px; }
+.detail-field .ts-wrapper:hover .ts-control { border-color: var(--primary); }
+.detail-field .ts-wrapper.focus .ts-control {
+  border-color: var(--primary); box-shadow: 0 0 0 2px rgb(var(--primary-rgb) / 0.16);
+}
+.detail-field .ts-wrapper.single::after {
+  content: '▾'; position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  z-index: 2; /* .ts-control 自带 z-index:1，箭头要盖在它上面 */
+  font-size: 10px; line-height: 1; color: var(--text-3); pointer-events: none;
+}
+.detail-field .ts-wrapper.single .ts-control > .item {
+  display: inline-flex; align-items: center; max-width: 100%; min-width: 0;
+  padding: 0; margin: 0; border: 0; background: none; color: inherit;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px;
+}
+.detail-field .ts-wrapper.single .ts-control > .item .ts-item {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .detail-section { margin-top: 18px; }
 .detail-section-head {
   display: flex; align-items: center; justify-content: space-between;

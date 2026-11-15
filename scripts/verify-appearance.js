@@ -107,7 +107,7 @@ async function connect(wsUrl) {
       style: document.documentElement.getAttribute('data-style'),
     }))()`);
     ok('渲染层就绪', boot.ready);
-    ok('theme-core 已加载且 6 套风格', boot.hasCore && boot.styles === 6, JSON.stringify(boot.styles));
+    ok('theme-core 已加载且 7 套风格', boot.hasCore && boot.styles === 7, JSON.stringify(boot.styles));
     ok('背景层 DOM 存在', boot.hasLayer);
     ok('启动即有 data-theme / data-style', !!boot.theme && !!boot.style, `${boot.theme} / ${boot.style}`);
 
@@ -208,7 +208,7 @@ async function connect(wsUrl) {
     })()`);
     ok('设置中心第一个分区是「外观」', pane.first === '外观', JSON.stringify(pane.nav));
     ok('外观分区默认选中', pane.isActive);
-    ok('6 张风格卡', pane.cards === 6, pane.cards);
+    ok('7 张风格卡', pane.cards === 7, pane.cards);
     ok('当前风格高亮到 sepia', pane.selected === 'sepia', pane.selected);
     ok('风格卡缩略图按真实 token 上色', !!pane.thumbBg && pane.thumbBg !== 'rgba(0, 0, 0, 0)', pane.thumbBg);
     ok('「通用」里不再有界面主题下拉', pane.generalHasTheme === false);
@@ -248,7 +248,7 @@ async function connect(wsUrl) {
       const saved = await window.api.theme.get();
       return { mode: saved.mode, style: saved.style, type: saved.backdrop.type, attr: document.documentElement.getAttribute('data-style') };
     })()`);
-    ok('恢复默认回到宣纸 / 跟随系统 / 无背景', reset.style === 'sepia' && reset.mode === 'system' && reset.type === 'none', JSON.stringify(reset));
+    ok('恢复默认回到故宫 / 跟随系统 / 无背景', reset.style === 'palace' && reset.mode === 'system' && reset.type === 'none', JSON.stringify(reset));
 
     /* ---- 10) 分区内搜索：外壳的过滤不用为外观做特殊处理 ---- */
     const search = await page.evaluate(`(async () => {

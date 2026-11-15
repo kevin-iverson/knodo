@@ -45,6 +45,56 @@ function getAsrConfig() {
   return { baseUrl, model, apiKey, hasKey: !!apiKey, encryptionDegraded: degraded };
 }
 
+/** 视觉模型（截图识别）独立一组配置，与语音转写同构；整组留空 = 回落到对话模型 */
+function getVisionConfig() {
+  const baseUrl = db.getSetting('ai.visionBaseUrl', '');
+  const model = db.getSetting('ai.visionModel', '');
+  const stored = db.getSetting('ai.visionKey', '');
+  const { value: apiKey, degraded } = crypto.decryptApiKey(stored);
+  return { baseUrl, model, apiKey, hasKey: !!apiKey, encryptionDegraded: degraded };
+}
+
+/** 地址归一：只有"同一家服务商"才允许复用对话模型的 Key，否则必然 401 */
+function sameBase(a, b) {
+  const n = (v) => String(v || '').trim().replace(/\/+$/, '').toLowerCase();
+  return !!n(a) && n(a) === n(b);
+}
+
+/**
+ * 视觉模型的**生效值**（界面要显示「你配的」与「实际在用的」两件事）。
+ * 回落规则与 main/shot.js#readVisionConfig 必须完全一致 —— 设置页说"会用 GLM"，
+ * 卡片就不能按 DeepSeek 去发请求。
+ */
+function visionView() {
+  const c = getAiConfig();
+  const v = getVisionConfig();
+  const baseUrl = v.baseUrl || c.baseUrl;
+  const model = v.model || c.model;
+  const source = v.model ? 'vision' : 'fallback';
+  const reuse = !v.apiKey && sameBase(baseUrl, c.baseUrl);
+  const hasKey = !!(v.apiKey || (reuse ? c.apiKey : ''));
+  return {
+    // 用户自己填的那一份
+    baseUrl: v.baseUrl,
+    model: v.model,
+    hasKey: v.hasKey,
+    encryptionDegraded: v.encryptionDegraded,
+    // 生效值
+    effective: {
+      baseUrl,
+      model,
+      label: ai.modelLabel(model),
+      source,
+      hasKey,
+      keyReused: reuse,
+      imageCapability: ai.visionCapability(model),
+    },
+    // 回落目标（界面要写清"回落到哪个模型"）
+    fallback: { model: c.model, label: ai.modelLabel(c.model), hasKey: c.hasKey },
+    presets: ai.VISION_PRESETS,
+  };
+}
+
 function getAiConfig() {
   const baseUrl = db.getSetting('ai.baseUrl', ai.DEFAULT_CONFIG.baseUrl);
   const model = db.getSetting('ai.model', ai.DEFAULT_CONFIG.model);
@@ -75,6 +125,15 @@ function kbScopeLabel(folderIds) {
  * 润色配置：上次使用的提示词（ai.polishInstruction）与用户自建预设（ai.polishPresets）。
  * 内置预设由 ai.POLISH_PRESETS 下发，两者在界面上合并成一个下拉，但只持久化用户自己的那份。
  */
+/**
+ * 256×256 纯白 PNG：自检"这个模型能不能吃图"用，562 字节，计费可忽略。
+ *
+ * 不能用 8×8：Qwen 视觉系列要求宽高 ≥10px，Qwen3.8 的 min_pixels 又是 65536，
+ * 探测图太小会被服务端以"图像尺寸不合规"拒绝 —— 那会把"模型支持图片"
+ * 误报成"读图失败"。256×256 正好 65536 像素，所有主流视觉模型都吃得下。
+ */
+const VISION_PROBE_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAB+UlEQVR42u3TMQ0AAAzDsPIn3d7DMBtCpKTwWCTAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAGAAMAAYAA4ABwABgADAAGAAMAAYAA4ABwABgADAAGAAMAAYAA4ABwABgADAAGAAMAAYAA4ABwABgADAAGAAMAAYAA4ABwABgADAAGAAMAAYAA4ABwABgADAAGAAMAAbAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADAAGgGvctyzUB/Dz3wAAAABJRU5ErkJggg==';
+
 function getPolishConfig() {
   let custom = [];
   try {
@@ -510,6 +569,7 @@ function registerIpc() {
         baseUrl: a.baseUrl, model: a.model, hasKey: a.hasKey,
         encryptionDegraded: a.encryptionDegraded, presets: asr.ASR_PRESETS,
       },
+      vision: visionView(),
     };
   });
   ipcMain.handle('ai:saveConfig', (_e, p = {}) => {
@@ -527,6 +587,12 @@ function registerIpc() {
     if (p.asrKey !== undefined && p.asrKey !== null && p.asrKey !== '') {
       db.setSetting('ai.asrKey', crypto.encryptApiKey(p.asrKey));
     }
+    // 视觉模型同样三件套：地址 / 模型允许清空（清空 = 回落），Key 留空 = 保持不变
+    if (p.visionBaseUrl !== undefined) db.setSetting('ai.visionBaseUrl', String(p.visionBaseUrl || '').trim());
+    if (p.visionModel !== undefined) db.setSetting('ai.visionModel', String(p.visionModel || '').trim());
+    if (p.visionKey !== undefined && p.visionKey !== null && p.visionKey !== '') {
+      db.setSetting('ai.visionKey', crypto.encryptApiKey(p.visionKey));
+    }
     const c = getAiConfig();
     const a = getAsrConfig();
     return {
@@ -537,6 +603,7 @@ function registerIpc() {
         baseUrl: a.baseUrl, model: a.model, hasKey: a.hasKey,
         encryptionDegraded: a.encryptionDegraded, presets: asr.ASR_PRESETS,
       },
+      vision: visionView(),
     };
   });
   ipcMain.handle('ai:clearKey', () => {
@@ -546,6 +613,10 @@ function registerIpc() {
   ipcMain.handle('ai:clearAsrKey', () => {
     db.setSetting('ai.asrKey', '');
     return getAsrConfig();
+  });
+  ipcMain.handle('ai:clearVisionKey', () => {
+    db.setSetting('ai.visionKey', '');
+    return visionView();
   });
   ipcMain.handle('ai:test', async (_e, { baseUrl, model, apiKey }) => {
     // 测试时允许使用临时 Key，优先使用传入值，否则用已保存值
@@ -569,6 +640,31 @@ function registerIpc() {
       return { ok: true, message };
     } catch (e) {
       return { ok: false, message: e.message };
+    }
+  });
+
+  /**
+   * 视觉模型自检。
+   * 不用 testConnection 那种纯文本探测：文本能通不代表能吃 image_url，
+   * 而"能看图"正是这组配置唯一的存在理由。这里发一张 256×256 白图，
+   * 成本可以忽略，但能把「选了个文本模型」当场拦下来。
+   */
+  ipcMain.handle('ai:testVision', async (_e, p = {}) => {
+    const v = visionView();
+    const baseUrl = String(p.baseUrl || v.baseUrl || '').trim() || v.effective.baseUrl;
+    const model = String(p.model || v.model || '').trim() || v.effective.model;
+    // Key：优先用刚填的，其次用视觉自己的，最后按"同址可复用"借对话模型的
+    const savedV = getVisionConfig();
+    const savedC = getAiConfig();
+    const key = p.apiKey || savedV.apiKey || (sameBase(baseUrl, savedC.baseUrl) ? savedC.apiKey : '');
+    if (!key) {
+      return { ok: false, message: sameBase(baseUrl, savedC.baseUrl) ? '还没有配置 AI Key' : '这个地址与对话模型不同，需要单独的 API Key' };
+    }
+    try {
+      await ai.recognizeTasksFromImage(VISION_PROBE_IMAGE, { baseUrl, apiKey: key, model });
+      return { ok: true, message: `连接成功，「${ai.modelLabel(model)}」能读图` };
+    } catch (e) {
+      return { ok: false, message: (e && e.message) || '连接失败' };
     }
   });
 

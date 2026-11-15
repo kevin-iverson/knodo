@@ -221,6 +221,37 @@ const OPEN_AND_MEASURE = `(async () => {
     const hit = document.elementFromPoint(80, 300);
     out.hitClass = hit ? hit.className.toString().slice(0, 60) : '';
     out.hitIsMask = !!(hit && hit.classList && hit.classList.contains('detail-mask'));
+
+    /* 抽屉里的 Tom Select 下拉（优先级 / 分组）是 dropdownParent:'body'，挂在 body 上，
+       层级必须高于抽屉（150 / 从检索弹窗打开时 320），否则面板 display:block 了
+       也是被实体面板盖住 —— 用户视角就是「点了没反应、没有下拉选项」。
+       这里用 elementFromPoint 判定真实可见性，不看 display。 */
+    const priWrap = drawer.querySelector('.detail-field .ts-wrapper');
+    out.priOpen = false;
+    out.priOnTop = false;
+    out.priZ = '';
+    if (priWrap) {
+      const ctrl = priWrap.querySelector('.ts-control');
+      const cr = ctrl.getBoundingClientRect();
+      const opt = { bubbles: true, cancelable: true, clientX: cr.x + 24, clientY: cr.y + cr.height / 2 };
+      ctrl.dispatchEvent(new MouseEvent('mousedown', opt));
+      ctrl.dispatchEvent(new MouseEvent('mouseup', opt));
+      ctrl.dispatchEvent(new MouseEvent('click', opt));
+      await wait(400);
+      const dd = Array.from(document.querySelectorAll('.ts-dropdown'))
+        .find((d) => d.getBoundingClientRect().width > 0);
+      if (dd) {
+        const r = dd.getBoundingClientRect();
+        out.priOpen = true;
+        out.priZ = getComputedStyle(dd).zIndex;
+        const onTop = document.elementFromPoint(Math.round(r.left + 20), Math.round(r.top + 20));
+        out.priOnTop = !!(onTop && dd.contains(onTop));
+        out.priHit = onTop ? onTop.tagName + '.' + String(onTop.className).split(' ')[0] : '';
+      }
+      // 收起来，别影响后面「点遮罩关抽屉」的判定
+      ctrl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+      await wait(300);
+    }
     return out;
   } catch (e) {
     out.__err = String((e && e.message) || e);
@@ -278,6 +309,7 @@ const CLOSE_AND_CHECK = `(async () => {
     console.log(`[DRAWER] 抽屉容器底色=${res.drawerBg}（alpha=${res.drawerAlpha}）；遮罩底色=${res.maskBg}（alpha=${res.maskAlpha}）；面板底色=${res.panelBg}（alpha=${res.panelAlpha}）`);
     console.log(`[DRAWER] 像素比对（窗口左侧 ${sampleX.length}×${sampleY.length} 点）：平均差 ${avgDiff.toFixed(2)}、最大差 ${maxDiff.toFixed(2)}`);
     console.log(`[DRAWER] 左侧命中元素=${res.hitClass || '(none)'}（透明点击层=${res.hitIsMask ? '是' : '否'}）；面板在最上层=${res.panelOnTop ? '是' : '否'}；面板标题「${res.panelTitle || '-'}」/ 控件 ${res.panelControls} 个；点遮罩关闭=${closeRes.closedByMask ? '✓' : '✗'}`);
+    console.log(`[DRAWER] 优先级下拉：展开=${res.priOpen ? '是' : '否'}、可见（命中面板内元素）=${res.priOnTop ? '是' : '否'}、z-index=${res.priZ || '-'}${res.priHit ? '、命中=' + res.priHit : ''}`);
 
     const problems = [];
     if (res.drawerAlpha !== 0) problems.push(`detail-drawer 自身有不透明底色（alpha=${res.drawerAlpha}）→ 会整屏刷色`);
@@ -287,6 +319,10 @@ const CLOSE_AND_CHECK = `(async () => {
     if (!res.panelOnTop) problems.push('面板没有盖在最上层（被遮罩或其它层压住）');
     if (!(res.panelControls >= 5) || !res.panelTitle) problems.push(`面板内容不全（控件 ${res.panelControls} 个、标题「${res.panelTitle}」）`);
     if (!closeRes.closedByMask) problems.push('点空白处关不掉抽屉（透明点击层失效）');
+    if (!res.priOpen) problems.push('详情里的优先级下拉点不开（面板未展开）');
+    if (res.priOpen && !res.priOnTop) {
+      problems.push(`优先级下拉展开了却被抽屉盖住（z-index=${res.priZ || '-'}，命中元素=${res.priHit || 'none'}）→ 用户看到的是「点了没反应」`);
+    }
 
     page.close();
     if (problems.length) fail(problems.join('；'), { res, closeRes, avgDiff, maxDiff });

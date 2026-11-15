@@ -1,0 +1,258 @@
+/* 故宫主题 · 檐角脊兽
+   只在 data-style="palace" 时出现：底部 80px 的檐口（上 46px 给兽身，下 34px 琉璃瓦），
+   13 尊形象站在赤金脊线上，悬停浮起来历与寓意。檐口在文档流里，内容不会被盖住。 */
+
+.palace-rail { display: none; }
+
+:root[data-style="palace"] .palace-rail {
+  display: block;
+  position: relative;
+  flex: none;
+  height: 80px;
+  z-index: 2;
+  background: rgb(var(--bg-rgb));
+}
+/* 琉璃瓦：34px，铺在檐口底部 */
+:root[data-style="palace"] .palace-rail::before {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: 0; height: 34px;
+  border-top: 2px solid #C99A3C;
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,.05) 0 2px, rgba(0,0,0,0) 2px 22px),
+    linear-gradient(180deg, #3A554D 0%, #243833 55%, #1B2A26 100%);
+  box-shadow: inset 0 10px 16px rgba(0,0,0,.26), 0 -8px 18px rgba(40,24,10,.10);
+}
+:root[data-style="palace"][data-theme="dark"] .palace-rail::before {
+  border-top-color: #B8892F;
+  background:
+    repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 2px, rgba(0,0,0,0) 2px 22px),
+    linear-gradient(180deg, #2C433C 0%, #1B2B26 55%, #131E1B 100%);
+  box-shadow: inset 0 10px 18px rgba(0,0,0,.45);
+}
+/* 瓦当：一排赤金圆点 */
+:root[data-style="palace"] .palace-rail::after {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: 4px; height: 8px;
+  background: radial-gradient(circle at 11px 4px, rgba(231,188,94,.55) 0 2.6px, rgba(231,188,94,0) 3px) 0 0/22px 8px repeat-x;
+  opacity: .55;
+  pointer-events: none;
+}
+
+.pr-seal {
+  position: absolute; left: 12px; bottom: 6px; z-index: 3;
+  width: 22px; height: 22px; border: 1px solid rgba(231,188,94,.75); border-radius: 3px;
+  display: grid; place-items: center;
+  font-family: "楷体","KaiTi",serif; font-size: 8px; line-height: 1.02; letter-spacing: .04em;
+  color: #F3D9A0; opacity: .85; pointer-events: none;
+}
+.pr-caption {
+  position: absolute; right: 14px; bottom: 10px; z-index: 3;
+  font-family: "楷体","KaiTi",serif; font-size: 10.5px; letter-spacing: .22em;
+  color: rgba(243,217,160,.72); pointer-events: none; white-space: nowrap;
+}
+
+/* 队列：兽脚踩在赤金脊线上（瓦沿在 34px 处，图内脚底约 3.6px） */
+.pr-row {
+  position: absolute; left: 0; right: 0; bottom: 30px;
+  height: 46px;
+  display: flex; align-items: flex-end; justify-content: center;
+  gap: 6px; padding: 0 18px;
+  pointer-events: none;
+}
+.pr-beast {
+  position: relative; flex: 0 0 auto;
+  width: 46px; height: 46px;
+  display: flex; align-items: flex-end; justify-content: center;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  pointer-events: auto;
+  filter: drop-shadow(0 4px 6px rgba(20, 12, 6, .28));
+  transition: opacity .16s ease, transform .18s cubic-bezier(.3,.7,.3,1);
+}
+.pr-beast img {
+  display: block; width: 100%; height: 100%; object-fit: contain;
+  transition: transform .18s cubic-bezier(.3,.7,.3,1), filter .18s ease;
+  -webkit-user-drag: none; user-select: none;
+}
+
+.pr-row:hover .pr-beast,
+.pr-row:has(.pr-beast.is-pinned) .pr-beast { opacity: .45; }
+.pr-row .pr-beast:hover,
+.pr-row .pr-beast:focus-visible,
+.pr-row .pr-beast.is-pinned { opacity: 1; }
+.pr-row .pr-beast:hover img,
+.pr-row .pr-beast:focus-visible img,
+.pr-row .pr-beast.is-pinned img {
+  transform: translateY(-4px) scale(1.04);
+  filter: drop-shadow(0 8px 12px rgba(201, 154, 60, .35));
+}
+.pr-beast:focus-visible { outline: 2px solid #E7BC5E; outline-offset: 4px; border-radius: 10px; }
+
+/* 有模态 / 详情抽屉时整条檐口让位：遮罩只盖到 .app，不处理的话底部会留一条亮着的檐口。
+   用 display:none 而不是 visibility:hidden —— 遮罩跟着 .app 长高，底部才不会留一条没压暗的带子。
+   选择器带上 :root[data-style="palace"]，特异性才压得过上面的 display:block。 */
+:root[data-style="palace"]:has(.modal-mask) .palace-rail,
+:root[data-style="palace"]:has(.detail-mask) .palace-rail { display: none; }
+
+/* 提示条不要压在瓦面上 */
+:root[data-style="palace"] .toast { bottom: 52px; }
+
+/* 介绍卡：固定定位，脚在兽上方；深浅两套沿用主题 token */
+.pr-tip {
+  position: fixed; z-index: 260;
+  width: 318px; padding: 14px 14px 12px;
+  border: 1px solid rgba(201, 154, 60, .9);
+  border-radius: 14px;
+  background: rgb(var(--panel-rgb));
+  color: rgb(var(--text-rgb));
+  box-shadow: 0 18px 40px rgba(40, 24, 10, .28), 0 1px 0 rgba(255, 255, 255, .35) inset;
+  opacity: 0; transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity .14s ease, transform .16s ease;
+}
+.pr-tip.is-show { opacity: 1; transform: translateY(0); }
+.pr-tip::after {
+  content: ""; position: absolute; left: var(--pr-caret, 50%); bottom: -7px;
+  width: 12px; height: 12px; transform: translateX(-50%) rotate(45deg);
+  background: rgb(var(--panel-rgb));
+  border-right: 1px solid rgba(201, 154, 60, .9);
+  border-bottom: 1px solid rgba(201, 154, 60, .9);
+}
+.pr-tip.is-below::after {
+  bottom: auto; top: -7px; border: 0;
+  border-left: 1px solid rgba(201, 154, 60, .9);
+  border-top: 1px solid rgba(201, 154, 60, .9);
+}
+.pr-tip-head { display: flex; align-items: center; gap: 11px; }
+.pr-tip-ico {
+  flex: none; width: 64px; height: 64px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: radial-gradient(circle at 50% 38%, #FFF9EA, #F2E3C4 70%, #EBD9B6);
+  border: 1px solid rgba(201, 154, 60, .35);
+}
+.pr-tip-ico img { width: 58px; height: 58px; }
+[data-theme="dark"] .pr-tip-ico {
+  background: radial-gradient(circle at 50% 38%, #3A2B22, #2A1E18 70%, #241A15);
+  border-color: rgba(201, 154, 60, .3);
+}
+.pr-tip-role { display: block; font-size: 10.5px; letter-spacing: .18em; color: #C99A3C; text-transform: uppercase; }
+.pr-tip-name {
+  display: block; margin: 1px 0 1px; font-family: "楷体","KaiTi",serif; font-weight: 400;
+  font-size: 23px; line-height: 1.2; color: rgb(var(--text-rgb));
+}
+.pr-tip-py { display: block; font-family: "楷体","KaiTi",serif; font-style: italic; font-size: 11px; color: rgb(var(--text3-rgb)); }
+.pr-tip-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.pr-tip-chips span {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  background: rgba(var(--active-rgb), .55);
+  border: 1px solid rgba(var(--border-rgb), .9);
+  color: rgb(var(--text2-rgb));
+}
+[data-theme="dark"] .pr-tip-chips span { background: rgba(201, 154, 60, .10); border-color: rgba(201, 154, 60, .22); color: #D9C39E; }
+.pr-tip-origin { margin: 9px 0 0; font-size: 12px; line-height: 1.75; color: rgb(var(--text2-rgb)); }
+.pr-tip-meaning {
+  margin: 8px 0 0; padding: 7px 10px;
+  border-left: 2px solid rgb(var(--primary-rgb));
+  background: linear-gradient(90deg, rgba(var(--primary-rgb), .09), rgba(var(--primary-rgb), 0));
+  font-size: 12px; line-height: 1.7; color: rgb(var(--text-rgb));
+}
+.pr-tip-meaning b {
+  font-family: "楷体","KaiTi",serif; font-weight: 400; letter-spacing: .1em;
+  color: rgb(var(--primary-rgb)); margin-right: 5px;
+}
+.pr-tip-seal {
+  position: absolute; right: 12px; bottom: 10px;
+  width: 30px; height: 30px; border: 1.5px solid rgb(var(--primary-rgb)); border-radius: 3px;
+  display: grid; place-items: center;
+  font-family: "楷体","KaiTi",serif; font-size: 9px; line-height: 1.02; letter-spacing: .04em;
+  color: rgb(var(--primary-rgb)); opacity: .55; transform: rotate(-3deg);
+  pointer-events: none;
+}
+
+/* 窄窗：把 13 尊缩小一档，仍然一屏排下 */
+@media (max-width: 1080px) {
+  :root[data-style="palace"] .palace-rail { height: 72px; }
+  .pr-row { bottom: 30px; height: 42px; gap: 4px; padding: 0 12px; }
+  .pr-beast { width: 40px; height: 40px; }
+  .pr-caption { display: none; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   红墙标题栏与字体：把应用的外壳拉回原型图的观感
+   - 标题栏整条宫墙红（原来左半是侧栏色、右半是窗口底色，拼起来是两条）
+   - 中文用宋体 / 标题用楷体；西文与数字走 Segoe UI，和原型图的混排一致
+   ───────────────────────────────────────────────────────────── */
+
+/* 红墙：整条红到底，不再有「侧栏段 / 主区段」的接缝 */
+:root[data-style="palace"] .titlebar {
+  background: linear-gradient(140deg, #9A3128 0%, #7C2620 46%, #5F1B17 100%);
+  border-bottom-color: rgba(201, 154, 60, .45);
+}
+:root[data-style="palace"] .titlebar::before {
+  background: transparent;
+  border-left: 0;
+}
+:root[data-style="palace"] .titlebar .tb-logo {
+  box-shadow: 0 0 0 1px rgba(231, 188, 94, .35);
+}
+:root[data-style="palace"] .titlebar .tb-name { color: #F7E7C3; }
+:root[data-style="palace"] .titlebar .tb-ver { color: rgba(247, 231, 195, .5); }
+:root[data-style="palace"] .titlebar .tb-set { color: rgba(247, 231, 195, .84); }
+:root[data-style="palace"] .titlebar .tb-set:hover,
+:root[data-style="palace"] .titlebar .tb-set.is-open {
+  background: rgba(255, 243, 218, .15);
+  color: #FFF3DA;
+}
+:root[data-style="palace"] .titlebar .tb-nav .nav-item,
+:root[data-style="palace"] .titlebar .tb-buddy { color: rgba(247, 231, 195, .84); }
+:root[data-style="palace"] .titlebar .tb-nav .nav-item:hover,
+:root[data-style="palace"] .titlebar .tb-buddy:hover {
+  background: rgba(255, 243, 218, .13);
+  color: #FFF3DA;
+}
+:root[data-style="palace"] .titlebar .tb-nav .nav-item.active,
+:root[data-style="palace"] .titlebar .tb-buddy.is-open {
+  background: rgba(255, 243, 218, .2);
+  color: #FFF3DA;
+}
+:root[data-style="palace"] .titlebar .tb-win-btn { color: rgba(247, 231, 195, .76); }
+:root[data-style="palace"] .titlebar .tb-win-btn:hover {
+  background: rgba(255, 243, 218, .14);
+  color: #FFF3DA;
+}
+:root[data-style="palace"] .titlebar .tb-win-btn:active { background: rgba(255, 243, 218, .22); }
+:root[data-style="palace"] .titlebar .tb-win-btn.is-close:hover { background: #E81123; color: #fff; }
+:root[data-style="palace"] .titlebar .tb-win-btn.is-close:active { background: #C50F1F; color: #fff; }
+:root[data-style="palace"] .titlebar button:focus-visible { outline-color: #E7BC5E; }
+
+/* 明暗滑盘：红墙上用一枚米色盘 + 酒红字形，别再吃浅色主题的墨色 */
+:root[data-style="palace"] .titlebar .tbm-track {
+  background: rgba(247, 231, 195, .22);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .25);
+}
+:root[data-style="palace"] .titlebar .tbm-orb {
+  background: #F7EFDC;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .18), 0 1px 3px rgba(0, 0, 0, .28);
+}
+:root[data-style="palace"] .titlebar .tbm-sun,
+:root[data-style="palace"] .titlebar .tbm-moon { color: #6F1F1B; }
+:root[data-style="palace"] .titlebar .tbm-track::after { border-color: rgba(247, 231, 195, .6); }
+
+/* 字体：中文宋体、西文 Segoe UI —— 和原型图的混排一致 */
+:root[data-style="palace"] body {
+  font-family: "Segoe UI", "SimSun", "宋体", "Songti SC", "Noto Serif SC", serif;
+}
+/* 控件默认字体是 Arial（浏览器默认），不 inherit 的话按钮里的中文会单独走一套 */
+:root[data-style="palace"] button,
+:root[data-style="palace"] input,
+:root[data-style="palace"] select {
+  font-family: inherit;
+}
+/* 不碰 textarea：报告输出 / 笔记源码 / 代码块要留各自的等宽字体 */
+
+/* 视图标题用楷体，回到原型图里「今天」的写法 */
+:root[data-style="palace"] .topbar-left h1 {
+  font-family: "楷体", "KaiTi", "STKaiti", "Noto Serif SC", serif;
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: .02em;
+}
