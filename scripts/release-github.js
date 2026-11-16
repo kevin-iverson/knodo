@@ -320,7 +320,7 @@ async function uploadAssets(releaseId) {
     const name = assetName(local);
     const full = path.join(RELEASE_DIR, local);
     const size = fs.statSync(full).size;
-    const hit = existing.find((a) => a.name === name);
+    const hit = existing.find((a) => a.name === name && a.state === 'uploaded');
     if (hit) {
       const same = hit.size === size;
       console.log(`③ 已存在 ${name}（${(size / 1048576).toFixed(1)} MiB）${same ? '· 字节一致，跳过' : `· ⚠ 大小不同：远端 ${hit.size} / 本地 ${size}`}`);
@@ -335,8 +335,10 @@ async function uploadAssets(releaseId) {
     for (let attempt = 1; attempt <= 4 && !json; attempt += 1) {
       if (attempt > 1) {
         // 上一次可能其实已经落盘（网络中断但传到服务端），先复查再重传，避免挂出重复附件
+        // 注意必须要求 state === 'uploaded'：中断的上传会留下 state='starter' 的占位记录，
+        // 只看名字+大小会误判成「已上传成功」，结果附件公开列表里始终不出现（v2.8.0 的便携版就是这样丢的）
         const again = await listAssets(releaseId);
-        const landed = again.find((a) => a.name === name && a.size === size);
+        const landed = again.find((a) => a.name === name && a.size === size && a.state === 'uploaded');
         if (landed) {
           console.log(`   ↺ 复查发现已上传成功（${(landed.size / 1048576).toFixed(1)} MiB），不重传`);
           json = landed;
