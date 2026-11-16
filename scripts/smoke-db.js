@@ -324,8 +324,9 @@ check('列表按创建时间倒序', list[0].title === '评审会' && list.some(
 check('数量正确', list.length === 3); // 含上面那个「未命名会议」
 
 const exportSnap = db.exportData();
-check('导出含 meetings 且 schema 升级到 14',
-  exportSnap.schemaVersion === 14 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
+check('导出含 meetings 且 schema 升级到 16',
+  exportSnap.schemaVersion === 16 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
+  && Array.isArray(exportSnap.pay_rates) // v19 工时记薪费率随备份走
   && Array.isArray(exportSnap.reports) && Array.isArray(exportSnap.ai_searches)
   && Array.isArray(exportSnap.kb_qa)
   && Array.isArray(exportSnap.notes) && Array.isArray(exportSnap.note_folders)
@@ -1049,8 +1050,12 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
   const snapDir = path.join(path.dirname(db.getDbPath()), 'backups');
   const mkSnap = (monthsAgo) => {
     const now = new Date();
-    // 固定 15 号：月末直接减 N 个月会溢出到下个月，断言会时好时坏
-    const d = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 15);
+    // 用「今天」的日号，而不是固定 15 号：保留策略是「now - 2 个月」这条滚动线，
+    // 固定 15 号时一旦今天过了 15 号，2 个月前那份就落到线外，断言随日历偶发变红（11-16 就是这么红的）。
+    // 月末溢出（3-31 减一个月 → 3-3）用目标月的天数夹一下。
+    const target = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 1);
+    const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    const d = new Date(target.getFullYear(), target.getMonth(), Math.min(now.getDate(), lastDay));
     const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
     const p = path.join(snapDir, `knodo-${stamp}.db`);
     fs.writeFileSync(p, 'x');

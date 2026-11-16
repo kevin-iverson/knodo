@@ -14,11 +14,14 @@ import { openDetail } from '../detail.js';
 import { flattenGroupTree } from '../group-tree.js';
 import { openFormModal } from '../modal.js';
 import { DATE_RANGE_EVENT, dateRangeFieldHtml, bindDateRangeFields } from '../controls.js';
-import { live, hm, esc, dateKey, fmtDay } from './shared.js';
+import * as row from './row.js';
+import { live, hm, esc, dateKey, fmtDay, fmtClock } from './shared.js';
+import { money, rateText, openRateModal } from './pay.js';
 
 /* ------------------------------ 视图状态 ------------------------------ */
 
 const V = {
+  mode: 'time',      // time = 工时 | value = 价值（工时记薪）
   range: 'week',     // week | lastweek | month | custom
   scope: 'top',      // top = 含子任务 | all = 仅主任务
   groupId: '',       // '' = 全部分组
@@ -28,10 +31,13 @@ const V = {
 };
 
 const expanded = new Set();
+const expandedPay = new Set(); // 价值视图里展开明细的任务 id
 let groups = [];
 let tags = [];
 let lastRows = [];
 let lastRoots = [];
+let lastPay = null; // 最近一次 payRows 结果（金额列 / 明细回溯都吃这一份）
+let lastBounds = null;
 
 /* ------------------------------ 时间范围 ------------------------------ */
 
@@ -161,6 +167,8 @@ function toolbarHtml() {
     .join('');
   return `
   <div class="wl-toolbar">
+    ${chipGroup('mode', [['time', '工时'], ['value', '价值']], V.mode)}
+    <span class="wl-vmode-sep"></span>
     <span class="wl-tb-label">分组</span>
     <select class="wl-select" data-wl="group" aria-label="按分组筛选" title="按分组筛选">
       <option value="">全部分组</option>${groupOpts}
@@ -266,6 +274,161 @@ function chartHtml(entries, ids, from, to) {
   </div>`;
 }
 
+/* ------------------------------ 价值视图（工时记薪） ------------------------------ */
+
+/** 金额一列靠右对齐时用的紧凑格式（¥8,420 / 带两位小数开关），统一走 pay.js 的 money */
+function moneyCell(cents) {
+  return `<span class="wl-money">${money(cents)}</span>`;
+}
+
+/**
+ * 价值视图按任务聚合：金额是逐条记录的派生值，按 parent_id 成树后可以逐级上卷。
+ * 顶层合计 = Σ 顶级子树金额（含子任务）；scope=all 时只用任务自身金额。
+ * 与上层的工时视图同一范式：子任务行不参与顶部求和，避免重复计数。
+ */
+function buildPayTree(roots, pay) {
+  const byTask = new Map();
+  for (const r of pay.rows) {
+    const id = Number(r.taskId);
+    let agg = byTask.get(id);
+    if (!agg) {
+      agg = { amountCents: 0, ownSec: 0, ownCents: 0, cnt: 0, rows: [], children: [] };
+      byTask.set(id, agg);
+    }
+    agg.amountCents += Number(r.amountCents) || 0;
+    agg.ownSec += Number(r.durationSec) || 0;
+    agg.cnt += 1;
+    agg.rows.push(r);
+  }
+  // 把金额挂到已有的工时树上（树的形状仍以 aggregate 的 parent_id 为准）
+  const decorate = (node) => {
+    node.pay = byTask.get(Number(node.id)) || { amountCents: 0, ownSec: 0, ownCents: 0, cnt: 0, rows: [], children: [] };
+    node.pay.ownCents = node.pay.amountCents; // 自身金额（子树尚未上卷前）
+    node.children.forEach(decorate);
+  };
+  roots.forEach(decorate);
+  // 子树上卷：从叶到根累加（后序遍历）
+  const rollup = (node) => {
+    let sub = node.pay ? node.pay.amountCents : 0;
+    for (const c of node.children) sub += rollup(c);
+    if (node.pay) node.pay.subtreeCents = sub;
+    return sub;
+  };
+  roots.forEach(rollup);
+  return byTask;
+}
+
+/** 价值视图汇总卡：折算价值 / 可计费时长 / 已排除时长 / 平均时薪 */
+function valueCardsHtml(pay, label, days) {
+  if (!pay.hasRates) {
+    return `<div class="wl-pay-guide">
+      <div class="wl-pay-guide-mark">¥</div>
+      <div class="wl-pay-guide-body">
+        <div class="wl-pay-guide-t">先设置你的时薪</div>
+        <div class="wl-pay-guide-d">设置后，已记录的工时会按时薪估算成价值。这只是给自己看的估算，不是工资条；没有时薪前不会显示 ¥0.00。</div>
+      </div>
+      <button type="button" class="wl-btn is-accent" data-wl="rate">设置时薪</button>
+    </div>`;
+  }
+  const excludedHm = hm(pay.excludedSec);
+  return `<div class="wl-sum-grid">
+    <div class="wl-sum-card is-accent" data-wl="rate" title="点击修改时薪">
+      <div class="wl-k">折算价值 · 估算</div>
+      <div class="wl-v num">${money(pay.totalCents)}</div>
+      <div class="wl-s">${esc(label)} · 点击查看时薪</div>
+    </div>
+    <div class="wl-sum-card">
+      <div class="wl-k">可计费时长</div>
+      <div class="wl-v num">${hm(pay.billableSec)}</div>
+      <div class="wl-s">按 ${days} 个工作日 · ${pay.rows.length} 条记录</div>
+    </div>
+    <div class="wl-sum-card${pay.excludedSec > 0 ? ' is-excluded' : ''}"${pay.excludedSec > 0 ? ' data-wl="excluded"' : ''} title="${pay.excludedSec > 0 ? '点击查看被排除的记录' : ''}">
+      <div class="wl-k">已排除</div>
+      <div class="wl-v num">${excludedHm}</div>
+      <div class="wl-s">${pay.excludedSec > 0 ? '标记为不计薪，金额记 0' : '没有不计薪的记录'}</div>
+    </div>
+    <div class="wl-sum-card" title="总价值 ÷ 可计费小时，按记录费率加权">
+      <div class="wl-k">平均时薪</div>
+      <div class="wl-v num">${pay.billableSec > 0 ? rateText(pay.avgRateCents) : '—'}</div>
+      <div class="wl-s">按记录生效费率加权</div>
+    </div>
+  </div>`;
+}
+
+/** 单条明细记录行（明细回溯：日期 / 起止 / 时长 / 费率 / 金额 / 计薪开关） */
+function payEntryRow(r) {
+  const clock = r.startedAt && r.endedAt
+    ? `${fmtClock(r.startedAt)}–${fmtClock(r.endedAt)}`
+    : fmtClock(r.startedAt);
+  const estimate = r.useEarliest ? '<span class="wl-pay-tag">按最早费率估算</span>' : '';
+  return `<div class="wl-pay-entry${r.billable ? '' : ' is-excluded'}" data-pay-entry="${r.id}">
+    <span class="wl-pe-day">${esc(r.localDay)}</span>
+    <span class="wl-pe-clock">${esc(clock)}</span>
+    <span class="wl-pe-sec num">${hm(r.durationSec)}</span>
+    <span class="wl-pe-rate num">${r.rateCents ? rateText(r.rateCents) : '—'} ${estimate}</span>
+    <span class="wl-pe-amt num">${money(r.amountCents)}</span>
+    <button type="button" class="wl-pe-bill${r.billable ? ' is-on' : ''}" data-wl-billable="${r.id}"
+      title="${r.billable ? '点击标为不计薪（金额归零，但时长仍显示）' : '点击恢复计薪'}">${r.billable ? '计薪' : '不计薪'}</button>
+  </div>`;
+}
+
+/** 价值表格：任务 / 时长 / 金额 / 占比 / 明细。点金额行展开该任务（含子树）的记录 */
+function valueRowHtml(node, depth, totalCents, maxCents) {
+  const hasChild = node.children.length > 0;
+  const open = expandedPay.has(node.id);
+  const cents = V.scope === 'all' ? (node.pay ? node.pay.ownCents : 0) : (node.pay ? node.pay.subtreeCents : 0);
+  const sec = V.scope === 'all' ? (node.pay ? node.pay.ownSec : 0) : 0;
+  const pct = totalCents > 0 ? Math.round((cents / totalCents) * 100) : 0;
+  const barPct = maxCents > 0 ? Math.max(1, Math.round((cents / maxCents) * 100)) : 0;
+  const indent = depth * 22;
+
+  // 收集该任务及其全部后代的记录用于明细回溯
+  const collected = [];
+  const collect = (n) => {
+    if (n.pay && n.pay.rows) collected.push(...n.pay.rows);
+    n.children.forEach(collect);
+  };
+  collect(node);
+  collected.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+
+  return `<tr class="wl-row${depth ? ' is-child' : ''}" data-wl-pay-row="${node.id}">
+    <td>
+      <div class="wl-task-cell" style="padding-left:${indent}px">
+        <button type="button" class="wl-twist${hasChild ? '' : ' is-ph'}" data-wl-pay-twist="${node.id}" aria-label="${open ? '收起' : '展开'}子任务">${open ? '▾' : '▸'}</button>
+        <span class="wl-t-title${depth ? ' is-sub' : ''}">${esc(node.title)}</span>
+        ${depth ? '<span class="wl-t-group">· 子任务</span>' : (node.groupName ? `<span class="wl-t-group">· ${esc(node.groupName)}</span>` : '')}
+      </div>
+    </td>
+    <td class="wl-r wl-mono is-muted">${V.scope === 'all' ? hm(sec) : '—'}</td>
+    <td class="wl-r">${moneyCell(cents)}</td>
+    <td>
+      <div class="wl-bar-cell">
+        <div class="wl-bar-track"><div class="wl-bar-fill${depth ? ' is-sub' : ''}" style="width:${barPct}%"></div></div>
+        ${depth ? '' : `<span class="wl-mono is-muted wl-pct">${pct}%</span>`}
+      </div>
+    </td>
+    <td class="wl-r"><button type="button" class="wl-mini-act${open ? ' is-open' : ''}" data-wl-pay-open="${node.id}" title="回溯到原始记录">${open ? '收起' : '明细'}</button></td>
+  </tr>
+  ${open && collected.length ? `<tr class="wl-pay-detail-row"><td colspan="5">
+    <div class="wl-pay-detail">
+      <div class="wl-pay-detail-head">${esc(node.title)} · ${collected.length} 条记录 · 金额可逐级回溯到原始工时</div>
+      ${collected.map(payEntryRow).join('')}
+    </div>
+  </td></tr>` : ''}`;
+}
+
+function valueTreeHtml(roots, totalCents, maxCents) {
+  const out = [];
+  const walk = (node, depth) => {
+    out.push(valueRowHtml(node, depth, totalCents, maxCents));
+    if (node.children.length && expandedPay.has(node.id)) {
+      node.children.forEach((c) => walk(c, depth + 1));
+    }
+  };
+  roots.forEach((r) => walk(r, 0));
+  return out.join('');
+}
+
 export async function render(root) {
   if (!root) return;
   try {
@@ -285,19 +448,37 @@ export async function render(root) {
 
   let rows = [];
   let entries = [];
+  let pay = { hasRates: false, rows: [], totalCents: 0, billableSec: 0, excludedSec: 0, avgRateCents: 0 };
+  // pay 单独容错：记薪是派生视图，它失败不能拖垮工时视图本身的 rows / 每日分布
   try {
-    rows = await api.worklog.range(payload);
-    entries = await api.worklog.rangeEntries(payload);
-  } catch (e) {
-    toast(`加载工时失败：${(e && e.message) || e}`);
+    const [r, e] = await Promise.all([
+      api.worklog.range(payload),
+      api.worklog.rangeEntries(payload),
+    ]);
+    rows = r || [];
+    entries = e || [];
+  } catch (err) {
+    toast(`加载工时失败：${(err && err.message) || err}`);
+  }
+  try {
+    pay = (await api.worklog.pay(payload)) || pay;
+  } catch (err) {
+    if (V.mode === 'value') toast(`加载价值估算失败：${(err && err.message) || err}`);
   }
   lastRows = rows || [];
+  lastPay = pay;
+  lastBounds = { from, to, label, payload };
 
   const tree = buildTree(lastRows);
   const gset = groupSetOf(V.groupId);
   const tagName = V.tagId || '';
   const roots = filterTree(tree, gset, tagName).filter((r) => r.aggSec > 0 || r.children.some((c) => c.aggSec > 0));
   lastRoots = roots;
+
+  // 价值视图：把逐条金额挂到同一棵工时树上，逐任务/分组上卷
+  buildPayTree(roots, pay);
+  const payTotalCents = pay.totalCents;
+  const payMaxCents = Math.max(1, ...roots.map((r) => (r.pay ? r.pay.subtreeCents || 0 : 0)));
 
   const valueOf = (n) => (V.scope === 'all' ? n.ownSec : n.aggSec);
   const total = roots.reduce((s, r) => s + valueOf(r), 0);
@@ -330,9 +511,10 @@ export async function render(root) {
     return to;
   })();
 
-  root.innerHTML = `
-    ${toolbarHtml()}
-    <div class="wl-sum-grid">
+  const isValue = V.mode === 'value';
+  const cardsHtml = isValue
+    ? valueCardsHtml(pay, label, days)
+    : `<div class="wl-sum-grid">
       <div class="wl-sum-card is-accent">
         <div class="wl-k">总工时</div>
         <div class="wl-v num">${hm(total)}</div>
@@ -356,9 +538,30 @@ export async function render(root) {
         <div class="wl-v num">${longest ? hm(valueOf(longest)) : '0m'}</div>
         <div class="wl-s">${longest ? esc(longest.title) : '—'}</div>
       </div>
-    </div>
+    </div>`;
 
-    <div class="wl-panel">
+  const tablePanel = isValue
+    ? `<div class="wl-panel">
+      <div class="wl-panel-head">
+        <h3>按任务</h3>
+        <span class="wl-sub">金额 = 逐条工时 × 生效费率，逐级相加可回溯</span>
+        <div class="wl-spacer"></div>
+        <span class="wl-sub wl-mono">${pay.hasRates ? money(payTotalCents) : '—'}</span>
+      </div>
+      <table class="wl-table">
+        <thead><tr>
+          <th>任务</th>
+          <th class="wl-r" style="width:80px">${V.scope === 'all' ? '自身工时' : '工时'}</th>
+          <th class="wl-r" style="width:112px">金额 · 估算</th>
+          <th style="width:154px">占比</th>
+          <th class="wl-r" style="width:70px"></th>
+        </tr></thead>
+        <tbody>${roots.length
+    ? valueTreeHtml(roots, payTotalCents, payMaxCents)
+    : '<tr><td colspan="5"><div class="wl-empty-view">本区间没有可计薪的工时。先给任务计时或补录，再回来看估算价值。</div></td></tr>'}</tbody>
+      </table>
+    </div>`
+    : `<div class="wl-panel">
       <div class="wl-panel-head">
         <h3>按任务</h3>
         <span class="wl-sub">父任务合计 = 自身 + 全部后代，不重复计入</span>
@@ -377,12 +580,17 @@ export async function render(root) {
     ? treeHtml(roots, total, maxSec)
     : '<tr><td colspan="5"><div class="wl-empty-view">本期还没有工时记录。把鼠标移到任意任务上，点「▶」开始计时，或点工具栏右侧的「＋ 补录」。</div></td></tr>'}</tbody>
       </table>
-    </div>
-
-    <div class="wl-panel">
-      <div class="wl-panel-head"><h3>每日分布</h3><div class="wl-spacer"></div><span class="wl-sub">${esc(label)}</span></div>
-      ${chartHtml(entries || [], ids, from, chartTo)}
     </div>`;
+
+  root.innerHTML = `
+    ${toolbarHtml()}
+    ${cardsHtml}
+    ${tablePanel}
+    <div class="wl-panel">
+      <div class="wl-panel-head"><h3>每日分布</h3><div class="wl-spacer"></div><span class="wl-sub">${esc(label)}${isValue ? ' · 按工时' : ''}</span></div>
+      ${chartHtml(entries || [], ids, from, chartTo)}
+    </div>
+    ${isValue ? '<div class="wl-pay-footnote">金额是按你设定的时薪做的估算，不代表实际收入；跨天工时按开始日归属，不计薪的记录金额记 0 但时长仍保留。</div>' : ''}`;
 
   bind(root);
 }
@@ -419,7 +627,9 @@ async function onClick(e) {
   if (chip) {
     const kind = chip.dataset.wlChips;
     const v = chip.dataset.v;
-    if (kind === 'range') {
+    if (kind === 'mode') {
+      V.mode = v;
+    } else if (kind === 'range') {
       V.range = v;
       if (v === 'custom' && !V.customFrom) {
         const now = new Date();
@@ -431,6 +641,60 @@ async function onClick(e) {
       V.scope = v;
       toast(v === 'all' ? '口径：仅主任务自身工时（不累积子任务）' : '口径：父任务含全部后代工时');
     }
+    render(document.getElementById('view'));
+    return;
+  }
+
+  // 时薪设置（价值卡第一张 / 引导页按钮）
+  if (e.target.closest('[data-wl="rate"]')) {
+    await openRateModal(() => render(document.getElementById('view')));
+    return;
+  }
+  // 「已排除」卡：展开全部含不计薪记录的任务明细
+  if (e.target.closest('[data-wl="excluded"]')) {
+    let shown = 0;
+    for (const r of (lastPay && lastPay.rows) || []) {
+      if (!r.billable) { expandedPay.add(Number(r.taskId)); shown += 1; }
+    }
+    toast(shown ? `已展开被排除的记录（${shown} 条）` : '没有不计薪的记录');
+    render(document.getElementById('view'));
+    return;
+  }
+
+  // 价值视图：明细展开 / 子任务展开 / 计薪开关 —— 必须先于通用 row 点击处理
+  const billBtn = e.target.closest('[data-wl-billable]');
+  if (billBtn) {
+    e.stopPropagation();
+    const id = Number(billBtn.dataset.wlBillable);
+    const rec = lastPay && lastPay.rows.find((r) => Number(r.id) === id);
+    const next = rec ? !rec.billable : true;
+    try {
+      await api.worklog.entryBillable({ id, billable: next });
+      // store 直写不发 worklog:changed：手动同步任务行摘要缓存，切回列表时才是最新
+      row.refreshAll();
+      toast(next ? '已恢复计薪' : '已标为不计薪：金额归零，时长仍保留');
+    } catch (err) {
+      toast((err && err.message) || '操作失败');
+      return;
+    }
+    render(document.getElementById('view'));
+    return;
+  }
+
+  const payOpen = e.target.closest('[data-wl-pay-open]');
+  if (payOpen) {
+    e.stopPropagation();
+    const id = Number(payOpen.dataset.wlPayOpen);
+    if (expandedPay.has(id)) expandedPay.delete(id); else expandedPay.add(id);
+    render(document.getElementById('view'));
+    return;
+  }
+
+  const payTwist = e.target.closest('[data-wl-pay-twist]');
+  if (payTwist) {
+    e.stopPropagation();
+    const id = Number(payTwist.dataset.wlPayTwist);
+    if (expandedPay.has(id)) expandedPay.delete(id); else expandedPay.add(id);
     render(document.getElementById('view'));
     return;
   }
@@ -479,7 +743,9 @@ async function onClick(e) {
   }
 
   const row = e.target.closest('[data-wl-row]');
-  if (row) openDetail(Number(row.dataset.wlRow));
+  if (row) { openDetail(Number(row.dataset.wlRow)); return; }
+  const payRow = e.target.closest('[data-wl-pay-row]');
+  if (payRow) openDetail(Number(payRow.dataset.wlPayRow));
 }
 
 /**
@@ -535,7 +801,7 @@ async function manualAdd() {
       }
     },
   });
-  if (ok) refresh();
+  if (ok) { refresh(); row.refreshAll(); }
 }
 
 /** 计时状态变化时重画。只认「当前 #view 里真的有工时工具栏」，避免误刷别的视图 */

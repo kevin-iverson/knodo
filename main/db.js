@@ -513,6 +513,8 @@ const MIGRATIONS = [
   // schema 版本必须对全体用户一致，所以这里不做惰性建表（否则备份 / user_version 会分叉）。
   // DDL 放 main/worklog/schema.js：开关关闭的用户永远不会 require 到它。
   (d) => { require('./worklog/schema').migrate(d); },
+  // v19：工时记薪费率表。同上，DDL 放插件目录，迁移期一次性建表，与开关无关。
+  (d) => { require('./worklog/schema').migratePay(d); },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -1170,6 +1172,28 @@ function subtreeTaskIds(id) {
     for (const c of children) stack.push(c.id);
   }
   return ids;
+}
+
+/**
+ * 把一个任务挂到新的父任务下（parentId=null 表示提升为顶级任务）。
+ * 与 updateTask 分开：parent_id 是树结构字段，不能混进普通字段的 UPDATE（那样绕不过环检测）。
+ * 环检测：不能挂到自己、也不能挂到自己的任意后代下面，否则任务树成环（浮窗 / 报告递归会死循环）。
+ * sort_order 归零，让它排到新父任务子列表的首位。
+ */
+function moveTaskParent(id, parentId) {
+  const cur = getTask(id);
+  if (!cur) return null;
+  const next = parentId == null ? null : Number(parentId);
+  if (next != null) {
+    if (!Number.isFinite(next) || next <= 0) throw new Error('父任务不合法');
+    if (next === Number(id)) throw new Error('不能把任务挂到自己下面');
+    if (!getTask(next)) throw new Error('父任务不存在或已删除');
+    if (subtreeTaskIds(id).includes(next)) throw new Error('不能把任务挂到它自己的子任务下面');
+  }
+  if ((cur.parent_id == null ? null : Number(cur.parent_id)) === next) return cur; // 没变，不写库
+  db.prepare('UPDATE tasks SET parent_id = ?, sort_order = 0, updated_at = ? WHERE id = ?')
+    .run(next, nowIso(), id);
+  return getTask(id);
 }
 
 /**
@@ -3176,7 +3200,7 @@ function kbStats(kbId = 1) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 15,
+    schemaVersion: 16,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
@@ -3205,6 +3229,8 @@ function exportData() {
     // 工时：**无论插件开关是否开启都导出** —— 否则用户关一次插件再备份，历史工时静默丢失。
     // 只导出已结算的行（running 是进程内状态，重启会由对账逻辑收尾）。
     worklog_entries: db.prepare("SELECT * FROM worklog_entries WHERE status <> 'running' ORDER BY id").all(),
+    // 工时记薪费率：与工时同样无条件导出，金额是派生值不落库，费率丢了历史就再也算不对。
+    pay_rates: db.prepare('SELECT * FROM pay_rates ORDER BY effective_from').all(),
     settings: db
       .prepare('SELECT * FROM settings WHERE key NOT LIKE ?')
       .all('ai.apiKey%'),
@@ -3237,6 +3263,7 @@ function importData(data) {
     db.prepare('DELETE FROM task_notes').run();
     db.prepare('DELETE FROM focus_sessions').run();
     db.prepare('DELETE FROM worklog_entries').run();
+    db.prepare('DELETE FROM pay_rates').run();
     db.prepare('DELETE FROM note_tag_map').run();
     db.prepare('DELETE FROM notes').run();
     db.prepare('DELETE FROM note_tags').run();
@@ -3466,6 +3493,20 @@ function importData(data) {
         w.billable == null ? 1 : (w.billable ? 1 : 0), w.note || '', w.last_beat_at ?? null,
         w.created_at || t0
       );
+    }
+
+    // 工时记薪费率：旧备份没有 pay_rates 键时按空表跳过；同一生效日只保留一条（取第一条）。
+    const insRate = db.prepare(
+      `INSERT INTO pay_rates (id, rate_cents, effective_from, currency, note, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    const seenRateDay = new Set();
+    for (const r of data.pay_rates || []) {
+      const day = r.effective_from ? String(r.effective_from).slice(0, 10) : '';
+      const cents = Number(r.rate_cents);
+      if (!day || !Number.isFinite(cents) || cents <= 0 || seenRateDay.has(day)) continue;
+      seenRateDay.add(day);
+      insRate.run(r.id ?? null, cents, day, r.currency || 'CNY', r.note || '', r.created_at || t0);
     }
 
     const insKb = db.prepare(
@@ -3701,6 +3742,7 @@ module.exports = {
   updateTask,
   deleteTask,
   subtreeTaskIds,
+  moveTaskParent,
   setAttachments,
   toggleTask,
   listSubtasks,

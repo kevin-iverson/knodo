@@ -159,10 +159,17 @@ const SCRIPT = `(async () => {
   ck('入口仍在（常驻）', !!document.querySelector('.titlebar .nav-item[data-view="worklog"]'));
 
   /* ---------- 3. 造数：父 + 子 ---------- */
+  // 日期必须落在「本周」里：视图默认范围是本周，写死某一天过几周就会变成「总工时 0m」
+  // （11-16 就是这么挂的：脚本里还写着 2026-11-12，那天已经是上周）
+  const today = (() => {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  })();
   const parent = await api.tasks.create({ title: '验收-父任务' });
   const kid = await api.tasks.create({ title: '验收-子任务', parentId: parent.id });
-  await api.worklog.manualAdd({ taskId: parent.id, date: '2026-11-12', start: '09:00', end: '10:00', note: '父任务自身' });
-  await api.worklog.manualAdd({ taskId: kid.id, date: '2026-11-12', start: '10:00', end: '10:30', note: '子任务' });
+  await api.worklog.manualAdd({ taskId: parent.id, date: today, start: '09:00', end: '10:00', note: '父任务自身' });
+  await api.worklog.manualAdd({ taskId: kid.id, date: today, start: '10:00', end: '10:30', note: '子任务' });
   const sum = await api.worklog.task(parent.id);
   ck('本任务 3600s', sum.ownSec === 3600, sum.ownSec);
   ck('含子任务 5400s', sum.aggSec === 5400, sum.aggSec);
@@ -196,7 +203,7 @@ const SCRIPT = `(async () => {
   await wait(500);
   ck('补录弹窗可取消', !document.querySelector('.modal-form'));
 
-  /* ---------- 5. 任务行内入口（详情抽屉里不再有工时块） ---------- */
+  /* ---------- 5. 任务行内入口（详情抽屉里的工时块见下） ---------- */
   document.querySelector('.nav-item[data-view="all"]').click();
   await wait(900);
   const rowP = document.querySelector('.task-item[data-id="' + parent.id + '"]');
@@ -206,8 +213,15 @@ const SCRIPT = `(async () => {
 
   const d = await import('./js/detail.js');
   d.openDetail(parent.id);
-  await wait(800);
-  ck('详情里没有工时块', !document.querySelector('.wl-detail') && !document.querySelector('[data-wl-slot]'));
+  await wait(1200);
+  // 11-16 起详情抽屉里又有工时块了（累计 / 记录明细 / ＋补录），但必须全只读：
+  // 抽屉级 autosave 会捕获 input/change，放了输入框就会「没改任务却写库」
+  const ds = document.querySelector('.wl-ds');
+  ck('详情里有工时块', !!ds);
+  ck('详情工时块可补录', !!ds && !!ds.querySelector('[data-wl-ds-add]'));
+  ck('详情工时块没有输入框', !!ds && ds.querySelectorAll('input, textarea, select').length === 0);
+  ck('详情工时块有累计读数', !!ds && /h|m/.test((ds.querySelector('[data-wl-ds-sum]') || {}).textContent || ''),
+    ds ? (ds.querySelector('[data-wl-ds-sum]') || {}).textContent : '');
   d.closeDetail();
   await wait(400);
 

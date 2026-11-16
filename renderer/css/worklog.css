@@ -300,3 +300,228 @@ table.wl-table tbody tr:hover { background: var(--bg-hover); }
   .wl-dock-task { max-width: 96px; }
   .wl-dock-btn { padding: 3px 9px; }
 }
+
+/* ================ 工时记薪（时间价值） ================
+ * 视觉完全跟随主题 token：金额用主色 + 等宽数字，不引入金色 / 钱包之类俗套符号。
+ * 钱是安静的派生数字，不是要炫耀的战绩 —— 克制是这一组样式的基调。 */
+
+/* 工时 / 价值 分段：与后面筛选芯片之间留一道细分隔 */
+.wl-vmode-sep { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
+
+/* 金额：等宽数字，右对齐不跳动 */
+.wl-money {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px; font-weight: 650; letter-spacing: -0.2px;
+}
+.wl-sum-card .wl-v .wl-money { font-size: inherit; font-weight: inherit; }
+.wl-sum-card.is-excluded { border-color: rgb(var(--primary-rgb) / 0.28); }
+.wl-sum-card.is-excluded .wl-v { color: var(--text-2); }
+.wl-sum-card[data-wl="rate"] { cursor: pointer; }
+.wl-sum-card[data-wl="rate"]:hover { border-color: rgb(var(--primary-rgb) / 0.5); }
+
+/* 无费率引导态：安静的虚线卡，不显示 ¥0，只给一个明确的下一步 */
+.wl-pay-guide {
+  display: flex; align-items: center; gap: 16px;
+  padding: 20px 22px; margin-bottom: 14px;
+  background: var(--bg-ground); border: 1px dashed rgb(var(--primary-rgb) / 0.4);
+  border-radius: 12px;
+}
+.wl-pay-guide-mark {
+  flex: 0 0 auto; width: 42px; height: 42px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgb(var(--primary-rgb) / 0.1); color: var(--primary-strong);
+  font-size: 22px; font-weight: 500;
+}
+.wl-pay-guide-body { flex: 1; min-width: 0; }
+.wl-pay-guide-t { font-size: 14px; font-weight: 650; color: var(--text); }
+.wl-pay-guide-d { font-size: 11.5px; color: var(--text-3); margin-top: 4px; line-height: 1.6; }
+.wl-btn.is-accent {
+  border-color: rgb(var(--primary-rgb) / 0.4);
+  color: var(--primary-strong); background: rgb(var(--primary-rgb) / 0.08);
+  font-weight: 600;
+}
+.wl-btn.is-accent:hover { background: rgb(var(--primary-rgb) / 0.16); }
+
+/* 明细回溯行：嵌在表格里的浅面板 */
+.wl-mini-act.is-open {
+  color: var(--primary-strong); border-color: rgb(var(--primary-rgb) / 0.35);
+  background: rgb(var(--primary-rgb) / 0.1);
+}
+tr.wl-pay-detail-row > td { padding: 0 14px 10px !important; background: var(--bg-hover); }
+.wl-pay-detail {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-ground); overflow: hidden;
+}
+.wl-pay-detail-head {
+  padding: 8px 12px; font-size: 11.5px; color: var(--text-3);
+  border-bottom: 1px solid var(--border); background: var(--bg-hover);
+}
+.wl-pay-entry {
+  display: grid;
+  grid-template-columns: 92px 92px 62px 1fr 92px 64px;
+  align-items: center; gap: 8px;
+  padding: 7px 12px; border-bottom: 1px solid rgb(var(--border-rgb) / 0.6);
+  font-size: 11.5px;
+}
+.wl-pay-entry:last-child { border-bottom: 0; }
+.wl-pay-entry.is-excluded { opacity: 0.72; }
+.wl-pe-day { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.wl-pe-clock { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.wl-pe-sec { color: var(--text-2); }
+.wl-pe-rate { color: var(--text-3); display: flex; align-items: center; gap: 6px; }
+.wl-pe-amt { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.wl-pay-tag {
+  display: inline-block; padding: 1px 6px; border-radius: 999px;
+  background: rgb(var(--primary-rgb) / 0.1); color: var(--primary-strong);
+  font-size: 10px; line-height: 1.5; white-space: nowrap;
+}
+.wl-pe-bill {
+  border: 1px solid var(--border); background: var(--bg-ground); color: var(--text-3);
+  border-radius: 6px; padding: 2px 6px; font-size: 11px; cursor: pointer; white-space: nowrap;
+}
+.wl-pe-bill:hover { border-color: rgb(var(--primary-rgb) / 0.4); }
+.wl-pe-bill.is-on { color: var(--primary-strong); border-color: rgb(var(--primary-rgb) / 0.3); }
+.wl-pay-footnote {
+  font-size: 11px; color: var(--text-3); line-height: 1.6;
+  padding: 4px 2px 2px; text-align: center;
+}
+@media (max-width: 1000px) {
+  .wl-pay-entry { grid-template-columns: 82px 82px 54px 1fr 80px 58px; gap: 5px; }
+}
+
+/* 时薪设置弹窗：复用 modal 类，只补费率历史列表 */
+.pay-tip { margin: 0 0 14px; font-size: 11.5px; line-height: 1.6; color: var(--text-3); }
+.pay-optional { color: var(--text-3); font-weight: 400; font-size: 11px; }
+.pay-history { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.pay-hist-head { font-size: 12px; font-weight: 650; color: var(--text-2); margin-bottom: 8px; }
+.pay-hist-head span { font-weight: 400; color: var(--text-3); font-size: 11px; margin-left: 6px; }
+.pay-hist-empty { font-size: 11.5px; color: var(--text-3); padding: 6px 0; }
+.pay-hist-list { max-height: 188px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.pay-hist-row { display: flex; align-items: stretch; border-bottom: 1px solid rgb(var(--border-rgb) / 0.6); }
+.pay-hist-row:last-child { border-bottom: 0; }
+.pay-hist-edit {
+  flex: 1; min-width: 0; display: grid;
+  grid-template-columns: 100px 88px 1fr; align-items: center; gap: 8px;
+  border: 0; background: transparent; color: var(--text-2);
+  padding: 8px 10px; font-size: 11.5px; text-align: left; cursor: pointer;
+}
+.pay-hist-edit:hover { background: var(--bg-hover); }
+.pay-hist-day { font-variant-numeric: tabular-nums; color: var(--text); }
+.pay-hist-rate { font-variant-numeric: tabular-nums; color: var(--primary-strong); font-weight: 600; }
+.pay-hist-note { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pay-hist-del {
+  flex: 0 0 auto; width: 34px; border: 0; border-left: 1px solid var(--border);
+  background: transparent; color: var(--text-3); cursor: pointer; font-size: 12px;
+}
+.pay-hist-del:hover { background: var(--bg-hover); color: var(--text); }
+.pay-hist-del.is-confirm { color: #c0392b; font-size: 10px; width: 76px; white-space: nowrap; }
+
+/* ============================================================================
+   任务行工时摘要 / 记录明细（feature.worklog 开启时随本文件注入）
+   ----------------------------------------------------------------------------
+   摘要 chip 挂在 .task-meta 末尾（跟优先级/日期/标签同行）；点开展开的明细面板
+   挂在 .task-body 底部（不新增列，不破坏任务行的 flex 布局）。
+   全部用主题 token，强调色只走 --primary-rgb，浅/深/六套风格自动生效。
+   ========================================================================== */
+.wl-row-log-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  border: 1px solid rgb(var(--primary-rgb) / 0.22);
+  background: rgb(var(--primary-rgb) / 0.07);
+  color: var(--primary-strong);
+  border-radius: 5px; padding: 1px 6px;
+  font-size: 11px; line-height: 1.5; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer; transition: background 0.15s, border-color 0.15s;
+}
+.wl-row-log-chip:hover { background: rgb(var(--primary-rgb) / 0.14); border-color: rgb(var(--primary-rgb) / 0.4); }
+.wl-row-log-chip.is-open { background: rgb(var(--primary-rgb) / 0.18); }
+.wl-row-log-chip.is-empty { display: none; }
+.wl-row-log-sub { color: var(--text-3); font-size: 10px; }
+
+/* 明细面板：卡片底色用 --bg-ground + border（内容区不用 --bg-panel，浅风格会出白斑） */
+.wl-row-log-panel {
+  margin: 7px 0 2px;
+  border: 1px solid var(--border);
+  border-left: 2px solid rgb(var(--primary-rgb) / 0.5);
+  border-radius: 7px;
+  background: var(--bg-ground);
+  padding: 8px 10px 9px;
+  max-width: 560px;
+}
+.wl-re-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; color: var(--text-3); margin-bottom: 7px;
+}
+.wl-re-head > span { font-variant-numeric: tabular-nums; }
+.wl-re-add {
+  border: 1px solid rgb(var(--primary-rgb) / 0.3);
+  background: transparent; color: var(--primary-strong);
+  border-radius: 5px; padding: 2px 9px; font-size: 11px; cursor: pointer;
+}
+.wl-re-add:hover { background: rgb(var(--primary-rgb) / 0.1); }
+.wl-re-list { display: flex; flex-direction: column; gap: 1px; }
+.wl-re-row {
+  display: grid; grid-template-columns: 50px 92px 52px 52px 1fr;
+  align-items: center; gap: 8px;
+  padding: 4px 2px; font-size: 11.5px; color: var(--text-2);
+  border-top: 1px solid rgb(var(--border-rgb) / 0.45);
+}
+.wl-re-row:first-child { border-top: 0; }
+.wl-re-day, .wl-re-clock, .wl-re-sec { font-variant-numeric: tabular-nums; }
+.wl-re-day { color: var(--text-3); }
+.wl-re-sec { color: var(--text); font-weight: 600; }
+.wl-re-src { color: var(--text-3); }
+.wl-re-note { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-re-empty, .wl-re-loading { font-size: 11.5px; color: var(--text-3); padding: 5px 2px; }
+
+/* 已完成任务：摘要 chip 淡一点（历史记录仍可查），但不隐藏 */
+.task-item.done .wl-row-log-chip { opacity: 0.72; }
+
+@media (max-width: 1000px) {
+  .wl-re-row { grid-template-columns: 46px 78px 46px 44px 1fr; gap: 5px; }
+}
+
+/* ============================================================================
+   任务详情抽屉里的工时区块（EXT.detailSection 填入 [data-detail-slot=worklog]）
+   ----------------------------------------------------------------------------
+   位置：「重复与设置」下方、子任务上方。抽屉默认宽 420px，明细行用紧凑栅格；
+   不放 input（抽屉 autosave 会写库），只读信息 + 补录弹窗。
+   ========================================================================== */
+.wl-detail-slot:empty { display: none; }
+.wl-ds {
+  margin: 4px 0 14px;
+  border: 1px solid var(--border);
+  border-left: 2px solid rgb(var(--primary-rgb) / 0.5);
+  border-radius: 8px;
+  background: var(--bg-ground);
+  padding: 9px 11px 10px;
+}
+.wl-ds-head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.wl-ds-title { font-size: 12px; font-weight: 650; color: var(--text-2); }
+.wl-ds-sum {
+  font-size: 11px; color: var(--primary-strong);
+  font-variant-numeric: tabular-nums; font-weight: 600;
+}
+.wl-ds-add {
+  margin-left: auto;
+  border: 1px solid rgb(var(--primary-rgb) / 0.3);
+  background: transparent; color: var(--primary-strong);
+  border-radius: 5px; padding: 2px 9px; font-size: 11px; cursor: pointer;
+}
+.wl-ds-add:hover { background: rgb(var(--primary-rgb) / 0.12); }
+.wl-ds-body { max-height: 168px; overflow-y: auto; }
+.wl-ds-list { display: flex; flex-direction: column; gap: 1px; }
+.wl-ds-row {
+  display: grid; grid-template-columns: 42px 84px 46px 42px 1fr;
+  align-items: center; gap: 6px;
+  padding: 4px 2px; font-size: 11px; color: var(--text-2);
+  border-top: 1px solid rgb(var(--border-rgb) / 0.45);
+}
+.wl-ds-row:first-child { border-top: 0; }
+.wl-ds-day, .wl-ds-clock, .wl-ds-sec { font-variant-numeric: tabular-nums; }
+.wl-ds-day { color: var(--text-3); }
+.wl-ds-sec { color: var(--text); font-weight: 600; }
+.wl-ds-src { color: var(--text-3); }
+.wl-ds-note { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-ds-empty, .wl-ds-loading { font-size: 11px; color: var(--text-3); padding: 4px 2px; line-height: 1.6; }

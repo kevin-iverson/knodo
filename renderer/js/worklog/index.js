@@ -15,6 +15,8 @@ import { live, setSnap, onSnap, elapsedMs, isActive } from './shared.js';
 import * as view from './view.js';
 import * as bar from './timer-bar.js';
 import * as zen from './zen.js';
+import * as row from './row.js';
+import { renderDetailSection } from './detail.js';
 
 const CSS_ID = 'wl-css';
 let mounted = false;
@@ -29,6 +31,13 @@ function bindChanged() {
   changedBound = true;
   api.on('worklog:changed', (snap) => {
     if (mounted && snap) setSnap(snap);
+    // 计时结束 / 补录都会走 service.notify → 这条广播：重建任务行摘要缓存（局部重画，不重绘列表）
+    if (mounted) row.refreshAll();
+  });
+  // 浮窗点 ☯ 请主窗口弹全屏禅层：计时已由浮窗先 worklog:start({source:'zen'}) 起好，
+  // 这里只负责把覆盖层亮出来。worklog:changed 快照已同步（openZen 在 start 之后调用）。
+  api.on('ui:zen-open', () => {
+    if (mounted) zen.show();
   });
 }
 
@@ -179,6 +188,7 @@ function paintRows() {
 
 /** 每秒只改时间文本与按钮态，不动 DOM 结构 */
 function tickRows() {
+  row.tick(live.snap);
   if (!isActive(live.snap)) return;
   const txt = rowClock(elapsedMs(live.snap));
   document.querySelectorAll('[data-wl-row-time]').forEach((n) => { n.textContent = txt; });
@@ -200,13 +210,18 @@ export async function mount() {
     long: '按时间范围统计任务工时；父任务合计 = 自身 + 全部后代，绝不重复计入',
     render: view.render,
   };
-  EXT.taskRowExtra.push(renderRowExtra);
+  // 任务行两个扩展点：行内计时按钮 + 工时摘要/记录/补录（都在ui.js#renderTasks重绘后同步回调）
+  EXT.taskRowExtra.push(renderRowExtra, row.renderRowLog);
+  // 详情抽屉扩展点：工时累计 / 记录明细 / ＋补录（detail.js#renderDetail 拼完 HTML 后回调）
+  EXT.detailSection.push(renderDetailSection);
+  // 先拉一次缓存：扩展点回调是同步的，不能在那里 await；晚来的数据由 refreshAll 局部重画
+  row.refreshAll();
 
   bar.mount();
   zen.mount();
   tickTimer = setInterval(tickRows, 1000);
 
-  offSnap = onSnap(() => {
+  offSnap = onSnap((snap) => {
     bar.paint();
     zen.paint();
     paintRows();
@@ -243,7 +258,12 @@ export function unmount() {
     && document.querySelector('.nav-item[data-view="worklog"]').classList.contains('active'));
 
   delete EXT.views.worklog;
-  EXT.taskRowExtra = EXT.taskRowExtra.filter((f) => f !== renderRowExtra);
+  EXT.taskRowExtra = EXT.taskRowExtra.filter((f) => f !== renderRowExtra && f !== row.renderRowLog);
+  EXT.detailSection = EXT.detailSection.filter((f) => f !== renderDetailSection);
+  // 抽屉可能正开着：扩展点已注销，下次 renderDetail 不会再填，这里先清空当前 slot，
+  // 否则 removeCss() 后会留下一块无样式的裸 DOM（关态不该有任何工时痕迹）。
+  document.querySelectorAll('[data-detail-slot="worklog"]').forEach((s) => { s.innerHTML = ''; });
+  row.reset();
 
   bar.unmount();
   zen.unmount();

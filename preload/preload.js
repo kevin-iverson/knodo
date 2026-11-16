@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('api', {
     get: (id) => call('tasks:get', id),
     create: (p) => call('tasks:create', p),
     update: (id, p) => call('tasks:update', id, p),
+    moveParent: (id, parentId) => call('tasks:moveParent', id, parentId),
     remove: (id) => call('tasks:delete', id),
     toggle: (id) => call('tasks:toggle', id),
     reorder: (ids) => call('tasks:reorder', ids),
@@ -416,6 +417,14 @@ contextBridge.exposeInMainWorld('api', {
     entryDelete: (id) => call('worklog:entryDelete', id),
     exportCsv: (p) => call('worklog:export', p || {}),
     notices: () => call('worklog:notices'),
+    // 浮窗请求主窗口弹出全屏禅层（浮窗自身放不下全屏覆盖层）
+    openZen: () => call('worklog:openZen'),
+    // 工时记薪（时间价值）
+    rates: () => call('worklog:rates'),
+    rateSet: (p) => call('worklog:rateSet', p || {}),
+    rateDelete: (id) => call('worklog:rateDelete', id),
+    pay: (p) => call('worklog:pay', p || {}),
+    entryBillable: (p) => call('worklog:entryBillable', p || {}),
   },
   // 主进程事件
   on: (channel, cb) => {
@@ -452,6 +461,8 @@ contextBridge.exposeInMainWorld('api', {
       'feature:changed',
       // 工时：主进程计时状态变化（开始 / 暂停 / 继续 / 结束 / 崩溃对账后的提示）
       'worklog:changed',
+      // 工时：浮窗点 ☯ 后由主进程转发，主窗口据此弹出全屏禅层
+      'ui:zen-open',
       // 趣味功能 → 上班鼓励器：主浮窗 / 卡片页
       'ui:encourager', 'ui:encourager-card',
       // 截图建任务：取图成功 → 开确认卡；取图失败 / 框选超时 → 只要一句提示

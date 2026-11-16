@@ -32,4 +32,23 @@ CREATE INDEX IF NOT EXISTS idx_wl_status ON worklog_entries(status);
 `);
 }
 
-module.exports = { migrate };
+/**
+ * v19：工时记薪（时间价值）。费率是全局时间序列表，与任务无关；
+ * worklog_entries 一个字段都不动，金额一律实时派生、不落库。
+ * 与 v18 同一约定：DDL 集中在本文件，由 db.js 的 MIGRATIONS 在迁移时 require。
+ */
+function migratePay(d) {
+  d.exec(`
+CREATE TABLE IF NOT EXISTS pay_rates (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  rate_cents     INTEGER NOT NULL,          -- 每小时单价，单位：分
+  effective_from TEXT    NOT NULL,          -- 生效日 YYYY-MM-DD（本地日期）
+  currency       TEXT    NOT NULL DEFAULT 'CNY',
+  note           TEXT,
+  created_at     TEXT    NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pay_rate_from ON pay_rates(effective_from);
+`);
+}
+
+module.exports = { migrate, migratePay };

@@ -21,6 +21,7 @@ import {
 } from './group-select.js';
 import { detailRepeatHtml, bindDetailRepeat, derivedScheduleHtml } from './recurrence.js';
 import { TOOLBAR_HTML, createWysiwyg } from './wysiwyg.js';
+import { ext } from './ext.js';
 
 // 详情页的计划日期是否必填（默认否，保持可创建“无期限”任务）
 const PLAN_DATE_REQUIRED = DATE_RANGE_DEFAULTS.required;
@@ -538,6 +539,9 @@ async function renderDetail() {
 
         ${detailRepeatHtml(task, recurRule)}
 
+        <!-- 工时插件开态由 EXT.detailSection 填入累计/记录/补录；关态空节点无样式无高度 -->
+        <div class="wl-detail-slot" data-detail-slot="worklog"></div>
+
         <div class="detail-section">
           <div class="detail-section-head"><span>子任务</span></div>
           <div class="subtask-container">${subtreeHtml || '<div class="subtask-empty">暂无子任务</div>'}</div>
@@ -610,6 +614,9 @@ async function renderDetail() {
     onSaved: async () => { await refreshAll(); handlers.refresh(); renderDetail(); },
   });
   bindDetailEvents(drawer, task);
+  // 插件扩展点：详情抽屉拼完后插入自定义区块（工时累计/记录/补录）。
+  // 关态 EXT.detailSection 为空数组，这里是空循环，slot 保持空节点不占空间。
+  ext('detailSection', { drawer, task, signal: renderAbort.signal });
   // 即时持久化：挂载在事件绑定之后，保证能监听到同一批事件。
   // derived=true 时计划日期 / 提醒不在表单里，保存器只写内容字段（库里也会拒写那三个字段）。
   drawer.__autoSave = bindDetailAutoSave(drawer, task, notesHtml, { derived });
