@@ -456,11 +456,19 @@ function seed(dir) {
       durationSec: mins * 60,
       source,
       status: 'done',
-      billable: 1,
+      // 周会是内部会议，不该算进报价 —— 价值视图要靠它演示「已排除 X 小时」
+      billable: task === tWeek ? 0 : 1,
       note,
       lastBeatAt: endedAt,
     });
   }
+
+  /* 时薪：两条历史（三个月前 ¥100、上个月涨到 ¥120）+ 一条「早于最早费率」用不上也要有 */
+  // 不播种费率的话，价值视图只是一张「先设置你的时薪」引导页，截图会空
+  const rateDay = (back) => new Date(Date.now() - back * 86400000).toISOString().slice(0, 10);
+  store.upsertRate({ rateCents: 10000, effectiveFrom: rateDay(92), note: '接私活的第一版报价' });
+  store.upsertRate({ rateCents: 12000, effectiveFrom: rateDay(30), note: '涨薪后 / A 客户' });
+
   // 「正在计时」那一段不在这里造：启动对账会把遗留的 running 行按最后心跳结算掉（service.reconcileOnStartup），
   // 真要看计时中的样子，截图脚本用 `api.worklog.start()` 真开一段。
 

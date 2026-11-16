@@ -281,6 +281,8 @@ const SIZES = {
   'calendar-week': [1600, 950],
   // 工时视图=工具栏 + 四张卡 + 按任务表 + 每日分布，900 高会把柱状图的日期标签裁掉半行
   worklog: [1440, 1000],
+  // 价值视图=四张卡 + 按任务表 + 展开的明细（金额回溯到逐条记录），再高一点才不切最后一笔
+  'worklog-value': [1440, 1180],
   // 详情抽屉的正常截图会滚到「描述」，900 高会在标题下面露出一截被裁的子任务行；
   // 直接加高窗口、不滚动，从标题一路看到关联笔记
   'task-detail': [1440, 1120],
@@ -431,7 +433,10 @@ const shots = {
     await goView(page, 'worklog');
     await page.waitFor(`!!document.querySelector('.wl-toolbar')`, 8000, '工时工具栏');
     await page.waitFor(`!!document.querySelector('.wl-sum-grid')`, 8000, '工时汇总卡');
-    await sleep(1300);
+    // 范围用「本月」而不是默认的「本周」：截图哪天都可能跑（周一跑的话本周只有一天数据，
+    // 四张卡里三张是 0、每日分布只剩一根柱，看起来像功能坏了）
+    await page.evaluate(click('[data-wl-chips="range"][data-v="month"]'));
+    await sleep(1200);
     // 展开父任务：自身 3h25m + 三个子任务 6h15m —— 这张图要证明「累积」是真的，不是一句说明
     await page.evaluate(`(() => {
       const b = document.querySelector('[data-wl-twist]:not(.is-ph)');
@@ -441,6 +446,36 @@ const shots = {
     })()`);
     await sleep(1000);
     return page.shot(path.join(outDir, 'worklog.png'));
+  },
+
+  /* 工时记薪：价值视图。同一份工时按时薪折算成金额 —— 这张图要证明两件事：
+     父任务金额含子任务（向上卷），以及金额能一路回溯到「哪天几点、按哪档费率」 */
+  async 'worklog-value'(page) {
+    await closeOverlays(page);
+    await goView(page, 'worklog');
+    await page.waitFor(`!!document.querySelector('.wl-toolbar')`, 8000, '工时工具栏');
+    await page.evaluate(click('[data-wl-chips="mode"][data-v="value"]'));
+    // 有费率才出汇总卡；没有费率是引导页（说明演示库的费率没播上）
+    await page.waitFor(`!!document.querySelector('.wl-sum-grid')`, 8000, '价值汇总卡');
+    // 范围与工时视图一致用「本月」：本周在周一只有一天数据，金额表会只剩两行
+    await page.evaluate(click('[data-wl-chips="range"][data-v="month"]'));
+    await sleep(1000);
+    // 口径切「仅主任务」：含子任务档下工时列显示的是「—」（时长只在自身口径下才有意义），
+    // 图上留一列破折号不如让每行都带着时长与金额
+    await page.evaluate(click('[data-wl-chips="scope"][data-v="all"]'));
+    await sleep(1200);
+    // 打开「周会」那条的明细：它是唯一被标成不计薪的记录 —— 一张图同时说清
+    // 「明细能回溯到哪天几点、按哪档费率」和「不计薪的金额归零但时长留着」
+    // （展开最大的那条会把下面的每日分布顶出画面）
+    await page.evaluate(`(() => {
+      const btn = Array.from(document.querySelectorAll('[data-wl-pay-open]'))
+        .find((b) => (b.closest('tr') || {}).textContent && b.closest('tr').textContent.indexOf('周会') >= 0);
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    await sleep(1000);
+    return page.shot(path.join(outDir, 'worklog-value.png'));
   },
 
   /* 工时计时：行内 ▶ 变时钟 + 页面底部计时条（真开一段，秒数只能等出来） */
@@ -516,8 +551,9 @@ const shots = {
       return true;
     })()`);
     await sleep(400);
-    // 钉一个分组（不是「未完成」全局视图）：全局视图逾期十几条，窗口会高到一张图放不下
-    const gid = IDS.groups['团队协作'];
+    // 钉「产品迭代」分组：这个分组里有那条带三个子任务的父任务（父子层级 + 折叠箭头），
+    // 又不像「今天 / 未完成」那样铺进二十几条把窗口撑高（窗口一高，图里字就小到看不清）
+    const gid = IDS.groups['产品迭代'];
     await page.evaluate(`(async () => {
       await window.api.desktop.pin('group', ${gid}, { show: true });
       return true;
@@ -532,6 +568,26 @@ const shots = {
     }
     if (!target) throw new Error('浮窗 target 未出现');
     await sleep(1800);
+    // 在浮窗里展开父任务的子任务，并把鼠标停在一行上：▶/☯/■ 三个键只在悬停时出现，
+    // 不 hover 的话截出来像「浮窗不支持计时」，而这正是这一版新增的东西
+    const dw = await connect(target.webSocketDebuggerUrl);
+    await dw.evaluate(`(() => {
+      const b = document.querySelector('.dw-expand:not(.is-leaf)');
+      if (b) b.click();
+      return true;
+    })()`);
+    await sleep(900);
+    const hit = await dw.evaluate(`(() => {
+      const row = document.querySelector('.dw-row');
+      if (!row) return null;
+      const r = row.getBoundingClientRect();
+      return { x: Math.round(r.right - 26), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    if (hit) {
+      await dw.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hit.x, y: hit.y, button: 'none' });
+      await sleep(700);
+    }
+    dw.close();
     const b64 = await shotTransparent(target.webSocketDebuggerUrl);
     const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
     const dt = list.find((t) => /desktop\.html/.test(t.url));
@@ -607,7 +663,7 @@ const shots = {
   const order = [
     'tasks', 'calendar-month', 'calendar-week', 'task-detail', 'notes-wysiwyg',
     'meetings', 'ai-report', 'ai-search', 'stats',
-    'worklog', 'worklog-timer', 'worklog-zen', 'settings-keys',
+    'worklog', 'worklog-value', 'worklog-timer', 'worklog-zen', 'settings-keys',
     'desktop-pin', 'capture',
   ];
   const results = [];
