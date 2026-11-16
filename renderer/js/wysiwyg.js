@@ -171,7 +171,11 @@ function buildTurndown() {
       const lang = (n.querySelector('.md-code-lang')?.textContent || '').trim();
       const code = (n.querySelector('pre code')?.textContent || '').replace(/\n$/, '');
       const info = lang && lang !== 'text' ? lang : '';
-      let out = `\n\n\`\`\`${info}\n${code}\n\`\`\`\n\n`;
+      // 代码内容本身含 ``` （粘贴一段 Markdown 示例很常见）时，围栏必须比它长，
+      // 否则重新打开这篇笔记时，代码块会被自己的围栏截断、后半段变成正文。
+      const longest = (code.match(/`{3,}/g) || []).reduce((m, s) => Math.max(m, s.length), 0);
+      const fence = '`'.repeat(Math.max(3, longest + 1));
+      let out = `\n\n${fence}${info}\n${code}\n${fence}\n\n`;
       const rest = n.cloneNode(true);
       rest.querySelectorAll('pre, .md-code-bar').forEach((x) => x.remove());
       const extra = td.turndown(rest.innerHTML).trim();
@@ -896,10 +900,64 @@ export function createWysiwyg(o) {
   /**
    * 纯文本按行落成段落。粘贴的默认行为（也是「保持原文」分支）：
    * 外部 HTML 一律不进来（脚本 / 内联样式 / 未知标签），Markdown 标记保持肉眼可见。
+   * 注意：代码块里绝不能走这里（块级 <p> 会被代码块规则吞掉），见 pasteIntoCode()。
    */
   function insertPlainText(text) {
     const paras = String(text).split(/\r?\n/).map((line) => `<p>${esc(line) || '<br>'}</p>`).join('');
     insertHTML(paras);
+  }
+
+  /**
+   * 光标所在的代码块（`pre > code`）。粘贴 / 拖入的落点判断要用它：
+   * 只有它非空时，正文才该按「纯代码文本」处理。
+   * @param {Node} node
+   * @returns {HTMLElement|null}
+   */
+  function codeBlockOf(node) {
+    const el = node && node.nodeType === 1 ? node : (node && node.parentElement);
+    if (!el || !root.contains(el)) return null;
+    const code = el.closest('pre > code');
+    return code && root.contains(code) ? code : null;
+  }
+
+  /**
+   * 把纯文本原样写进代码块（粘贴代码片段的唯一正确路径）。
+   *
+   * 为什么不用 insertHTML / insertPlainText：那两条路都会先经过
+   * normaliseInsertionPoint()，它把落在 `.md-code` 里的光标挪到外壳之后 ——
+   * 结果就是「代码粘到代码块外面变成段落」，代码块里一个字都没进去。
+   *
+   * 为什么不用 execCommand('insertText')：它在 <pre> 里把换行落成 `<br>`，
+   * textContent 里换行就没了；笔记序列化走 textContent → 整段代码被压成一行
+   * （实测："A1\nA2" → innerHTML "A1<br>A2" / textContent "A1A2"）。
+   * 手工插文本节点能保住 \n，`<pre>` 里就是换行。
+   *
+   * @param {HTMLElement} code `pre > code`
+   * @param {string} text 剪贴板纯文本
+   */
+  function pasteIntoCode(code, text) {
+    const body = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+    if (!body) return;
+    // 空代码块里只有占位 <br>：先清掉，否则文本会贴在占位符旁边（视觉上像没粘进去）
+    const wasEmpty = !code.textContent;
+    if (wasEmpty) code.innerHTML = '';
+    const sel = window.getSelection();
+    let range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    // 选区不在代码块里（清空过占位符 / 从外面拖选进来）→ 追加到代码末尾
+    if (wasEmpty || !range || !code.contains(range.startContainer) || !code.contains(range.endContainer)) {
+      range = document.createRange();
+      range.selectNodeContents(code);
+      range.collapse(false);
+    }
+    range.deleteContents();
+    const node = document.createTextNode(body);
+    range.insertNode(node);
+    range.setStart(node, node.length);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    saveSelection();
+    afterChange();
   }
 
   /** 把粘贴进来的 Markdown 渲染成富文本再插入（Markdown → HTML 走渲染器，和笔记展示同一份逻辑） */
@@ -966,6 +1024,12 @@ export function createWysiwyg(o) {
     const plain = e.clipboardData && e.clipboardData.getData('text/plain');
     if (plain == null) return;
     e.preventDefault();
+    // 代码块里粘贴 = 写代码：直接落到 pre > code，不包段落、也不弹 Markdown 转换提示
+    // （粘贴一段带 ``` 的代码被问「要转换成富文本吗」既莫名其妙，选了还会把代码渲染成正文）
+    const sel = window.getSelection();
+    // 先看粘贴事件落在哪个元素上（选区可能已经不在正文里），再退回选区锚点
+    const code = codeBlockOf(e.target) || codeBlockOf(sel && sel.anchorNode);
+    if (code) { pasteIntoCode(code, plain); return; }
     if (looksLikeMarkdown(plain)) { askMarkdownConvert(String(plain)); return; }
     insertPlainText(String(plain));
   }
