@@ -22,3 +22,6 @@ docs/*
 
 # electron-builder 临时配置（build-win.js 生成，正常退出会自删）
 .builder-config*.json
+
+# 排查期的一次性脚本（前缀点号 + .tmp-），不进仓库
+scripts/.tmp-*.js
