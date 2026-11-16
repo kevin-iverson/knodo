@@ -251,6 +251,8 @@ function registerIpc() {
     return ok;
   }, { notify: true }));
   ipcMain.handle('tasks:toggle', withDb((id) => db.toggleTask(id), { notify: true }));
+  // 改父任务（拖拽用）：notify:true 会让 notifyChange 广播 desktop:invalidate 给所有浮窗 + 主窗口重绘
+  ipcMain.handle('tasks:moveParent', withDb((id, parentId) => db.moveTaskParent(id, parentId), { notify: true }));
   ipcMain.handle('tasks:reorder', withDb((ids) => db.reorderTasks(ids)));
   ipcMain.handle('tasks:archiveCompleted', withDb((groupId) => db.archiveCompleted(groupId), { notify: true }));
   ipcMain.handle('tasks:archive', withDb((id) => db.archiveTask(id), { notify: true }));

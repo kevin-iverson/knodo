@@ -213,6 +213,13 @@ html[data-theme='dark'] .dw-pend {
 .dw-row.is-sel { background: var(--dw-hover); box-shadow: inset 0 0 0 1px var(--dw-ring); }
 .dw-row.is-new { animation: dw-row-new 400ms ease-out; }
 
+/* 拖拽改父级：拖动中整行淡；合法落点整行描边高亮；非法（自己/后代）红色禁止 */
+.dw-row.is-dragging { opacity: 0.4; }
+.dw-row.drag-over { box-shadow: inset 0 0 0 2px var(--dw-primary); background: color-mix(in srgb, var(--dw-primary) 10%, transparent); }
+.dw-row.drag-forbidden { box-shadow: inset 0 0 0 2px #e5484d; background: color-mix(in srgb, #e5484d 8%, transparent); cursor: no-drop; }
+/* 落到列表空白 = 提升为顶级：整条列表给一圈提示描边 */
+.dw-list.drop-top { box-shadow: inset 0 0 0 2px var(--dw-primary); border-radius: 7px; }
+
 /* 勾掉即消失：淡出 + 轻微右移，180ms 后整表重建（桌面浮窗不留已完成行） */
 .dw-row.is-leaving {
   pointer-events: none;
@@ -228,15 +235,54 @@ html[data-theme='dark'] .dw-pend {
   to { background: transparent; }
 }
 
-.dw-row.is-child { padding-left: 20px; }
+/* 父子层级槽位：固定 18px，让各级复选框落在同一竖线上。
+   有子任务的是可点箭头 ▸/▾，叶子子任务是 └ 引导线，顶层任务留空。 */
+.dw-lead {
+  flex: none;
+  width: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* 箭头热区 20×22（比字大，好点）：视觉 14px，四周留白吸收点击误差 */
+.dw-expand {
+  border: 0;
+  padding: 0;
+  /* flex:none —— 行是 flex，标题一长就把这枚 20px 的按钮压到 18px（实测），热区跟着缩水 */
+  flex: none;
+  width: 20px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent;
+  color: var(--dw-text-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.dw-expand:hover { background: var(--dw-hover); color: var(--dw-primary); }
+.dw-expand.is-leaf { cursor: default; opacity: 0.55; font-size: 12px; }
+.dw-expand.is-leaf:hover { background: transparent; color: var(--dw-text-3); }
+
+/* 子任务按深度缩进：每级 18px，叠在基础 padding 上（JS 在行上写 data-depth） */
+.dw-row[data-depth='1'] { padding-left: 24px; }
+.dw-row[data-depth='2'] { padding-left: 42px; }
+.dw-row[data-depth='3'] { padding-left: 60px; }
+.dw-row[data-depth='4'] { padding-left: 78px; }
+
+/* 标题即拖拽把手：提示可拖动改父级 */
+.dw-text { cursor: grab; }
+.dw-row.is-dragging .dw-text { cursor: grabbing; }
 
 /* 复选框 16×16 圆角 5：未选 1.5px 描边，选中填充品牌蓝 + 白勾 */
 .dw-check {
   width: 16px; height: 16px;
   flex: none;
+  padding: 0;
   border-radius: 5px;
   border: 1.5px solid var(--dw-check);
+  background: transparent;
   position: relative;
+  cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease;
 }
 
@@ -396,6 +442,46 @@ html[data-theme='dark'] .dw-tail { color: #ff6b6e; }
 
 .dw-row-btn:hover { background: var(--dw-hover); color: var(--dw-text); }
 .dw-row-btn[data-act='del']:hover { color: #e5484d; }
+
+/* ---------------- 父子层级 ----------------
+   行内「↳ 父任务名」「☑ 完成数/总数」：10px 小字，限宽省略，绝不去挤标题。
+   子任务本身已由 .dw-row.is-child 缩进 20px，这里补的是「归谁 / 拆了几条」的语义。 */
+.dw-rel {
+  flex: none;
+  max-width: 84px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--dw-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dw-rel-parent { color: var(--dw-text-2); }
+.dw-rel-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--dw-primary);
+  font-weight: 500;
+}
+html[data-theme='dark'] .dw-rel-count { opacity: 0.85; }
+.dw-row.is-done .dw-rel { color: var(--dw-text-3); font-weight: 400; }
+
+/* ---------------- 行内工时按钮 ----------------
+   ▶ 计时 · ☯ 禅 · ■ 结束。常态收起（不占 286px 的宝贵宽度），悬停整组出现；
+   本任务正在计时时强制显示整组，让「正在计时」的状态与结束入口随时可见。 */
+.dw-row-acts .dw-wl-btn { display: none; }
+.dw-row:hover .dw-row-acts .dw-wl-btn,
+.dw-row.is-timing .dw-row-acts .dw-wl-btn { display: inline-flex; }
+.dw-row.is-timing .dw-row-acts { opacity: 1; }
+.dw-wl-run.is-run { color: var(--dw-primary); font-weight: 600; }
+.dw-wl-run.is-paused { color: var(--dw-text-3); }
+.dw-wl-zen:hover { color: var(--dw-primary); }
+.dw-wl-stop.is-off { display: none !important; }
+.dw-wl-stop:hover { color: #e5484d; }
+.dw-wl-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  letter-spacing: -0.3px;
+}
 
 /* ---------------- 提示 / 空态 ---------------- */
 

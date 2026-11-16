@@ -618,8 +618,11 @@ async function render() {
   const isCalendar = state.view === 'calendar';
   // 新建编辑行是列表的尾项（在 #view 内），离开任务视图时随重绘一起消失，
   // 不需要额外的收起动作 —— 这里只保留一句提示，免得后来人再去找那个面板。
-  // 插件视图保留顶栏（工时页仍要用「＋ 新建任务」与搜索）。
-  document.querySelector('.topbar-right').hidden = !(isTaskView || isCalendar || !!extView);
+  // 工时页有自己的工具栏（＋补录/导出/分组/范围），顶栏那排（搜索/AI/笔记/导入/备份/录制/新建）
+  // 在这里是干扰，用户拍板整排收起。别的插件视图仍保留顶栏。
+  // 只用 hidden 切换，不删 DOM / 不碰 innerHTML —— 切回任务/日历视图时按钮要原样可用。
+  const isWorklogView = state.view === 'worklog';
+  document.querySelector('.topbar-right').hidden = !(isTaskView || isCalendar || (!!extView && !isWorklogView));
   document.getElementById('filter-bar').hidden = !isTaskView;
   if (!isTaskView) document.getElementById('time-filter').hidden = true;
   // AI 检索已是弹窗：顶栏按钮只是入口，不再有「选中态」，也不占视图
@@ -1947,7 +1950,33 @@ function bindTaskListEvents(container) {
     bindDrag(item);
   });
 
-  // 底部“添加任务”入口
+  // 落到列表空白 = 标题拖拽脱离成独立任务（parentId=null）。
+  // 行内的 drop 已 stopPropagation，不会走到这里；容器本身在重绘间不换节点，故只需绑一次。
+  if (!container.dataset.parentDropBound) {
+    container.dataset.parentDropBound = '1';
+    container.addEventListener('dragover', (e) => {
+      if (!taskDrag || taskDrag.mode !== 'parent' || !e.dataTransfer) return;
+      const row = e.target.closest && e.target.closest('.task-item[data-id]');
+      if (row) return; // 落到行上交给行自己的 handler
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      clearTaskDropMarks();
+      container.classList.add('drop-top');
+    });
+    container.addEventListener('drop', async (e) => {
+      if (!taskDrag || taskDrag.mode !== 'parent' || !e.dataTransfer) return;
+      const row = e.target.closest && e.target.closest('.task-item[data-id]');
+      if (row) return;
+      e.preventDefault();
+      const fromId = Number(String(e.dataTransfer.getData('text/plain') || '').replace(/^task:/, ''));
+      taskDrag = null;
+      clearTaskDropMarks();
+      const ok = await guardAction(() => api.tasks.moveParent(fromId, null), '脱离失败');
+      if (ok) { await loadTasks(); renderTasks(); }
+    });
+  }
+
+  // 底部"添加任务"入口
   const addBtn = container.querySelector('[data-act="start-add"]');
   if (addBtn) addBtn.addEventListener('click', startAdd);
 
@@ -2503,46 +2532,108 @@ function setSortMode(mode) {
   if (sel) sel.value = mode;
 }
 
+/** 当前正在拖拽的任务 { id, mode }，mode = 'sort'（⠿ 手柄同级排序）| 'parent'（标题改父级）。
+ *  dragover 阶段读不到 dataTransfer.getData（浏览器安全限制），落点合法性判断全靠它。 */
+let taskDrag = null;
+
+/** 清掉主任务列表的拖拽落点标记（行高亮 + 列表空白的提升提示） */
+function clearTaskDropMarks() {
+  document.querySelectorAll('.task-item.drag-over, .task-item.drag-forbidden').forEach((x) => {
+    x.classList.remove('drag-over', 'drag-forbidden');
+  });
+  const view = document.getElementById('view');
+  if (view) view.classList.remove('drop-top');
+}
+
 /**
- * 绑定一行的拖拽排序。
- *
- * 原先整行 draggable="true"，问题有两个：
- *  1) 行内的输入框 / 按钮会抢走 mousedown，多数时候根本拖不起来；
- *  2) 列表顺序由 SQL 的「完成状态 → 截止日期 → 优先级 → sort_order」决定，
- *     sort_order 只是很靠后的兜底键，拖拽写进去后列表又按别的键排回去，看起来"没反应"。
- * 现在：只有按住左侧手柄才允许拖拽；拖完自动切到「手动」排序，让 sort_order 真正生效。
+ * 判断 targetId 能否作为 fromId 的新父任务：不能是自己、不能是自己的后代（否则树成环）。
+ * 依赖当前视图 state.tasks；DB 的 moveTaskParent 里还有一道 subtreeTaskIds 兜底。
+ * targetId == null（落到列表空白 = 提升顶级）永远合法。
+ */
+function validTaskParent(fromId, targetId) {
+  if (targetId == null) return true;
+  if (!Number.isFinite(fromId) || !Number.isFinite(targetId)) return false;
+  if (targetId === fromId) return false;
+  const byId = new Map((state.tasks || []).map((t) => [t.id, t]));
+  let cur = byId.get(targetId);
+  const seen = new Set();
+  for (let i = 0; cur && cur.parent_id != null && i < 100; i += 1) {
+    const pid = Number(cur.parent_id);
+    if (pid === Number(fromId)) return false;
+    if (seen.has(pid)) break; // 脏数据成环，别死循环
+    seen.add(pid);
+    cur = byId.get(pid);
+  }
+  return true;
+}
+
+/**
+ * 绑定一行的两种拖拽（都是 pointerdown 解锁 draggable，避免和行内点击/按钮冲突）：
+ *  - ⠿ 手柄 → 同级排序（sort）：沿用 dropReorder，拖完切手动排序。
+ *  - 标题 .task-title-text → 改父级（parent）：落任务行=挂为其子任务，落列表空白=脱离成独立任务，
+ *    落自己/自己的后代=禁止。点标题不拖时 click 仍走 rename（浮窗同款范式）。
  */
 function bindDrag(item) {
   const handle = item.querySelector('.drag-handle');
-  if (!handle) return; // 子任务行不参与主列表排序
+  const title = item.querySelector('.task-title-text');
+  if (!handle && !title) return;
 
-  const enable = () => { item.draggable = true; };
-  const disable = () => { item.draggable = false; };
-  handle.addEventListener('pointerdown', enable);
-  handle.addEventListener('pointerup', disable);
+  const arm = (mode) => { taskDrag = { id: Number(item.dataset.id), mode }; item.draggable = true; };
+  const disarm = () => { item.draggable = false; taskDrag = null; };
+
+  if (handle) handle.addEventListener('pointerdown', () => arm('sort'));
+  if (title) title.addEventListener('pointerdown', () => arm('parent'));
+  item.addEventListener('pointerup', disarm);
 
   item.addEventListener('dragstart', (e) => {
-    if (!item.draggable) { e.preventDefault(); return; }
+    if (!item.draggable || !taskDrag) { e.preventDefault(); return; }
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', String(item.dataset.id));
+    // 前缀区分两种模式：drop 时据此分派，不与外部拖入的文本混淆
+    const prefix = taskDrag.mode === 'parent' ? 'task:' : 'sort:';
+    e.dataTransfer.setData('text/plain', `${prefix}${taskDrag.id}`);
     item.classList.add('dragging');
   });
   item.addEventListener('dragend', () => {
-    disable();
+    disarm();
     item.classList.remove('dragging');
-    document.querySelectorAll('.task-item.drag-over').forEach((x) => x.classList.remove('drag-over'));
+    clearTaskDropMarks();
   });
+
   item.addEventListener('dragover', (e) => {
-    if (!e.dataTransfer) return;
+    if (!taskDrag || !e.dataTransfer) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    item.classList.add('drag-over');
+    const row = e.target.closest && e.target.closest('.task-item[data-id]');
+    clearTaskDropMarks();
+    if (taskDrag.mode === 'parent') {
+      const targetId = row ? Number(row.dataset.id) : null;
+      const ok = validTaskParent(taskDrag.id, targetId);
+      e.dataTransfer.dropEffect = ok ? 'move' : 'none';
+      if (row) row.classList.add(ok ? 'drag-over' : 'drag-forbidden');
+      else document.getElementById('view').classList.add('drop-top');
+    } else {
+      // 排序模式只认顶层行：展开的子任务是视觉缩进，不参与同级排序
+      e.dataTransfer.dropEffect = 'move';
+      if (row && !row.classList.contains('is-subtask')) row.classList.add('drag-over');
+    }
   });
-  item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+
   item.addEventListener('drop', async (e) => {
+    if (!taskDrag || !e.dataTransfer) return;
     e.preventDefault();
-    item.classList.remove('drag-over');
-    await dropReorder(item, e.dataTransfer ? e.dataTransfer.getData('text/plain') : '');
+    e.stopPropagation(); // 落在本行时不让下面的容器级委托再处理一次
+    const mode = taskDrag.mode;
+    const fromId = Number(String(e.dataTransfer.getData('text/plain') || '').replace(/^(task:|sort:)/, ''));
+    const row = e.target.closest && e.target.closest('.task-item[data-id]');
+    taskDrag = null;
+    clearTaskDropMarks();
+    if (mode === 'parent') {
+      const targetId = row ? Number(row.dataset.id) : null;
+      if (targetId != null && !validTaskParent(fromId, targetId)) return;
+      const ok = await guardAction(() => api.tasks.moveParent(fromId, targetId), '移动失败');
+      if (ok) { await loadTasks(); renderTasks(); }
+      return;
+    }
+    if (row) await dropReorder(row, String(fromId));
   });
 }
 

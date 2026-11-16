@@ -11,6 +11,9 @@
  *  - 不在透明窗上做骨架屏 / toast：286px 里任何闪动都比「什么都不显示」更干扰。
  */
 import { api, fmtDateTime } from './api.js';
+// 工时插件的纯状态中心（无 DOM 依赖，两个渲染进程各持一份独立实例，互不干扰）。
+// 浮窗复用它，计时口径与主窗口完全一致：wall clock 秒显 + 同一份 worklog:changed 快照。
+import { live, setSnap, elapsedMs, isActive } from './worklog/shared.js';
 
 const query = new URLSearchParams(location.search);
 const projectionId = query.get('id') || '';
@@ -70,6 +73,12 @@ let highlightId = null;
 let selId = null;
 /** 上一次渲染的指纹，用来跳过无变化的重建 */
 let lastSig = '';
+/** 父子树的展开态：父任务 id 集合。默认收起（与主窗口一致）；仅本浮窗内存，重启复位 */
+const expandedTasks = new Set();
+/** 正在拖拽的任务 id（dragover 阶段读不到 dataTransfer，用模块变量；与主窗口分组拖拽同理） */
+let dragTaskId = null;
+/** 工时插件是否启用（feature:changed 同步）；关闭时按钮整组不渲染、订阅也忽略 */
+let wlEnabled = false;
 /** 清单已被删除：进入只读提示态，3 秒后自动取消钉住 */
 let missingTimer = null;
 
@@ -228,10 +237,12 @@ function priOf(t) {
 
 function signature() {
   if (!view) return 'none';
-  const t = (view.tasks || []).map((x) => `${x.id}:${x.completed ? 1 : 0}:${x.title}:${x.parent_id || ''}:${x.plan_end || ''}:${priOf(x)}`).join('|');
+  const t = (view.tasks || []).map((x) => `${x.id}:${x.completed ? 1 : 0}:${x.title}:${x.parent_id || ''}:${x.parent_title || ''}:${x.subtask_count || 0}:${x.subtask_done || 0}:${x.plan_end || ''}:${priOf(x)}`).join('|');
   const p = view.projection || {};
-  // 优先级必须进指纹：否则主列表改了优先级，浮窗不重绘 = 「色标永远不变」
-  return `${view.title}|${view.counts ? view.counts.done : 0}/${view.counts ? view.counts.total : 0}|${view.error || ''}|${view.missing ? 1 : 0}|${isCollapsed() ? 1 : 0}|${p.kind || ''}|${p.dock || ''}|${view.pending == null ? '' : view.pending}/${view.overdue == null ? '' : view.overdue}|${t}|${highlightId || ''}`;
+  // 优先级必须进指纹：否则主列表改了优先级，浮窗不重绘 = 「色标永远不变」。
+  // parent_title / subtask_* 决定层级徽标，wlEnabled 决定工时按钮组，变了都要重建 DOM。
+  // 注意计时秒数**不进**指纹：那是瞬态，交给 paintWorklogRows 每秒就地改，重绘会丢滚动位置。
+  return `${view.title}|${view.counts ? view.counts.done : 0}/${view.counts ? view.counts.total : 0}|${view.error || ''}|${view.missing ? 1 : 0}|${isCollapsed() ? 1 : 0}|${p.kind || ''}|${p.dock || ''}|${view.pending == null ? '' : view.pending}/${view.overdue == null ? '' : view.overdue}|${t}|${highlightId || ''}|${wlEnabled ? 1 : 0}`;
 }
 
 function render() {
@@ -358,33 +369,155 @@ function dueLabel(planEnd) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-/** 一行任务（不带分组） */
+/** 行内计时时钟：<1h mm:ss，≥1h h:mm:ss（与主窗口 worklog/index.js#rowClock 同口径） */
+function wlRowClock(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const two = (n) => String(n).padStart(2, '0');
+  const h = Math.floor(s / 3600);
+  return h
+    ? `${h}:${two(Math.floor((s % 3600) / 60))}:${two(s % 60)}`
+    : `${two(Math.floor(s / 60))}:${two(s % 60)}`;
+}
+
+/** 当前快照里，这条任务是否正在计时（含暂停态——暂停也要能点继续 / 结束） */
+function wlMine(id) {
+  return isActive(live.snap) && Number(live.snap.taskId) === Number(id);
+}
+
+/**
+ * 行内工时按钮组：▶（计时 / 暂停 / 继续）· ☯（禅，联动主窗口全屏）· ■（结束）。
+ * 与主窗口「关态不渲染」一致：wlEnabled=false 时整组不出现（feature:changed 同步开关）。
+ * 宽度约束：286px 浮窗里三个按钮常态 display:none，悬停才占位；仅「本任务正在计时」时
+ * 把 ▶（此时显示时钟）常驻，作为「正在计时」的持续反馈 —— 避免标题被永久挤窄。
+ */
+function wlButtonsHtml(t) {
+  if (!wlEnabled) return '';
+  return `<button type="button" class="dw-row-btn dw-wl-btn dw-wl-run" data-act="wl-run" title="开始工时计时">▶</button>`
+    + `<button type="button" class="dw-row-btn dw-wl-btn dw-wl-zen" data-act="wl-zen" title="禅模式：全屏静默计时">☯</button>`
+    + `<button type="button" class="dw-row-btn dw-wl-btn dw-wl-stop" data-act="wl-stop" title="结束并记录工时">■</button>`;
+}
+
+/**
+ * 一行任务（不带分组）。
+ * 树结构：opts.node = { depth, hasKids, expanded, parentVisible } 由 flattenTree 给出。
+ *  - 有子任务 → 行首可点 ▸/▾ 箭头（data-act="toggle-expand"）；
+ *  - 子任务 → 行首 └ 引导线，整行按 depth 缩进；
+ *  - 父任务 → 标题右侧 ☑ 完成数徽标。
+ * 完成只认复选框：.dw-check 带 data-act="toggle"，点行主体不再完成任务。
+ */
 function rowHtml(t, opts = {}) {
   const done = !!t.completed;
   const pri = priOf(t);
+  const timing = wlMine(t.id);
+  const node = opts.node || { depth: 0, hasKids: false, expanded: false, parentVisible: true };
+  const depth = Math.max(0, Number(node.depth) || 0);
   const cls = [
     'dw-row',
     done ? 'is-done' : '',
-    t.parent_id ? 'is-child' : '',
+    depth > 0 ? 'is-child' : '',
+    node.hasKids ? 'has-kids' : '',
     t.id === selId ? 'is-sel' : '',
     t.id === highlightId ? 'is-new' : '',
     // 紧急行额外强化：左侧竖条 + 标题加粗 + 淡红底（色点太弱，一眼扫不到）
     pri === 3 && !done ? 'is-urgent' : '',
+    timing ? 'is-timing' : '',
   ].filter(Boolean).join(' ');
   const due = opts.due || '';
   const tail = opts.tail || '';
-  return `<div class="${cls}" data-id="${t.id}"${opts.sec ? ` data-sec="${opts.sec}"` : ''} role="checkbox" aria-checked="${done}" title="${esc(t.title)}">
-      <span class="dw-check${done ? ' on' : ''}"></span>
+  // 层级槽位：父任务的展开箭头 + 子任务的 └ 引导线，固定宽度让复选框在同一竖线上
+  let lead = '';
+  if (node.hasKids) {
+    lead = `<button type="button" class="dw-expand" data-act="toggle-expand" aria-expanded="${node.expanded}" title="${node.expanded ? '收起子任务' : '展开子任务'}">${node.expanded ? '▾' : '▸'}</button>`;
+  } else if (depth > 0) {
+    lead = '<span class="dw-expand is-leaf" aria-hidden="true">└</span>';
+  }
+  // 父子语义：父任务挂「☑ 完成数/总数」；子任务只在父被过滤掉（parentVisible=false）时挂「↳ 父任务名」。
+  // 父就在上一行时，缩进 + └ 线已表达归属 —— 286px 窄窗里再塞 84px 父名会把标题挤成两三个字。
+  // 主进程 TASK_SELECT 已下发 parent_title / subtask_count / subtask_done，无需新增 IPC。
+  const parentName = t.parent_title ? String(t.parent_title) : '';
+  const parentTag = (!node.parentVisible && parentName)
+    ? `<span class="dw-rel dw-rel-parent" title="父任务：${esc(parentName)}">↳ ${esc(parentName)}</span>` : '';
+  const subTotal = Number(t.subtask_count) || 0;
+  const subDone = Number(t.subtask_done) || 0;
+  const subTag = subTotal > 0 ? `<span class="dw-rel dw-rel-count" title="子任务 ${subDone}/${subTotal} 已完成">☑ ${subDone}/${subTotal}</span>` : '';
+  return `<div class="${cls}" data-id="${t.id}"${opts.sec ? ` data-sec="${opts.sec}"` : ''}${depth ? ` data-depth="${depth}"` : ''} draggable="false" title="${esc(t.title)}">
+      <span class="dw-lead">${lead}</span>
+      <button type="button" class="dw-check${done ? ' on' : ''}" data-act="toggle" role="checkbox" aria-checked="${done}" title="${done ? '取消完成' : '标记完成'}"></button>
       <span class="dw-pri p${pri}" title="优先级：${['低', '中', '高', '紧急'][pri]}"></span>
       <span class="dw-text">${esc(t.title)}</span>
+      ${parentTag}${subTag}
       <span class="dw-pri-tag p${pri}" title="优先级：${['低', '中', '高', '紧急'][pri]}">${['低', '中', '高', '紧急'][pri]}</span>
       ${due ? `<span class="dw-due${due === '今天' || due === '明天' ? ' is-soon' : ''}">${esc(due)}</span>` : ''}
       ${tail ? `<span class="dw-tail">${esc(tail)}</span>` : ''}
       <span class="dw-row-acts">
+        ${wlButtonsHtml(t)}
         <button type="button" class="dw-row-btn" data-act="open" title="在主窗口打开">↗</button>
         <button type="button" class="dw-row-btn" data-act="del" title="删除任务">✕</button>
       </span>
     </div>`;
+}
+
+/**
+ * 浮窗版 flattenTree（对齐主窗口 ui.js#flattenTree 的语义）：
+ * 按 parent_id 把可见任务组织成树、展平成「父 → 其子（缩进）」的有序节点。
+ * 父被筛选掉（已完成 / 不在投影）时子任务作为 root 渲染（depth=0、parentVisible=false），
+ * 但 parent_title 仍在，行内的 ↳ 标签照常显示归属 —— 不会变成没有上下文的孤行。
+ */
+function flattenTree(tasks) {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const children = new Map();
+  const roots = [];
+  for (const t of tasks) {
+    if (t.parent_id && byId.has(t.parent_id)) {
+      if (!children.has(t.parent_id)) children.set(t.parent_id, []);
+      children.get(t.parent_id).push(t);
+    } else {
+      roots.push(t);
+    }
+  }
+  const out = [];
+  const walk = (t, depth, parentVisible) => {
+    const kids = children.get(t.id) || [];
+    out.push({ task: t, depth, parentVisible, hasKids: kids.length > 0, expanded: expandedTasks.has(t.id) });
+    if (!expandedTasks.has(t.id)) return; // 默认收起：点箭头才吐出子任务
+    for (const k of kids) walk(k, depth + 1, true);
+  };
+  for (const r of roots) walk(r, 0, !r.parent_id);
+  return out;
+}
+
+/**
+ * 用工时快照就地刷新行内按钮（不重建列表 → 不丢滚动位置 / hover）。
+ * 只改 class、title 与时间文本，DOM 结构保持稳定。
+ */
+function paintWorklogRows() {
+  const snap = live.snap;
+  const running = isActive(snap);
+  const txt = running ? wlRowClock(elapsedMs(snap)) : '';
+  el.list.querySelectorAll('.dw-row[data-id]').forEach((row) => {
+    const mine = wlMine(row.dataset.id);
+    const paused = mine && snap.mode === 'paused';
+    row.classList.toggle('is-timing', mine);
+    const run = row.querySelector('[data-act="wl-run"]');
+    if (run) {
+      run.classList.toggle('is-run', mine);
+      run.classList.toggle('is-paused', paused);
+      run.title = mine ? (paused ? '已暂停，点击继续' : '正在计时，点击暂停') : '开始工时计时';
+      if (mine) {
+        if (!run.querySelector('.dw-wl-time')) {
+          run.textContent = '';
+          const time = document.createElement('span');
+          time.className = 'dw-wl-time';
+          run.appendChild(time);
+        }
+        run.querySelector('.dw-wl-time').textContent = txt;
+      } else if (run.querySelector('.dw-wl-time')) {
+        run.textContent = '▶';
+      }
+    }
+    const stop = row.querySelector('[data-act="wl-stop"]');
+    if (stop) stop.classList.toggle('is-off', !mine);
+  });
 }
 
 /**
@@ -450,12 +583,14 @@ function renderList() {
 
   if (kind === 'unfinished') {
     const html = groupSections(tasks).map((sec) => {
-      const rows = sec.rows.map((t) => {
+      // 每段各自成树：逾期段里的一对父子也在展开后紧跟在一起
+      const rows = flattenTree(sec.rows).map((node) => {
+        const t = node.task;
         const overdue = sec.key === 'overdue' && !t.completed ? `逾期 ${overdueDays(t.plan_end)} 天` : '';
         const due = sec.key === 'later' ? dueLabel(t.plan_end) : '';
         // 逾期段行尾给天数，之后段给短日期；今天 / 未安排不占宽度
         return rowHtml(t, {
-          ...opts, due, tail: overdue, sec: sec.key,
+          ...opts, due, tail: overdue, sec: sec.key, node,
         });
       }).join('');
       return `<div class="dw-sec ${sec.cls}" data-sec="${sec.key}">
@@ -466,9 +601,13 @@ function renderList() {
     el.list.innerHTML = html;
   } else {
     const showDue = kind === 'upcoming';
-    el.list.innerHTML = tasks.map((t) => rowHtml(t, { ...opts, due: showDue ? dueLabel(t.plan_end) : '' })).join('');
+    el.list.innerHTML = flattenTree(tasks).map((node) => rowHtml(node.task, {
+      ...opts, due: showDue ? dueLabel(node.task.plan_end) : '', node,
+    })).join('');
   }
   el.list.scrollTop = scrollTop;
+  // 新 DOM 用当前快照补一次计时态（行内时钟 / ▶暂停态 / ■可用性），避免闪烁
+  paintWorklogRows();
   if (highlightId) {
     setTimeout(() => {
       const row = el.list.querySelector(`.dw-row[data-id="${highlightId}"]`);
@@ -885,6 +1024,49 @@ function recount() {
   lastSig = signature();
 }
 
+/* ---- 行内工时操作（与主窗口 worklog/index.js 完全同源的调用链） ---- */
+
+/** ▶：未计时则开始，计时中是本任务则暂停 / 继续。isActive 含暂停态。 */
+async function wlRun(taskId) {
+  try {
+    const snap = live.snap;
+    const mine = isActive(snap) && Number(snap.taskId) === Number(taskId);
+    if (!mine) await api.worklog.start({ taskId, source: 'timer' });
+    else if (snap.mode === 'running') await api.worklog.pause();
+    else await api.worklog.resume();
+    // 广播会回到本窗的 worklog:changed → paintWorklogRows；这里补一次防漏
+    paintWorklogRows();
+  } catch (e) {
+    showQuickHint((e && e.message) || '计时操作失败');
+  }
+}
+
+/** ☯：以 zen 来源开始计时，并让主进程唤起主窗口的全屏禅层（浮窗自身放不下全屏） */
+async function wlZen(taskId) {
+  try {
+    const mine = isActive(live.snap) && Number(live.snap.taskId) === Number(taskId);
+    if (!mine) await api.worklog.start({ taskId, source: 'zen' });
+    await api.worklog.openZen();
+    paintWorklogRows();
+  } catch (e) {
+    showQuickHint((e && e.message) || '进入禅模式失败');
+  }
+}
+
+/** ■：结束并记录（浮窗没有 toast，用底部提示区报结果，2 秒后自动收起） */
+async function wlStop() {
+  try {
+    const r = await api.worklog.stop();
+    paintWorklogRows();
+    if (!r) return;
+    if (r.discarded) showQuickHint(`太短（${r.sec} 秒），已丢弃`);
+    else showQuickHint(`已记录 ${Math.floor(r.sec / 60)} 分钟`);
+    if (r.warning) showQuickHint(r.warning);
+  } catch (e) {
+    showQuickHint((e && e.message) || '结束计时失败');
+  }
+}
+
 /** 一行临时提示：换掉底部提示区两秒钟，不做 toast（弹层在 286px 里太吵） */
 let quickTimer = null;
 function showQuickHint(msg) {
@@ -1045,31 +1227,171 @@ function dockShouldStayOpen() {
 
 /* ---------------- 事件绑定 ---------------- */
 
+/**
+ * 判断 maybeDesc 是否是 ancestorId 的后代（沿 parent_id 链向上找，带环保护）。
+ * 拖拽时用它阻止「把父任务拖到自己的子任务下」——否则树成环，浮窗 / 报告递归会死循环。
+ */
+function isTaskDescendant(maybeDesc, ancestorId) {
+  const byId = new Map((view && view.tasks ? view.tasks : []).map((t) => [t.id, t]));
+  let cur = byId.get(maybeDesc);
+  const seen = new Set();
+  for (let i = 0; cur && cur.parent_id != null && i < 100; i += 1) {
+    const pid = Number(cur.parent_id);
+    if (pid === Number(ancestorId)) return true;
+    if (seen.has(pid)) break; // 脏数据成环，别死循环
+    seen.add(pid);
+    cur = byId.get(pid);
+  }
+  return false;
+}
+
+/** 拖拽落点是否合法：不能落到自己身上，也不能落到自己的后代身上 */
+function validDropTarget(targetId) {
+  if (dragTaskId == null || targetId == null) return false;
+  if (Number(targetId) === Number(dragTaskId)) return false;
+  return !isTaskDescendant(Number(targetId), Number(dragTaskId));
+}
+
+/** 清掉拖拽高亮 */
+function clearDropMarks() {
+  el.list.querySelectorAll('.dw-row.drag-over, .dw-row.drag-forbidden').forEach((r) => {
+    r.classList.remove('drag-over', 'drag-forbidden');
+  });
+  el.list.classList.remove('drop-top');
+}
+
+/**
+ * 绑定浮窗任务行的拖拽改父级。
+ * - 把手 = 标题（.dw-text）：pointerdown 命中标题才临时 draggable=true，pointerup / dragend 复位。
+ *   这样点复选框 / 箭头 / 行尾按钮都不会误触发拖拽（抄主窗口 bindDrag 的「手柄解锁」范式）。
+ * - 落到某行 = 成为该行的子任务；落到列表空白 / 段标题 = 提升为顶级任务（parentId=null）。
+ * - 落到自己 / 自己的后代 = 禁止（DB 层还有一道环检测兜底）。
+ */
+function bindRowDrag() {
+  // 标题当把手：pointerdown 解锁，pointerup 复位（drag 期间不会有 click 误完成）
+  el.list.addEventListener('pointerdown', (e) => {
+    const text = e.target.closest && e.target.closest('.dw-text');
+    if (!text) return;
+    const row = text.closest('.dw-row');
+    if (row) row.draggable = true;
+  });
+  el.list.addEventListener('pointerup', () => {
+    el.list.querySelectorAll('.dw-row[draggable="true"]').forEach((r) => { r.draggable = false; });
+  });
+
+  el.list.addEventListener('dragstart', (e) => {
+    const row = e.target.closest && e.target.closest('.dw-row');
+    if (!row || row.draggable !== true) { e.preventDefault(); return; }
+    dragTaskId = Number(row.dataset.id);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', `task:${dragTaskId}`);
+    }
+    row.classList.add('is-dragging');
+  });
+
+  el.list.addEventListener('dragend', () => {
+    dragTaskId = null;
+    el.list.querySelectorAll('.dw-row').forEach((r) => {
+      r.draggable = false;
+      r.classList.remove('is-dragging');
+    });
+    clearDropMarks();
+  });
+
+  // 落到行上：成为该行的子任务
+  el.list.addEventListener('dragover', (e) => {
+    if (dragTaskId == null) return;
+    const row = e.target.closest && e.target.closest('.dw-row');
+    if (row) {
+      const ok = validDropTarget(Number(row.dataset.id));
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = ok ? 'move' : 'none';
+      clearDropMarks();
+      row.classList.add(ok ? 'drag-over' : 'drag-forbidden');
+      return;
+    }
+    // 空白 / 段标题 / 提示条：提升为顶级任务
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    clearDropMarks();
+    el.list.classList.add('drop-top');
+  });
+
+  el.list.addEventListener('dragleave', (e) => {
+    // 只有真正离开列表才清，行之间移动不清（否则会闪）
+    if (!el.list.contains(e.relatedTarget)) clearDropMarks();
+  });
+
+  el.list.addEventListener('drop', (e) => {
+    if (dragTaskId == null) return;
+    e.preventDefault();
+    const fromId = dragTaskId;
+    const row = e.target.closest && e.target.closest('.dw-row');
+    let parentId = null; // 落空白 = 顶级
+    if (row) {
+      const targetId = Number(row.dataset.id);
+      if (!validDropTarget(targetId)) { clearDropMarks(); return; }
+      parentId = targetId;
+    }
+    dragTaskId = null;
+    clearDropMarks();
+    api.tasks.moveParent(fromId, parentId)
+      .then(() => { refresh(); fit(); })
+      .catch((err) => showQuickHint((err && err.message) || '移动失败'));
+  });
+}
+
 function bind() {
   el.list.addEventListener('click', (e) => {
     const row = e.target.closest('.dw-row');
     if (!row) return;
-    const id = row.dataset.id;
-    const act = e.target.closest('[data-act]');
-    if (act) {
+    const id = Number(row.dataset.id);
+    const actEl = e.target.closest('[data-act]');
+    if (actEl) {
       e.stopPropagation();
-      if (act.dataset.act === 'open') {
-        api.desktop.openInMain(Number(id)).catch(() => {});
+      const act = actEl.dataset.act;
+      if (act === 'open') {
+        api.desktop.openInMain(id).catch(() => {});
         return;
       }
-      if (act.dataset.act === 'del') {
-        api.desktop.deleteTask(projectionId, Number(id))
+      if (act === 'del') {
+        api.desktop.deleteTask(projectionId, id)
           .then((r) => { if (r && r.ok) refresh(); })
           .catch((err) => showQuickHint((err && err.message) || '删除失败'));
         return;
       }
+      // 展开 / 收起子任务：就地重建列表（展开态在 expandedTasks 里），高度随内容重算
+      if (act === 'toggle-expand') {
+        if (expandedTasks.has(id)) expandedTasks.delete(id);
+        else expandedTasks.add(id);
+        renderList();
+        fit();
+        return;
+      }
+      // 完成只认复选框（主窗口同款范式）：其余任何点击都不完成任务
+      if (act === 'toggle') {
+        if (view && view.missing) return;
+        // 刚勾掉一条时下面的行会上移，紧接着的第二下点击会落到邻居身上（连点误勾）——260ms 内不吃
+        if (Date.now() < clickGuardUntil) return;
+        selId = id;
+        toggleTask(id);
+        return;
+      }
+      // 行内工时：▶ 计时 / ☯ 禅 / ■ 结束。三者都停在原地，绝不能落到「勾选整行」上
+      if (act === 'wl-run') { wlRun(id); return; }
+      if (act === 'wl-zen') { wlZen(id); return; }
+      if (act === 'wl-stop') { wlStop(); return; }
     }
+    // 点行主体（标题 / 空白处）：只选中作为键盘锚点，不完成任务。
+    // 想完成请点最前面的复选框，想看详情请用 ↗ —— 与主窗口「点行开详情、点复选框完成」的范式一致。
     if (view && view.missing) return;
-    // 刚勾掉一条时下面的行会上移，紧接着的第二下点击会落到邻居身上（连点误勾）——260ms 内不吃
-    if (Date.now() < clickGuardUntil) return;
-    selId = Number(id);
-    toggleTask(Number(id));
+    selId = id;
+    row.classList.add('is-sel');
+    el.list.querySelectorAll('.dw-row.is-sel').forEach((r) => { if (r !== row) r.classList.remove('is-sel'); });
   });
+
+  bindRowDrag();
 
   el.collapse.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1246,6 +1568,33 @@ function bind() {
       setCollapsed(true);
     }, DOCK_CLOSE_DELAY);
   });
+
+  // 工时插件：初始开关 + 当前计时快照（关闭态 IPC 未注册，调用会失败 → 保持默认关）
+  (async () => {
+    try {
+      const pref = await api.features.pref();
+      wlEnabled = !!(pref && pref.enabled);
+    } catch (e) { wlEnabled = false; }
+    try {
+      const snap = await api.worklog.state();
+      if (snap) setSnap(snap);
+    } catch (e) { /* 插件关闭：无 handler，忽略 */ }
+    lastSig = ''; // 开关状态可能已变，强制重建一次按钮组
+    render();
+  })();
+  // 主进程计时状态变化 → 更新快照并就地刷新行内按钮（不重绘列表，保滚动位置）
+  api.on('worklog:changed', (snap) => { if (snap) { setSnap(snap); paintWorklogRows(); } });
+  // 功能插件开关：浮窗按钮组随开/关动态出现/消失，无需重挂整个模块
+  api.on('feature:changed', (pref) => {
+    const next = !!(pref && pref.enabled);
+    if (next === wlEnabled) return;
+    wlEnabled = next;
+    if (!next) setSnap(null); // 关闭即清空计时态，避免残留 is-timing
+    lastSig = '';
+    render();
+  });
+  // 每秒就地刷一次行内时钟（wall clock 现算，不用累加；隐藏时省掉）
+  setInterval(() => { if (!document.hidden && isActive(live.snap)) paintWorklogRows(); }, 1000);
 
   // 主进程事件
   api.on('desktop:invalidate', (id) => { if (id === projectionId) refresh(); });

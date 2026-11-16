@@ -158,7 +158,10 @@ async function connect(wsUrl) {
     const clicked = await dock.evaluate(`(async () => {
       const row = document.querySelector('.dw-row[data-id="${target}"]');
       if (!row) return { error: '浮窗里没有这条任务' };
-      row.click();
+      // 完成只认复选框：点行主体不再勾选（与主窗口范式一致）
+      const box = row.querySelector('.dw-check[data-act="toggle"]');
+      if (!box) return { error: '浮窗任务行没有完成复选框' };
+      box.click();
       await new Promise(r => setTimeout(r, 1400));
       const after = document.querySelector('.dw-row[data-id="${target}"]');
       // 新规则：勾掉即从小窗移除（主窗口的「今日已完成」另算，见下面的断言）

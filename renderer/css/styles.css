@@ -739,6 +739,9 @@ body {
 .task-item:hover { box-shadow: var(--shadow); }
 .task-item.dragging { opacity: 0.5; }
 .task-item.drag-over { outline: 2px dashed var(--primary); outline-offset: -2px; }
+/* 改父级拖拽：落点行高亮（合法主色 / 非法红禁止）；落到列表空白 = 脱离成独立任务 */
+.task-item.drag-forbidden { outline: 2px dashed var(--danger); outline-offset: -2px; cursor: no-drop; }
+.view.drop-top { outline: 2px dashed var(--primary); outline-offset: -6px; border-radius: 10px; }
 
 .task-check {
   width: 20px; height: 20px; border-radius: 50%;
@@ -758,14 +761,14 @@ body {
    没有子任务时 .task-expand-slot 仍占住同样的宽度，保证完成按钮列对齐 */
 .task-leading { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .task-expand-slot {
-  flex: 0 0 20px; width: 20px; height: 20px;
+  flex: 0 0 26px; width: 26px; height: 26px;
   display: inline-flex; align-items: center; justify-content: center;
 }
 .task-expand {
   border: none; background: transparent; color: var(--text-3); cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 15px; padding: 0; flex-shrink: 0; line-height: 1;
-  width: 20px; height: 20px; border-radius: 5px;
+  font-size: 18px; padding: 0; flex-shrink: 0; line-height: 1;
+  width: 26px; height: 26px; border-radius: 6px;
 }
 .task-expand:hover { color: var(--primary); background: var(--bg-hover); }
 .task-expand:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
