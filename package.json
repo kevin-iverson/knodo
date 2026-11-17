@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": {
@@ -26,6 +26,7 @@
     "verify:code-paste": "node scripts/verify-code-paste.js",
     "verify:search": "node scripts/verify-search-modal.js",
     "verify:note": "node scripts/verify-note-desktop.js",
+    "verify:note-fs": "node scripts/verify-note-fs.js",
     "verify:dock": "node scripts/verify-dock.js",
     "dist": "node scripts/gen-icon.js && node scripts/build-vendor.js && node scripts/build-win.js",
     "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --dir",
@@ -33,6 +34,8 @@
     "release": "node scripts/release-gitee.js",
     "release:github": "node scripts/release-github.js",
     "verify:appearance": "node scripts/verify-appearance.js",
+    "verify:settings-foot": "node scripts/verify-settings-foot.js",
+    "verify:palace-rail": "node scripts/verify-palace-rail.js",
     "verify:mode": "node scripts/verify-theme-switch.js",
     "smoke:theme-image": "node scripts/smoke-theme-image.js",
     "verify:calendar": "node scripts/verify-calendar-past-lock.js",
@@ -47,9 +50,13 @@
     "verify:main-drag-parent": "node scripts/verify-main-drag-parent.js",
     "verify:add-inline": "node scripts/verify-add-inline.js",
     "verify:shot": "node scripts/verify-shot.js",
+    "verify:voice": "node scripts/verify-voice-task.js",
     "verify:meeting-rename": "node scripts/verify-meeting-rename.js",
+    "verify:recorder-split": "node scripts/verify-recorder-split.js",
+    "verify:kb-calendar-panel": "node scripts/verify-kb-calendar-panel.js",
     "shots": "node scripts/shots.js",
-    "figures": "electron scripts/marketing-figures.js"
+    "figures": "electron scripts/marketing-figures.js",
+    "verify:complete-fx": "node scripts/verify-complete-fx.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
