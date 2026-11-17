@@ -6,6 +6,10 @@
  *   GH_TOKEN=<你的 PAT> npm run release:github              # 发布 dist/release/ 下所有附件
  *   GH_TOKEN=<pat> npm run release:github -- --tag v2.5.0   # 指定 tag（默认 v<package.json version>）
  *   GH_TOKEN=<pat> npm run release:github -- --draft        # 先建草稿，人工点发布
+ *   GH_TOKEN=<pat> npm run release:github -- --sha <sha>    # 指定 tag 指向的提交（默认 HEAD）
+ *
+ * ⚠ 什么时候需要 --sha：github.com 的 git 传输被挡（代理回 502）时，代码是用 Git Data API 推上去的，
+ * 远端提交的 sha 与本地不同。这时必须把远端 sha 传进来，否则 tag 会指向一个远端不存在的对象。
  *
  * 前置条件：
  *   1. 已执行 npm run dist，且 dist/release/ 下已放好要发布的附件；
@@ -60,7 +64,7 @@ if (!m) {
 }
 const [owner, repo] = [m[1], m[2].replace(/\.git$/, '')];
 const slug = `${owner}/${repo}`;
-const sha = execSync('git rev-parse HEAD', { cwd: REPO_ROOT }).toString().trim();
+const sha = argOf('--sha') || execSync('git rev-parse HEAD', { cwd: REPO_ROOT }).toString().trim();
 const run = (cmd) => execSync(cmd, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
 
 // ---- HTTP ----
