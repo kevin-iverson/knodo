@@ -24,7 +24,9 @@ const root = path.join(__dirname, '..');
 const pkg = require(path.join(root, 'package.json'));
 const productName = (pkg.build && pkg.build.productName) || 'Knodo';
 const exePath = path.join(root, 'dist', 'win-unpacked', `${productName}.exe`);
-const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 240000);
+// 6 分钟：打包版的全量冒烟（十几轮 DOM 交互）在这台机器上实测 2m45s，
+// 原来的 240s 只差几十秒就假超时（v2.9.0 出包时撞过一次），再叠上并发构建会更紧。
+const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 360000);
 
 if (!fs.existsSync(exePath)) {
   console.error(`[smoke:packaged] 找不到打包产物：${exePath}`);
