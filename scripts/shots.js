@@ -534,8 +534,9 @@ const shots = {
     await page.evaluate(click('.st-nav-item[data-nav="keys"]'));
     await sleep(1400);
     // 这台机器上第三方程序占着 Ctrl+Alt+C，首屏挂着一条红字「未能注册」——放进 README 会被读成缺陷。
-    // 滚到「显示 / 隐藏桌面浮窗」那一行起：还是同一张可录制的全局键列表，只是看不到那一条
-    await scrollPanelTo(page, '.st-krow[data-key="app.toggleDesktop"]', 8);
+    // 滚到「语音录入任务」那一行起：本版新增的那一条在最上面，下面紧跟截图建任务与浮窗键，
+    // 被占用的那一条刚好落在可视区上方。
+    await scrollPanelTo(page, '.st-krow[data-key="app.voiceTask"]', 8);
     // 往下滚一屏：这台机器上第三方程序占着 Ctrl+Alt+C，首屏会挂着一条红字「未能注册」，
     // 放进 README 会被读成缺陷。滚到下面几行，仍然是同一张全局快捷键列表（行内胶囊、可录制）
     return page.shot(path.join(outDir, 'settings-keys.png'));
