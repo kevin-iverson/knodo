@@ -74,7 +74,9 @@ check('规则摘要可读', /每个法定工作日/.test(rules.describeRule({ fr
 console.log('\n[4] 数据层：一条任务 + 按日打卡');
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'todo-recur-'));
 db.init(tmpDir);
-check('迁移到 v17', db.getDb().pragma('user_version', { simple: true }) === 17);
+check('迁移到最新版本（≥ v17，v17 是重复事项合并那一版）',
+  db.getDb().pragma('user_version', { simple: true }) >= 17,
+  db.getDb().pragma('user_version', { simple: true }));
 check('新表就绪', (() => {
   const names = db.getDb().prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
   return names.includes('recurring_rules') && names.includes('recurrence_completions')
@@ -139,11 +141,14 @@ check('跨天自动恢复未完成', !t1.completed && t1.completed_at == null);
 check('历史打卡没有被跨天抹掉', db.listCompletions(rule.id).some((c) => c.occurrence_date === TODAY));
 
 // 用户原话：设了重复 10 天，想改成 8 天怎么办 —— 现在只改一行规则，不重建任何任务
-db.updateRecurringRule(rule.id, { endDate: '2026-11-16', today: NEXT });
-check('改结束日（10天→8天）仍只有一条任务',
+// ⚠ 结束日必须落在**真实今天之后**：importData() 末尾会按真实今天重算下一次发生日，
+// 把结束日写成固定日期（原先是 2026-11-16），跑到那天之后这条用例就会静默变成「规则已结束」而假失败。
+const END_FAR = dateU.addDays(TODAY, 400);
+db.updateRecurringRule(rule.id, { endDate: END_FAR, today: NEXT });
+check('改结束日仍只有一条任务',
   db.listTasks({ recurringId: rule.id, status: 'any' }).length === 1);
 check('改结束日不动打卡历史', db.listCompletions(rule.id).length === 1);
-check('规则结束日已更新', db.getRecurringRule(rule.id).end_date === '2026-11-16');
+check('规则结束日已更新', db.getRecurringRule(rule.id).end_date === END_FAR);
 db.updateRecurringRule(rule.id, {
   rule: { freq: 'daily', reminderTime: '10:30', dueOffsetDays: 0 }, today: NEXT,
 });
@@ -168,9 +173,9 @@ db.setRecurringEnabled(rule.id, true, { today: NEXT });
 check('重新启用 → 这一条恢复排期', db.getTask(t0.id).occurrence_date === NEXT);
 
 const snapshot = db.exportData();
-check('备份 schema 14 且含规则/打卡/跳过', snapshot.schemaVersion === 14
+check('备份 schema ≥14 且含规则/打卡/跳过', snapshot.schemaVersion >= 14
   && snapshot.recurring_rules.length === 1 && snapshot.recurrence_completions.length === 1
-  && Array.isArray(snapshot.recurrence_skips));
+  && Array.isArray(snapshot.recurrence_skips), snapshot.schemaVersion);
 check('备份里重复事项只有一条任务',
   snapshot.tasks.filter((t) => t.recurring_id === rule.id).length === 1);
 
@@ -226,7 +231,9 @@ raw.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_recur_day ON tasks(recurri
 raw.pragma('user_version = 16');
 db.close();
 db.init(tmpDir2);
-check('重开后迁移到 v17', db.getDb().pragma('user_version', { simple: true }) === 17);
+check('重开后迁移到最新版本（≥ v17）',
+  db.getDb().pragma('user_version', { simple: true }) >= 17,
+  db.getDb().pragma('user_version', { simple: true }));
 check('5 条旧实例合并成 1 条', db.getDb()
   .prepare('SELECT COUNT(*) c FROM tasks WHERE recurring_id = ?').get(rule3.id).c === 1);
 check('2 条已完成实例转成打卡记录', db.listCompletions(rule3.id).length === 2,

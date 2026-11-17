@@ -1,0 +1,68 @@
+/* ============================================================
+   快速语音录入任务
+   ------------------------------------------------------------
+   确认卡整体复用 shot.css 的 .modal-shot / .shot-*（两张卡是同一套回执），
+   这里只补语音独有的三处：录音条上的标签、头部麦克风圆块、转写原文折叠区。
+   ============================================================ */
+
+/* ---------------- 录音条上的「语音录入」标签 ---------------- */
+.voice-rec-dock .rec-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* ---------------- 确认卡头部：麦克风圆块替代截图的缩略图 ---------------- */
+.voice-head .voice-mic {
+  flex: 0 0 132px;
+  width: 132px;
+  height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-ground);
+  font-size: 34px;
+  line-height: 1;
+  user-select: none;
+}
+
+/* 语音卡没有图片，描述区可以宽一点；原文折叠区占整行 */
+.modal.modal-voice { width: 660px; }
+
+/* ---------------- 转写原文（可展开核对 AI 有没有听错） ---------------- */
+.voice-transcript {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-ground);
+  overflow: hidden;
+}
+.voice-transcript > summary {
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.voice-transcript > summary::-webkit-details-marker { display: none; }
+.voice-transcript > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.12s ease;
+}
+.voice-transcript[open] > summary::before { transform: rotate(90deg); }
+.voice-transcript > summary:hover { color: var(--text); }
+.voice-transcript-text {
+  padding: 4px 12px 10px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 168px;
+  overflow: auto;
+}

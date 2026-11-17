@@ -31,6 +31,9 @@ const ACTIONS = [
   // S 是备选（直接框选，会短暂隐藏主窗口）
   { id: 'app.screenshotPaste', label: '截图建任务（剪贴板）', hint: '读剪贴板里的图片 → 识别成待办', def: 'Control+Alt+V' },
   { id: 'app.screenshot', label: '截图建任务（框选区域）', hint: '拖拽框选屏幕区域 → 识别成待办', def: 'Control+Alt+S' },
+  // 快速语音录入：按一下开麦录音，再按一下转文字并弹出与截图同款的确认卡。
+  // R = Record，避开 B/N/C/V/S/D/M/E 与 1–6（都已被上面占用）。
+  { id: 'app.voiceTask', label: '语音录入任务', hint: '按一下开始录音，再按一下转成任务', def: 'Control+Alt+R' },
   // 桌面浮窗用 D（Desktop）而不是原来的 H：H 与「显示 / 隐藏笔记」的 Ctrl+Shift+H
   // 只差一个修饰键，实机上很容易按混、也会被输入法/键盘宏串到一起
   { id: 'app.toggleDesktop', label: '显示 / 隐藏桌面浮窗', hint: '演示 / 共享屏幕前一键收起', def: 'Control+Alt+D' },

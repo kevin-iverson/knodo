@@ -1460,7 +1460,8 @@ function registerIpc() {
   // key 白名单：避免渲染层拿它当任意键值存储使用。
   // calendar：日历视图的容量 / 周起始 / 显示已完成 / 上次视图 / 首启提示（见设计方案 6.3）
   // encourager：上班鼓励器的玩法与隐私配置（不存月薪，月薪一律读 tool.salary）。零 DB 迁移。
-  const TOOL_PREF_KEYS = ['calendar', 'encourager'];
+  // recorder：录制分片时长（会议纪要界面配置，录音 / 录屏两条入口共用）。零 DB 迁移。
+  const TOOL_PREF_KEYS = ['calendar', 'encourager', 'recorder'];
   ipcMain.handle('ui:getToolPref', (_e, key) => {
     const k = TOOL_PREF_KEYS.includes(String(key || '')) ? String(key) : '';
     if (!k) return null;

@@ -23,6 +23,8 @@
   <link rel="stylesheet" href="css/recurrence.css" />
   <!-- 截图建任务确认卡（.shot-*）：只在卡片打开时才有 DOM，样式独立成文件免得 styles.css 再长 -->
   <link rel="stylesheet" href="css/shot.css" />
+  <!-- 快速语音录入：录音条标签 + 确认卡的麦克风块 / 转写原文折叠区（卡体复用 shot.css） -->
+  <link rel="stylesheet" href="css/voice.css" />
   <!-- 故宫主题 · 檐口脊兽（只在 :root[data-style="palace"] 时显示） -->
   <link rel="stylesheet" href="css/palace-ridge.css" />
 </head>
@@ -197,7 +199,10 @@
             <button class="text-btn" id="btn-import" title="从完整备份包（.zip）或旧版 JSON 恢复">📥 导入</button>
             <button class="text-btn" id="btn-export" title="导出完整备份包（任务 / 笔记 / 附件 / 录音都在里面）">📤 备份</button>
             <!-- 「🗂 归档」已移入 File 菜单（低频维护动作），腾出的行宽给搜索框与 AI 检索 -->
-            <button class="text-btn" id="btn-record" title="录制会议音频（或屏幕），结束后转文字并生成纪要">⏺ 录制</button>
+            <!-- 录制拆成两条入口：录音一键直启（不弹配置窗），录屏要先挑屏幕 / 窗口。
+                 分片时长不在顶栏配置，统一放到「会议纪要」界面。 -->
+            <button class="text-btn" id="btn-record-audio" title="录音：点击直接开始（麦克风 + 系统声），结束后转文字并生成纪要">🎙 录音</button>
+            <button class="text-btn" id="btn-record-screen" title="录屏：先选择屏幕 / 窗口，再开始录制画面 + 音频">🖥 录屏</button>
             <!-- AI 设置 / 开机自启动 / 同步 / 主题 都在顶部菜单栏（主进程应用菜单） -->
             <button class="primary-btn" id="btn-new-task">＋ 新建任务</button>
           </div>

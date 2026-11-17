@@ -357,28 +357,75 @@ export async function stopRecording() {
   }
 }
 
-/* ------------------------------ 开始前的配置面板 ------------------------------ */
+/* ------------------------------ 分片时长（会议纪要界面配置） ------------------------------ */
+
+export const DEFAULT_SLICE_MS = 600000;
+const SLICE_CHOICES = [300000, 600000, 900000, 1800000];
 
 /**
- * 打开录制设置面板：选择「仅音频 / 屏幕+音频」、按需挑录制源，再开始录制。
+ * 读取会议纪要工具栏设置的分片时长。录音 / 录屏两条入口共用这一处，
+ * 偏好没有写过时回落到 10 分钟（与旧录制弹窗的默认值一致）。
  */
-export async function openRecorder() {
+export async function getSliceMs() {
+  try {
+    const pref = await api.ui.getToolPref('recorder');
+    const v = Number(pref && pref.sliceMs);
+    return SLICE_CHOICES.includes(v) ? v : DEFAULT_SLICE_MS;
+  } catch (e) {
+    return DEFAULT_SLICE_MS;
+  }
+}
+
+/** 会议纪要工具栏改分片时长：只接受预设档位，脏值一律拒绝，避免偏好被写坏 */
+export async function setSliceMs(ms) {
+  const v = Number(ms);
+  if (!SLICE_CHOICES.includes(v)) throw new Error('无效的分片时长');
+  await api.ui.setToolPref('recorder', { sliceMs: v });
+}
+
+/* ------------------------------ 一键录音 ------------------------------ */
+
+/**
+ * 顶栏「🎙 录音」与会议纪要「录音」共用：不弹任何配置窗，直接开录。
+ * 声音来源用默认值（系统声 + 麦克风），会议名自动生成，分片时长读会议纪要的设置。
+ */
+export async function startAudioRecording() {
+  if (session.active) { notify('正在录制中，请先结束当前录制'); return null; }
+  const sliceMs = await getSliceMs();
+  try {
+    return await startRecording({
+      mode: 'audio',
+      title: `会议 ${stampNow()}`,
+      sourceLabel: '麦克风 + 系统声',
+      wantMic: true,
+      wantSystem: true,
+      sliceMs,
+    });
+  } catch (e) {
+    // startRecording 内部已 notify 具体原因，这里只吞掉异常免得变成未处理拒绝
+    return null;
+  }
+}
+
+/* ------------------------------ 录屏配置面板 ------------------------------ */
+
+/**
+ * 打开「🖥 录屏」配置面板：挑一块屏幕 / 窗口 + 声音来源，再开始录制。
+ * 音频已拆成独立的一键入口，所以这里固定 screen 模式，不再有「采集方式」单选；
+ * 分片时长也移到了会议纪要界面，弹窗打开即加载可录制源列表。
+ */
+export async function openScreenRecorder() {
   if (session.active) { notify('正在录制中，请先结束当前录制'); return; }
 
+  const sliceMs = await getSliceMs();
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
   mask.innerHTML = `
-    <div class="modal rec-setup" role="dialog" aria-modal="true" aria-label="开始录制">
-      <div class="modal-head">开始会议录制</div>
+    <div class="modal rec-setup" role="dialog" aria-modal="true" aria-label="开始录屏">
+      <div class="modal-head">开始屏幕录制</div>
       <div class="modal-body">
         <label class="field-label" for="rec-title">会议名称</label>
         <input class="modal-input" id="rec-title" data-field="title" type="text" maxlength="60" />
-
-        <div class="field-label">采集方式</div>
-        <div class="choice-row">
-          <label class="choice"><input type="radio" name="rec-mode" value="audio" checked /><span class="choice-dot"></span><span>仅音频（推荐）</span></label>
-          <label class="choice"><input type="radio" name="rec-mode" value="screen" /><span class="choice-dot"></span><span>画面 + 音频</span></label>
-        </div>
 
         <div class="field-label">声音来源</div>
         <div class="choice-row">
@@ -386,26 +433,17 @@ export async function openRecorder() {
           <label class="choice"><input type="checkbox" name="rec-mic" checked /><span class="choice-dot"></span><span>麦克风（我自己的声音）</span></label>
         </div>
 
-        <div id="rec-source-wrap" hidden>
-          <div class="field-label">录制画面</div>
-          <div class="rec-source-grid" id="rec-source-grid"><div class="rec-loading">正在读取可录制窗口…</div></div>
-        </div>
+        <div class="field-label">录制画面</div>
+        <div class="rec-source-grid" id="rec-source-grid"><div class="rec-loading">正在读取可录制窗口…</div></div>
 
-        <label class="field-label" for="rec-slice">单片时长（自动切分，便于上传转写）</label>
-        <select class="modal-input" id="rec-slice" data-field="slice">
-          <option value="300000">5 分钟</option>
-          <option value="600000" selected>10 分钟</option>
-          <option value="900000">15 分钟</option>
-          <option value="1800000">30 分钟</option>
-        </select>
-        <div class="modal-hint">录制中请勿把窗口最小化到托盘，否则画面轨会被系统暂停。</div>
+        <div class="modal-hint">录制中请勿把窗口最小化到托盘，否则画面轨会被系统暂停。分段时长在「会议纪要」界面调整（当前 ${Math.round(sliceMs / 60000)} 分钟）。</div>
         <div class="modal-error" hidden></div>
       </div>
       <div class="modal-foot">
         <div class="foot-extra"><button type="button" class="ghost-btn" data-extra="导入录音文件">导入录音文件</button></div>
         <div class="foot-main">
           <button type="button" class="ghost-btn" data-modal="cancel">取消</button>
-          <button type="button" class="primary-btn" data-modal="ok">⏺ 开始录制</button>
+          <button type="button" class="primary-btn" data-modal="ok">⏺ 开始录屏</button>
         </div>
       </div>
     </div>`;
@@ -415,7 +453,6 @@ export async function openRecorder() {
   titleInput.value = `会议 ${stampNow()}`;
 
   const grid = mask.querySelector('#rec-source-grid');
-  const wrap = mask.querySelector('#rec-source-wrap');
   const errEl = mask.querySelector('.modal-error');
   const okBtn = mask.querySelector('[data-modal="ok"]');
   let sources = [];
@@ -447,14 +484,6 @@ export async function openRecorder() {
     });
   };
 
-  mask.querySelectorAll('input[name="rec-mode"]').forEach((r) => {
-    r.addEventListener('change', () => {
-      const need = r.value === 'screen';
-      wrap.hidden = !need;
-      if (need && !sources.length) loadSources();
-    });
-  });
-
   const close = () => {
     document.removeEventListener('keydown', onKey, true);
     mask.remove();
@@ -464,27 +493,25 @@ export async function openRecorder() {
     errEl.hidden = !msg;
   };
   const submit = async () => {
-    const mode = (mask.querySelector('input[name="rec-mode"]:checked') || {}).value || 'audio';
     const wantMic = mask.querySelector('input[name="rec-mic"]').checked;
     const wantSystem = mask.querySelector('input[name="rec-sys"]').checked;
-    if (!wantMic && !wantSystem && mode === 'audio') { showError('至少要勾选一个声音来源'); return; }
-    if (mode === 'screen' && !pickedId) { showError('请选择一个要录制的屏幕 / 窗口'); return; }
+    if (!pickedId) { showError('请选择一个要录制的屏幕 / 窗口'); return; }
     const sourceObj = sources.find((s) => s.id === pickedId);
     okBtn.disabled = true;
     showError('');
     try {
       await startRecording({
-        mode,
-        sourceId: mode === 'screen' ? pickedId : '',
-        sourceLabel: mode === 'screen' ? (sourceObj ? sourceObj.name : '') : (wantMic && wantSystem ? '麦克风 + 系统声' : (wantSystem ? '系统声' : '麦克风')),
+        mode: 'screen',
+        sourceId: pickedId,
+        sourceLabel: sourceObj ? sourceObj.name : '屏幕',
         title: titleInput.value.trim() || `会议 ${stampNow()}`,
         wantMic,
         wantSystem,
-        sliceMs: Number(mask.querySelector('#rec-slice').value) || 600000,
+        sliceMs: await getSliceMs(),
       });
       close();
     } catch (e) {
-      showError((e && e.message) || '启动录制失败');
+      showError((e && e.message) || '启动录屏失败');
       okBtn.disabled = false;
     }
   };
@@ -496,6 +523,9 @@ export async function openRecorder() {
   mask.querySelector('[data-modal="cancel"]').addEventListener('click', close);
   mask.addEventListener('click', (e) => { if (e.target === mask) close(); });
   okBtn.addEventListener('click', submit);
+  // 事件先绑完再去读录制源：desktopCapturer 在无显示适配器环境下会很慢，
+  // 若 await 在绑定之前，这期间点「取消」会毫无反应（冒烟就栽在这里）。
+  loadSources();
   mask.querySelector('[data-extra="导入录音文件"]').addEventListener('click', async () => {
     try {
       const r = await api.rec.importMedia();
@@ -508,12 +538,16 @@ export async function openRecorder() {
   });
 }
 
-/** 绑定工具栏「⏺ 录制」按钮 */
-export function bindRecordButton() {
-  const btn = document.getElementById('btn-record');
-  if (!btn) return false;
-  btn.addEventListener('click', () => {
-    openRecorder().catch((e) => notify(`打开录制失败：${e && e.message ? e.message : e}`));
-  });
-  return true;
+/** 绑定顶栏「🎙 录音」「🖥 录屏」两个按钮 */
+export function bindRecordButtons() {
+  const bind = (id, action, label) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      Promise.resolve().then(action)
+        .catch((e) => notify(`打开${label}失败：${e && e.message ? e.message : e}`));
+    });
+  };
+  bind('btn-record-audio', startAudioRecording, '录音');
+  bind('btn-record-screen', openScreenRecorder, '录屏');
 }

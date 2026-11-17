@@ -89,9 +89,14 @@
 
 /* 有模态 / 详情抽屉时整条檐口让位：遮罩只盖到 .app，不处理的话底部会留一条亮着的檐口。
    用 display:none 而不是 visibility:hidden —— 遮罩跟着 .app 长高，底部才不会留一条没压暗的带子。
-   选择器带上 :root[data-style="palace"]，特异性才压得过上面的 display:block。 */
+   选择器带上 :root[data-style="palace"]，特异性才压得过上面的 display:block。
+
+   ⚠ 抽屉判据必须是「抽屉实际打开」(.detail-drawer:not([hidden]))，不能写成 :has(.detail-mask)：
+   #detail-drawer 是常驻节点，closeDetail() 只把 drawer.hidden 置真，内部的 .detail-mask 子节点
+   并不移除；而 :has() 只看 DOM 存在与否、不看 hidden，于是关掉抽屉后规则仍命中，脊兽永久消失
+   且「关掉后不再复现」。用 :not([hidden]) 只在真正打开时让位，隐藏后脊兽立即回来。 */
 :root[data-style="palace"]:has(.modal-mask) .palace-rail,
-:root[data-style="palace"]:has(.detail-mask) .palace-rail { display: none; }
+:root[data-style="palace"]:has(.detail-drawer:not([hidden])) .palace-rail { display: none; }
 
 /* 提示条不要压在瓦面上 */
 :root[data-style="palace"] .toast { bottom: 52px; }

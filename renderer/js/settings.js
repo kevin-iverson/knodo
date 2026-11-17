@@ -1921,6 +1921,15 @@ export async function openSettings(paneId = '') {
       const root = mask.querySelector('.st-shell');
       paintActive(root, active);
 
+      // 页脚提示：与顶部标题栏呼应的底部栏左侧文字（样式见 styles.css 的 .st-foot-hint）
+      const foot = mask.querySelector('.modal-foot');
+      if (foot && !foot.querySelector('.st-foot-hint')) {
+        const hint = document.createElement('span');
+        hint.className = 'st-foot-hint';
+        hint.textContent = '所有更改即时生效，无需保存';
+        foot.insertBefore(hint, foot.firstChild);
+      }
+
       // 导航
       root.querySelector('.st-nav').addEventListener('click', (e) => {
         const item = e.target.closest('.st-nav-item');

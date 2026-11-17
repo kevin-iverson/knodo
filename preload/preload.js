@@ -375,6 +375,15 @@ contextBridge.exposeInMainWorld('api', {
     image: () => envelope('shot:image'),
   },
   /**
+   * 快速语音录入任务（快捷键按一下开 / 再按一下停）。
+   * 与 shot 同用信封：错误码（NO_ASR_KEY / NO_API_KEY / …）要能带到卡片的「去配置 / 重试」分流。
+   */
+  voiceTask: {
+    status: () => envelope('voice:status'),
+    submit: (p) => envelope('voice:submit', p || {}),
+    commit: (p) => envelope('voice:commit', p || {}),
+  },
+  /**
    * 快速捕捉条（Ctrl+Alt+C）。
    * 捕捉条是独立窗口：它自己调 save / cycle / undo，主窗口只负责把"当前选中的清单"
    * 同步过去（setContext），让「从主窗口按 C」落到对的地方。
@@ -467,6 +476,8 @@ contextBridge.exposeInMainWorld('api', {
       'ui:encourager', 'ui:encourager-card',
       // 截图建任务：取图成功 → 开确认卡；取图失败 / 框选超时 → 只要一句提示
       'ui:screenshot', 'ui:shot-error', 'ui:shot-timeout',
+      // 快速语音录入：全局快捷键 → 渲染层切换录音（开 / 停）
+      'ui:voice-toggle',
     ];
     if (allowed.includes(channel)) {
       ipcRenderer.on(channel, (_e, ...args) => cb(...args));

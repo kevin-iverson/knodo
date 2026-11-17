@@ -2034,45 +2034,90 @@ function fmtHistTime(iso) {
     : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`;
 }
 
+/* 与 AI 检索共用同一套 .search-* 骨架与样式：左边历史、右边结果。
+   知识库特有的一点是「检索范围」目录多选，收窄成 hero 下方一条紧凑 chips。 */
+let kbRootEl = null;
+const kbq = (id) => (kbRootEl ? kbRootEl.querySelector(`#${id}`) : null);
+const KB_SAMPLES = ['最近讨论的灰度发布方案', '这个项目的背景是什么', '会议里定下的截止时间', '接口鉴权是怎么设计的'];
+
+function kbPanelHtml() {
+  return `
+    <div class="search-panel">
+      <div class="search-hero">
+        <div class="search-field">
+          <span class="sf-ico" aria-hidden="true">🔍</span>
+          <input id="kb-q-input" type="text" spellcheck="false" autocomplete="off"
+                 placeholder="就你的笔记提问，例如：上次讨论的灰度发布方案是什么？" />
+        </div>
+        <button id="kb-ask-btn" class="primary-btn">提问</button>
+      </div>
+      <div class="kb-scope">
+        <span class="kb-scope-label">检索范围</span>
+        <div class="kb-scope-opts" id="kb-scope"></div>
+      </div>
+      <div class="search-note" id="kb-note"></div>
+      <div class="search-main">
+        <aside class="search-side">
+          <div class="sh-head">
+            <span class="sh-title">提问历史</span>
+            <span class="sh-count" id="kb-history-count"></span>
+          </div>
+          <ul class="sh-list" id="kb-history"><li class="sh-empty">加载中…</li></ul>
+        </aside>
+        <section class="search-stage">
+          <div class="search-empty" id="kb-empty">
+            <div class="se-ico" aria-hidden="true">🧠</div>
+            <div class="se-title">就你的笔记提问</div>
+            <div class="se-sub">把你沉淀的笔记当知识库：AI 从相关片段里总结答案，点引用来源可打开原文定位</div>
+            <div class="se-chips">
+              ${KB_SAMPLES.map((k) => `<button type="button" class="se-chip">${esc(k)}</button>`).join('')}
+            </div>
+          </div>
+          <div class="search-summary markdown-body" id="kb-summary" hidden></div>
+          <ul class="search-results" id="kb-results"></ul>
+        </section>
+      </div>
+    </div>`;
+}
+
+function kbPlaceholder(on) {
+  const el = kbq('kb-empty');
+  if (el) el.hidden = !on;
+}
+
 /** 以笔记库为检索来源向 AI 提问；无 AI 配置时降级为「只展示召回片段」 */
 async function openKbModal() {
+  const existing = document.querySelector('.modal-mask .modal-kb');
+  if (existing) {
+    // 已开着：不叠第二层，只聚焦（两层 openPanelModal 会让一次 Esc 连关两层）
+    const input = existing.querySelector('#kb-q-input');
+    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+    return;
+  }
   await openPanelModal({
     title: '知识库问答（检索来源：笔记）',
     className: 'modal-kb',
-    // 关闭只认 ✕ / 底部按钮 / Esc：提问结果一关就没，误点遮罩丢结果太伤（问题 3）
     showClose: true,
-    closeOnMask: false,
-    html: `
-      <div class="kb-scope">
-        <span class="kb-scope-label">检索范围</span>
-        <div class="kb-scope-opts" data-kb="scope"></div>
-      </div>
-      <div class="kb-form">
-        <input class="modal-input" data-kb="q" placeholder="例如：上次讨论的灰度发布方案是什么？" />
-        <button class="primary-btn" data-kb="ask">提问</button>
-      </div>
-      <div class="kb-stat" data-kb="stat">加载中…</div>
-      <div class="kb-result" data-kb="result"></div>
-      <div class="kb-history" data-kb="history">
-        <div class="kb-hist-head">
-          <span>提问历史</span>
-          <span class="kb-hist-count" data-kb="hist-count"></span>
-        </div>
-        <ul class="kb-hist-list" data-kb="hist-list"></ul>
-      </div>`,
     okText: '关闭',
-    onMount: async (mask) => {
-      const statEl = mask.querySelector('[data-kb="stat"]');
-      const resultEl = mask.querySelector('[data-kb="result"]');
-      const qEl = mask.querySelector('[data-kb="q"]');
-      const askBtn = mask.querySelector('[data-kb="ask"]');
-      const histList = mask.querySelector('[data-kb="hist-list"]');
-      const histCount = mask.querySelector('[data-kb="hist-count"]');
-      const scopeBox = mask.querySelector('[data-kb="scope"]');
+    resizable: true,
+    resizeKey: 'kb-search',
+    minWidth: 620,
+    minHeight: 420,
+    // 与 AI 检索一致：只有显式「关闭」/ ✕ 退出，遮罩误点 / Esc 都不许把结果弄丢
+    closeOnMask: false,
+    closeOnEsc: false,
+    html: kbPanelHtml(),
+    onMount: async (root) => {
+      kbRootEl = root;
+      const input = kbq('kb-q-input');
+      const askBtn = kbq('kb-ask-btn');
+      const note = kbq('kb-note');
+      const scopeBox = kbq('kb-scope');
+      let scopeIds = [];
 
       /* ---- 检索范围（分类多选）：不选任何分类 = 全部笔记；目录含子目录 ---- */
-      let scopeIds = [];
       const folders = await api.noteFolders.list().catch(() => []);
+      if (!kbRootEl) return; // 读目录期间窗已关
       const paintScope = () => {
         if (!scopeBox) return;
         const chips = [{ id: 0, name: '全部' }, ...folders.map((f) => ({ id: f.id, name: f.name }))];
@@ -2081,130 +2126,185 @@ async function openKbModal() {
           return `<button type="button" class="kb-scope-chip${active ? ' active' : ''}" data-scope="${c.id}">${esc(c.name)}</button>`;
         }).join('');
       };
-      if (scopeBox) {
-        scopeBox.addEventListener('click', (e) => {
-          const chip = e.target.closest('[data-scope]');
-          if (!chip) return;
-          const fid = Number(chip.dataset.scope);
-          if (fid === 0) scopeIds = []; // 「全部」一键清空
-          else {
-            const i = scopeIds.indexOf(fid);
-            if (i >= 0) scopeIds.splice(i, 1); else scopeIds.push(fid);
-          }
-          paintScope();
-        });
-      }
+      scopeBox?.addEventListener('click', (e) => {
+        const chip = e.target.closest('[data-scope]');
+        if (!chip) return;
+        const fid = Number(chip.dataset.scope);
+        if (fid === 0) scopeIds = []; // 「全部」一键清空
+        else {
+          const i = scopeIds.indexOf(fid);
+          if (i >= 0) scopeIds.splice(i, 1); else scopeIds.push(fid);
+        }
+        paintScope();
+      });
       paintScope();
 
-      const paintStat = async () => {
-        const s = await api.kb.stats(1).catch(() => null);
-        if (!s) { statEl.textContent = '知识库状态读取失败'; return; }
-        statEl.innerHTML = `已沉淀 <b>${s.note_count}</b> 篇笔记，索引 <b>${s.indexed_note_count}</b> 篇 / <b>${s.chunk_count}</b> 个分块`;
-      };
-      await paintStat();
-
-      // 历史记录：每次提问都落库（含降级 / 无命中），点条目回看，🗑 删除
-      const loadHistory = async () => {
-        const list = await api.kb.qaList(30).catch(() => []);
-        if (histCount) histCount.textContent = list.length ? `${list.length} 条` : '';
-        if (!histList) return;
-        if (!list.length) {
-          histList.innerHTML = '<li class="kb-hist-empty">还没有提问记录</li>';
-          return;
-        }
-        histList.innerHTML = list.map((h) => `
-          <li class="kb-hist-item" data-id="${h.id}">
-            <div class="kb-hist-main">
-              <div class="kb-hist-q">${esc(h.question)}</div>
-              <div class="kb-hist-sub">${esc(fmtHistTime(h.created_at))} · ${h.hit_count} 条引用${h.degraded ? ' · 未生成回答' : ''}${h.scope && h.scope !== '全部笔记' ? ` · ${esc(h.scope)}` : ''}</div>
-            </div>
-            <button type="button" class="kb-hist-del" data-act="del" title="删除这条记录">🗑</button>
-          </li>`).join('');
-      };
-
-      histList.addEventListener('click', async (e) => {
-        const item = e.target.closest('.kb-hist-item');
-        if (!item) return;
-        const id = Number(item.dataset.id);
-        if (e.target.closest('[data-act="del"]')) {
-          await api.kb.qaRemove(id).catch(() => {});
-          loadHistory();
-          return;
-        }
-        const rec = await api.kb.qaGet(id).catch(() => null);
-        if (!rec) { notify('读取这条记录失败'); return; }
-        resultEl.innerHTML = kbResultHtml(rec.question, {
-          answer: rec.answer,
-          hits: rec.hits,
-          degraded: rec.degraded,
-          reason: rec.reason,
-        });
-        enhanceMarkdown(resultEl);
-        resultEl.querySelectorAll('[data-kb-act="open"]').forEach((b) => {
-          b.addEventListener('click', async () => {
-            mask.querySelector('[data-modal="ok"]')?.click();
-            await openNote(Number(b.dataset.id), { focusTerm: b.dataset.term || rec.question });
-          });
-        });
-        qEl.value = rec.question;
-      });
+      // 知识库状态：作为提问前的提示语（有内容才显示，与 .search-note 的空态一致）
+      const s = await api.kb.stats(1).catch(() => null);
+      if (s && note) note.textContent = `已沉淀 ${s.note_count} 篇笔记，索引 ${s.indexed_note_count} 篇 / ${s.chunk_count} 个分块`;
 
       const ask = async () => {
-        const q = (qEl.value || '').trim();
-        if (!q) return;
+        const question = (input.value || '').trim();
+        if (!question) { notify('请输入问题'); return; }
+        kbPlaceholder(false);
+        note.textContent = '检索中（改写查询 → 多路召回：全文 / 笔记级 / 模糊 → AI 重排）…';
+        const summary = kbq('kb-summary');
+        const results = kbq('kb-results');
+        if (summary) { summary.hidden = true; summary.innerHTML = ''; }
+        if (results) results.innerHTML = '<li class="sr-loading"><i></i>正在从笔记里找答案…</li>';
         askBtn.disabled = true;
-        resultEl.innerHTML = '<div class="kb-loading">检索中（改写查询 → 多路召回：全文 / 笔记级 / 模糊 → AI 重排）…</div>';
         // folderIds：把检索与回答限定在所选分类（含子目录）内；空数组 = 全部笔记
-        const res = await api.kb.ask({ question: q, topK: 8, folderIds: scopeIds.slice() }).catch((e) => ({ __err: e.message }));
+        const res = await api.kb.ask({ question, topK: 8, folderIds: scopeIds.slice() }).catch((e) => ({ __err: e.message }));
         askBtn.disabled = false;
-        resultEl.innerHTML = kbResultHtml(q, res);
-        enhanceMarkdown(resultEl);
-        resultEl.querySelectorAll('[data-kb-act="open"]').forEach((b) => {
-          b.addEventListener('click', async () => {
-            // 关闭弹窗 → 右栏打开该笔记，并把命中的词高亮 / 滚动定位过去（便于溯源）
-            mask.querySelector('[data-modal="ok"]')?.click();
-            await openNote(Number(b.dataset.id), { focusTerm: b.dataset.term || q });
-          });
-        });
-        loadHistory(); // 本次提问已落库，刷新历史
+        if (!kbRootEl) return; // 等待期间用户可能已关窗
+        paintKbResult(res, question);
+        kbLoadHistory(); // 本次提问已落库，刷新历史
       };
       askBtn.addEventListener('click', ask);
-      qEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
-      loadHistory();
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ask(); } });
+      root.querySelectorAll('.se-chip').forEach((chip) => {
+        chip.addEventListener('click', () => { input.value = chip.textContent.trim(); ask(); });
+      });
+
+      // 底部左侧说明：与 AI 检索同款，「不关就是能关」这件事得写出来
+      const foot = root.querySelector('.modal-foot');
+      if (foot) {
+        const hint = document.createElement('span');
+        hint.className = 'search-foot-hint';
+        hint.textContent = '提问会存进历史 · 点引用来源打开原文 · 只有点「关闭」或 ✕ 才退出';
+        foot.prepend(hint);
+      }
+      kbBindHistory();
+      kbLoadHistory();
+      input.focus();
     },
+    onClose: () => { kbRootEl = null; },
   });
 }
 
-function kbResultHtml(q, res) {
-  if (!res || res.__err) return `<div class="kb-error">检索失败：${esc((res && res.__err) || '未知错误')}</div>`;
-  const meta = res.meta || {};
-  const flag = meta.reranked ? '<span class="kb-flag">已 AI 重排</span>' : '';
-  if (res.degraded && res.reason === 'no-hit') return '<div class="kb-empty">知识库里没有命中相关内容，换个说法试试。</div>';
+/** 回填一次问答结果（新提问与回看历史共用），结构与 AI 检索的结果区对齐 */
+function paintKbResult(res, question) {
+  if (!kbRootEl) return;
+  const summary = kbq('kb-summary');
+  const results = kbq('kb-results');
+  const note = kbq('kb-note');
+  const input = kbq('kb-q-input');
+  if (!summary || !results) return;
+  kbPlaceholder(false);
+  if (input && question) input.value = question;
+  if (!res || res.__err) {
+    if (note) note.textContent = '检索失败';
+    results.innerHTML = `<li class="sr-empty"><div class="sr-empty-title">检索失败：${esc((res && res.__err) || '未知错误')}</div></li>`;
+    return;
+  }
+  const hits = res.hits || [];
+  const flag = (res.meta && res.meta.reranked) ? ' · 已 AI 重排' : '';
+  // 回答放 .search-summary（markdown-body），与 AI 检索的总结块同一个视觉位置
+  if (res.answer) {
+    summary.innerHTML = renderSafeMarkdown(res.answer);
+    summary.hidden = false;
+    enhanceMarkdown(summary);
+  } else {
+    summary.hidden = true;
+    summary.innerHTML = '';
+  }
+  if (res.degraded && res.reason === 'no-hit') {
+    if (note) note.textContent = '知识库里没有命中相关内容';
+    results.innerHTML = '<li class="sr-empty"><div class="sr-empty-title">没有找到相关内容</div><div class="sr-empty-sub">换个说法，或在「检索范围」里切到全部笔记再试</div></li>';
+    return;
+  }
   if (res.degraded && res.reason === 'no-ai') {
-    return `${kbHitsHtml(res.hits)}<div class="kb-degraded">未配置 AI 接口，以上为本地多路召回结果（可在菜单栏「AI 设置」里配置后获得总结与语义重排）。</div>`;
+    if (note) note.textContent = `未配置 AI 接口，以下是本地召回的 ${hits.length} 条片段`;
+    results.innerHTML = `<li class="sr-banner sr-banner-multi">📚 <b>${hits.length} 条召回片段</b>：可在「AI 设置」里配置接口后获得总结与语义重排</li>${kbHitsHtml(hits)}`;
+  } else if (res.degraded) {
+    if (note) note.textContent = `AI 调用失败（${res.reason || ''}），展示本地召回片段`;
+    results.innerHTML = `<li class="sr-banner sr-banner-multi">⚠️ AI 总结失败（${esc(res.reason || '')}），以下为本地召回结果</li>${kbHitsHtml(hits)}`;
+  } else {
+    if (note) note.textContent = `已生成回答 · 引用 ${hits.length} 篇笔记${flag}`;
+    results.innerHTML = hits.length
+      ? `<li class="sr-banner sr-banner-unique">📚 <b>${hits.length} 条引用来源</b>：点标题打开原文并定位</li>${kbHitsHtml(hits)}`
+      : '';
   }
-  if (res.degraded) {
-    return `${kbHitsHtml(res.hits)}<div class="kb-degraded">AI 调用失败（${esc(res.reason || '')}），以上为本地多路召回结果。</div>`;
-  }
-  return `<div class="kb-answer">${renderSafeMarkdown(res.answer || '')}</div>${flag}${kbHitsHtml(res.hits)}`;
+  // 引用来源：整条可点，关窗后右栏打开笔记并高亮命中词（保留知识库特有的溯源能力）
+  results.querySelectorAll('.kb-hit').forEach((li) => {
+    li.addEventListener('click', async () => {
+      const id = Number(li.dataset.id);
+      if (!id) { notify('这条来源没有关联笔记'); return; }
+      kbRootEl?.querySelector('[data-modal="ok"]')?.click();
+      await openNote(id, { focusTerm: li.dataset.term || question || '' });
+    });
+  });
 }
 
 function kbHitsHtml(hits = []) {
   if (!hits.length) return '';
-  return `<div class="kb-hits-title">引用来源（按相关度排序，点标题可打开原文定位）</div><ul class="kb-hits">${hits.map((h, i) => `
-    <li>
-      <div class="kb-hit-head">
-        <span class="kb-idx">[${i + 1}]</span>
-        <button class="kb-hit-title" data-kb-act="open" data-id="${h.noteId ?? ''}"
-                data-term="${esc(h.matchTerm || '')}">${esc(h.title || '未命名笔记')}</button>
-        ${h.headingPath ? `<span class="kb-hit-path">${esc(h.headingPath)}</span>` : ''}
-        ${h.matchedBy ? `<span class="kb-hit-path">命中：${esc(matchLabel(h.matchedBy))}</span>` : ''}
-        <span class="kb-rel" title="融合相关度 ${Number(h.relevance) || 0}%">
-          <i style="width:${Math.max(6, Math.min(100, Number(h.relevance) || 0))}%"></i>
-        </span>
+  return hits.map((h, i) => {
+    const pct = Math.max(8, Math.min(100, Number(h.relevance) || 0));
+    const conf = pct >= 70 ? 'high' : (pct >= 40 ? 'mid' : 'low');
+    const confText = { high: '高相关', mid: '中等', low: '弱相关' }[conf];
+    const matchTxt = h.matchedBy ? matchLabel(h.matchedBy) : '';
+    const why = [
+      `<span class="sr-conf sr-conf-${conf}">[${i + 1}] ${confText}</span>`,
+      matchTxt ? `<span class="sr-reasons">命中：${esc(matchTxt)}</span>` : '',
+      `<span class="sr-score" title="相关度 ${pct}%"><i style="width:${pct}%"></i></span>`,
+    ].filter(Boolean).join('');
+    return `<li class="search-result-item kb-hit" data-id="${h.noteId ?? ''}" data-term="${esc(h.matchTerm || '')}" title="点击打开原文并定位">
+      <div class="sr-row">
+        <span class="sr-status">📄</span>
+        <span class="sr-title">${esc(h.title || '未命名笔记')}</span>
+        ${h.headingPath ? `<span class="sr-meta">${esc(h.headingPath)}</span>` : ''}
+        <span class="sr-arrow">›</span>
       </div>
+      <div class="sr-why">${why}</div>
       <div class="kb-hit-body">${highlightKeyword(h.snippet || String(h.content || '').slice(0, 220), h.matchTerm || '')}</div>
-    </li>`).join('')}</ul>`;
+    </li>`;
+  }).join('');
+}
+
+/* ---- 提问历史（左栏，与 AI 检索同款 .sh-* 结构） ---- */
+async function kbLoadHistory() {
+  const box = kbq('kb-history');
+  const count = kbq('kb-history-count');
+  if (!box) return;
+  const list = await api.kb.qaList(30).catch(() => []);
+  if (!kbRootEl || !box.isConnected) return; // 读历史期间窗已关
+  if (count) count.textContent = list.length ? `${list.length} 条` : '';
+  if (!list.length) {
+    box.innerHTML = '<li class="sh-empty">还没有提问记录<br>问过的问题会留在这里，方便回看</li>';
+    return;
+  }
+  box.innerHTML = list.map((h) => `<li class="sh-item" data-id="${h.id}" title="${esc(h.question)}">
+    <div class="sh-main">
+      <div class="sh-kw">${esc(h.question)}</div>
+      <div class="sh-sub">${esc(fmtHistTime(h.created_at))} · ${h.hit_count} 条引用${h.degraded ? ' · 无回答' : ''}</div>
+    </div>
+    <button type="button" class="sh-del" data-act="del" title="删除这条记录">✕</button>
+  </li>`).join('');
+}
+
+function kbBindHistory() {
+  const box = kbq('kb-history');
+  if (!box || box.__kbBound) return;
+  box.__kbBound = true;
+  box.addEventListener('click', async (e) => {
+    const item = e.target.closest('.sh-item');
+    if (!item) return;
+    const id = Number(item.dataset.id);
+    if (e.target.closest('[data-act="del"]')) {
+      await api.kb.qaRemove(id).catch(() => {});
+      kbLoadHistory();
+      return;
+    }
+    const rec = await api.kb.qaGet(id).catch(() => null);
+    if (!rec) { notify('读取这条记录失败'); return; }
+    if (!kbRootEl) return;
+    const note = kbq('kb-note');
+    if (note) note.textContent = `回看历史：${fmtHistTime(rec.created_at)}`;
+    paintKbResult({
+      answer: rec.answer, hits: rec.hits, degraded: rec.degraded,
+      reason: rec.reason, meta: rec.meta || {},
+    }, rec.question);
+  });
 }
 
 function matchLabel(matchedBy) {

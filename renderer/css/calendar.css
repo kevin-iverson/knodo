@@ -463,11 +463,52 @@
   border: 1px solid var(--cal-line); border-radius: 5px; background: var(--cal-card); color: var(--cal-ink2);
 }
 .cal-panel-act {
-  width: 22px; height: 22px; border: 1px solid var(--cal-line); border-radius: 5px;
+  width: 22px; height: 22px; flex: 0 0 22px; border: 1px solid var(--cal-line); border-radius: 5px;
   background: var(--cal-card); color: var(--cal-ink2); cursor: pointer; font-size: 12px;
 }
 .cal-panel-act:hover { border-color: var(--cal-blue); color: var(--cal-blue); }
+.cal-panel-add-btn {
+  border: 0; background: transparent; color: var(--cal-blue);
+  font-size: 11px; font-weight: 500; cursor: pointer; padding: 2px 4px;
+}
+.cal-panel-add-btn:hover { text-decoration: underline; }
 .cal-panel-empty { padding: 14px 2px; font-size: 12px; color: var(--cal-ink3); }
+
+/* 右栏就地新增 / 编辑：嵌在当日面板里，不弹窗、不双击 */
+.cal-editor {
+  margin-top: 10px; padding: 10px; border: 1px solid var(--cal-blue);
+  border-radius: 9px; background: var(--cal-card);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.cal-editor.is-edit { border-color: var(--cal-line); }
+.cal-editor-head { font-size: 11.5px; font-weight: 700; color: var(--cal-ink2); }
+.cal-editor-head span { font-weight: 400; color: var(--cal-ink3); }
+.cal-editor-title {
+  width: 100%; padding: 6px 8px; font-size: 12px;
+  border: 1px solid var(--cal-line); border-radius: 6px;
+  background: var(--cal-card); color: var(--cal-ink); outline: none;
+}
+.cal-editor-title:focus { border-color: var(--cal-blue); }
+.cal-editor-row { display: flex; gap: 6px; }
+.cal-editor-pri, .cal-editor-group, .cal-editor-date {
+  padding: 4px 6px; font-size: 11px; min-width: 0;
+  border: 1px solid var(--cal-line); border-radius: 6px;
+  background: var(--cal-card); color: var(--cal-ink2);
+}
+.cal-editor-pri { width: 76px; flex: 0 0 76px; }
+.cal-editor-group { flex: 1; }
+.cal-editor-dates { display: flex; align-items: center; gap: 5px; }
+.cal-editor-date { flex: 1; }
+.cal-editor-arrow { color: var(--cal-ink3); font-size: 11px; }
+.cal-editor-note { font-size: 10.5px; color: var(--cal-ink3); line-height: 1.4; }
+.cal-editor-error { font-size: 10.5px; color: var(--cal-red); }
+.cal-editor-foot { display: flex; justify-content: flex-end; gap: 6px; }
+.cal-editor-cancel, .cal-editor-save {
+  padding: 5px 12px; font-size: 11px; border-radius: 6px; cursor: pointer;
+}
+.cal-editor-cancel { border: 1px solid var(--cal-line); background: var(--cal-card); color: var(--cal-ink2); }
+.cal-editor-save { border: 0; background: var(--cal-blue); color: #fff; font-weight: 600; }
+.cal-editor-save:hover { filter: brightness(1.08); }
 .cal-panel-backlog { margin-top: 4px; }
 .cal-backlog-row { display: flex; align-items: center; gap: 6px; padding: 5px 2px; border-bottom: 1px solid var(--cal-line); }
 .cal-backlog-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; }

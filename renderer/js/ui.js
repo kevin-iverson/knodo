@@ -27,7 +27,7 @@ import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meeti
 import {
   renderNotes, setNotesHandlers, createNote, disposeNotes, importNotesFromDisk, openNotesDock,
 } from './notes.js';
-import { bindRecordButton, setRecorderHandlers } from './recorder.js';
+import { bindRecordButtons, setRecorderHandlers } from './recorder.js';
 // 趣味功能 → 上班鼓励器（薪资进账主界面）；不反向 import ui.js，toast / 统计走依赖注入
 import { listenEncouragerMenu, setEncouragerHandlers, openEncourager } from './encourager.js';
 import { setNoteExportHandlers } from './sync.js';
@@ -38,6 +38,8 @@ import { initWindowControls } from './win-controls.js';
 import { openContextMenu, closeContextMenu } from './ctx-menu.js';
 // 截图建任务确认卡：只管渲染与提交，取图 / 识别都在主进程
 import { openShotCard, setShotHandlers } from './shot-task.js';
+// 快速语音录入：录音在渲染层，识别 / 落库在主进程；确认卡复用截图卡同一套 UI
+import { toggleVoiceRecord, setVoiceHandlers } from './voice-task.js';
 import { openSettings, setSettingsHandlers } from './settings.js';
 // 插件扩展点（关闭态全是空数组，三处调用零行为差异）
 import { EXT, ext, getExtView } from './ext.js';
@@ -46,6 +48,8 @@ import { initTheme as initThemeState, getTheme, setThemeHook } from './theme.js'
 // 标题栏「日 / 月 盘」：两态明暗开关（视觉在 CSS，这里只管点击与回显）
 import { initThemeSwitch } from './theme-switch.js';
 import { renderCalendar, setCalendarHandlers, openCalendar, backToList, disposeCalendar } from './calendar.js';
+// 完成反馈的互斥闸门 + 点赞动画：效果播完才允许刷新/排序，见文件头注释
+import { beginFx, endFx, isFxBusy, whenFxIdle, playLikeFx } from './like-fx.js';
 import {
   repeatEditorHtml, bindRepeatEditor, readRepeatConfig, isRepeatOn,
   setRecurrenceHandlers, listenRecurrenceMenu, openRuleFromTask, openRecurrenceManager,
@@ -139,6 +143,8 @@ export async function init() {
   // 截图建任务的卡片也要 toast（"已添加 3 条到今天"）：注入而不是让它反向 import ui.js
   // onAdded：卡片确认提交并关闭后回调，用来把新任务立刻显示出来（见 refreshAfterShotAdd）
   setShotHandlers({ toast, onAdded: (info) => refreshAfterShotAdd(info) });
+  // 语音录入的确认卡同样只管渲染 / 提交；onAdded 复用截图卡的补刷链路
+  setVoiceHandlers({ toast, onAdded: (info) => refreshAfterShotAdd(info) });
   // 会议录制 / 纪要：录制归档后自动跳到会议视图查看。
   // refresh 只刷侧栏计数，绝不碰 #view —— 它是共享容器，会议里完成转写 / 出纪要 /
   // 删除记录 / 导入待办都会回调它，这里调 renderTasks() 会把整页换回任务列表
@@ -279,8 +285,8 @@ function bindStaticEvents() {
   // 后台跨天推进了重复事项：抽屉里那份「本次 / 截止 / 提醒」要跟着换；
   // 用户正在输入时不动（refreshDetailIfIdle 内部判断），避免丢光标
   api.on('ui:recurrence-generated', () => refreshDetailIfIdle());
-  // 会议录制（工具栏按钮）
-  bindRecordButton();
+  // 会议录制（顶栏「🎙 录音」/「🖥 录屏」两个按钮）
+  bindRecordButtons();
 
   // 笔记导出面板的 toast 注入（入口在笔记视图工具栏「📤 导出」，见 notes.js）
   setNoteExportHandlers({ toast });
@@ -413,6 +419,12 @@ function bindStaticEvents() {
   // 取图失败（系统权限 / 屏幕采集被拦）与框选超时：只有一句话，没有卡片可开
   api.on('ui:shot-error', (msg) => { toast(msg || '截图失败，换个方式再试一次'); });
   api.on('ui:shot-timeout', () => { toast('框选超时，已取消（再按一次可以重新框选）'); });
+
+  // 快速语音录入（Ctrl+Alt+R）：主进程唤起窗口后推一条切换指令，
+  // 第一次开麦录音、第二次停录并弹确认卡；状态机全在 voice-task.js。
+  api.on('ui:voice-toggle', () => {
+    toggleVoiceRecord().catch((e) => toast((e && e.message) || '语音录入失败'));
+  });
 
   api.on('ui:quick-add', () => {
     ensureTaskView();
@@ -612,8 +624,10 @@ async function render() {
   const descEl = document.getElementById('view-desc');
   descEl.textContent = meta.desc;
   descEl.title = meta.long || meta.desc;
-  // 统计 / AI 报告 / 会议纪要不是任务列表：顶栏工具整排隐藏。
-  // 日历保留工具行但收起筛选栏（有自己的负载图例与控件）。
+  // 统计 / AI 报告 / 会议纪要 / 日历都不是任务列表：顶栏工具整排隐藏。
+  // 日历原来保留工具行，但用户拍板「日历不需要顶部栏」——新增 / 编辑任务全部
+  // 收进右栏当日面板（见 calendar.js 的 .cal-panel-add-btn / .cal-editor 与行内 ✎）。
+  // 日历仍收起筛选栏（有自己的负载图例与控件）。
   const isTaskView = TASK_VIEWS.includes(state.view);
   const isCalendar = state.view === 'calendar';
   // 新建编辑行是列表的尾项（在 #view 内），离开任务视图时随重绘一起消失，
@@ -622,7 +636,7 @@ async function render() {
   // 在这里是干扰，用户拍板整排收起。别的插件视图仍保留顶栏。
   // 只用 hidden 切换，不删 DOM / 不碰 innerHTML —— 切回任务/日历视图时按钮要原样可用。
   const isWorklogView = state.view === 'worklog';
-  document.querySelector('.topbar-right').hidden = !(isTaskView || isCalendar || (!!extView && !isWorklogView));
+  document.querySelector('.topbar-right').hidden = !(isTaskView || (!!extView && !isWorklogView));
   document.getElementById('filter-bar').hidden = !isTaskView;
   if (!isTaskView) document.getElementById('time-filter').hidden = true;
   // AI 检索已是弹窗：顶栏按钮只是入口，不再有「选中态」，也不占视图
@@ -637,7 +651,8 @@ async function render() {
   if (state.view === 'meetings') { await renderMeetings(); return; }
   if (state.view === 'notes') { await renderNotes(); return; }
   if (isCalendar) { await renderCalendar(); return; }
-  await renderTasks();
+  // force：视图切换不等完成反馈 —— 点侧栏必须立刻切走
+  await renderTasks({ force: true });
 }
 
 /**
@@ -1466,12 +1481,17 @@ function hasTimeFilter() {
   return !!(tf.planStartFrom || tf.planStartTo || tf.planEndFrom || tf.planEndTo || tf.completedFrom || tf.completedTo);
 }
 
-async function renderTasks() {
+async function renderTasks(opts = {}) {
   // #view 是共享容器：日历态下任何误调（应用内快捷键、外部刷新）都不能把日历整块冲成列表
   if (state.view === 'calendar') { await renderCalendar(); return; }
   // 统计 / AI 报告 / 检索 / 会议 / 笔记同样共用 #view：后台回调里的误调不能把当前视图
   // 整块换成任务列表。想展示任务列表的入口都必须先改 state.view（ensureTaskView 等）再刷。
   if (!TASK_VIEWS.includes(state.view)) return;
+  // 完成反馈正在播：这一刻重绘会把行整块换掉，动画和「先画上的完成态」一起没了。
+  // 改为排队，等效果结束（连同这一批连续勾选）再统一刷一次。
+  // 例外：视图切换（render() 传 force）必须立刻生效，不然点侧栏像卡住 —— 粒子在 body 上，
+  // 行被换掉也不影响它自己播完收尾。
+  if (isFxBusy() && !opts.force) { queueRefreshAfterFx(); return; }
   const tasks = await loadTasks();
   // 重复规则摘要（任务行徽标的 title / 习惯图标）；一次批量查询，规则数量很小
   recurringRules = api.recurrences ? await api.recurrences.list().catch(() => []) : [];
@@ -2663,18 +2683,74 @@ async function dropReorder(item, fromIdStr) {
 
 /* ---------------- 任务操作 ---------------- */
 
+/** 完成反馈结束后等待的静默窗口：这段时间内又有人勾任务，就并进同一批刷新 */
+const FX_REFRESH_GRACE = 120;
+
+/** 排队中的刷新（同一批只跑一次）：重复完成事件 / 多个任务接连勾选都不会刷多遍 */
+let fxRefreshQueued = null;
+
+/**
+ * 效果全部播完再刷新。勾选 → 排序/过滤会让行整块换掉，
+ * 效果期间刷新的结果就是「动画播一半没了」，所以统一从这里排队。
+ */
+function queueRefreshAfterFx() {
+  if (fxRefreshQueued) return fxRefreshQueued;
+  fxRefreshQueued = (async () => {
+    await whenFxIdle(FX_REFRESH_GRACE);
+    fxRefreshQueued = null;
+    await refreshAll();
+    renderSidebarList();
+    await renderTasks();
+  })();
+  return fxRefreshQueued;
+}
+
+/** 取当前视图里这条任务对应的行（子任务行嵌在父行 <li> 内，按 id 取仍然唯一） */
+function findTaskRow(id) {
+  const scope = document.getElementById('view') || document;
+  return scope.querySelector(`.task-item[data-id="${Number(id)}"]`);
+}
+
+/**
+ * 先把「已完成」画在这一行上。
+ * 库已经确认完成，这里只是省略一次往返的视觉空档：效果播完才会重绘，
+ * 不先画的话用户会看到「冒了心心但勾没打上」。重绘后拿到的是同一份真值，不会来回闪。
+ */
+function paintDonePreview(row) {
+  if (!row || !row.isConnected) return;
+  row.classList.add('done');
+  const check = row.querySelector('.task-check');
+  if (check && !check.textContent) check.textContent = '✓';
+}
+
 async function toggleTask(id) {
+  // 占锁：写库往返 + 效果播放期间，这条任务的重复点击 / 重复完成事件直接吞掉。
+  // 连点两次 toggle 会互相抵消，那才是真正的「状态闪烁 + 数据错乱」。
+  if (!beginFx(id)) return;
+  const row = findTaskRow(id);
   const before = state.tasks.find((x) => x.id === id);
-  const t = await api.tasks.toggle(id);
-  // 今天完成的任务保留在「今天」列表里：任何视图里勾的都要记（这里是列表勾选入口）
-  noteCompletionChange(id, !!(t && t.completed), t && t.parent_id);
-  // 重复事项勾的是「这一天」的打卡：说明跨天会自动恢复，免得用户以为整条被勾完了
-  if (before && before.recurring_id != null && t) {
-    toast(t.completed ? '今日已打卡，下个发生日会自动恢复未完成' : '已撤销今日打卡');
+  try {
+    const t = await api.tasks.toggle(id);
+    // 今天完成的任务保留在「今天」列表里：任何视图里勾的都要记（这里是列表勾选入口）
+    noteCompletionChange(id, !!(t && t.completed), t && t.parent_id);
+    // 重复事项勾的是「这一天」的打卡：说明跨天会自动恢复，免得用户以为整条被勾完了
+    if (before && before.recurring_id != null && t) {
+      toast(t.completed ? '今日已打卡，下个发生日会自动恢复未完成' : '已撤销今日打卡');
+    }
+    // 只有「未完成 → 完成」才播：取消勾选、重复事件、本来就已经勾上的都不播
+    const wasDone = row ? row.classList.contains('done') : !!(before && before.completed);
+    if (t && t.completed && !wasDone) {
+      paintDonePreview(row);
+      await playLikeFx(row ? (row.querySelector('.task-check') || row) : null, { row });
+    }
+  } catch (e) {
+    // 写库失败：什么都没改（也就没画完成态），提示一次后交给下面的刷新纠正
+    console.error('[toggleTask]', e);
+    toast(`操作失败：${(e && e.message) ? e.message : String(e)}`);
+  } finally {
+    endFx(id); // 任何路径都必须释放，否则这条任务会被永久锁住
   }
-  await refreshAll();
-  renderSidebarList();
-  renderTasks();
+  await queueRefreshAfterFx();
 }
 
 async function archiveTask(id) {

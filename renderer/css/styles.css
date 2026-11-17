@@ -753,6 +753,43 @@ body {
 .task-item.done .task-check { background: var(--green); border-color: var(--green); }
 .task-item.done .task-title { text-decoration: line-through; color: var(--text-3); }
 
+/* 任务完成「点赞」反馈（renderer/js/like-fx.js）
+   粒子层挂 body、position:fixed：行被重绘也不会把飞行中的粒子带走。
+   层级压在详情抽屉(150)/弹窗(300)之上、toast 之下。 */
+/* 粒子层是 0×0 的定位点：不能加 contain:paint，否则粒子会被裁在盒子外（整层看不见） */
+.like-fx {
+  position: fixed; width: 0; height: 0; pointer-events: none;
+  z-index: 400; contain: layout style;
+}
+.like-fx-p {
+  position: absolute; left: 0; top: 0; opacity: 0; line-height: 1;
+  transform: translate(-50%, -50%);
+  will-change: transform, opacity;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.14);
+}
+.like-fx-big { font-size: 32px; }
+.like-fx-ring {
+  position: absolute; left: 0; top: 0; width: 26px; height: 26px;
+  margin: -13px 0 0 -13px; border-radius: 50%;
+  border: 2px solid var(--green); opacity: 0;
+}
+/* 勾选圈弹一下：完成瞬间的“手感”主要来自这里 */
+.is-fx-pop { animation: fx-pop 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.4); }
+@keyframes fx-pop {
+  0% { transform: scale(0.72); }
+  45% { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+/* 整行淡扫一层绿：告诉用户“这条已经完成了”，替代立即排序/消失的突兀 */
+.task-item.is-like-fx { animation: fx-row-flash 0.62s ease-out; }
+@keyframes fx-row-flash {
+  0%, 100% { background-color: var(--bg-ground); }
+  35% { background-color: color-mix(in srgb, var(--green) 15%, var(--bg-ground)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-fx-pop, .task-item.is-like-fx { animation: none; }
+}
+
 .task-body { flex: 1; min-width: 0; }
 /* 标题比正文高一档（16px vs meta 12px），层级一眼分明
    标题行单行排布：标题按文字宽度占位，子任务计数紧跟其后（详见 .task-title-text） */
@@ -2046,11 +2083,11 @@ html.is-resizing .detail-foot { pointer-events: none; }
 .sr-tried li::before { content: '·'; position: absolute; left: 4px; color: var(--text-3); }
 
 /* ---- 弹窗容器 ---- */
-.modal-search { width: 860px; max-width: 100%; height: min(620px, calc(100vh - var(--titlebar-h, 50px) - 48px)); }
-.modal-search .modal-head { padding: 12px 16px 12px 18px; }
+.modal-search, .modal-kb { width: 860px; max-width: 100%; height: min(620px, calc(100vh - var(--titlebar-h, 50px) - 48px)); }
+.modal-search .modal-head, .modal-kb .modal-head { padding: 12px 16px 12px 18px; }
 /* body 自己不能滚：滚动交给 .search-stage / .sh-list，否则两栏会一起被推走 */
-.modal-search .modal-body { padding: 12px 16px 10px; gap: 0; overflow: hidden; }
-.modal-search .modal-foot { padding: 8px 16px 10px; }
+.modal-search .modal-body, .modal-kb .modal-body { padding: 12px 16px 10px; gap: 0; overflow: hidden; }
+.modal-search .modal-foot, .modal-kb .modal-foot { padding: 8px 16px 10px; }
 .search-foot-hint { font-size: 11.5px; color: var(--text-3); }
 
 /* 从检索弹窗里打开详情：抽屉默认 z-index 150 < 遮罩 300，会被压住。
@@ -2180,7 +2217,9 @@ body:has(.detail-drawer[data-opened="1"]:not([hidden])) #wl-dock {
 
 /* 会议视图 */
 .mt-wrap { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 24px; }
-.mt-toolbar { display: flex; align-items: center; gap: 8px; }
+.mt-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mt-toolbar-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+.mt-toolbar .sort-select { padding: 6px 8px; cursor: pointer; }
 .mt-count { color: var(--text-2); font-size: 12px; margin-left: 4px; }
 .mt-layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
 .mt-list {
@@ -2594,9 +2633,15 @@ body:has(.detail-drawer[data-opened="1"]:not([hidden])) #wl-dock {
  * 层级 320：高于弹窗遮罩（300，笔记弹窗里也要能全屏），低于图片 / 图表放大层（400）。
  * 选择器要带上 `.modal.modal-note-editor` 前缀，否则弹窗里那条 (0,3,0) 的 fixed 高度规则
  * 会压过 `.nt-dp.is-fs` 的 (0,2,0)，全屏只会得到一个「窗口高的面板」而不是整屏。
+ *
+ * 顶边必须让出标题栏：`inset: 0` 会让笔记头部按钮（编辑 / 大纲 / 退出全屏 / ×）
+ * 落进 50px 标题栏带里，而自绘三键 .tb-win（外层上下文 z-index:2）盖在 .app（z-index:1）
+ * 之上 —— 于是「退出全屏」被最大化键截胡、× 被关窗键截胡，表现就是「全屏退不出来」。
+ * 与 .modal-mask 同一条边界（inset: var(--titlebar-h) 0 0 0）：既让三键可点，
+ * 也让笔记自己的按钮回到可点区域，两者互不遮挡。
  */
 .nt-dp.is-fs, .modal.modal-note-editor .nt-dp.is-fs, .modal.modal-notes-dock .nt-dp.is-fs {
-  position: fixed; inset: 0; z-index: 320;
+  position: fixed; inset: var(--titlebar-h, 50px) 0 0 0; z-index: 320;
   height: auto; max-height: none; min-height: 0;
   background: var(--bg); border: none; border-radius: 0; box-shadow: none;
   padding: 12px 24px 14px; animation: ntFsIn 0.12s ease-out;
@@ -2690,15 +2735,15 @@ body.nt-fs-open { overflow: hidden; }
 .nt-del-ops { display: flex; gap: 8px; margin-top: 12px; }
 .chip-danger { color: var(--danger); border-color: rgba(229, 72, 77, 0.4); }
 
-/* 知识库问答弹窗 */
-/* 尺寸类必须写成 .modal.modal-xxx（两个类）：
+/* 知识库问答弹窗：容器尺寸与两栏骨架复用 .modal-search / .search-*（见 1904 段），
+   这里只保留知识库特有部件的样式。
+   尺寸类必须写成 .modal.modal-xxx（两个类）：
    只写 .modal-note-editor .modal 是「后代选择器」，而 className 是加在 .modal **自身上**的，
    那条规则永远不会命中 —— 之前笔记弹窗只有 380px 宽、内容挤压变形就是这个原因。 */
-.modal.modal-kb, .modal.modal-note-delete { width: 680px; max-width: 92vw; }
-.kb-form { display: flex; gap: 8px; }
-.kb-form .modal-input { flex: 1; }
-/* 检索范围（分类多选，仿语雀的知识库选择）：chips 可多选，「全部」一键清空 */
-.kb-scope { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+.modal.modal-note-delete { width: 680px; max-width: 92vw; }
+/* 检索范围（分类多选，仿语雀的知识库选择）：chips 可多选，「全部」一键清空。
+   在 search-panel 的 flex 列里是紧凑一行，不再独立占底部历史区。 */
+.kb-scope { display: flex; align-items: flex-start; gap: 10px; flex: 0 0 auto; }
 .kb-scope-label { flex: 0 0 auto; font-size: 12px; color: var(--text-2); line-height: 26px; font-weight: 600; }
 .kb-scope-opts { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .kb-scope-chip {
@@ -3216,8 +3261,15 @@ body.nt-fs-open { overflow: hidden; }
   max-height: calc(100vh - var(--titlebar-h, 50px) - 48px);
   border-radius: 14px;
 }
-/* 所有设置项都是「改完即生效」，没有保存语义 → 不要底部按钮栏，只留右上角 ✕ 与 Esc */
-.modal.modal-settings .modal-foot { display: none; }
+/* 设置项「改完即生效」→ 底部不放「保存」，但要留一条与顶部头栏呼应的页脚栏：
+   头栏有 border-bottom，底部给同样的 border-top + 左提示 + 右「关闭」，
+   否则内容直接切在窗口底沿、看着像被截断（用户反馈"底部怪怪的"）。 */
+.modal.modal-settings .modal-foot {
+  display: flex; align-items: center; gap: 8px;
+  height: 46px; padding: 0 12px 0 18px; /* 与 .modal-head 同高、同左右内边距 */
+  border-top: 1px solid var(--border);
+}
+.st-foot-hint { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--text-3); }
 /* 抬头的 ✕ 与标题栏三键不再上下紧贴（遮罩让出了标题栏），保持 12px 右侧内边距即可 */
 .modal.modal-settings .modal-head {
   height: 46px; padding: 0 12px 0 18px; flex: 0 0 auto;

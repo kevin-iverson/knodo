@@ -152,6 +152,8 @@ const cfg = {
   undo: null,
   undoTimer: null,
   introHidden: false,
+  editor: null,          // 右栏就地新增 / 编辑状态（null = 收起）
+  editorGroups: [],      // 编辑器分组下拉选项
 };
 let boundRoot = null;
 
@@ -399,7 +401,7 @@ function onTitleHover(e) {
   const canOpen = host.matches('.cal-task, .cal-pool-item');
   tip.innerHTML = `<div class="cal-tip-title">${esc(t.title || '未命名任务')}</div>
     <div class="cal-tip-meta">${bits.join('<i>·</i>')}</div>
-    ${canOpen ? '<div class="cal-tip-hint">双击打开详情</div>' : ''}`;
+    ${canOpen ? '<div class="cal-tip-hint">右键详情 · 选中日期后右栏编辑</div>' : ''}`;
   tip.hidden = false;
   const r = label.getBoundingClientRect();
   const w = tip.offsetWidth;
@@ -676,6 +678,7 @@ function panelRowHtml(entry, day) {
       </div>
     </div>
     <select class="cal-panel-priority" data-cal-act="priority" data-task-id="${t.id}" title="改优先级">${opts}</select>
+    <button type="button" class="cal-panel-act" data-cal-act="edit" data-task-id="${t.id}" title="编辑任务（标题 / 优先级 / 分组 / 日期）">✎</button>
     <button type="button" class="cal-panel-act" data-cal-act="defer" data-task-id="${t.id}" title="延期一天"${occ ? ' disabled' : ''}>→</button>
   </div>`;
 }
@@ -706,8 +709,11 @@ function panelHtml() {
         <div class="cal-panel-load-desc">${st.label} · ${Math.round(st.rate * 100)}% · ${cell.tasks.length} 项安排</div>
         ${loadBarHtml(cell.load, cfg.prefs.capacity)}
       </div>
-      <div class="cal-panel-sec-title">任务清单（${cell.tasks.length}）</div>
+      <div class="cal-panel-sec-title">任务清单（${cell.tasks.length}）
+        <button type="button" class="cal-panel-add-btn" data-cal-act="add-task" title="为这一天新增任务">＋ 新增任务</button>
+      </div>
       <div class="cal-panel-list">${list}</div>
+      ${editorHtml()}
       ${cfg.showBacklog ? backlogListHtml() : ''}
     </div>` : '<button type="button" class="cal-panel-reopen" data-cal-act="panel-open" title="展开当日面板">‹</button>'}
   </aside>`;
@@ -809,6 +815,7 @@ export function backToList(view = 'today') {
 
 export function disposeCalendar() {
   hideTitleTip();
+  cfg.editor = null;
   clearEdgeTimer();
   clearPreview();
   endDrag();
@@ -1074,7 +1081,6 @@ function bindDelegates(root) {
   if (boundRoot === root) return;
   boundRoot = root;
   root.addEventListener('click', onClick);
-  root.addEventListener('dblclick', onDblClick);
   root.addEventListener('contextmenu', onContextMenu);
   root.addEventListener('change', onChange);
   root.addEventListener('mousemove', onTitleHover);
@@ -1113,6 +1119,14 @@ function onClick(e) {
         toggleTask(id, act.dataset.occ || ''); return;
       }
       case 'capacity': openCapacityDialog(); return;
+      case 'edit': {
+        const t = cfg.tasks.find((x) => x.id === id);
+        if (t) void ensureGroups().then(() => openEditor(t, cfg.selected));
+        return;
+      }
+      case 'add-task': void ensureGroups().then(() => openEditor(null, cfg.selected)); return;
+      case 'editor-cancel': closeEditor(); return;
+      case 'editor-save': void saveEditor(); return;
       case 'more': selectDate(act.dataset.date || todayStr()); return;
       case 'overdue': selectDate(todayStr(), true); return;
       case 'panel-close': cfg.showPanel = false; paintPanel(); return;
@@ -1162,9 +1176,114 @@ function onClick(e) {
   if (cell && !e.target.closest('.cal-task, button')) selectDate(cell.dataset.date);
 }
 
-function onDblClick(e) {
-  const card = e.target.closest('.cal-task, .cal-pool-item');
-  if (card && card.dataset.taskId) ext.openTaskDetail(Number(card.dataset.taskId));
+/* ---------------- 右栏就地新增 / 编辑（不弹窗，不双击） ---------------- */
+
+/**
+ * 右栏行内编辑器状态。null = 收起。
+ * 用户拍板：日历不要双击弹窗添加，改为「选中日期 → 右栏直接编辑行 / 新增」。
+ * 编辑器本体渲染在当日面板里（见 editorHtml），天然跟着 cfg.selected 切换。
+ * 重复事项的日期由规则派生，编辑时不写 plan_*（与 blockRecurringSchedule 同一口径）。
+ */
+function openEditor(task, day) {
+  const t = task || null;
+  const range = t ? taskRange(t) : null;
+  cfg.editor = {
+    id: t ? t.id : null,
+    recurring: !!(t && t.recurring_id != null),
+    title: t ? (t.title || '') : '',
+    priority: t ? priorityOf(t) : 1,
+    groupId: t && t.group_id != null ? String(t.group_id) : '',
+    planStart: range ? range[0] : (t ? '' : (day || cfg.selected)),
+    planEnd: range ? range[1] : (t ? '' : (day || cfg.selected)),
+    error: '',
+  };
+  paintPanel();
+  const first = document.querySelector('.cal-editor-title');
+  if (first) first.focus();
+}
+
+function closeEditor() {
+  if (!cfg.editor) return;
+  cfg.editor = null;
+  paintPanel();
+}
+
+function editorHtml() {
+  const ed = cfg.editor;
+  if (!ed) return '';
+  const groups = cfg.editorGroups || [];
+  const groupOpts = ['<option value="">无分组</option>']
+    .concat(groups.map((g) => `<option value="${g.id}"${ed.groupId === String(g.id) ? ' selected' : ''}>${esc(g.name || `分组 ${g.id}`)}</option>`))
+    .join('');
+  const priOpts = [3, 2, 1, 0].map((p) => `<option value="${p}"${ed.priority === p ? ' selected' : ''}>${PRIORITY_TEXT[p]}</option>`).join('');
+  const dates = ed.recurring
+    ? '<div class="cal-editor-note">重复事项的日期由规则派生，请在「重复规则」里改</div>'
+    : `<div class="cal-editor-dates">
+        <input class="cal-editor-date" type="date" data-cal-ed="planStart" value="${esc(ed.planStart)}" title="开始日期" />
+        <span class="cal-editor-arrow">→</span>
+        <input class="cal-editor-date" type="date" data-cal-ed="planEnd" value="${esc(ed.planEnd)}" title="结束日期" />
+      </div>`;
+  return `<div class="cal-editor${ed.id ? ' is-edit' : ''}">
+    <div class="cal-editor-head">${ed.id ? '编辑任务' : '新增任务'} <span>· ${dateLabel(ed.planEnd || cfg.selected)}</span></div>
+    <input class="cal-editor-title" type="text" data-cal-ed="title" maxlength="120" placeholder="要做什么？" value="${esc(ed.title)}" />
+    <div class="cal-editor-row">
+      <select class="cal-editor-pri" data-cal-ed="priority" title="优先级">${priOpts}</select>
+      <select class="cal-editor-group" data-cal-ed="groupId" title="分组">${groupOpts}</select>
+    </div>
+    ${dates}
+    ${ed.error ? `<div class="cal-editor-error">${esc(ed.error)}</div>` : ''}
+    <div class="cal-editor-foot">
+      <button type="button" class="cal-editor-cancel" data-cal-act="editor-cancel">取消</button>
+      <button type="button" class="cal-editor-save" data-cal-act="editor-save">${ed.id ? '保存' : '创建'}</button>
+    </div>
+  </div>`;
+}
+
+/** 分组选项供右栏编辑器用；拉不到就空着（仍能建无分组任务） */
+let groupsLoaded = false;
+async function ensureGroups() {
+  if (groupsLoaded) return;
+  try { cfg.editorGroups = (await api.groups.list()) || []; }
+  catch (e) { cfg.editorGroups = []; }
+  groupsLoaded = true;
+}
+
+async function saveEditor() {
+  const ed = cfg.editor;
+  if (!ed) return;
+  // 读实时 DOM：select / input 的 change 事件时序不可靠（尤其点「创建」时 blur 与 click 竞争）
+  const box = document.querySelector('.cal-editor');
+  if (box) {
+    box.querySelectorAll('[data-cal-ed]').forEach((f) => { ed[f.dataset.calEd] = f.value; });
+  }
+  const title = String(ed.title || '').trim();
+  if (!title) { cfg.editor.error = '请输入任务标题'; paintPanel(); return; }
+  const ps = String(ed.planStart || '').trim();
+  const pe = String(ed.planEnd || '').trim();
+  if (!ed.recurring && ps && pe && pe < ps) { cfg.editor.error = '结束日期不能早于开始日期'; paintPanel(); return; }
+  const payload = {
+    title,
+    priority: Number(ed.priority) || 0,
+    groupId: ed.groupId ? Number(ed.groupId) : null,
+  };
+  if (!ed.recurring) {
+    payload.planStart = ps || null;
+    payload.planEnd = pe || (ps || null);
+  }
+  const isEdit = !!ed.id;
+  try {
+    if (isEdit) await api.tasks.update(ed.id, payload);
+    else await api.tasks.create(payload);
+  } catch (err) {
+    cfg.editor.error = (err && err.message) || (isEdit ? '保存失败，请重试' : '创建失败，请重试');
+    paintPanel();
+    return;
+  }
+  const backdated = !!payload.planEnd && isPastDay(payload.planEnd);
+  cfg.editor = null;
+  await reloadAndPaint();
+  ext.renderSidebar();
+  ext.toast(isEdit ? '任务已更新' : (backdated ? '任务已创建 · 历史日期进入今天的欠账区' : '任务已创建'));
 }
 
 function onContextMenu(e) {
@@ -1204,7 +1323,12 @@ function onContextMenu(e) {
 
 function onChange(e) {
   const sel = e.target.closest('.cal-panel-priority');
-  if (sel) setPriority(Number(sel.dataset.taskId), Number(sel.value));
+  if (sel) { setPriority(Number(sel.dataset.taskId), Number(sel.value)); return; }
+  const fld = e.target.closest('[data-cal-ed]');
+  if (fld && cfg.editor) {
+    cfg.editor[fld.dataset.calEd] = fld.value;
+    // 不清错误条也不重绘：重绘会丢焦点。真正的读写以 saveEditor 读 DOM 为准。
+  }
 }
 
 function selectDate(d, backlog = false) {
@@ -1212,6 +1336,8 @@ function selectDate(d, backlog = false) {
   cfg.selected = d;
   cfg.showBacklog = !!backlog;
   cfg.showPanel = true;
+  // 切换日期时收起编辑器：它是「当前这一天」的行内表单，留着会串到别的日期上
+  cfg.editor = null;
   // 局部刷新：只换选中态与右侧面板，日历本身不滚动、不跳页（方案 5.3）
   document.querySelectorAll('.cal-cell.is-selected, .cal-week-col.is-selected').forEach((el) => {
     el.classList.remove('is-selected');

@@ -22,6 +22,8 @@ import {
 import { detailRepeatHtml, bindDetailRepeat, derivedScheduleHtml } from './recurrence.js';
 import { TOOLBAR_HTML, createWysiwyg } from './wysiwyg.js';
 import { ext } from './ext.js';
+// 与列表勾选同一套闸门：效果播完才刷新/重建抽屉，重复点击直接吞掉
+import { beginFx, endFx, whenFxIdle, playLikeFx } from './like-fx.js';
 
 // 详情页的计划日期是否必填（默认否，保持可创建“无期限”任务）
 const PLAN_DATE_REQUIRED = DATE_RANGE_DEFAULTS.required;
@@ -756,10 +758,26 @@ function bindDetailEvents(drawer, task) {
     parentEl.addEventListener('click', () => openDetail(Number(parentEl.dataset.parent)));
   }
 
-  drawer.querySelector('[data-act="toggle"]').addEventListener('click', async () => {
-    const next = await api.tasks.toggle(task.id);
-    // 与列表勾选保持一致：今天完成的任务保留在「今天」列表里（详情抽屉里勾的同样要记）
-    noteCompletionChange(task.id, !!(next && next.completed), task.parent_id);
+  const checkBtn = drawer.querySelector('[data-act="toggle"]');
+  checkBtn.addEventListener('click', async () => {
+    // 占锁：效果播放 + 写库往返期间的重复点击一律忽略（否则连点两次等于没勾）
+    if (!beginFx(task.id)) return;
+    const wasDone = checkBtn.classList.contains('done');
+    try {
+      const next = await api.tasks.toggle(task.id);
+      // 与列表勾选保持一致：今天完成的任务保留在「今天」列表里（详情抽屉里勾的同样要记）
+      noteCompletionChange(task.id, !!(next && next.completed), task.parent_id);
+      // 只在「未完成 → 完成」时播一次；先把完成态画在按钮上，等效果结束再重建抽屉
+      if (next && next.completed && !wasDone) {
+        checkBtn.classList.add('done');
+        checkBtn.textContent = '✓';
+        await playLikeFx(checkBtn);
+      }
+    } finally {
+      endFx(task.id);
+    }
+    // 抽屉 renderDetail() 会整块换掉按钮，所以刷新也必须等效果完全结束
+    await whenFxIdle(120);
     await refreshAll();
     handlers.refresh();
     renderDetail();

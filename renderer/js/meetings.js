@@ -10,7 +10,7 @@ import { api } from './api.js';
 import { state } from './store.js';
 import { renderMarkdown } from './markdown.js';
 import { groupOptionsHtml } from './group-tree.js';
-import { openRecorder } from './recorder.js';
+import { startAudioRecording, openScreenRecorder, getSliceMs, setSliceMs } from './recorder.js';
 import { openPanelModal, openPromptModal } from './modal.js';
 
 let notify = () => {};
@@ -73,6 +73,9 @@ export async function renderMeetings(containerSelector = '#view') {
     : containerSelector;
   if (!container) return;
   lastList = await api.meeting.list().catch(() => []);
+  // 分段时长在会议纪要界面配置，录音 / 录屏两条入口都读它
+  const sliceMs = await getSliceMs();
+  const sliceOpt = (v, label) => `<option value="${v}"${sliceMs === v ? ' selected' : ''}>${label}</option>`;
   if (selectedId && !lastList.some((m) => m.id === selectedId)) selectedId = null;
   if (!selectedId && lastList.length) selectedId = lastList[0].id;
   const current = lastList.find((m) => m.id === selectedId) || null;
@@ -80,15 +83,24 @@ export async function renderMeetings(containerSelector = '#view') {
   container.innerHTML = `
     <div class="mt-wrap">
       <div class="mt-toolbar">
-        <button class="primary-btn" data-mt="record">⏺ 新录制</button>
+        <button class="primary-btn" data-mt="record-audio" title="点击直接开始录音（麦克风 + 系统声），无需配置">🎙 录音</button>
+        <button class="ghost-btn" data-mt="record-screen" title="选择屏幕 / 窗口后开始录屏">🖥 录屏</button>
         <button class="ghost-btn" data-mt="import">📁 导入录音</button>
         <button class="ghost-btn" data-mt="refresh">🔄 刷新</button>
         <button class="ghost-btn" data-mt="history">🕘 历史记录</button>
+        <span class="mt-toolbar-sep"></span>
+        <label class="mt-label" for="mt-slice" title="录制时自动切分的单片时长，便于上传转写">分段</label>
+        <select class="sort-select" id="mt-slice" title="录制时自动切分的单片时长，便于上传转写">
+          ${sliceOpt(300000, '5 分钟')}
+          ${sliceOpt(600000, '10 分钟')}
+          ${sliceOpt(900000, '15 分钟')}
+          ${sliceOpt(1800000, '30 分钟')}
+        </select>
         <span class="mt-count">共 ${lastList.length} 条会议记录</span>
       </div>
       <div class="mt-layout">
         <ul class="mt-list">
-          ${lastList.length ? '' : '<li class="mt-empty">还没有会议记录，点「⏺ 新录制」开始，或直接导入一段录音。</li>'}
+          ${lastList.length ? '' : '<li class="mt-empty">还没有会议记录，点「🎙 录音」直接开始，或「🖥 录屏」录制画面，也可以导入一段录音。</li>'}
           ${lastList.map((m) => {
     const st = STATUS_TEXT[m.status] || STATUS_TEXT.recorded;
     return `
@@ -316,7 +328,16 @@ function bindEvents(root) {
       return;
     }
     if (act === 'tab') { activeTab = el.dataset.tab; await renderMeetings(root); return; }
-    if (act === 'record') { openRecorder(); return; }
+    if (act === 'record-audio') {
+      // 录音一键直启：startAudioRecording 内部已吞掉采集失败的异常并提示
+      await startAudioRecording();
+      return;
+    }
+    if (act === 'record-screen') {
+      try { await openScreenRecorder(); }
+      catch (err) { notify(`打开录屏失败：${err && err.message ? err.message : err}`); }
+      return;
+    }
     if (act === 'refresh') { await renderMeetings(root); return; }
     if (act === 'history') { await openHistoryModal(root); return; }
     if (act === 'import') {
@@ -368,6 +389,21 @@ function bindEvents(root) {
     if (act === 'summarize') { await runSummarize(id, root); return; }
     if (act === 'export') { await exportMeeting(id, el.dataset.fmt); return; }
     if (act === 'import-todos') { await importTodos(id, root); }
+  });
+
+  // 分段时长：在会议纪要界面改，录音 / 录屏两条入口下次开录时自动读新值。
+  // 用委托（change 冒泡），否则重绘 innerHTML 后新 select 上没监听器。
+  root.addEventListener('change', async (e) => {
+    if (!e.target || e.target.id !== 'mt-slice') return;
+    const sel = e.target;
+    const v = Number(sel.value);
+    try {
+      await setSliceMs(v);
+      notify(`分段时长已设为 ${v / 60000} 分钟（下次录制生效）`);
+    } catch (err) {
+      notify(`保存分段设置失败：${err && err.message ? err.message : err}`);
+      sel.value = String(await getSliceMs());
+    }
   });
 
   // 全选联动

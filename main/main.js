@@ -19,6 +19,7 @@ const desktopWindow = require('./desktop-window');
 const shortcuts = require('./shortcuts');
 const capture = require('./capture');
 const shot = require('./shot');
+const voiceTask = require('./voice-task');
 const features = require('./features');
 const autostart = require('./autostart');
 const { startReminderScheduler, stopReminderScheduler } = require('./reminders');
@@ -379,6 +380,14 @@ function dispatchShortcut(actionId) {
           mainWindow.webContents.send('ui:shot-error', (e && e.message) || String(e));
         }
       });
+      return;
+    case 'app.voiceTask':
+      // 语音录入：录音在渲染层（MediaRecorder），主进程只唤起窗口并把切换指令转过去。
+      // 「按一下开 / 再按一下停」的状态机在渲染层 voice-task.js，主进程不持状态。
+      showWindow();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('ui:voice-toggle');
+      }
       return;
     case 'app.toggleDesktop': {
       const r = desktopWindow.toggleAllVisible();
@@ -1179,6 +1188,12 @@ app.whenReady().then(async () => {
     onDataChange: (payload) => broadcastDataChanged(payload),
   });
 
+  // 快速语音录入：常驻（不并入插件开关），空闲时只有几个 IPC handler，
+  // 没有定时器、没有剪贴板 / 麦克风监听 —— 录音只在用户按快捷键之后由渲染层开启。
+  voiceTask.init({
+    onDataChange: (payload) => broadcastDataChanged(payload),
+  });
+
   // 全局快捷键：必须在这里（whenReady 之后）注册，早于此时机 register() 静默失败
   shortcuts.init({ onAction: dispatchShortcut });
 
@@ -1187,6 +1202,7 @@ app.whenReady().then(async () => {
     features.handleWillQuit(); // 进行中的工时按已跑时长落库
     capture.destroy();
     shot.destroy();
+    voiceTask.destroy();
     shortcuts.destroy();
   });
 
@@ -2199,18 +2215,38 @@ app.whenReady().then(async () => {
               if (nav) { nav.click(); await wait(500); }
               out.viewRendered = !!document.querySelector('.mt-wrap');
               out.viewTitle = document.getElementById('view-title').textContent;
-              const recBtn = document.getElementById('btn-record');
-              out.recBtn = !!recBtn && recBtn.textContent.indexOf('录制') > -1;
+              // 录制已拆成两个入口：录音一键直启、录屏要先选画面。录音按钮只验证存在，
+              // 绝不点它（点了会真的去申请麦克风 / 系统声，冒烟环境没有采集硬件）。
+              const audioBtn = document.getElementById('btn-record-audio');
+              const screenBtn = document.getElementById('btn-record-screen');
+              out.audioBtn = !!audioBtn && audioBtn.textContent.indexOf('录音') > -1;
+              out.screenBtn = !!screenBtn && screenBtn.textContent.indexOf('录屏') > -1;
+              // 分段时长从弹窗搬到了会议纪要工具栏，两条入口共用
+              const sliceSel = document.getElementById('mt-slice');
+              out.sliceOpts = sliceSel ? sliceSel.querySelectorAll('option').length : 0;
+              if (sliceSel) {
+                const before = sliceSel.value;
+                sliceSel.value = '900000';
+                sliceSel.dispatchEvent(new Event('change', { bubbles: true }));
+                await wait(150);
+                const pref = await window.api.ui.getToolPref('recorder');
+                out.sliceSaved = !!pref && pref.sliceMs === 900000;
+                sliceSel.value = before;
+                sliceSel.dispatchEvent(new Event('change', { bubbles: true }));
+                await wait(150);
+              }
 
-              // 2) 录制设置面板：默认纯音频、两种声音源勾选、切片时长可选、可取消
-              if (recBtn) { recBtn.click(); await wait(300); }
+              // 2) 录屏设置面板：固定画面模式（无「采集方式」单选）、两种声音源勾选、
+              //    分片时长已移出弹窗、可选屏幕源、可取消
+              if (screenBtn) { screenBtn.click(); await wait(400); }
               const setup = document.querySelector('.rec-setup');
               out.setupOpened = !!setup;
               if (setup) {
                 out.titlePrefilled = /^会议 /.test(setup.querySelector('#rec-title').value);
                 out.modeCount = setup.querySelectorAll('input[name="rec-mode"]').length;
                 out.audioChecks = setup.querySelectorAll('input[name="rec-sys"]:checked, input[name="rec-mic"]:checked').length;
-                out.sliceOpts = setup.querySelectorAll('#rec-slice option').length;
+                out.setupSlice = !!setup.querySelector('#rec-slice option');
+                out.sourceGrid = !!setup.querySelector('#rec-source-grid');
                 out.importBtn = !!setup.querySelector('[data-extra="导入录音文件"]');
                 setup.querySelector('[data-modal="cancel"]').click();
                 await wait(200);
@@ -2444,7 +2480,8 @@ app.whenReady().then(async () => {
                 .find((el) => (el.querySelector('.task-title-text') || {}).textContent === '今日保留用例R10');
               out.todayRowBefore = !!rowOf();
               rowOf().querySelector('[data-act="toggle"]').click();
-              await wait(900);
+              // 完成反馈要播完才重绘（renderer/js/like-fx.js 的闸门）：900ms 会量到「还没刷」的旧画面
+              await wait(1700);
               const kept = rowOf();
               out.todayKeptAfterDone = !!kept;
               out.todayKeptMarkedDone = !!kept && kept.classList.contains('done');
@@ -2462,7 +2499,7 @@ app.whenReady().then(async () => {
               nav('today'); await wait(800);
               const again = rowOf();
               if (again) again.querySelector('[data-act="toggle"]').click();
-              await wait(900);
+              await wait(1700); // 同上：等效果播完再断言
               out.todayKeptAgain = !!rowOf();
               nav('all'); await wait(600);
               nav('today'); await wait(800);
@@ -2527,7 +2564,7 @@ app.whenReady().then(async () => {
               out.resizeStableAfterDrop = Math.abs(panel.getBoundingClientRect().width - w2) <= 1;
               // 重绘（勾选完成会触发 renderDetail）：宽度保持、且不再重播入场动画
               drawer.querySelector('[data-act="toggle"]').click();
-              await wait(1200);
+              await wait(2000); // 抽屉也等效果播完才重建（no-anim 才不会漏判）
               const panel2 = drawer.querySelector('.detail-panel');
               out.rerenderKeepsWidth = Math.abs(panel2.getBoundingClientRect().width - w2) <= 2;
               out.rerenderNoAnim = panel2.classList.contains('no-anim');
@@ -2623,7 +2660,8 @@ app.whenReady().then(async () => {
           recMod.deleteSession(oneSession.sessionId);
 
           console.log(`[SMOKE] 会议视图 = 导航${r7.navExists ? '存在' : '缺失'}；标题「${r7.viewTitle}」；渲染=${r7.viewRendered ? '成功' : '失败'}；列表 ${r7.itemCount} 条（首条「${r7.itemTitle}」）`);
-          console.log(`[SMOKE] 录制面板 = 打开${r7.setupOpened ? '✓' : '✗'}；默认名预填${r7.titlePrefilled ? '✓' : '✗'}；采集方式 ${r7.modeCount} 项；默认勾选音源 ${r7.audioChecks} 个；切片档位 ${r7.sliceOpts}；导入入口${r7.importBtn ? '✓' : '✗'}；取消关闭${r7.setupClosed ? '✓' : '✗'}`);
+          console.log(`[SMOKE] 录制入口 = 录音${r7.audioBtn ? '✓' : '✗'}；录屏${r7.screenBtn ? '✓' : '✗'}；分段档位 ${r7.sliceOpts}；保存${r7.sliceSaved ? '✓' : '✗'}`);
+          console.log(`[SMOKE] 录屏面板 = 打开${r7.setupOpened ? '✓' : '✗'}；默认名预填${r7.titlePrefilled ? '✓' : '✗'}；采集方式 ${r7.modeCount} 项（应为0）；默认勾选音源 ${r7.audioChecks} 个；面板内切片${r7.setupSlice ? '有' : '无'}；选源网格${r7.sourceGrid ? '✓' : '✗'}；导入入口${r7.importBtn ? '✓' : '✗'}；取消关闭${r7.setupClosed ? '✓' : '✗'}`);
           console.log(`[SMOKE] 会议转写未配 Key 的提示 = 「${r7.transcribeErr}」→ ${r7.transcribeFriendly ? '可读' : '不可读'}`);
           console.log(`[SMOKE] 纪要操作条 = 按钮 ${r7.pipelineBtns + r7.exportBtns} 个；未转写时禁用生成=${r7.summarizeDisabled ? '是' : '否'}；转写页签占位「${r7.transcriptPlaceholder}」`);
           console.log(`[SMOKE] 待办入库 = 勾选 ${r7.todoRows} 条 → 独立导入${r7.imported ? '✓' : '✗'}（优先级 ${r7.taskPriority}）；父子任务形态${r7.subtaskMode ? '✓' : '✗'}；清理后无残留=${r7.cleaned ? '是' : '否'}`);
@@ -3416,12 +3454,29 @@ app.whenReady().then(async () => {
               out.legend = !!document.querySelector('.cal-legend');
               out.segCount = document.querySelectorAll('[data-cal-view]').length;
               out.desc = (document.getElementById('view-desc') || {}).textContent || '';
+              // 用户拍板：日历不要顶栏工具区；新增 / 编辑都收进右栏
+              out.topbarHidden = !!document.querySelector('.topbar-right').hidden;
+              out.addBtn = !!document.querySelector('.cal-panel-add-btn[data-cal-act="add-task"]');
+              out.editBtns = document.querySelectorAll('.cal-panel-row [data-cal-act="edit"]').length;
+              out.panelRows = document.querySelectorAll('.cal-panel-row').length;
+              // 点「＋ 新增任务」→ 右栏就地出现编辑器（不是弹窗），日期预填选中日
+              const add = document.querySelector('.cal-panel-add-btn[data-cal-act="add-task"]');
+              const selDay = (document.querySelector('.cal-cell.is-selected') || {}).dataset?.date || '';
+              if (add) { add.click(); await wait(350); }
+              out.inlineEditor = !!document.querySelector('.cal-right .cal-editor');
+              out.noModal = !document.querySelector('.modal-mask');
+              out.editorDate = (document.querySelector('.cal-editor [data-cal-ed="planEnd"]') || {}).value || '';
+              out.editorPrefill = !selDay || out.editorDate === selDay;
+              const cancelEd = document.querySelector('.cal-editor [data-cal-act="editor-cancel"]');
+              if (cancelEd) { cancelEd.click(); await wait(200); }
+              out.editorClosed = !document.querySelector('.cal-editor');
               const wk = document.querySelector('[data-cal-view="week"]');
               if (wk) { wk.click(); await wait(500); }
               out.weekCols = document.querySelectorAll('.cal-week-col').length;
               const back = document.querySelector('.nav-item[data-view="today"]');
               if (back) { back.click(); await wait(500); }
               out.backToList = !document.querySelector('.cal-wrap');
+              out.topbarRestored = !document.querySelector('.topbar-right').hidden;
               // 顶栏「AI 检索」：弹窗形态 —— 打开不换视图，重复点不叠层，✕ 关闭
               const ai = document.getElementById('btn-ai-search');
               if (ai) { ai.click(); await wait(500); }
@@ -3456,6 +3511,8 @@ app.whenReady().then(async () => {
             return out;
           })()`);
           console.log(`[SMOKE] 日历视图 = 标题栏入口=${calOut.navExists ? '有' : '无'}；chip已移除=${calOut.chipGone ? '是' : '否'}；高亮=${calOut.navActive ? '是' : '否'}；标题「${calOut.title || '-'}」；骨架=${calOut.wrap ? '有' : '无'}；格子 ${calOut.cells} 个；负载条 ${calOut.loadBars} 条；待安排池=${calOut.pool ? '有' : '无'}；图例=${calOut.legend ? '有' : '无'}；月/周控件 ${calOut.segCount} 个；周视图 ${calOut.weekCols} 列；回列表=${calOut.backToList ? '成功' : '失败'}；描述「${calOut.desc || '-'}」${calOut.err ? '；异常=' + calOut.err : ''}`);
+          console.log(`[SMOKE] 日历工具区 = 顶栏收起=${calOut.topbarHidden ? '是' : '否'}；回任务视图恢复=${calOut.topbarRestored ? '是' : '否'}；右栏新增按钮=${calOut.addBtn ? '有' : '无'}；行内编辑按钮 ${calOut.editBtns}/${calOut.panelRows} 行`);
+          console.log(`[SMOKE] 右栏就地编辑 = 编辑器出现=${calOut.inlineEditor ? '是' : '否'}；无弹窗=${calOut.noModal ? '是' : '否'}；日期预填=${calOut.editorPrefill ? '是' : '否'}；取消关闭=${calOut.editorClosed ? '是' : '否'}`);
           console.log(`[SMOKE] 顶栏 AI 检索（弹窗）= 弹出=${calOut.aiPanel ? '成功' : '失败'}；单层=${calOut.aiSingle ? '是' : '否'}；视图不动=${calOut.aiKeepsView ? '是' : '否'}；再点不叠层=${calOut.aiNoStack ? '是' : '否'}；关闭移除=${calOut.aiBack ? '成功' : '失败'}`);
           console.log(`[SMOKE] 标题栏「搭子」= 入口=${calOut.buddyBtn ? '有' : '无'}；弹出=${calOut.buddyOpen ? '成功' : '失败'}；页签「${calOut.buddyTab || '-'}」；按钮点亮=${calOut.buddyLit ? '是' : '否'}；视图不动=${calOut.buddyKeepsView ? '是' : '否'}；关闭复位=${calOut.buddyBack ? '成功' : '失败'}`);
 
@@ -3494,6 +3551,9 @@ app.whenReady().then(async () => {
             && calOut.navExists && calOut.chipGone && calOut.navActive && calOut.wrap && calOut.segCount === 2
             && calOut.cells >= 28 && calOut.loadBars > 0
             && calOut.pool && calOut.legend && calOut.weekCols === 7 && calOut.backToList
+            && calOut.topbarHidden && calOut.topbarRestored && calOut.addBtn
+            && calOut.editBtns === calOut.panelRows
+            && calOut.inlineEditor && calOut.noModal && calOut.editorPrefill && calOut.editorClosed
             && calOut.aiPanel && calOut.aiSingle && calOut.aiKeepsView && calOut.aiNoStack && calOut.aiBack
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
@@ -3530,9 +3590,10 @@ app.whenReady().then(async () => {
             && r4docx.size > 1000 && r4docx.isZip
             && r4multi.multi && r4multi.single && r4multi.none
             // 第 7 轮：会议录制 / 纪要 / 待办
-            && r7.navExists && r7.viewRendered && r7.viewTitle === '会议纪要' && r7.recBtn
-            && r7.setupOpened && r7.titlePrefilled && r7.modeCount === 2 && r7.audioChecks === 2
-            && r7.sliceOpts === 4 && r7.importBtn && r7.setupClosed
+            && r7.navExists && r7.viewRendered && r7.viewTitle === '会议纪要'
+            && r7.audioBtn && r7.screenBtn && r7.sliceOpts === 4 && r7.sliceSaved
+            && r7.setupOpened && r7.titlePrefilled && r7.modeCount === 0 && r7.audioChecks === 2
+            && !r7.setupSlice && r7.sourceGrid && r7.importBtn && r7.setupClosed
             && r7.meetingCreated && r7.chunkCount === 1 && r7.transcribeFriendly
             && r7.itemCount >= 1 && r7.itemTitle === '冒烟会议'
             && r7.pipelineBtns === 2 && r7.summarizeDisabled && r7.exportBtns === 2
@@ -3631,6 +3692,8 @@ app.whenReady().then(async () => {
               'r10:tfNativeDates',         // 期望「原生 date 输入框 0 个」
               'r15:masksBefore',           // 提示用：期望润色前没有残留遮罩 = 0
               'r17:noneCount',             // 期望「确实无关联」时候选就是 0 条
+              'r7:modeCount',              // 录屏面板已无「采集方式」单选，期望 0 项
+              'r7:setupSlice',             // 分段时长已移出录屏面板，期望 false
               'dom:aiMenuItem',            // 菜单栏已整条撤掉，这一项恒为 null（入口改到设置中心），别再当失败
             ]);
             let printed = 0;
