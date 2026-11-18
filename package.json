@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.9.0",
+  "version": "2.10.0",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": {
@@ -18,6 +18,8 @@
     "gen-icon": "node scripts/gen-icon.js",
     "test:db": "node scripts/smoke-db.js",
     "test:recur": "node scripts/smoke-recurrence.js",
+    "verify:recur-group": "node scripts/verify-recur-group.js",
+    "verify:recur-window": "node scripts/verify-recur-window.js",
     "verify:recur": "node scripts/verify-recurrence-ui.js",
     "verify:desktop": "node scripts/verify-desktop-level.js",
     "verify:identity": "node scripts/verify-notification-identity.js",
@@ -56,7 +58,9 @@
     "verify:kb-calendar-panel": "node scripts/verify-kb-calendar-panel.js",
     "shots": "node scripts/shots.js",
     "figures": "electron scripts/marketing-figures.js",
-    "verify:complete-fx": "node scripts/verify-complete-fx.js"
+    "verify:complete-fx": "node scripts/verify-complete-fx.js",
+    "verify:update-badge": "node scripts/verify-update-badge.js",
+    "verify:journal": "node scripts/verify-journal.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

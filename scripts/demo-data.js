@@ -472,6 +472,41 @@ function seed(dir) {
   // 「正在计时」那一段不在这里造：启动对账会把遗留的 running 行按最后心跳结算掉（service.reconcileOnStartup），
   // 真要看计时中的样子，截图脚本用 `api.worklog.start()` 真开一段。
 
+  /* ---------- 四象日记（插件功能：开开关，播今天这一页） ---------- */
+  // 与工时同理：先写开关，否则日记视图在关闭态只是引导页，截出来是空的
+  db.setSetting('feature.journal', JSON.stringify({
+    enabled: true,
+    cellLabels: ['心智', '身体', '连结', '事业'],
+  }));
+  const jr = db.getDb();
+  const jrDay = day(0);
+  const insCell = jr.prepare(
+    `INSERT INTO journal_cells (day, cell, body, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(day, cell) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at`
+  );
+  // 四格各写一段真会写的话：截图要能看出「每格一句起手式」压住了空白页，不是四行 lorem
+  const jrCells = [
+    '今天想明白一件事：虚拟列表没必要一期做完，先把「今天」这一个视图做对，'
+      + '其余视图继续整块重绘也不会有人察觉。\n计划写得越全，越容易在第一周就放弃 —— 先交一个能用的。',
+    '睡了 6 小时半，下午靠一杯咖啡撑过去。\n绕小区走了两圈，回来那半小时是今天效率最高的。',
+    '和客服小周一起过了导入乱码的复现，她一句「用户根本不知道自己在用 GB18030 存文件」把方向纠回来了。\n晚上给妈打了电话，聊了 20 分钟。',
+    '把 renderTasks 拆成算 diff 与打补丁两半，行级补丁下沉后重绘 380ms → 90ms。\n明天第一步：把基准用例接进 CI，别再靠手点。',
+  ];
+  jrCells.forEach((body, i) => insCell.run(jrDay, i, body, at(0, 21, 10 + i * 5)));
+
+  const insJrNote = jr.prepare(
+    'INSERT INTO journal_notes (day, body, cell, task_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  // 三条碎碎念：一条已归入（cell 有值 → 列表里带「事业」标签）、两条还没归类（右侧原料区的主角）
+  insJrNote.run(jrDay, '会上那句「先做对一件事，再谈通用」可以贴到墙上。', 3, null, at(0, 10, 42), at(0, 10, 42));
+  insJrNote.run(jrDay, '下午三点左右特别困，明天试试把最难的活挪到上午。', null, null, at(0, 15, 12), at(0, 15, 12));
+  insJrNote.run(jrDay, '想给日记加一个「只写一句也算」的提示，别让人看着四个空格子有压力。', null, null, at(0, 20, 55), at(0, 20, 55));
+
+  // 前一天也留一页：左翻能看到「已记录」不止今天，而不是每次打开都是空的
+  const yDay = day(-1);
+  insCell.run(yDay, 0, '周一定的三档排期被现实削成一档半，但剩下的那一档反而更清楚。', at(-1, 22, 0));
+  insJrNote.run(yDay, '把「能不能这周上」改成「这周上哪一半」，讨论立刻不吵了。', 0, null, at(-1, 19, 30), at(-1, 19, 30));
+
 
   // 任务 ↔ 笔记：详情抽屉底部会显示「关联笔记」
   db.linkTaskNote(tPerf.id, noteMain.id);

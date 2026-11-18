@@ -25,3 +25,6 @@ docs/*
 
 # 排查期的一次性脚本（前缀点号 + .tmp-），不进仓库
 scripts/.tmp-*.js
+# 小工具（minitools/）里的一次性探针与打好的 zip 产物：源码进仓库，探针与压缩包不进
+minitools/_tools/probe*.js
+minitools/*.zip

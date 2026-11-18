@@ -427,6 +427,17 @@ const shots = {
     return page.shot(path.join(outDir, 'stats.png'));
   },
 
+  /* 四象日记：一天一页。左边四格（每格都有内容与起手式）、右边碎碎念（一条已归入、两条待整理） */
+  async journal(page) {
+    await closeOverlays(page);
+    await goView(page, 'journal');
+    // 插件开启才挂载：等视图根出现，否则会截到「未启用」引导页
+    await page.waitFor(`!!document.querySelector('.jr-view')`, 8000, '日记视图');
+    await page.waitFor(`document.querySelectorAll('.jr-view [data-cell]').length === 4`, 6000, '四格');
+    await sleep(1200);
+    return page.shot(path.join(outDir, 'journal.png'));
+  },
+
   /* 工时：本周汇总卡 + 按任务表（父行「含子任务」，展开一行看子任务的贡献） */
   async worklog(page) {
     await closeOverlays(page);
@@ -664,7 +675,7 @@ const shots = {
   const order = [
     'tasks', 'calendar-month', 'calendar-week', 'task-detail', 'notes-wysiwyg',
     'meetings', 'ai-report', 'ai-search', 'stats',
-    'worklog', 'worklog-value', 'worklog-timer', 'worklog-zen', 'settings-keys',
+    'journal', 'worklog', 'worklog-value', 'worklog-timer', 'worklog-zen', 'settings-keys',
     'desktop-pin', 'capture',
   ];
   const results = [];

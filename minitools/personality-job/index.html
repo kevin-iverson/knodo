@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#f2ece2">
+<title>你适合什么岗位？</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div class="app" id="app">
+  <header class="topbar">
+    <span class="brand">Knodo · 岗位测评</span>
+    <span class="step" id="stepLabel">10 道题</span>
+  </header>
+
+  <main class="stage" id="stage">
+    <section class="screen is-active" id="screenStart">
+      <p class="eyebrow">CAREER ARCHETYPE TEST</p>
+      <h1 class="display">你适合<br>什么岗位？</h1>
+      <p class="lede">10 道情境题，看看你的工作性格更像哪一种人，以及哪些岗位更容易让你发挥。</p>
+
+      <ul class="facts">
+        <li><b>10</b><span>道情境题</span></li>
+        <li><b>1</b><span>分钟完成</span></li>
+        <li><b>6</b><span>种岗位原型</span></li>
+      </ul>
+
+      <button class="btn btn-primary" id="btnStart" type="button">开始测评</button>
+      <button class="btn btn-ghost" id="btnResume" type="button" hidden>查看上次结果</button>
+      <p class="hint" id="storageHint" hidden>当前容器版本不支持保存结果，本次结果仅在当前页面有效</p>
+
+      <div class="type-preview">
+        <p class="preview-label">你可能是其中一种</p>
+        <div class="preview-pills">
+          <span class="preview-pill">洞察者</span>
+          <span class="preview-pill">造梦者</span>
+          <span class="preview-pill">连接者</span>
+          <span class="preview-pill">推动者</span>
+          <span class="preview-pill">影响者</span>
+          <span class="preview-pill">探索者</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="screenQuiz">
+      <div class="progress-head">
+        <span id="qIndex">第 1 题</span>
+        <span id="qPercent">10%</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+
+      <h2 class="question" id="questionText"></h2>
+      <div class="options" id="options"></div>
+      <button class="btn btn-ghost btn-back" id="btnBack" type="button" hidden>上一题</button>
+      <p class="quiz-foot">没有标准答案，凭第一直觉选就好</p>
+    </section>
+
+    <section class="screen" id="screenResult">
+      <p class="eyebrow" id="resultEyebrow">YOUR ARCHETYPE</p>
+      <h2 class="result-name" id="resultName"></h2>
+      <p class="result-tag" id="resultTag"></p>
+
+      <div class="dims" id="dims"></div>
+
+      <h3 class="section-title">你的优势</h3>
+      <ul class="list" id="strengths"></ul>
+
+      <h3 class="section-title">适合的岗位方向</h3>
+      <div class="chips" id="jobs"></div>
+
+      <h3 class="section-title">可以留意</h3>
+      <ul class="list list-warn" id="watch"></ul>
+
+      <p class="fineprint">结果基于自评倾向生成，仅供职业探索参考。</p>
+
+      <div class="actions">
+        <button class="btn btn-primary" id="btnSave" type="button">保存结果卡片</button>
+        <button class="btn btn-ghost" id="btnRestart" type="button">重新测一次</button>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+</div>
+<script src="./main.js"></script>
+</body>
+</html>
