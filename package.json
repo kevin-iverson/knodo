@@ -20,6 +20,7 @@
     "test:recur": "node scripts/smoke-recurrence.js",
     "verify:recur-group": "node scripts/verify-recur-group.js",
     "verify:recur-window": "node scripts/verify-recur-window.js",
+    "verify:recur-cancel": "node scripts/verify-cancel-recur.js",
     "verify:recur": "node scripts/verify-recurrence-ui.js",
     "verify:desktop": "node scripts/verify-desktop-level.js",
     "verify:identity": "node scripts/verify-notification-identity.js",

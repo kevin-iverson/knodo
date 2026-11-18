@@ -52,7 +52,7 @@ import { beginFx, endFx, isFxBusy, whenFxIdle, playLikeFx } from './like-fx.js';
 import {
   repeatEditorHtml, bindRepeatEditor, readRepeatConfig, isRepeatOn,
   setRecurrenceHandlers, listenRecurrenceMenu, openRuleFromTask, openRecurrenceManager,
-  derivedScheduleHtml, recurStateBadgeHtml, recurState,
+  derivedScheduleHtml, recurStateBadgeHtml, recurState, cancelRecurrence,
 } from './recurrence.js';
 
 /** 即时持久化防抖延迟（毫秒）：输入停止这么久之后才写库 */
@@ -2348,8 +2348,28 @@ function bindEditorEvents(container) {
       else if (act === 'editor-cancel') cancelEditor();
       else if (act === 'editor-delete') deleteEditingTask(ed);
       else if (act === 'open-recur-inline') openRuleFromTask(Number(btn.dataset.ruleId));
+      else if (act === 'detach-recur') detachEditingRecurring(ed, Number(btn.dataset.ruleId));
     });
   });
+}
+
+/**
+ * 列表就地编辑器里「取消重复」：规则删除、任务脱钩成普通待办。
+ * 先 flush 一次自动保存，免得刚改的标题跟着编辑器一起被重绘丢掉。
+ */
+async function detachEditingRecurring(ed, ruleId) {
+  if (!Number.isFinite(ruleId)) return;
+  if (!window.confirm('取消重复？这条任务会变回普通待办并保留；该规则的打卡历史会被清除。')) return;
+  if (ed && ed.__autoSave) {
+    // 保存失败不阻断取消重复，但要留痕：这条编辑内容可能没落库
+    try { await ed.__autoSave.flush(); } catch (e) { console.warn('[detach-recur] 保存编辑内容失败', e); }
+  }
+  const ok = await guardAction(() => cancelRecurrence(ruleId, { confirm: false }), '取消重复失败');
+  if (!ok) return;
+  state.editingTaskId = null;
+  await refreshAll();
+  renderSidebarList();
+  renderTasks();
 }
 
 function startAdd() {

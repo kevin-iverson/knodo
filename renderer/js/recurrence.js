@@ -304,10 +304,14 @@ export const DEFAULT_REPEAT_RULE = Object.freeze({ freq: 'workday', reminderTime
 
 export function repeatEditorHtml(task, rule) {
   if (task && task.recurring_id != null) {
+    // 已开启重复的任务也必须能在这里退出重复：只给「编辑规则」的话，用户要取消重复就得
+    // 先想到右上角齿轮里的管理面板（实测没人找得到）。
+    const paused = !!rule && rule.enabled === false;
     return `<div class="rpt-instance-note">
-      <span class="rpt-instance-ico">🔁</span>
-      <span>重复事项：始终只有这一条任务，按规则出现在「今天」；勾选完成记一次打卡。</span>
+      <span class="rpt-instance-ico">${paused ? '⏸' : '🔁'}</span>
+      <span>${paused ? '重复已暂停：这条任务暂时不按规则排期。' : '重复事项：始终只有这一条任务，按规则出现在「今天」；勾选完成记一次打卡。'}</span>
       <button type="button" class="link-btn" data-act="open-recur-inline" data-rule-id="${Number(task.recurring_id)}" title="修改规则 / 查看打卡记录">编辑规则与打卡 →</button>
+      <button type="button" class="link-btn is-danger" data-act="detach-recur" data-rule-id="${Number(task.recurring_id)}" title="取消重复：这条任务变回普通待办（打卡历史会一并清除）">取消重复</button>
     </div>
     ${derivedScheduleHtml(task, rule)}`;
   }
@@ -609,9 +613,8 @@ async function mountManager(mask, opts) {
         return;
       }
       if (act === 'remove') {
-        if (!window.confirm('删除这条重复规则？该任务会变成普通待办保留，打卡历史将一并清除。')) return;
-        await api.recurrences.remove(id);
-        toast('重复规则已删除，任务已转为普通待办');
+        // 「取消重复」而不是「删除规则」：删掉的是重复规则，任务本身转为普通待办保留
+        if (!(await cancelRecurrence(id))) return;
         await reload();
         await changed();
         return;
@@ -659,7 +662,7 @@ function ruleCardHtml(r) {
       <button type="button" class="ghost-btn" data-rc-act="toggle" data-rc-on="${r.enabled ? '1' : '0'}">${r.enabled ? '⏸ 停止' : '▶ 启用'}</button>
       ${r.enabled ? '<button type="button" class="ghost-btn" data-rc-act="skip-today">⏩ 跳过本次</button>' : ''}
       ${r.skip_count ? '<button type="button" class="ghost-btn" data-rc-act="clear-skips">↩ 恢复跳过</button>' : ''}
-      <button type="button" class="ghost-btn rc-danger" data-rc-act="remove">🗑 删除</button>
+      <button type="button" class="ghost-btn rc-danger" data-rc-act="remove" title="取消重复：任务转为普通待办保留，打卡历史清除">🗑 取消重复</button>
     </div>
   </div>`;
 }
@@ -689,27 +692,58 @@ export function openRuleFromTask(ruleId) {
  * 提醒时间、完成日偏移都在复用过来的规则字段里，所以「详情里能设重复时间 + 提醒」是同一块表单。
  */
 export function detailRepeatHtml(task, rule) {
-  const on = !!rule;
+  // 开关必须表达「规则是否在跑」，不是「规则是否存在」。
+  // 之前用 !!rule：暂停后规则行还在，抽屉重绘又是「重复：已开启」，用户以为取消没生效。
+  const exists = !!rule;
+  const paused = exists && rule.enabled === false;
+  const on = exists && !paused;
   const r = rule || { rule: DEFAULT_REPEAT_RULE, start_date: todayStr(), end_date: '', habit: false };
   const ico = r.habit ? '💪' : '🔁';
+  const toggleText = on ? `${ico} 重复：已开启` : (paused ? '⏸ 重复：已暂停' : '🔁 设为重复');
+  const hint = exists
+    ? (on ? '改完点保存；关掉开关再保存 = 取消重复。' : '当前是暂停状态：点「取消重复」变回普通待办，或打开开关重新启用。')
+    : '改完点保存；始终只有这一条任务，不会生成多余待办。';
   return `<div class="detail-section detail-repeat" data-detail-repeat="1">
     <div class="detail-section-head"><span>重复与提醒</span>
       <span class="np-head-ops">
-        ${on ? `<button type="button" class="ghost-btn tiny" data-detail-repeat-act="manage" data-rule-id="${Number(task.recurring_id)}" title="打开管理面板看全部规则与打卡">全部规则 →</button>` : ''}
+        ${exists ? `<button type="button" class="ghost-btn tiny" data-detail-repeat-act="manage" data-rule-id="${Number(task.recurring_id)}" title="打开管理面板看全部规则与打卡">全部规则 →</button>
+        <button type="button" class="ghost-btn tiny rc-danger" data-detail-repeat-act="cancel" data-rule-id="${Number(task.recurring_id)}" title="取消重复：这条任务变回普通待办（打卡历史会一并清除）">取消重复</button>` : ''}
       </span>
     </div>
     <div class="rpt-block" data-on="${on ? '1' : '0'}">
-      <button type="button" class="rpt-toggle${on ? ' is-on' : ''}" data-act="editor-repeat" aria-pressed="${on ? 'true' : 'false'}">${on ? `${ico} 重复：已开启` : '🔁 设为重复'}</button>
+      <button type="button" class="rpt-toggle${on ? ' is-on' : ''}" data-act="editor-repeat" aria-pressed="${on ? 'true' : 'false'}">${toggleText}</button>
       <div class="rpt-panel"${on ? '' : ' hidden'}>${repeatFieldsHtml({
     rule: r.rule, startDate: r.start_date, endDate: r.end_date, habit: r.habit,
   })}</div>
     </div>
-    ${on ? `<div class="rpt-detail-summary">${esc(r.summary || '')}${r.todayDone ? ' · 今日已完成' : ''}${r.doneCount ? ` · 累计打卡 ${r.doneCount} 次` : ''}</div>` : ''}
+    ${exists ? `<div class="rpt-detail-summary">${paused ? '⏸ 已暂停 · ' : ''}${esc(r.summary || '')}${r.todayDone ? ' · 今日已完成' : ''}${r.doneCount ? ` · 累计打卡 ${r.doneCount} 次` : ''}</div>` : ''}
     <div class="rpt-detail-foot">
-      <span class="rpt-detail-hint">改完点保存；始终只有这一条任务，不会生成多余待办。</span>
+      <span class="rpt-detail-hint">${hint}</span>
       <button type="button" class="primary-btn" data-detail-repeat-act="save">保存重复设置</button>
     </div>
   </div>`;
+}
+
+/**
+ * 取消重复 = 删除规则、任务脱钩成普通待办（任务本身保留）。
+ *
+ * 为什么不再用 setEnabled(false)：那只是「暂停」，任务依旧是重复事项，
+ * 抽屉会继续显示「已开启」，用户点了没有可见变化 —— 这就是「取消不掉」的根因。
+ * 详情抽屉、列表就地编辑器、管理面板三处共用这一份，语义只写一遍。
+ *
+ * @returns {Promise<boolean>} 真的删掉了才返回 true（用户取消确认返回 false）
+ */
+export async function cancelRecurrence(rule, opts = {}) {
+  const ruleId = typeof rule === 'number' ? rule : (rule && rule.id);
+  if (ruleId == null) return false;
+  const ask = opts.confirm === false
+    ? true
+    : window.confirm(opts.confirmText
+      || '取消重复？这条任务会变回普通待办并保留；该规则的打卡历史会被清除。');
+  if (!ask) return false;
+  await api.recurrences.remove(ruleId);
+  toast('已取消重复，任务已转为普通待办');
+  return true;
 }
 
 /** 绑定详情里的重复配置；signal 由抽屉的 renderAbort 提供，重绘时自动解绑 */
@@ -736,27 +770,33 @@ export function bindDetailRepeat(drawer, task, rule, { signal, onSaved } = {}) {
     const act = btn.dataset.detailRepeatAct;
     try {
       if (act === 'manage') { openRuleFromTask(Number(btn.dataset.ruleId)); return; }
-      if (act !== 'save') return;
-      if (!isRepeatOn(host)) {
-        if (rule) {
-          if (!window.confirm('取消重复？这条任务会变成普通待办，打卡历史保留。')) return;
-          await api.recurrences.setEnabled(rule.id, false);
-          toast('已取消重复');
+      // 显式「取消重复」按钮：不必先理解「关掉开关再保存」这套操作
+      if (act === 'cancel') {
+        if (!(await cancelRecurrence(rule))) return;
+      } else if (act === 'save') {
+        if (!isRepeatOn(host)) {
+          if (!rule) { toast('当前未开启重复，无需保存'); return; }
+          // 开关是关着的：这次保存按「取消重复」处理（文案要说清，别让用户以为只是改了设置）
+          if (!(await cancelRecurrence(rule, {
+            confirmText: '重复开关是关着的：保存会按「取消重复」处理 —— 任务变回普通待办并保留，该规则的打卡历史清除。继续？',
+          }))) return;
         } else {
-          toast('当前未开启重复，无需保存');
-          return;
+          const checked = validateRepeatFields(host);
+          if (!checked.ok) { toast(checked.message); return; }
+          const title = drawer.querySelector('.detail-title').value.trim() || task.title;
+          // enabled: true —— 暂停中的规则在这里重新打开开关后必须真的恢复排期，
+          // 否则 update 会带着 base.enabled=0 把规则又存回暂停态（点了没反应）。
+          const p = {
+            title, rule: checked.rule, startDate: checked.startDate,
+            endDate: checked.endDate, habit: checked.habit, notes: task.notes || '',
+            enabled: true,
+          };
+          if (rule) await api.recurrences.update(rule.id, p);
+          else await api.recurrences.create({ ...p, originTaskId: task.id });
+          toast(rule ? '重复规则已更新' : '已设为重复事项');
         }
       } else {
-        const checked = validateRepeatFields(host);
-        if (!checked.ok) { toast(checked.message); return; }
-        const title = drawer.querySelector('.detail-title').value.trim() || task.title;
-        const p = {
-          title, rule: checked.rule, startDate: checked.startDate,
-          endDate: checked.endDate, habit: checked.habit, notes: task.notes || '',
-        };
-        if (rule) await api.recurrences.update(rule.id, p);
-        else await api.recurrences.create({ ...p, originTaskId: task.id });
-        toast(rule ? '重复规则已更新' : '已设为重复事项');
+        return;
       }
       if (typeof onSaved === 'function') onSaved();
       else await changed();

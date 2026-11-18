@@ -81,6 +81,9 @@
   border-radius: 8px; background: var(--bg-active); font-size: 12px; color: var(--text-2);
 }
 .rpt-instance-ico { font-size: 14px; }
+/* 就地编辑器里的「取消重复」：和「编辑规则」并列，用危险色区分不能撤销的操作 */
+.rpt-instance-note .link-btn { white-space: nowrap; }
+.rpt-instance-note .link-btn.is-danger { color: var(--danger); }
 
 /* ---------------- 任务行徽标 ---------------- */
 .recur-badge {
