@@ -72,6 +72,10 @@ const S = {
   encourager: null,
   /** 功能插件：工时开关（{ enabled, zenDefaultSec, dayAttr }） */
   worklog: null,
+  /** 功能插件：工位搭子开关（{ enabled }），默认关闭 */
+  buddy: null,
+  /** 功能插件：四象日记开关（{ enabled, cellLabels:[4] }），默认关闭 */
+  journal: null,
 };
 
 /** 当前搜索词（列表重绘后要重跑过滤，所以留在模块级） */
@@ -1030,7 +1034,10 @@ function funHtml() {
   const c = normalizeConfig(S.encourager);
   const s = S.salary || {};
   const buys = Object.entries(c.purchases).slice(0, 3);
+  const buddyOn = !!(S.buddy && S.buddy.enabled);
   return [
+    `<div class="st-foot-note" id="fun-plugin-off"${buddyOn ? ' hidden' : ''}>工位搭子是插件，当前未启用 —— 标题栏入口、快捷键与浮窗都隐藏。先到「功能插件 → 工位搭子」打开开关，这里的内容才会出现。</div>`,
+    `<div id="fun-plugin-body"${buddyOn ? '' : ' hidden'}>`,
     // 原来在「趣味功能」菜单里的两个浮窗入口：菜单栏撤掉后落到这里
     sectionHtml({
       title: '浮窗入口',
@@ -1119,7 +1126,18 @@ function funHtml() {
       })),
     }),
     `<div class="st-foot-note">主浮窗：Ctrl + Alt + E 或菜单「趣味功能 → 上班鼓励器」；月薪与班次也能直接在主浮窗的「设置」页签里改。<br>主题跟随应用明暗，唯一入口在「通用 → 界面主题」，这里不另设开关。<br>牛马币与连续打卡是情绪数据，会被整体备份 / 恢复回滚，不参与导入校验，请不要当成资产；解锁项仅存本机，换设备或重装不继承。</div>`,
+    `</div>`,
   ].join('');
+}
+
+/** 插件开关在「功能插件」里拨动时，就地收起 / 展开趣味功能内容，不重建整个设置面板 */
+function applyFunGate(root) {
+  const scope = root || document;
+  const on = !!(S.buddy && S.buddy.enabled);
+  const off = scope.querySelector('#fun-plugin-off');
+  const body = scope.querySelector('#fun-plugin-body');
+  if (off) off.hidden = on;
+  if (body) body.hidden = !on;
 }
 
 function mountFun(pane) {
@@ -1638,6 +1656,7 @@ const GROUPS = [
 const WL_DEFAULTS = {
   enabled: false, zenDefaultSec: 5400, dayAttr: 'start',
 };
+const BUDDY_DEFAULTS = { enabled: false };
 
 function wlChips(key, items, current) {
   return `<div class="wl-chips">${items.map(([v, label]) => `<button type="button"
@@ -1682,18 +1701,82 @@ function pluginsCardHtml() {
   </div>`;
 }
 
+function buddyCardHtml() {
+  const p = { ...BUDDY_DEFAULTS, ...(S.buddy || {}) };
+  const on = !!p.enabled;
+  return `<div class="st-card wl-set-card${on ? ' is-on' : ''}">
+    <div class="wl-set-head">
+      <div class="wl-set-ico">🐮</div>
+      <div class="wl-set-main">
+        <div class="wl-set-title">工位搭子 <span class="wl-badge">插件</span></div>
+        <div class="wl-set-desc">今日进账 / 抽签 / 抱团 / 牛马卡，完成任务时搭子会冒一句。默认关闭，开启后才显示标题栏入口。</div>
+      </div>
+      <label class="st-switch" title="${on ? '关闭工位搭子插件' : '启用工位搭子插件'}">
+        <input type="checkbox" id="buddy-enabled"${on ? ' checked' : ''} aria-label="启用工位搭子">
+        <span class="st-switch-track"><span class="st-switch-dot"></span></span>
+      </label>
+    </div>
+    <div class="wl-set-body"${on ? '' : ' hidden'}>
+      <div class="wl-field">
+        <span class="wl-field-label">标题栏入口</span>
+        <span class="wl-chip is-active is-static">🐮 搭子</span>
+        <span class="wl-field-hint">紧跟在「🕒 工时」右侧，点开默认落在「搭子」页</span>
+      </div>
+      <div class="wl-field">
+        <span class="wl-field-label">快捷唤起</span>
+        <span class="wl-chip is-active is-static">Ctrl + Alt + E</span>
+        <span class="wl-field-hint">插件关闭时该快捷键与菜单入口同样不生效</span>
+      </div>
+      <div class="wl-set-note">${on
+    ? '已启用：标题栏出现「🐮 搭子」，趣味功能设置与浮窗已加载；关闭后入口、浮窗、样式与发币监听一起卸载，配置留在数据库里，随时可再开启。'
+    : '当前为关闭状态 —— 标题栏入口隐藏，浮窗模块与样式未加载，不监听任务完成事件；只有这里能打开它。'}</div>
+    </div>
+  </div>`;
+}
+
+const JR_DEFAULTS = { enabled: false, cellLabels: ['心智', '身体', '连结', '事业'] };
+
+function journalCardHtml() {
+  const p = { ...JR_DEFAULTS, ...(S.journal || {}) };
+  const on = !!p.enabled;
+  const labels = Array.isArray(p.cellLabels) && p.cellLabels.length === 4 ? p.cellLabels : JR_DEFAULTS.cellLabels;
+  return `<div class="st-card wl-set-card jr-set-card${on ? ' is-on' : ''}" data-journal-card>
+    <div class="wl-set-head">
+      <div class="wl-set-ico">📔</div>
+      <div class="wl-set-main">
+        <div class="wl-set-title">四象日记 <span class="wl-badge">插件</span></div>
+        <div class="wl-set-desc">一天一页：心智 / 身体 / 连结 / 事业四格整理，白天随手丢碎碎念，晚上归到四格。按日回看，不打卡、不提醒。</div>
+      </div>
+      <label class="st-switch" title="${on ? '关闭日记插件' : '启用日记插件'}">
+        <input type="checkbox" id="jr-enabled"${on ? ' checked' : ''} aria-label="启用四象日记">
+        <span class="st-switch-track"><span class="st-switch-dot"></span></span>
+      </label>
+    </div>
+    <div class="wl-set-body"${on ? '' : ' hidden'}>
+      <div class="wl-field">
+        <span class="wl-field-label">四格名称</span>
+        <div class="jr-label-grid">
+          ${labels.map((label, i) => `<label class="jr-label-row"><span class="jr-label-ix jr-ix-${i}">${i + 1}</span><input type="text" data-jr-label="${i}" value="${esc(label)}" maxlength="8" aria-label="第 ${i + 1} 格名称"></label>`).join('')}
+        </div>
+        <span class="wl-field-hint">格子位置固定，只改名（如「工作 / 生活 / 学习 / 情绪」）；改名不影响历史内容。</span>
+      </div>
+      <div class="wl-set-note">日记只存在本地数据库，<b>不参与 AI 检索与报告</b>，也不进笔记的目录 / 标签。关闭后入口保留，历史记录全部留在库里；JSON 备份会带上日记。</div>
+    </div>
+  </div>`;
+}
+
 function pluginsHtml() {
   return `<section class="st-sec"
-    data-search="功能插件 插件 工时 worklog 计时 报工 子任务 禅模式 行内计时 补录">
+    data-search="功能插件 插件 工时 worklog 计时 报工 子任务 禅模式 行内计时 补录 搭子 鼓励器 牛马币 抽签 抱团 日记 journal 四格 碎碎念">
     <div class="st-sec-title">功能插件</div>
-    <div class="st-sec-desc">默认全部关闭。关闭状态的插件不加载任何模块 —— 没有计时器、不写数据库；标题栏入口保留，点进去是开启引导。</div>
-    <div class="wl-set-host">${pluginsCardHtml()}</div>
+    <div class="st-sec-desc">默认全部关闭。关闭状态的插件不加载任何模块 —— 没有计时器、不监听事件、不注入样式；搭子入口随开关隐藏（工时 / 日记入口保留为开启引导），这里始终能看到开关。</div>
+    <div class="wl-set-host">${pluginsCardHtml()}${buddyCardHtml()}${journalCardHtml()}</div>
   </section>`;
 }
 
 function repaintPlugins(paneEl) {
   const host = paneEl.querySelector('.wl-set-host');
-  if (host) host.innerHTML = pluginsCardHtml();
+  if (host) host.innerHTML = pluginsCardHtml() + buddyCardHtml() + journalCardHtml();
 }
 
 function mountPlugins(paneEl) {
@@ -1702,18 +1785,36 @@ function mountPlugins(paneEl) {
 
   // 开关：主进程负责注册 / 注销，渲染层由 app.js 动态 mount / unmount
   paneEl.addEventListener('change', async (e) => {
-    const sw = e.target.closest('#wl-enabled');
+    const sw = e.target.closest('#wl-enabled, #buddy-enabled, #jr-enabled');
     if (!sw) return;
+    const isBuddy = sw.id === 'buddy-enabled';
+    const isJournal = sw.id === 'jr-enabled';
+    const name = isBuddy ? 'buddy' : (isJournal ? 'journal' : 'worklog');
     const want = sw.checked;
     sw.disabled = true;
     try {
-      const r = await api.features.setPref({ enabled: want });
+      const r = await api.features.setPref(name, { enabled: want });
       if (!r || r.ok === false) throw new Error((r && r.reason) || '切换失败');
-      S.worklog = r.pref;
+      if (isBuddy) {
+        S.buddy = r.pref;
+        applyFunGate(document);
+      } else if (isJournal) {
+        S.journal = r.pref;
+      } else {
+        S.worklog = r.pref;
+      }
       repaintPlugins(paneEl);
-      toast(want
-        ? '工时插件已启用 · 任务行内出现 ▶ 计时 / ☯ 禅模式'
-        : '工时插件已关闭 · 计时与视图已卸载，历史记录保留');
+      toast(isBuddy
+        ? (want
+          ? '工位搭子插件已启用 · 标题栏出现「🐮 搭子」'
+          : '工位搭子插件已关闭 · 入口与浮窗已卸载，配置保留')
+        : isJournal
+          ? (want
+            ? '四象日记已启用 · 标题栏出现「📔 日记」'
+            : '日记插件已关闭 · 视图与样式已卸载，历史记录保留')
+          : (want
+            ? '工时插件已启用 · 任务行内出现 ▶ 计时 / ☯ 禅模式'
+            : '工时插件已关闭 · 计时与视图已卸载，历史记录保留'));
     } catch (err) {
       sw.checked = !want;
       sw.disabled = false;
@@ -1733,6 +1834,26 @@ function mountPlugins(paneEl) {
       if (!r || r.ok === false) throw new Error((r && r.reason) || '保存失败');
       S.worklog = r.pref;
       repaintPlugins(paneEl);
+    } catch (err) {
+      toast(`保存失败：${(err && err.message) || err}`);
+    }
+  });
+
+  // 日记四格改名：改一项存一项，不重绘整个面板（重绘会丢其它输入框的焦点）
+  paneEl.addEventListener('change', async (e) => {
+    const inp = e.target.closest('[data-jr-label]');
+    if (!inp) return;
+    const i = Number(inp.dataset.jrLabel);
+    const labels = (S.journal && S.journal.cellLabels ? S.journal.cellLabels.slice() : JR_DEFAULTS.cellLabels.slice());
+    const v = inp.value.trim().slice(0, 8);
+    if (v) labels[i] = v;
+    else inp.value = labels[i];
+    try {
+      const r = await api.features.setPref('journal', { cellLabels: labels });
+      if (!r || r.ok === false) throw new Error((r && r.reason) || '保存失败');
+      S.journal = r.pref;
+      inp.value = labels[i];
+      toast(`第 ${i + 1} 格已改为「${labels[i]}」`);
     } catch (err) {
       toast(`保存失败：${(err && err.message) || err}`);
     }
@@ -1853,7 +1974,7 @@ function applyFilter(root) {
 
 async function loadState() {
   const soft = async (p, fb) => { try { return await p; } catch (e) { return fb; } };
-  const [themeRaw, autoStart, version, storage, backup, salary, ai, calendar, encourager, worklog] = await Promise.all([
+  const [themeRaw, autoStart, version, storage, backup, salary, ai, calendar, encourager, worklog, buddy, journal] = await Promise.all([
     soft(api.theme.get(), null),
     soft(api.app.getAutoStart(), { enabled: false, supported: false, reason: '读取开机自启动状态失败' }),
     soft(api.app.getVersion(), ''),
@@ -1864,12 +1985,16 @@ async function loadState() {
     soft(api.ui.getToolPref('calendar'), null),
     soft(api.ui.getToolPref('encourager'), null),
     soft(api.features.pref(), null),
+    soft(api.features.pref('buddy'), null),
+    soft(api.features.pref('journal'), null),
   ]);
   Object.assign(S, {
     // 老库 / 读取失败时回落出厂值，界面永远有东西可渲染
     theme: KT.normalize(themeRaw),
     autoStart, version, storage, backup, salary, ai, calendar, encourager,
     worklog: worklog || null,
+    buddy: buddy || null,
+    journal: journal || null,
   });
 }
 

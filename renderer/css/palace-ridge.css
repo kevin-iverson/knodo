@@ -201,6 +201,17 @@
 }
 :root[data-style="palace"] .titlebar .tb-name { color: #F7E7C3; }
 :root[data-style="palace"] .titlebar .tb-ver { color: rgba(247, 231, 195, .5); }
+/* 有新版本角标：红墙上走米字 + 淡金描边，别用 --primary（本身就是酒红，会糊在墙里看不见）。
+   与 .tb-name / .tb-set 同色系，一眼能认出是标题栏的一部分而不是外来控件。 */
+:root[data-style="palace"] .titlebar .tb-update-badge {
+  color: #F7E7C3;
+  border-color: rgba(231, 188, 94, .55);
+  background: rgba(231, 188, 94, .14);
+}
+:root[data-style="palace"] .titlebar .tb-update-badge:hover {
+  background: rgba(255, 243, 218, .2);
+  border-color: rgba(231, 188, 94, .85);
+}
 :root[data-style="palace"] .titlebar .tb-set { color: rgba(247, 231, 195, .84); }
 :root[data-style="palace"] .titlebar .tb-set:hover,
 :root[data-style="palace"] .titlebar .tb-set.is-open {

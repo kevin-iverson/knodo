@@ -229,6 +229,16 @@ body {
   background: var(--bg-active); color: var(--primary-strong); font-weight: 600;
 }
 .titlebar > .tb-nav > button:focus-visible { outline: 2px solid var(--primary); outline-offset: -1px; }
+/* 搭子插件关闭时入口彻底消失（.tb-buddy 自带 display:inline-flex，单纯 hidden 会被覆盖） */
+.titlebar > .tb-nav > #btn-buddy[hidden] { display: none; }
+/* 顶栏挤压降级：五个入口 + 侧栏拉满会压住明暗滑块（实测五按钮 323px，
+   860 宽 + 侧栏 420 时右缘 751 > 滑块左缘 639）。空间不足时只留图标 ——
+   裸文本靠 font-size:0 消失（HTML 零改动），.nav-ico 自己保留 13px。
+   is-compact 由 ui.js#initTopbarCompact 用「缓存的展开宽度」判定，避免抖动。 */
+body.is-compact .titlebar > .tb-nav > button {
+  font-size: 0; gap: 0; padding: 0 9px;
+}
+body.is-compact .titlebar > .tb-nav > button .nav-ico { font-size: 13px; }
 
 /* ---------------- 明暗滑块（标题栏右侧的「日 / 月 盘」） ---------------- */
 /* 位置：窗口三键（3 × 46 = 138px）之外再退 27px，右边缘距窗口 165px ——
@@ -417,6 +427,35 @@ body {
   color: var(--text-3); font-size: 11px;
   font-variant-numeric: tabular-nums; letter-spacing: 0.2px;
 }
+
+/* 「有新版本」角标：挂在版本号右侧，只在主进程确认有新版时出现。
+   标题栏整条是 drag 区 —— 按钮必须 no-drag，否则点下去只会拖窗（见 .tb-set）。
+   强调色一律走 --primary-rgb 三元组，六套风格自动换色；hidden 时彻底不占宽度。 */
+.tb-update-badge {
+  flex: none;
+  /* 版本号与齿轮之间只有约 50px：标题栏 gap 已给 8px，这里别再加正边距，
+     否则角标会压住齿轮（标题栏 flex 顺序：logo→name→ver→badge→…→齿轮）。
+     -5px 是实测值：齿轮左缘 = 侧栏宽 − 38，角标右缘必须停在它左边，
+     内边距收到 6/5 之后还剩 3px 余量（默认侧栏 220 下量过，见 verify:update-badge）。 */
+  margin-left: -5px;
+  display: inline-flex; align-items: center;
+  height: 17px; padding: 0 6px 0 5px;
+  /* 文案固定四字，但要挡住「字体被系统替换后变宽」这类意外：超了裁掉，绝不外扩压齿轮 */
+  max-width: 56px; overflow: hidden;
+  border: 1px solid rgb(var(--primary-rgb) / 0.32);
+  border-radius: 9px;
+  background: rgb(var(--primary-rgb) / 0.09);
+  color: var(--primary);
+  font-size: 10px; line-height: 1; white-space: nowrap;
+  cursor: pointer; -webkit-app-region: no-drag;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.tb-update-badge[hidden] { display: none; }
+/* 侧栏窄到放不下「版本号 + 角标」时让位：宁可少一个提示，也不能压住齿轮。
+   阈值与判定在 sidebar-resize.js#apply（宽度只有一个写入口，别在两处各判一次）。 */
+:root.tb-badge-tight .tb-update-badge { display: none; }
+.tb-update-badge:hover { background: rgb(var(--primary-rgb) / 0.17); border-color: rgb(var(--primary-rgb) / 0.58); }
+.tb-update-badge:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 
 /* 拖拽把手：贴着侧边栏右边界，热区 8px、视觉只露一条 1px 的线 */
 .sidebar-resizer {
@@ -3605,9 +3644,11 @@ body.nt-fs-open { overflow: hidden; }
 /* ============================================================================
    功能插件 · 设置卡片（工时）
    ----------------------------------------------------------------------------
-   这段样式必须常驻：插件关闭时用户唯一能看到的就是这张卡及其开关，
-   而 worklog.css 只在插件开启时才注入。命名统一 wl- 前缀，避免与主样式串味。
+   这段样式必须常驻：插件关闭时用户唯一能看到的就是卡片及其开关，
+   而 worklog.css / encourager.css 只在插件开启时才注入。命名统一 wl- 前缀，避免与主样式串味。
    ========================================================================== */
+/* 两个插件卡纵向排列，中间留一条 breathing room；单卡时也没有多余外边距 */
+.wl-set-host { display: flex; flex-direction: column; gap: 12px; }
 .wl-set-card { overflow: hidden; }
 .wl-set-head { display: flex; align-items: flex-start; gap: 12px; padding: 15px 16px; }
 .wl-set-ico {
@@ -3640,6 +3681,23 @@ body.nt-fs-open { overflow: hidden; }
   border-left: 2px solid var(--border);
   padding-left: 10px; margin-top: 14px; line-height: 1.75;
 }
+/* 日记四格改名：两列输入 + 低饱和序号，常驻样式（关闭态设置卡片也要能显示） */
+.jr-label-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; flex: 1; min-width: 260px; }
+.jr-label-row { display: flex; align-items: center; gap: 7px; }
+.jr-label-ix {
+  width: 18px; height: 18px; flex: none; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 10px; font-weight: 650;
+}
+.jr-ix-0 { background: #6b7fa8; } .jr-ix-1 { background: #7b8b5f; }
+.jr-ix-2 { background: #b07a5a; } .jr-ix-3 { background: #8a6f9e; }
+.jr-label-row input {
+  flex: 1; min-width: 0; height: 28px; padding: 0 9px;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg-ground); color: var(--text);
+  font-family: inherit; font-size: 12.5px; outline: 0;
+}
+.jr-label-row input:focus { border-color: rgb(var(--primary-rgb) / .45); }
 
 .wl-chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .wl-chip {
@@ -3679,3 +3737,5 @@ body.nt-fs-open { overflow: hidden; }
 .wl-off-text { font-size: 12.5px; color: var(--text-3); }
 .wl-off-text b { color: var(--text-2); font-weight: 600; }
 .wl-off-btn { margin-top: 4px; }
+/* 日记引导页与工时同形态（关闭态样式同样必须常驻） */
+.jr-off-hint { font-size: 11.5px; color: var(--text-3); margin-top: -2px; }

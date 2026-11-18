@@ -1,0 +1,183 @@
+/* ============================================================
+   四象日记 · 插件样式（动态注入 / 卸载，关闭态磁盘上也不进 DOM）
+   对齐 docs/features/journal-prototype.html，色值全部走 token 三元组；
+   只用低饱和竖线 / 圆点区分四象，不开色块（宣纸底上色块会毁质感）。
+   ============================================================ */
+
+/* 四象低饱和四色：灰蓝 / 苔绿 / 赭 / 灰紫。只用于线条与圆点。 */
+.jr-view {
+  --ax0: #6b7fa8; --ax1: #7b8b5f; --ax2: #b07a5a; --ax3: #8a6f9e;
+  display: flex; flex-direction: column; min-height: 0; flex: 1;
+}
+[data-theme="dark"] .jr-view {
+  --ax0: #8ba6d8; --ax1: #9db582; --ax2: #d09b78; --ax3: #b393c9;
+}
+
+/* 高度链：宿主 #view 是 overflow-y:auto 的**块**容器（不是 flex），
+   .jr-view 上的 flex:1 拿不到高度，四格会塌成内容高、下面空一大片。
+   这里就地把它变成列 flex，滚动交给碎碎念列表自己（:has 保证只影响日记页）。 */
+.view:has(> .jr-view) {
+  display: flex; flex-direction: column;
+  overflow: hidden; padding-bottom: 14px;
+}
+
+/* 日期导航条 */
+.jr-daybar { display: flex; align-items: center; gap: 10px; padding: 0 0 12px; flex: none; }
+.jr-daynav { display: flex; align-items: center; gap: 2px; }
+.jr-arrow {
+  width: 26px; height: 26px; flex: none;
+  border: 0; border-radius: 6px; background: transparent; color: var(--text-2);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.jr-arrow:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.jr-arrow:disabled { color: var(--text-3); opacity: .4; cursor: default; }
+.jr-arrow svg { width: 14px; height: 14px; }
+.jr-day { font-size: 13.5px; font-weight: 600; min-width: 132px; text-align: center; font-variant-numeric: tabular-nums; }
+.jr-week { color: var(--text-3); font-weight: 500; font-size: 12px; margin-left: 4px; }
+.jr-streak {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--text-3); font-size: 11.5px;
+  padding: 2px 8px; border-radius: 999px; background: var(--bg-hover);
+}
+.jr-streak b { color: var(--primary-strong); font-weight: 650; }
+.jr-daybar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.jr-save {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--text-3); font-size: 11.5px; min-width: 62px; justify-content: flex-end;
+}
+.jr-save.is-saving { color: var(--text-3); }
+.jr-save.is-saved { color: rgb(var(--green-rgb, 35 176 126)); }
+.jr-save .sdot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.jr-ghost {
+  height: 28px; padding: 0 11px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg-panel); color: var(--text-2); font-size: 12px; cursor: pointer;
+}
+.jr-ghost:hover { background: var(--bg-hover); color: var(--text); }
+
+/* 主体：四格 + 碎碎念列 */
+.jr-body { flex: 1; min-height: 0; display: flex; gap: 18px; }
+.jr-quads {
+  flex: 1; min-width: 0;
+  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 12px;
+}
+.quad {
+  background: var(--bg-ground); border: 1px solid var(--border); border-radius: 11px;
+  padding: 12px 14px 10px; display: flex; flex-direction: column; min-height: 0;
+  position: relative; overflow: hidden;
+  transition: border-color .14s ease, box-shadow .14s ease;
+}
+.quad::before {
+  content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--ax);
+}
+.quad:focus-within { border-color: var(--ax); }
+.quad-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; flex: none; }
+.quad-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ax); flex: none; }
+.quad-label { font-size: 12px; font-weight: 650; color: var(--text-2); letter-spacing: .3px; }
+.quad-count { margin-left: auto; color: var(--text-3); font-size: 10.5px; }
+.quad textarea {
+  flex: 1; min-height: 0; width: 100%; resize: none;
+  border: 0; outline: 0; background: transparent; color: var(--text);
+  font-family: inherit; font-size: 13px; line-height: 1.72; padding: 0;
+}
+.quad textarea::placeholder { color: var(--text-3); opacity: .85; }
+
+/* 碎碎念列 */
+.jr-notes {
+  width: 316px; flex: none; display: flex; flex-direction: column;
+  background: var(--bg-ground); border: 1px solid var(--border); border-radius: 11px;
+  min-height: 0; overflow: hidden;
+}
+.notes-head {
+  display: flex; align-items: center; gap: 6px; padding: 11px 13px 9px;
+  border-bottom: 1px solid var(--border); flex: none;
+}
+.nh-title { font-size: 12px; font-weight: 650; color: var(--text-2); letter-spacing: .3px; }
+.nh-count { color: var(--text-3); font-size: 11px; margin-left: auto; }
+.notes-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 6px 6px; }
+.jr-note { position: relative; padding: 6px 9px 7px; border-radius: 8px; margin-bottom: 2px; }
+.jr-note:hover { background: var(--bg-hover); }
+.note-top { display: flex; align-items: center; gap: 6px; margin-bottom: 1px; }
+.note-time { color: var(--text-3); font-size: 10.5px; letter-spacing: .2px; font-variant-numeric: tabular-nums; }
+.note-tag {
+  font-size: 10px; padding: 0 5px; border-radius: 999px; line-height: 15px;
+  background: rgb(var(--border-rgb) / .5); color: var(--ax);
+  border: 1px solid var(--border);
+}
+.note-body { font-size: 12.5px; color: var(--text); line-height: 1.6; word-break: break-word; white-space: pre-wrap; }
+.jr-note.is-done .note-body { text-decoration: line-through; color: var(--text-3); }
+.note-acts {
+  position: absolute; right: 6px; top: 5px; display: flex; gap: 2px;
+  opacity: 0; transition: opacity .12s ease;
+}
+.jr-note:hover .note-acts, .jr-note:focus-within .note-acts { opacity: 1; }
+.note-act {
+  width: 21px; height: 21px; border: 0; border-radius: 5px;
+  background: var(--bg-panel); color: var(--text-3); display: inline-flex;
+  align-items: center; justify-content: center; cursor: pointer;
+}
+.note-act:hover { background: var(--bg-active); color: var(--primary-strong); }
+.note-act svg { width: 12px; height: 12px; }
+.notes-empty { padding: 26px 16px; text-align: center; color: var(--text-3); font-size: 12px; line-height: 1.8; }
+.notes-empty .ne-sub { font-size: 11px; }
+.notes-input {
+  flex: none; border-top: 1px solid var(--border); padding: 8px 9px 9px;
+  display: flex; align-items: flex-end; gap: 6px;
+}
+.notes-input textarea {
+  flex: 1; min-height: 30px; max-height: 92px; resize: none;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-ground);
+  color: var(--text); font-family: inherit; font-size: 12.5px; line-height: 1.6;
+  padding: 6px 9px; outline: 0;
+}
+.notes-input textarea:focus { border-color: rgb(var(--primary-rgb) / .45); }
+.notes-input textarea::placeholder { color: var(--text-3); }
+.ni-send {
+  width: 30px; height: 30px; flex: none; border: 0; border-radius: 8px;
+  background: var(--primary); color: #fff; display: inline-flex;
+  align-items: center; justify-content: center; cursor: pointer;
+}
+.ni-send:hover { background: var(--primary-strong); }
+.ni-send svg { width: 14px; height: 14px; }
+.ni-hint { padding: 0 12px 8px; color: var(--text-3); font-size: 10.5px; }
+
+/* 归入菜单：浮层挂 body，自带 z-index（抽屉 150/320 之上要可读） */
+.ax-menu {
+  position: fixed; z-index: 330; min-width: 132px;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 9px;
+  box-shadow: var(--shadow); padding: 4px;
+}
+.ax-menu button {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 6px 8px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--text); font-size: 12.5px; text-align: left; cursor: pointer; font-family: inherit;
+}
+.ax-menu button:hover { background: var(--bg-hover); }
+.ax-menu .sep { height: 1px; background: var(--border); margin: 3px 2px; }
+.ax-menu .ax-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+/* 归入 / 删除的 5 秒撤销条：底部居中，与计时条同体系但不盖碎碎念输入 */
+.jr-undo-bar {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 215;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 12px 8px 16px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-elevated); box-shadow: var(--shadow);
+  color: var(--text-2); font-size: 12.5px;
+}
+.jr-undo-bar button {
+  border: 0; border-radius: 6px; background: rgb(var(--primary-rgb) / .12);
+  color: var(--primary); font-size: 12px; padding: 3px 10px; cursor: pointer; font-family: inherit;
+}
+.jr-undo-bar button:hover { background: rgb(var(--primary-rgb) / .2); }
+.jr-note .note-trace { font-size: 10.5px; color: var(--text-3); margin-top: 2px; }
+
+/* 数据未就绪：不白屏 */
+.jr-unready { padding: 40px; text-align: center; color: var(--text-3); }
+
+/* 窄窗：主区 < 900 时碎碎念收到四格下方（原型 1180 断点按真实顶栏换算后取 1020） */
+@media (max-width: 1020px) {
+  .jr-body { flex-direction: column; }
+  .jr-notes { width: auto; flex: none; height: 190px; }
+  .jr-quads { flex: 1; min-height: 0; }
+}

@@ -515,6 +515,8 @@ const MIGRATIONS = [
   (d) => { require('./worklog/schema').migrate(d); },
   // v19：工时记薪费率表。同上，DDL 放插件目录，迁移期一次性建表，与开关无关。
   (d) => { require('./worklog/schema').migratePay(d); },
+  // v20：四象日记（插件功能）。同 v18/v19：DDL 在插件目录，迁移期建表，与开关无关。
+  (d) => { require('./journal/schema').migrate(d); },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -542,6 +544,12 @@ function init(dbDir, dbFileName = 'todo.db') {
       run();
     }
     seedDefaults();
+    // 插件表的「补列」必须每次启动都校正：迁移只在升级那一次跑，
+    // 库若已经是 v20（早一版建的 journal_notes 没有 task_id）就再也轮不到迁移。
+    // migrate() 自身幂等（CREATE IF NOT EXISTS + PRAGMA 判列），代价三条语句。
+    try { require('./journal/schema').migrate(db); } catch (e) {
+      console.error('[db] 校正日记表结构失败：', e && e.message);
+    }
     initError = '';
     return db;
   } catch (e) {
@@ -1468,10 +1476,15 @@ function syncRuleFieldsToTask(taskId, f) {
  * originTaskId 存在时把已有的一次性任务就地转成重复事项（保留附件 / 关联笔记 / 子任务）。
  */
 function createRecurringRule(p = {}) {
-  const f = ruleInput(p);
-  const t = nowIso();
   const originId = p.originTaskId != null ? Number(p.originTaskId) : null;
   const origin = originId ? db.prepare('SELECT * FROM tasks WHERE id = ?').get(originId) : null;
+  // 就地转换（已有任务 → 重复事项）必须先读原任务再算 f：ruleInput 用空 base 时，
+  // group_id / priority / tag_ids 会回退成 null / 1 / []，再被 syncRuleFieldsToTask 写回
+  // 任务行 —— 表现就是「加完重复跑到未分组」，优先级和标签同时被重置。
+  // tag_ids 存在独立表 task_tags，tasks 行里没有，用 getTask() 补齐。
+  const base = origin ? { ...origin, tag_ids: JSON.stringify(getTask(origin.id)?.tag_ids || []) } : {};
+  const f = ruleInput(p, base);
+  const t = nowIso();
   const run = db.transaction(() => {
     let taskId;
     if (origin) {
@@ -1641,9 +1654,29 @@ function rollRecurringTask(ruleId, opts = {}) {
   const skips = new Set(listSkips(ruleId));
   let day = '';
   if (rule.enabled && (!end || today <= end)) {
-    const from = today > start ? today : start;
-    const list = recurRules.occurrences(rule.rule, from, dateU.addDays(from, RECUR_AHEAD_DAYS), start);
-    day = list.find((d) => !skips.has(d)) || '';
+    // 1) 优先延续「本次未完成、且还在完成窗口内」的发生日。
+    //    原逻辑从 today 起找下一次，跨天就把 occurrence_date 跳到下一轮，
+    //    「每周一 + 5 天内完成」的事周二就从前台消失，整天判据实际退化成「只在发生日当天」。
+    //    候选窗口只取 dueOffsetDays 天，避免每天/每周规则把很久以前的未完成一直堆在前面。
+    const dueOffset = rule.rule.dueOffsetDays;
+    if (dueOffset > 0) {
+      const winFrom = dateU.addDays(today, -dueOffset);
+      const recent = recurRules.occurrences(rule.rule, winFrom < start ? start : winFrom, today, start)
+        .filter((d) => !skips.has(d));
+      const prev = recent[recent.length - 1] || '';
+      if (prev) {
+        const prevDone = db.prepare(
+          'SELECT 1 FROM recurrence_completions WHERE rule_id = ? AND occurrence_date = ?'
+        ).get(ruleId, prev);
+        if (!prevDone) day = prev;
+      }
+    }
+    // 2) 没有待续的本次，就取「今天及以后的下一次发生日」
+    if (!day) {
+      const from = today > start ? today : start;
+      const list = recurRules.occurrences(rule.rule, from, dateU.addDays(from, RECUR_AHEAD_DAYS), start);
+      day = list.find((d) => !skips.has(d)) || '';
+    }
   }
   const f = day
     ? recurRules.instanceFields(rule.rule, day)
@@ -3200,7 +3233,7 @@ function kbStats(kbId = 1) {
 function exportData() {
   return {
     app: 'todo-desktop',
-    schemaVersion: 16,
+    schemaVersion: 17,
     exportedAt: nowIso(),
     groups: db.prepare('SELECT * FROM groups ORDER BY id').all(),
     tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
@@ -3231,6 +3264,10 @@ function exportData() {
     worklog_entries: db.prepare("SELECT * FROM worklog_entries WHERE status <> 'running' ORDER BY id").all(),
     // 工时记薪费率：与工时同样无条件导出，金额是派生值不落库，费率丢了历史就再也算不对。
     pay_rates: db.prepare('SELECT * FROM pay_rates ORDER BY effective_from').all(),
+    // 四象日记：**无论插件开关是否开启都导出** —— 用户关一次插件再备份，日记不能静默丢失。
+    // 隐私：日记只在这份本地 JSON 里，不进任何 AI / 检索链路。
+    journal_cells: db.prepare('SELECT * FROM journal_cells ORDER BY day, cell').all(),
+    journal_notes: db.prepare('SELECT * FROM journal_notes ORDER BY day, created_at, id').all(),
     settings: db
       .prepare('SELECT * FROM settings WHERE key NOT LIKE ?')
       .all('ai.apiKey%'),
@@ -3264,6 +3301,8 @@ function importData(data) {
     db.prepare('DELETE FROM focus_sessions').run();
     db.prepare('DELETE FROM worklog_entries').run();
     db.prepare('DELETE FROM pay_rates').run();
+    db.prepare('DELETE FROM journal_cells').run();
+    db.prepare('DELETE FROM journal_notes').run();
     db.prepare('DELETE FROM note_tag_map').run();
     db.prepare('DELETE FROM notes').run();
     db.prepare('DELETE FROM note_tags').run();
@@ -3507,6 +3546,35 @@ function importData(data) {
       if (!day || !Number.isFinite(cents) || cents <= 0 || seenRateDay.has(day)) continue;
       seenRateDay.add(day);
       insRate.run(r.id ?? null, cents, day, r.currency || 'CNY', r.note || '', r.created_at || t0);
+    }
+
+    // 四象日记：老备份没有这两个键时按空表跳过；cell 固定 0..3，重复 (day,cell) 只取一条。
+    const insCell = db.prepare(
+      'INSERT INTO journal_cells (day, cell, body, updated_at) VALUES (?, ?, ?, ?)'
+    );
+    const seenCell = new Set();
+    for (const c of data.journal_cells || []) {
+      const day = c.day ? String(c.day).slice(0, 10) : '';
+      const i = Number(c.cell);
+      const key = `${day}#${i}`;
+      if (!day || !Number.isInteger(i) || i < 0 || i > 3 || seenCell.has(key)) continue;
+      seenCell.add(key);
+      insCell.run(day, i, String(c.body || ''), c.updated_at || t0);
+    }
+    const insJrNote = db.prepare(
+      `INSERT INTO journal_notes (id, day, body, cell, task_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const n of data.journal_notes || []) {
+      const day = n.day ? String(n.day).slice(0, 10) : '';
+      if (!day || !n.body) continue;
+      let cell = null;
+      if (n.cell != null && n.cell !== '') {
+        const i = Number(n.cell);
+        cell = Number.isInteger(i) && i >= 0 && i <= 3 ? i : null;
+      }
+      const tid = Number.isFinite(Number(n.task_id ?? n.taskId)) && (n.task_id ?? n.taskId) != null
+        ? Number(n.task_id ?? n.taskId) : null;
+      insJrNote.run(n.id ?? null, day, String(n.body), cell, tid, n.created_at || t0, n.updated_at || t0);
     }
 
     const insKb = db.prepare(

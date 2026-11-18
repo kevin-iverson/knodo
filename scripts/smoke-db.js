@@ -324,9 +324,12 @@ check('列表按创建时间倒序', list[0].title === '评审会' && list.some(
 check('数量正确', list.length === 3); // 含上面那个「未命名会议」
 
 const exportSnap = db.exportData();
-check('导出含 meetings 且 schema 升级到 16',
-  exportSnap.schemaVersion === 16 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
+// 版本断言用「不低于」：写死具体数字时，每次加表都要回来改，漏改就是一条假失败。
+check('导出含 meetings 且 schema 不低于 17',
+  exportSnap.schemaVersion >= 17 && Array.isArray(exportSnap.meetings) && exportSnap.meetings.length === 3
   && Array.isArray(exportSnap.pay_rates) // v19 工时记薪费率随备份走
+  && Array.isArray(exportSnap.journal_cells) // v20 四象日记：插件关着也要导出
+  && Array.isArray(exportSnap.journal_notes)
   && Array.isArray(exportSnap.reports) && Array.isArray(exportSnap.ai_searches)
   && Array.isArray(exportSnap.kb_qa)
   && Array.isArray(exportSnap.notes) && Array.isArray(exportSnap.note_folders)

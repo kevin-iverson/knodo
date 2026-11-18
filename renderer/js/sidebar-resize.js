@@ -28,6 +28,10 @@ function apply(w) {
   // 「侧栏色段 / 主区色段」的分界）是 .app 的兄弟节点，挂在 .app 上它读不到。
   // .sidebar 仍然消费同一个变量，层级没变。
   document.documentElement.style.setProperty('--sidebar-width', `${w}px`);
+  // 「有新版本」角标要跟齿轮抢同一段空间（齿轮 absolute，左缘 = 侧栏宽 − 38）。
+  // 实测默认 220 下角标右缘离齿轮只剩 3px，再窄就必然压上去 —— 而齿轮是设置的唯一入口。
+  // 所以窄侧栏直接让位：少一个提示可以，压住齿轮不行。
+  document.documentElement.classList.toggle('tb-badge-tight', w < 220);
   const app = document.querySelector('.app');
   if (app) app.style.setProperty('--sidebar-width', `${w}px`);
   const bar = document.querySelector('.sidebar');

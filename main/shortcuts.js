@@ -44,6 +44,9 @@ const ACTIONS = [
     def: `Control+Alt+${n}`,
   })),
   { id: 'app.calendar', label: '日历视图', hint: '打开日历视图（再按一次回列表）', def: 'Control+Alt+M' },
+  // 四象日记：J（Journal）。与日历 M 同族，但它是插件功能 —— 关闭时主进程不转发，
+  // 也不把窗口顶起来假装「按了有反应」。入口提示里早就写着这组键，必须真的能按。
+  { id: 'app.journal', label: '四象日记', hint: '打开日记视图（插件开启时）', def: 'Control+Alt+J' },
   // 趣味功能：E（Encourager）打开主浮窗。
   // 菜单加速键另用 CmdOrCtrl+Shift+* 前缀，不与全局键重复注册。
   { id: 'util.encourager', label: '上班鼓励器', hint: '打开 / 聚焦主浮窗（薪资进账主界面）', def: 'Control+Alt+E' },

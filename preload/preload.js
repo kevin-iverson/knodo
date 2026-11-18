@@ -285,6 +285,8 @@ contextBridge.exposeInMainWorld('api', {
     getVersion: () => call('app:getVersion'),
     // 检查更新：结果由主进程用原生对话框展示，这里只负责把动作叫起来
     checkUpdate: () => call('app:checkUpdate'),
+    // 标题栏「有新版本」角标：拉一次当前更新状态（初始化时用，防事件早于页面加载）
+    getUpdateState: () => call('app:getUpdateState'),
     // 「用了 N 天了」的一次性提示：天数与「是否已问过」都由主进程判定，
     // 渲染层只在「今天全部做完」时叫它一次
     sponsorPrompt: () => call('app:sponsorPrompt'),
@@ -402,12 +404,30 @@ contextBridge.exposeInMainWorld('api', {
   },
   /**
    * 功能插件开关注册中心（常驻，与插件本身无关）。
-   * 关闭态下只有这一个命名空间可用 —— 插件自己的 worklog 命名空间虽然也在这里暴露，
-   * 但主进程没注册 handler，调用会立刻失败（这正是「关=零成本」的验收点）。
+   * 关闭态下只有这个命名空间和各插件自己的 pref 通道可用 —— 插件业务通道
+   * （如 worklog:*）主进程没注册 handler，调用会立刻失败（「关=零成本」的验收点）。
+   *
+   * 兼容：无参 pref() / setPref(patch) 仍只操作工时（验收脚本与老代码都这么用）；
+   * 新代码显式传插件名：pref('buddy') / setPref('buddy', { enabled: true })。
    */
   features: {
-    pref: () => call('worklog:pref/get'),
-    setPref: (patch) => call('worklog:pref/set', patch || {}),
+    pref: (name) => name ? call('features:get', name) : call('worklog:pref/get'),
+    setPref: (nameOrPatch, patch) => (typeof nameOrPatch === 'string'
+      ? call('features:set', nameOrPatch, patch || {})
+      : call('worklog:pref/set', nameOrPatch || {})),
+  },
+  /**
+   * 四象日记（插件，默认关闭）。纯透传：主进程持有 SQLite，渲染层只发指令 + 收快照。
+   * 日记不进 FTS / AI，所有请求都走 journal:* 通道；关闭态主进程没有 handler。
+   */
+  journal: {
+    day: (day) => call('journal:day/get', { day }),
+    stats: () => call('journal:stats'),
+    setCell: (p) => call('journal:cell/set', p || {}),
+    noteAdd: (p) => call('journal:note/add', p || {}),
+    noteUpdate: (p) => call('journal:note/update', p || {}),
+    noteRemove: (id) => call('journal:note/remove', id),
+    noteFold: (p) => call('journal:note/fold', p || {}),
   },
   /**
    * 工时（插件，默认关闭）。全部为纯透传：渲染层不持有任何计时状态，
@@ -466,13 +486,17 @@ contextBridge.exposeInMainWorld('api', {
       'ui:calendar', 'ui:archive-done',
       // 启动时的静默检查更新：发现新版只推一条轻提示，详情由 File → 检查更新 打开
       'ui:update-available',
-      // 功能插件：开关变化（渲染层据此动态 mount / unmount 工时模块）
+      // 更新状态快照（角标显隐）：静默 / 手动检查完成后主进程都会推一次
+      'ui:update-state',
+      // 功能插件：开关变化（渲染层据此动态 mount / unmount 工时 / 搭子模块）
       'feature:changed',
       // 工时：主进程计时状态变化（开始 / 暂停 / 继续 / 结束 / 崩溃对账后的提示）
       'worklog:changed',
+      // 四象日记：多窗口写同步（P0 桌面浮窗不消费）
+      'journal:changed',
       // 工时：浮窗点 ☯ 后由主进程转发，主窗口据此弹出全屏禅层
       'ui:zen-open',
-      // 趣味功能 → 上班鼓励器：主浮窗 / 卡片页
+      // 趣味功能 → 上班鼓励器：主浮窗 / 卡片页（仅搭子插件开启时才由主进程推送）
       'ui:encourager', 'ui:encourager-card',
       // 截图建任务：取图成功 → 开确认卡；取图失败 / 框选超时 → 只要一句提示
       'ui:screenshot', 'ui:shot-error', 'ui:shot-timeout',
@@ -480,7 +504,12 @@ contextBridge.exposeInMainWorld('api', {
       'ui:voice-toggle',
     ];
     if (allowed.includes(channel)) {
-      ipcRenderer.on(channel, (_e, ...args) => cb(...args));
+      const listener = (_e, ...args) => cb(...args);
+      ipcRenderer.on(channel, listener);
+      // 返回退订函数：动态插件 unmount 时必须摘掉自己的监听，
+      // 否则关掉再开会叠两层监听（老调用方忽略返回值，行为不变）。
+      return () => ipcRenderer.removeListener(channel, listener);
     }
+    return () => {};
   },
 });

@@ -1,8 +1,10 @@
 'use strict';
 /**
- * 上班鼓励器 · 主浮窗（薪资进账主界面）。
+ * 上班鼓励器 · 工位搭子（插件模块，默认不加载）。
  *
  * 形态：主窗口内的模态浮窗（openPanelModal），五页签「搭子 / 抽签 / 抱团 / 卡片 / 设置」。
+ * 入口由 app.js 按 feature.buddy 动态 mount / unmount：关闭时这个文件不 import、
+ * css/encourager.css 不注入、菜单 / 快捷键监听全部摘掉，完成任务的发币提示也不再出现。
  * 内容区是宽屏两栏排布（搭子 / 卡片）或两列网格（抱团），目的是在常见视口下
  * 五个页签全部一屏看全、不出现滚动条；只有用户展开长列表时才在局部小区域滚动。
  * 月薪与班次读 tool.salary：既可在浮窗内「设置」页签直接填（首次使用的主入口），
@@ -62,6 +64,26 @@ let doneFlushTimer = null;
 let speechTimer = null;
 let pendingSpeech = '';
 let salarySaveTimer = null;
+/** 插件生命周期：只有 mount() 之后才允许开浮窗 / 发币 / 重画 */
+let mounted = false;
+let disposers = [];
+const CSS_ID = 'enc-css';
+
+/* ---------------- 插件外壳 ---------------- */
+
+function injectCss() {
+  if (document.getElementById(CSS_ID)) return;
+  const link = document.createElement('link');
+  link.id = CSS_ID;
+  link.rel = 'stylesheet';
+  link.href = 'css/encourager.css';
+  document.head.appendChild(link);
+}
+
+function removeCss() {
+  const link = document.getElementById(CSS_ID);
+  if (link) link.remove();
+}
 
 /* ---------------- 小工具 ---------------- */
 
@@ -331,6 +353,8 @@ function shellHtml() {
 /* ---------------- 打开 / 关闭 ---------------- */
 
 export async function openEncourager(opts = {}) {
+  // 插件关闭后模块可能还留在 JS 堆里（等 GC），但绝不允许再开浮窗
+  if (!mounted) return;
   if (openMask && openMask.isConnected) {
     if (opts.tab) switchTab(openMask, opts.tab);
     const active = openMask.querySelector('.enc-tab.is-active');
@@ -383,18 +407,57 @@ function maybeCoinHint(mask) {
 
 /* ---------------- 事件 ---------------- */
 
-export function listenEncouragerMenu() {
-  api.on('ui:encourager', (payload) => {
-    openEncourager(payload || {}).catch((e) => notify(`打开上班鼓励器失败：${(e && e.message) || e}`));
-  });
-  api.on('ui:encourager-card', () => {
-    openEncourager({ tab: 'card' }).catch((e) => notify(`打开今日牛马卡失败：${(e && e.message) || e}`));
-  });
+function onConfigChange() { reloadConfig().catch(() => {}); }
+
+function onThemeChange() {
+  if (mounted && openMask && activeTab === 'card') renderCardPreview(openMask, readCardOpts(openMask));
+}
+
+/** 由 app.js 在 feature.buddy 开启时调用；关闭时反调用 unmount() */
+export function mount() {
+  if (mounted) return;
+  mounted = true;
+  injectCss();
+  disposers.push(
+    api.on('ui:encourager', (payload) => {
+      if (!mounted) return;
+      openEncourager(payload || {}).catch((e) => notify(`打开上班鼓励器失败：${(e && e.message) || e}`));
+    }),
+    api.on('ui:encourager-card', () => {
+      if (!mounted) return;
+      openEncourager({ tab: 'card' }).catch((e) => notify(`打开今日牛马卡失败：${(e && e.message) || e}`));
+    }),
+  );
   document.addEventListener('app:task-completed', onTaskCompleted);
-  document.addEventListener('app:encourager-config', () => { reloadConfig().catch(() => {}); });
-  document.addEventListener('app:theme-changed', () => {
-    if (openMask && activeTab === 'card') renderCardPreview(openMask, readCardOpts(openMask));
-  });
+  document.addEventListener('app:encourager-config', onConfigChange);
+  document.addEventListener('app:theme-changed', onThemeChange);
+}
+
+export function unmount() {
+  if (!mounted) return;
+  mounted = false;
+
+  // 面板正开着就走它自己的 ✕，让 onClose 有机会清掉 resize / 计时 / 暂存
+  const live = document.querySelector('.modal-encourager') || openMask;
+  const closeBtn = live && live.querySelector('[data-modal="close"]');
+  if (closeBtn && live.isConnected) closeBtn.click();
+  else {
+    stopTicker();
+    openMask = null;
+  }
+
+  for (const off of disposers) { try { off(); } catch (e) { /* 退订失败不挡卸载 */ } }
+  disposers = [];
+  document.removeEventListener('app:task-completed', onTaskCompleted);
+  document.removeEventListener('app:encourager-config', onConfigChange);
+  document.removeEventListener('app:theme-changed', onThemeChange);
+  clearTimeout(doneFlushTimer); doneFlushTimer = null;
+  clearTimeout(speechTimer); speechTimer = null;
+  clearTimeout(salarySaveTimer); salarySaveTimer = null;
+  stopTicker();
+  pendingDone = [];
+  pendingSpeech = '';
+  removeCss();
 }
 
 function bindEvents(mask) {
@@ -565,6 +628,7 @@ function saveSalaryFromForm(mask, silent) {
 /* ---------------- 任务完成 → 发币 + 回应 ---------------- */
 
 function onTaskCompleted(e) {
+  if (!mounted) return;
   const id = e && e.detail ? e.detail.id : null;
   if (id == null) return;
   const r = awardTask(cfg, id);

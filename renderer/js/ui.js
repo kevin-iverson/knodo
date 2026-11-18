@@ -28,8 +28,7 @@ import {
   renderNotes, setNotesHandlers, createNote, disposeNotes, importNotesFromDisk, openNotesDock,
 } from './notes.js';
 import { bindRecordButtons, setRecorderHandlers } from './recorder.js';
-// 趣味功能 → 上班鼓励器（薪资进账主界面）；不反向 import ui.js，toast / 统计走依赖注入
-import { listenEncouragerMenu, setEncouragerHandlers, openEncourager } from './encourager.js';
+// 趣味功能 → 上班鼓励器是插件：这里只留入口点击，实际模块由 app.js 按开关动态挂载
 import { setNoteExportHandlers } from './sync.js';
 import { bindImageZoom } from './image-zoom.js';
 import { initSidebarResize } from './sidebar-resize.js';
@@ -137,6 +136,19 @@ let lastSentContext;
 
 /* ---------------- 初始化 ---------------- */
 
+/** 给搭子插件注入的统计快照：避免 encourage.js 反向 import ui.js 成环 */
+export function getEncouragerStats() {
+  const done = state.recentlyDone.size;
+  const active = (state.tasks || []).filter((t) => !t.completed).length;
+  const byId = new Map((state.tasks || []).map((t) => [String(t.id), t]));
+  const titles = [...state.recentlyDone]
+    .map((id) => byId.get(String(id)))
+    .filter((t) => t && t.title)
+    .slice(0, 20)
+    .map((t) => ({ id: t.id, title: String(t.title).slice(0, 60) }));
+  return { done, total: done + active, titles };
+}
+
 export async function init() {
   setDetailHandlers({ refresh: () => { renderSidebar(); renderTasks(); }, toast });
   setSearchHandlers({ openDetail, toast });
@@ -186,6 +198,8 @@ export async function init() {
     openTaskDetail: (id) => openDetail(id),
   });
   bindStaticEvents();
+  // 顶栏五入口空间不足时降级成纯图标（侧栏拉宽 / 窗口缩小都会触发）
+  initTopbarCompact();
   // 窗口三键：绑定点击 + 跟随主进程推来的最大化状态（图标在 最大化 / 还原 间切换）
   initWindowControls();
   // 图片双击放大：事件委托挂在 document 上，动态重绘出来的图片自动生效
@@ -208,6 +222,66 @@ export async function init() {
   await render();
 }
 
+/**
+ * 标题栏「有新版本」角标：状态唯一来源在主进程（updateState），渲染层只负责显隐。
+ * 两条链路都会调到这里 —— 启动时的 getUpdateState 拉取，与运行中的 ui:update-state 推送；
+ * 这样无论检查发生在页面加载之前还是之后，角标都不会漏更新。
+ */
+function paintUpdateBadge(info) {
+  const el = document.getElementById('sb-update-badge');
+  if (!el) return;
+  const on = !!(info && info.hasUpdate);
+  el.hidden = !on;
+  if (on) {
+    const v = info.tag || (info.latest ? `v${info.latest}` : '');
+    const tip = v ? `发现新版本 ${v}：点击查看更新说明并下载` : '发现新版本：点击查看更新说明并下载';
+    el.title = tip;
+    el.setAttribute('aria-label', tip);
+  }
+}
+
+/**
+ * 顶栏快捷入口的挤压降级（方案 §7.3）。
+ *
+ * 两个必踩的坑：
+ *  ① 判定必须用**缓存的展开宽度** —— 加 is-compact 后按钮自身变窄，拿当前宽度再判
+ *     会翻回 false，于是「加 class → 变窄 → 去掉 → 又撞」来回抖；
+ *  ② 只监听 window.resize 不够 —— 侧栏宽度变化 / 搭子入口显隐都改 .tb-nav 的几何，
+ *     要同时观察 tbNav 自身与 documentElement。
+ */
+function initTopbarCompact() {
+  const nav = document.querySelector('.tb-nav');
+  const mode = document.getElementById('btn-theme-mode');
+  if (!nav || !mode) return;
+  let fullWidth = 0;
+  const measure = () => {
+    const compact = document.body.classList.contains('is-compact');
+    const a = nav.getBoundingClientRect();
+    const b = mode.getBoundingClientRect();
+    if (!compact) fullWidth = a.width;
+    const want = a.left + (compact ? fullWidth : a.width) > b.left - 4;
+    document.body.classList.toggle('is-compact', want);
+    // 加上降级 class 之后重新量一次真实右缘：这才是「有没有压住滑块」的唯一证据
+    const after = nav.getBoundingClientRect();
+    window.__topbarCompact = {
+      navLeft: Math.round(a.left), navFullW: Math.round(compact ? fullWidth : a.width),
+      wouldRight: Math.round(a.left + (compact ? fullWidth : a.width)),
+      navRight: Math.round(after.right),
+      modeLeft: Math.round(b.left), compact: want,
+    };
+  };
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(measure).observe(document.documentElement);
+    new ResizeObserver(measure).observe(nav);
+  }
+  window.addEventListener('resize', measure);
+  // 搭子 / 日记这类入口显隐会改宽度，MutationObserver 兜住（不监听会停在旧判定）
+  if (typeof MutationObserver === 'function') {
+    new MutationObserver(measure).observe(nav, { attributes: true, attributeFilter: ['hidden', 'class'] });
+  }
+  requestAnimationFrame(measure);
+}
+
 function bindStaticEvents() {
   // 导航
   document.querySelectorAll('.nav-item').forEach((btn) => {
@@ -226,19 +300,21 @@ function bindStaticEvents() {
         .finally(() => btnSettings.classList.remove('is-open'));
     });
   }
-  // 标题栏「搭子」：打开工位搭子面板的「搭子」页（Ctrl+Alt+E 走同一条链路，默认也是这页）。
+  // 标题栏「搭子」：插件开启时才由 app.js 揭进入口；这里只负责点击 → 打开「搭子」页。
   // 它不是视图，所以不碰 state.view —— 模态关掉后停在原来那个视图，符合「点一下看看就走」。
   const btnBuddy = document.getElementById('btn-buddy');
   if (btnBuddy) {
     btnBuddy.addEventListener('click', () => {
+      const mod = window.KnodoEncourager;
+      if (!mod) { toast('工位搭子插件未启用'); return; }
       // 面板已经开着（可能停在其他页签）：只切页，不叠第二个模态，按钮也别闪一下
       if (document.querySelector('.modal-encourager')) {
-        openEncourager({ tab: 'buddy' }).catch(() => {});
+        mod.openEncourager({ tab: 'buddy' }).catch(() => {});
         return;
       }
       // 与齿轮同款：Promise 在关闭时才 resolve，正好拿来点亮 / 熄灭
       btnBuddy.classList.add('is-open');
-      openEncourager({ tab: 'buddy' })
+      mod.openEncourager({ tab: 'buddy' })
         .catch((e) => toast(`打开工位搭子失败：${(e && e.message) || e}`))
         .finally(() => btnBuddy.classList.remove('is-open'));
     });
@@ -250,6 +326,20 @@ function bindStaticEvents() {
       if (el && v) el.textContent = `v${v}`;
     })
     .catch(() => {});
+  // 「有新版本」角标：点一下复用设置页那条检查链路（原生对话框给下载 / 发布页按钮）
+  const elUpdateBadge = document.getElementById('sb-update-badge');
+  if (elUpdateBadge) {
+    elUpdateBadge.addEventListener('click', () => {
+      api.app.checkUpdate().catch(() => {});
+    });
+  }
+  // 拉取一次当前状态：覆盖「静默检查早于页面加载完成」的场合；失败静默，不影响启动
+  Promise.resolve(api.app.getUpdateState()).then(paintUpdateBadge).catch(() => {});
+  window.__updateBadgeSnapshot = () => {
+    const el = document.getElementById('sb-update-badge');
+    return el ? { hidden: el.hidden, title: el.title, text: el.textContent.trim() } : null;
+  };
+  window.__setUpdateBadgeForTest = paintUpdateBadge;
 
   // 分组 / 标签新增
   document.getElementById('btn-add-group').addEventListener('click', () => promptAddGroup());
@@ -257,23 +347,7 @@ function bindStaticEvents() {
   // AI 配置（原在「AI 报告」页内的配置面板；现统一从顶部菜单栏「AI 设置」打开）
   setAiSettingsHandlers({ toast, onChanged: () => { renderSidebarList(); } });
   listenAiSettingsMenu();
-  // 趣味功能 → 上班鼓励器：注册菜单事件 / 任务完成发币 / 配置变更的监听。
-  // 监听是全局的，主浮窗没打开时完成任务也会发币并用应用内 toast 回应。
-  setEncouragerHandlers({
-    toast,
-    getStats: () => {
-      const done = state.recentlyDone.size;
-      const active = (state.tasks || []).filter((t) => !t.completed).length;
-      const byId = new Map((state.tasks || []).map((t) => [String(t.id), t]));
-      const titles = [...state.recentlyDone]
-        .map((id) => byId.get(String(id)))
-        .filter((t) => t && t.title)
-        .slice(0, 20)
-        .map((t) => ({ id: t.id, title: String(t.title).slice(0, 60) }));
-      return { done, total: done + active, titles };
-    },
-  });
-  listenEncouragerMenu();
+  // 趣味功能 → 上班鼓励器是插件：菜单 / 发币监听与依赖注入都由 app.js 在开启时完成
   // 重复事项 / 习惯：菜单入口 + 后台跨天生成后的刷新；不反向 import ui.js，刷新能力走注入
   setRecurrenceHandlers({
     toast,
@@ -312,8 +386,10 @@ function bindStaticEvents() {
   window.__openSettings = openSettings;
   // 启动后的静默检查：有新版只轻提示，不弹窗打断；详情从 File 菜单 / 设置「关于」打开
   api.on('ui:update-available', (info) => {
-    toast(`发现新版本 ${(info && info.tag) || ''}：菜单 File → 检查更新 可查看详情`);
+    toast(`发现新版本 ${(info && info.tag) || ''}：点标题栏「有新版本」查看并下载`);
   });
+  // 更新状态快照：静默 / 手动检查完成后主进程都会推一次，直接驱动角标显隐
+  api.on('ui:update-state', (info) => paintUpdateBadge(info));
   // 全局键 Ctrl+Alt+1~6 / H 在"还没钉浮窗"时的明确反馈：不静默失败
   api.on('ui:no-desktop-pins', () => {
     toast('还没有钉到桌面的清单：在侧边栏右键清单 /「今天」/「即将到期」→「钉到桌面」');
@@ -403,6 +479,13 @@ function bindStaticEvents() {
       if (TASK_VIEWS.includes(state.view)) lastListView = state.view;
       openCalendar();
     }
+  });
+
+  // 全局快捷键 Ctrl+Alt+J：进侧栏「📔 日记」。插件关闭时主进程根本不转发这条事件，
+  // 所以这里不必再判开关；已经在日记页就不动（避免把正在写的那格刷掉）。
+  api.on('ui:journal', () => {
+    if (state.view === 'journal') return;
+    navigateTo('journal').catch((e) => toast(`打开日记失败：${(e && e.message) || e}`));
   });
 
   // 主题：唯一入口在设置中心（也可用 Ctrl+, 打开），菜单栏重复项已删除
@@ -615,11 +698,14 @@ async function render() {
   // 否则会 fallback 到 VIEW_META.all，标题变成「全部任务」。
   const extView = getExtView(state.view);
   const wlOff = state.view === 'worklog' && !extView;
+  const jrOff = state.view === 'journal' && !extView;
   const meta = extView
     ? { title: extView.title, desc: extView.desc || '', long: extView.long || extView.desc || '' }
     : wlOff
       ? { title: '工时', desc: '功能插件 · 未开启', long: '在 设置 → 功能插件 中开启「工时记录」后可用' }
-      : (VIEW_META[state.view] || VIEW_META.all);
+      : jrOff
+        ? { title: '四象日记', desc: '功能插件 · 未开启', long: '在 设置 → 功能插件 中开启「四象日记」后可用' }
+        : (VIEW_META[state.view] || VIEW_META.all);
   document.getElementById('view-title').textContent = meta.title;
   const descEl = document.getElementById('view-desc');
   descEl.textContent = meta.desc;
@@ -636,7 +722,8 @@ async function render() {
   // 在这里是干扰，用户拍板整排收起。别的插件视图仍保留顶栏。
   // 只用 hidden 切换，不删 DOM / 不碰 innerHTML —— 切回任务/日历视图时按钮要原样可用。
   const isWorklogView = state.view === 'worklog';
-  document.querySelector('.topbar-right').hidden = !(isTaskView || (!!extView && !isWorklogView));
+  const isJournalView = state.view === 'journal';
+  document.querySelector('.topbar-right').hidden = !(isTaskView || (!!extView && !isWorklogView && !isJournalView));
   document.getElementById('filter-bar').hidden = !isTaskView;
   if (!isTaskView) document.getElementById('time-filter').hidden = true;
   // AI 检索已是弹窗：顶栏按钮只是入口，不再有「选中态」，也不占视图
@@ -646,6 +733,7 @@ async function render() {
   renderTagFilterChip();
   if (extView) { await extView.render(document.getElementById('view')); return; }
   if (wlOff) { renderWorklogOff(document.getElementById('view')); return; }
+  if (jrOff) { renderJournalOff(document.getElementById('view')); return; }
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
   if (state.view === 'meetings') { await renderMeetings(); return; }
@@ -673,6 +761,34 @@ function renderWorklogOff(root) {
   if (btn) {
     btn.addEventListener('click', () => {
       openSettings('plugins').catch((e) => toast(`打开设置失败：${(e && e.message) || e}`));
+    });
+  }
+}
+
+/**
+ * 四象日记的「未启用」引导页。入口常驻标题栏，关闭态只给这块空态，
+ * 不 import 任何 journal 模块；「开启」按钮走同一条偏好通道，开了直接进今天。
+ */
+function renderJournalOff(root) {
+  root.innerHTML = `
+    <div class="wl-off jr-off" data-journal-off>
+      <div class="wl-off-ico" aria-hidden="true">📔</div>
+      <div class="wl-off-title">四象日记未开启</div>
+      <div class="wl-off-text">一天一页：四格整理 + 随手碎碎念。只在本地，不进 AI 检索与报告。</div>
+      <button type="button" class="primary-btn wl-off-btn" id="jr-off-open">开启四象日记</button>
+      <div class="jr-off-hint">也可到 设置 → 功能插件 开启，并自定义四个格子的名字</div>
+    </div>`;
+  const btn = root.querySelector('#jr-off-open');
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      try {
+        const r = await api.features.setPref('journal', { enabled: true });
+        if (!r || r.ok === false) throw new Error((r && r.reason) || '开启失败');
+        // 广播会异步触发 app.js 挂载；这里等它完成再重绘当前视图，用户直接落到今天
+        await navigateTo('journal');
+      } catch (e) {
+        toast(`开启日记失败：${(e && e.message) || e}`);
+      }
     });
   }
 }
@@ -1444,12 +1560,18 @@ function runMenuAction(name) {
     case 'recurrence':
       openRecurrenceManager();
       return;
-    case 'encourager':
-      openEncourager({}).catch((e) => toast(`打开上班鼓励器失败：${(e && e.message) || e}`));
+    case 'encourager': {
+      const mod = window.KnodoEncourager;
+      if (!mod) { toast('工位搭子插件未启用'); return; }
+      mod.openEncourager({}).catch((e) => toast(`打开上班鼓励器失败：${(e && e.message) || e}`));
       return;
-    case 'encourager-card':
-      openEncourager({ tab: 'card' }).catch((e) => toast(`打开今日牛马卡失败：${(e && e.message) || e}`));
+    }
+    case 'encourager-card': {
+      const mod = window.KnodoEncourager;
+      if (!mod) { toast('工位搭子插件未启用'); return; }
+      mod.openEncourager({ tab: 'card' }).catch((e) => toast(`打开今日牛马卡失败：${(e && e.message) || e}`));
       return;
+    }
     case 'archive-done':
       archiveCompleted();
       return;

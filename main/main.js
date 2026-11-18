@@ -399,7 +399,15 @@ function dispatchShortcut(actionId) {
       showWindow();
       if (mainWindow) mainWindow.webContents.send('ui:calendar');
       return;
+    case 'app.journal':
+      // Ctrl+Alt+J：日记同样是插件，关闭态直接返回（入口提示里写着这组键，不能按了没反应）
+      if (!features.isEnabled('journal')) return;
+      showWindow();
+      if (mainWindow) mainWindow.webContents.send('ui:journal');
+      return;
     case 'util.encourager':
+      // 工位搭子是插件：关闭时快捷键不生效，也不把窗口顶起来假装「点了没反应」
+      if (!features.isEnabled('buddy')) return;
       showWindow();
       if (mainWindow) mainWindow.webContents.send('ui:encourager');
       return;
@@ -424,6 +432,31 @@ const updateState = { checking: false, available: null };
 function updateMenuLabel() {
   if (updateState.checking) return '正在检查更新…';
   return updateState.available ? '检查更新…（发现新版本）' : '检查更新…';
+}
+
+/**
+ * 更新状态快照：标题栏角标与主进程菜单共用同一份，避免两边对不上。
+ * 只带可结构化的基本字段（没有 Error / undefined），跨 IPC 直接可用。
+ */
+function updateStateSnapshot() {
+  const a = updateState.available;
+  if (!a) return { hasUpdate: false, tag: '', latest: '' };
+  return {
+    hasUpdate: true,
+    tag: a.tag,
+    latest: a.latest,
+    name: a.name,
+    publishedAt: a.publishedAt,
+    summary: a.summary,
+    downloadUrl: a.downloadUrl,
+    releaseUrl: a.releaseUrl,
+  };
+}
+
+/** 把最新状态推给渲染层（角标显隐）。窗口隐藏时也推：webContents 仍在，显示后角标就是对的。 */
+function pushUpdateState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('ui:update-state', updateStateSnapshot());
 }
 
 /** 只放行 Gitee 的 https 链接：外部 API 返回的地址不能无条件交给系统浏览器。 */
@@ -501,6 +534,7 @@ async function runUpdateCheck() {
   }
   updateState.available = res.ok && res.hasUpdate ? res : null;
   setTimeout(() => buildAppMenu(), 0);
+  pushUpdateState();
   showUpdateResult(res).catch((e) => console.error('[updater] 展示结果失败', e && e.message));
   return res;
 }
@@ -514,9 +548,12 @@ async function silentUpdateCheck() {
   try {
     res = await updater.checkUpdate(app.getVersion());
   } catch { return; }
-  if (!res.ok || !res.hasUpdate) return;
-  updateState.available = res;
+  if (!res.ok) return;
+  // 查成功就同步一次角标状态：有新版点亮，已是最新则熄灭（失败时保留原状态，不误清）
+  updateState.available = res.hasUpdate ? res : null;
   buildAppMenu();
+  pushUpdateState();
+  if (!res.hasUpdate) return;
   const visible = mainWindow && !mainWindow.isDestroyed()
     && mainWindow.isVisible() && !mainWindow.isMinimized();
   if (!visible) return;
@@ -673,7 +710,8 @@ function buildAppMenu() {
     },
     // 「主题」顶格菜单已删除：它与设置中心「界面主题」写同一个 settings.theme 键，
     // 是重复入口。唯一入口收敛到 设置 → 通用 → 界面主题（Ctrl+,）。
-    {
+    // 「趣味功能」整组随工位搭子插件开关出现 / 消失；关闭时只有「功能插件」设置页能启用它。
+    ...(features.isEnabled('buddy') ? [{
       // v1.3 独立新增的第 7 个顶格项：情绪位与效率位是两种心智，塞进「实用工具」
       // 会被当成又一个计算器。不占顶栏宽度（1080 宽下顶栏已排满），发现性由
       // 菜单 + 全局键 Ctrl+Alt+E + 首次引导承担。
@@ -697,7 +735,7 @@ function buildAppMenu() {
         { type: 'separator' },
         { label: '工位搭子设置…', click: () => openSettings('fun') },
       ],
-    },
+    }] : []),
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -792,6 +830,8 @@ function registerSettingsIpc() {
   ipcMain.handle('app:setAutoStart', (_e, enabled) => toggleAutoStart(!!enabled, { silent: true }));
   // 设置中心「关于」页：与 File 菜单共用 runUpdateCheck()，对话框由主进程自己弹
   ipcMain.handle('app:checkUpdate', () => { runUpdateCheck(); return true; });
+  // 标题栏角标：渲染层初始化时拉一次当前状态，覆盖「检查发生在页面加载之前」的场合
+  ipcMain.handle('app:getUpdateState', () => updateStateSnapshot());
   ipcMain.handle('app:openStorageDialog', () => {
     showWindow();
     openStorageDialog().catch((e) => console.error('[settings] 打开存储位置失败', e && e.message));
@@ -1149,6 +1189,9 @@ app.whenReady().then(async () => {
   // 功能插件：先读开关再注册 IPC —— 关闭态下这里只装一个 60 行的注册中心，
   // main/worklog/ 整个目录不会进内存（方案 §四 第一层）。
   features.init();
+  // 搭子开关变化时重建原生菜单（macOS 才真正有菜单；Windows 侧是空操作）
+  features.setOnChange(() => buildAppMenu());
+  buildAppMenu();
   // 跟随系统明暗时：渲染层靠 matchMedia 自己换色，窗口三键是自绘的（吃 CSS token），
   // 主进程这边不需要再补推任何原生配色。
   registerIpc();
@@ -3490,13 +3533,23 @@ app.whenReady().then(async () => {
               const aiClose = document.querySelector('.modal-mask .modal-search [data-modal="close"]');
               if (aiClose) { aiClose.click(); await wait(400); }
               out.aiBack = !document.querySelector('.modal-mask .modal-search');
-              // 标题栏「搭子」：与「日历」同组、开在「搭子」页签、不切视图，关掉后按钮熄灭
+              // 标题栏「搭子」：与「日历」同组、开在「搭子」页签、不切视图，关掉后按钮熄灭。
+              // 它现在是插件、默认关闭 —— 所以先验关闭态（入口隐藏 + 点了不弹），
+              // 再走设置那条偏好通道打开，验一次真实挂载后的入口与浮层；
+              // 只验开启态会让「关=零成本」坏掉没人发现，只验关闭态则等于放弃覆盖这个功能。
               const buddy = document.getElementById('btn-buddy');
               // 文案只算文字部分：图标是 <span class="nav-ico">，textContent 会把它一起带上
               const buddyLabel = buddy
                 ? Array.from(buddy.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim()
                 : '';
               out.buddyBtn = !!buddy && buddyLabel === '搭子';
+              out.buddyOffHidden = !!buddy && buddy.hidden === true;
+              if (buddy && !buddy.hidden) { buddy.click(); await wait(400); }
+              out.buddyOffNoModal = !document.querySelector('.modal-encourager');
+              // 开启：等动态 import + mount 完成（入口显隐是覆盖挂载完成的可观测信号）
+              try { await window.api.features.setPref('buddy', { enabled: true }); } catch (e) { out.buddyErr = String((e && e.message) || e); }
+              await wait(1200);
+              out.buddyOnShown = !!buddy && !buddy.hidden;
               if (buddy) { buddy.click(); await wait(1100); }
               out.buddyOpen = !!document.querySelector('.modal-encourager');
               const bTab = document.querySelector('.modal-encourager .enc-tab.is-active');
@@ -3507,6 +3560,11 @@ app.whenReady().then(async () => {
               if (bClose) { bClose.click(); await wait(500); }
               out.buddyBack = !document.querySelector('.modal-encourager')
                 && !!buddy && !buddy.classList.contains('is-open');
+              // 还原成默认关闭，后面的用例仍在「插件全关」的起点上跑
+              try { await window.api.features.setPref('buddy', { enabled: false }); } catch (e) { /* 已在上面记过 */ }
+              await wait(900);
+              out.buddyOffAgain = !!buddy && buddy.hidden === true
+                && !document.querySelector('.modal-encourager');
             } catch (e) { out.err = String((e && e.message) || e); }
             return out;
           })()`);
@@ -3514,7 +3572,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 日历工具区 = 顶栏收起=${calOut.topbarHidden ? '是' : '否'}；回任务视图恢复=${calOut.topbarRestored ? '是' : '否'}；右栏新增按钮=${calOut.addBtn ? '有' : '无'}；行内编辑按钮 ${calOut.editBtns}/${calOut.panelRows} 行`);
           console.log(`[SMOKE] 右栏就地编辑 = 编辑器出现=${calOut.inlineEditor ? '是' : '否'}；无弹窗=${calOut.noModal ? '是' : '否'}；日期预填=${calOut.editorPrefill ? '是' : '否'}；取消关闭=${calOut.editorClosed ? '是' : '否'}`);
           console.log(`[SMOKE] 顶栏 AI 检索（弹窗）= 弹出=${calOut.aiPanel ? '成功' : '失败'}；单层=${calOut.aiSingle ? '是' : '否'}；视图不动=${calOut.aiKeepsView ? '是' : '否'}；再点不叠层=${calOut.aiNoStack ? '是' : '否'}；关闭移除=${calOut.aiBack ? '成功' : '失败'}`);
-          console.log(`[SMOKE] 标题栏「搭子」= 入口=${calOut.buddyBtn ? '有' : '无'}；弹出=${calOut.buddyOpen ? '成功' : '失败'}；页签「${calOut.buddyTab || '-'}」；按钮点亮=${calOut.buddyLit ? '是' : '否'}；视图不动=${calOut.buddyKeepsView ? '是' : '否'}；关闭复位=${calOut.buddyBack ? '成功' : '失败'}`);
+          console.log(`[SMOKE] 标题栏「搭子」= 入口=${calOut.buddyBtn ? '有' : '无'}；关闭态隐藏=${calOut.buddyOffHidden ? '是' : '否'}；关闭态点击不弹=${calOut.buddyOffNoModal ? '是' : '否'}；开启后入口=${calOut.buddyOnShown ? '出现' : '没出现'}；弹出=${calOut.buddyOpen ? '成功' : '失败'}；页签「${calOut.buddyTab || '-'}」；按钮点亮=${calOut.buddyLit ? '是' : '否'}；视图不动=${calOut.buddyKeepsView ? '是' : '否'}；关闭复位=${calOut.buddyBack ? '成功' : '失败'}；再关继续隐藏=${calOut.buddyOffAgain ? '是' : '否'}${calOut.buddyErr ? '；异常=' + calOut.buddyErr : ''}`);
 
           /* ---- 第 20 轮：笔记也能钉到桌面（kind: 'note' 投影）----
              只验主进程这一侧：钉出来的是 note 投影、重复钉不叠加、标题取的是笔记标题、
@@ -3555,6 +3613,10 @@ app.whenReady().then(async () => {
             && calOut.editBtns === calOut.panelRows
             && calOut.inlineEditor && calOut.noModal && calOut.editorPrefill && calOut.editorClosed
             && calOut.aiPanel && calOut.aiSingle && calOut.aiKeepsView && calOut.aiNoStack && calOut.aiBack
+            // 工位搭子改成插件后的两态：关着=入口隐藏且点了不弹；开了=入口出现并落在「搭子」页；再关回去还是隐藏
+            && calOut.buddyBtn && calOut.buddyOffHidden && calOut.buddyOffNoModal
+            && calOut.buddyOnShown && calOut.buddyOpen && calOut.buddyTab === '搭子'
+            && calOut.buddyLit && calOut.buddyKeepsView && calOut.buddyBack && calOut.buddyOffAgain
             && dom.hasArrow && dom.parentPresetMatched && dom.childRowVisible && dom.parentFilterIncludesChildTask
             && dom.childHiddenAfterCollapse && dom.childBackAfterExpand
             && dom.aiToolbarBtnGone && dom.aiModalOpened && dom.aiModalCount === 1

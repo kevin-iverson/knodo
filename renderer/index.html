@@ -19,7 +19,7 @@
   <!-- 所见即所得两态样式：加载在 styles.css 之后，覆盖旧的「预览 / 分栏 / 源码」三态规则 -->
   <link rel="stylesheet" href="css/wysiwyg.css" />
   <link rel="stylesheet" href="css/calendar.css" />
-  <link rel="stylesheet" href="css/encourager.css" />
+  <!-- 上班鼓励器 / 工位搭子是插件：css/encourager.css 只在插件开启时由渲染层动态注入 -->
   <link rel="stylesheet" href="css/recurrence.css" />
   <!-- 截图建任务确认卡（.shot-*）：只在卡片打开时才有 DOM，样式独立成文件免得 styles.css 再长 -->
   <link rel="stylesheet" href="css/shot.css" />
@@ -61,6 +61,10 @@
       <span class="tb-name" title="Knodo — 知识化待办（Knowledge + Todo）">Knodo</span>
       <!-- 版本号跟着品牌名（只是弱提示，取不到就空着，不影响布局） -->
       <span class="tb-ver" id="sb-ver"></span>
+      <!-- 有新版本角标：紧贴版本号右侧，默认 hidden；主进程查到新版后由渲染层揭开。
+           点击 = 检查更新并弹出下载对话框。标题栏整条是 drag 区，故必须 no-drag。 -->
+      <button type="button" class="tb-update-badge" id="sb-update-badge" hidden
+              title="发现新版本：点击查看更新说明并下载" aria-label="发现新版本，点击查看">有新版本</button>
       <!-- 设置入口：骑在标题栏「侧栏段 / 主区段」分界线上的齿轮（另有 Ctrl+, 与托盘菜单两条路）。
            位置由 CSS 按 --sidebar-width 算，拖动侧栏宽度它会跟着走；
            标题栏整条是 drag 区，按钮必须 no-drag，否则点不动只会拖窗。 -->
@@ -86,9 +90,14 @@
              否则用户既看不到入口、也无从知道该去哪儿开启（见 ui.js#renderWorklogOff）。 -->
         <button type="button" class="nav-item tb-worklog" data-view="worklog"
                 title="工时：子任务向上累积，可按分组 / 标签筛选后导出报工表"><span class="nav-ico">🕒</span>工时</button>
+        <!-- 四象日记：常驻入口（与工时同规矩），关闭时点进来是引导页（见 ui.js#renderJournalOff）。
+             关闭态这里不出现任何日记 DOM —— 视图与样式都由 renderer/js/journal/index.js 动态挂。 -->
+        <button type="button" class="nav-item tb-journal" data-view="journal"
+                title="四象日记：四格整理 + 随手碎碎念，按天记录（Ctrl+Alt+J）"><span class="nav-ico">📔</span>日记</button>
         <!-- 搭子：工位搭子面板（五页签主浮窗的「搭子」页）。
-             它不是视图，所以不挂 .nav-item / data-view —— 点击只开模态，不切 state.view。 -->
-        <button type="button" class="tb-buddy" id="btn-buddy"
+             它不是视图，所以不挂 .nav-item / data-view —— 点击只开模态，不切 state.view。
+             插件默认关闭：入口带 hidden，只有 feature.buddy.enabled 时由 app.js 揭开。 -->
+        <button type="button" class="tb-buddy" id="btn-buddy" hidden
                 title="搭子：工位搭子（戳一戳 / 抽签 / 抱团 / 牛马卡，Ctrl+Alt+E）"
                 aria-label="打开工位搭子"><span class="nav-ico">🐮</span>搭子</button>
       </div>
