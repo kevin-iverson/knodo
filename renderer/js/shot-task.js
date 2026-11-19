@@ -3,9 +3,13 @@
  * 截图建任务 · 确认卡
  *
  * 为什么一定要有这张卡：识图有 5–10 秒的延迟、识别结果永远不可能 100% 准，
- * 而建任务是**有副作用**的（列表、浮窗、日历、报告全都会跟着变）。
- * 所以这里的设计原则是「挡在最前面」：模型先给一份草稿，勾选、改名、调优先级都在卡里做完，
- * 用户点「添加到今天」之前，一个字节都不进库。
+ * 而建任务是**有副作用**的（列表、浮窗、日历、报告全都会跟着走）。
+ * 所以这里的设计原则是「挡在最前面」：模型先给一份草稿，勾选、改名、调优先级、
+ * **改计划日期**都在卡里做完，用户点确认之前，一个字节都不进库。
+ *
+ * 计划日期：模型只在截图里明写日期时给 due（见 ai.js#SHOT_SYSTEM_PROMPT），
+ * 没写就是今天 —— 但用户能逐行改，也能一次把整批改到同一天（底部「全部设为」）。
+ * 日期说辞与切换逻辑在 due-chip.js，与语音卡共用一份。
  *
  * 状态机：loading → ready / empty / error → submitting → 关闭
  *   - 只有显式关闭（按钮 / ✕）：识别花了时间也花了 token，误点遮罩就全丢了（closeOnMask:false）
@@ -15,6 +19,8 @@
 import { api, PRIORITY_TEXT, PRIORITY_COLOR } from './api.js';
 import { openPanelModal } from './modal.js';
 import { openSettings } from './settings.js';
+// 日期胶囊（今天/明天的说法、非法日期回落、胶囊 ↔ 原生日期输入）与语音卡共用一份
+import { todayStr, dueText, dueTitle, safeDay, bindDueChip } from './due-chip.js';
 
 const esc = (s) =>
   String(s == null ? '' : s)
@@ -83,6 +89,8 @@ export function openShotCard(initialStatus) {
     slow: false,
     busy: false,
     ocrFallback: false,
+    /** 视觉模型不可用、已自动改用对话模型时的一句话原因（空 = 没降级） */
+    degraded: '',
     imgW: 0,
     imgH: 0,
     source: '',
@@ -127,6 +135,11 @@ export function openShotCard(initialStatus) {
     const fallback = vision && vision.source === 'fallback'
       ? `<div class="shot-warn">未单独配置视觉模型，回落到对话模型${vision.imageCapability === 'yes' ? '' : '（是否支持图片未确认）'}</div>`
       : '';
+    // 库里配了视觉模型，但这次请求失败后自动改走对话模型：必须说清楚这张结果是谁识别的，
+    // 否则用户会以为设置里的视觉模型生效了
+    const degraded = S.degraded
+      ? `<div class="shot-warn">视觉模型不可用（${esc(S.degraded)}），这次已改用对话模型${S.modelLabel ? ` ${esc(S.modelLabel)}` : ''}</div>`
+      : '';
 
     return `<div class="shot-head">
       ${thumbHtml()}
@@ -136,6 +149,7 @@ export function openShotCard(initialStatus) {
         ${S.summary ? `<div class="shot-summary">${esc(S.summary)}</div>` : ''}
         ${S.ocrFallback ? '<div class="shot-warn">这张图没拆出明确待办，先把文字识别成一条草稿；标题可以自己改，不要就关掉。</div>' : ''}
         ${fallback}
+        ${degraded}
       </div>
     </div>`;
   };
@@ -157,14 +171,34 @@ export function openShotCard(initialStatus) {
              data-role="title" role="textbox" aria-label="任务标题">${esc(t.title)}</div>
         ${t.note ? `<div class="shot-note">${esc(t.note)}</div>` : ''}
       </div>
+      <!-- 计划日期胶囊：识别到就显示具体日期（高亮），没识别到显示「今天」。
+           点一下换成原生日期输入，改完自动复原 —— 比自绘日历可靠，也支持键盘输入。 -->
+      <button type="button" class="shot-due${t.due ? ' is-set' : ''}" data-role="due"
+              title="${esc(dueTitle(t.due))}">${esc(dueText(t.due))}</button>
+      <input type="date" class="shot-due-input" data-role="due-input"
+             value="${esc(t.due || '')}" tabindex="-1" aria-label="计划日期" hidden />
       <button type="button" class="shot-pri" data-role="pri" data-p="${t.priority}"
               title="点击切换优先级：低 → 中 → 高 → 紧急"
               style="--p:${PRIORITY_COLOR[t.priority] || PRIORITY_COLOR[1]}">${PRIORITY_TEXT[t.priority] || '中'}</button>
       <button type="button" class="shot-del" data-role="del" title="从这次添加里去掉" aria-label="去掉这一条">✕</button>
     </div>`;
 
+  /** 批量日期：只在 2 条以上出现；点一下把所有条目改到同一天 */
+  const batchHtml = () => {
+    if (S.tasks.length < 2) return '';
+    const first = S.tasks[0] ? (S.tasks[0].due || '') : '';
+    const same = S.tasks.every((t) => (t.due || '') === first);
+    return `<div class="shot-batch">
+      <span class="shot-batch-label">${same ? '这批全部在' : '这批日期不同，全部设为'}</span>
+      <button type="button" class="shot-due${first ? ' is-set' : ''}" data-role="batch-due"
+              title="把所有条目改到同一天">${same ? esc(dueText(first)) : '同一天'}</button>
+      <input type="date" class="shot-due-input" data-role="batch-input" tabindex="-1"
+             aria-label="把所有条目设为同一天" hidden />
+    </div>`;
+  };
+
   const listHtml = () => (S.tasks.length
-    ? `<div class="shot-list">${S.tasks.map(rowHtml).join('')}</div>`
+    ? `<div class="shot-list">${S.tasks.map(rowHtml).join('')}</div>${batchHtml()}`
     : '<div class="shot-empty-hint">没有可添加的条目</div>');
 
   const emptyHtml = () => `
@@ -202,19 +236,26 @@ export function openShotCard(initialStatus) {
     if (!body) return;
     body.innerHTML = bodyHtml();
     body.classList.toggle('is-loading', S.phase === 'loading');
-    // 主按钮：只有 ready 能提交；submitting 期间置灰防连点
-    if (okBtn) {
-      const ready = S.phase === 'ready' && S.tasks.some((t) => t.checked && t.title.trim());
-      okBtn.disabled = S.phase !== 'ready' || !ready;
-      okBtn.textContent = S.phase === 'submitting' ? '添加中…' : '添加到今天';
-    }
+    syncSubmitState();
     bindBody();
   }
 
-  /** 只刷新「全选 / 提交可用性」，不重绘列表（勾选时不能把滚动位置和输入焦点搞丢） */
+  /**
+   * 只刷新主按钮（文案 + 可用性），不重绘列表：勾选 / 改日期时把滚动位置和
+   * 输入焦点搞丢是很讨厌的事。
+   */
   function syncSubmitState() {
     if (!okBtn) return;
-    okBtn.disabled = S.phase !== 'ready' || !S.tasks.some((t) => t.checked && t.title.trim());
+    const picked = S.tasks.filter((t) => t.checked && String(t.title || '').trim());
+    okBtn.disabled = S.phase !== 'ready' || !picked.length;
+    if (S.phase === 'submitting') {
+      okBtn.textContent = '添加中…';
+      return;
+    }
+    const today = todayStr();
+    const allToday = picked.every((t) => !t.due || t.due === today);
+    // 有条目落在别的日期时按钮直接说条数：「添加到今天」会变成一句假话
+    okBtn.textContent = picked.length && !allToday ? `添加 ${picked.length} 条` : '添加到今天';
   }
 
   /* ------------------------------ 行内交互 ------------------------------ */
@@ -272,11 +313,30 @@ export function openShotCard(initialStatus) {
         btn.style.setProperty('--p', PRIORITY_COLOR[t.priority]);
       });
 
+      bindDueChip(row.querySelector('[data-role="due"]'), row.querySelector('[data-role="due-input"]'), {
+        read: () => t.due || '',
+        write: (v) => { t.due = v; },
+      }, syncSubmitState);
+
       row.querySelector('[data-role="del"]')?.addEventListener('click', () => {
         S.tasks.splice(i, 1);
         repaintList();
       });
     });
+
+    // 批量日期：所有条目改成同一天。改完重绘（此刻没有输入焦点，安全）
+    const batchChip = body.querySelector('[data-role="batch-due"]');
+    const batchInput = body.querySelector('[data-role="batch-input"]');
+    if (batchChip && batchInput) {
+      bindDueChip(batchChip, batchInput, {
+        read: () => (S.tasks[0] ? S.tasks[0].due || '' : ''),
+        write: (v) => {
+          if (!v) return;
+          S.tasks.forEach((x) => { x.due = v; });
+          repaintList();
+        },
+      }, syncSubmitState);
+    }
 
     body.querySelectorAll('[data-act]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -332,6 +392,7 @@ export function openShotCard(initialStatus) {
     S.phase = 'loading';
     S.slow = false;
     S.ocrFallback = false;
+    S.degraded = '';
     S.errorText = '';
     S.errorCode = '';
     paint();
@@ -348,9 +409,14 @@ export function openShotCard(initialStatus) {
       S.modelLabel = r.modelLabel || '';
       S.summary = r.summary || '';
       S.ocrFallback = r.fallback === 'text';
+      S.degraded = r.degraded ? String(r.degradedReason || '配置不可用') : '';
       if (r.width) S.imgW = r.width;
       if (r.height) S.imgH = r.height;
-      S.tasks = (r.tasks || []).map((t) => ({ ...t, checked: true }));
+      S.tasks = (r.tasks || []).map((t) => ({
+        ...t,
+        checked: true,
+        due: safeDay(t && t.due),
+      }));
       S.phase = S.tasks.length ? 'ready' : 'empty';
     } catch (e) {
       clearTimeout(slowTimer);
@@ -403,13 +469,14 @@ export function openShotCard(initialStatus) {
     S.summary = '';
     S.modelLabel = '';
     S.ocrFallback = false;
+    S.degraded = '';
     S.busy = false;
     runRecognize();
   }
 
   /** 空态里的「我来手写」：给一条空行，光标直接落进去 */
   function startManual() {
-    S.tasks = [{ title: '', note: '', priority: 1, checked: true }];
+    S.tasks = [{ title: '', note: '', priority: 1, due: '', checked: true }];
     S.ocrFallback = false;
     S.phase = 'ready';
     paint();
@@ -453,15 +520,21 @@ export function openShotCard(initialStatus) {
       if (S.phase !== 'ready') return '识别还没结束，稍等一下';
       const chosen = S.tasks
         .filter((t) => t.checked && String(t.title || '').trim())
-        .map((t) => ({ title: t.title.trim(), note: t.note, priority: t.priority }));
+        .map((t) => ({
+          title: t.title.trim(), note: t.note, priority: t.priority, due: t.due || '',
+        }));
       if (!chosen.length) return '至少勾选一条；都不想建就点左下角「全不选」';
       S.phase = 'submitting';
       paint();
       try {
         const r = await shotApi(api.shot.commit({ tasks: chosen }));
         S.added = r;
+        const away = (r.days || []).filter((d) => d && d !== todayStr()).length;
         if (r.imageErrors && r.imageErrors.length) {
           toast(`已添加 ${r.created} 条，但截图保存失败：${r.imageErrors[0]}`);
+        } else if (away) {
+          // 落在别的日期的任务不会出现在「今天」里，不说清楚会以为没保存上
+          toast(`已添加 ${r.created} 条，其中 ${away} 条不在今天（在对应日期或「即将到期」里查看）`);
         } else {
           toast(`已添加 ${r.created} 条到 ${r.group ? r.group.name : '今天'}`);
         }

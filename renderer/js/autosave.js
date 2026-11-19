@@ -52,6 +52,7 @@ export function createAutoSave({
   let baseline = null;   // 最后一次成功写入的快照（回滚依据）
   let inflight = false;
   let disposed = false;
+  let inflightWaiters = [];   // 正在等「这一轮写完」的 flush 调用
 
   function setBaseline(v) {
     baseline = v ? { ...v } : null;
@@ -91,6 +92,10 @@ export function createAutoSave({
       onError(e);
     } finally {
       inflight = false;
+      // 等这一轮的 flush 调用（点保存 / 关面板 / 失焦）现在可以补写最新值了
+      const ws = inflightWaiters;
+      inflightWaiters = [];
+      ws.forEach((r) => r());
       // 防抖期间又有新输入 → 立即补一轮
       if (!disposed && !isFlush && timer === null && pendingAgain) {
         pendingAgain = false;
@@ -110,8 +115,15 @@ export function createAutoSave({
   }
 
   /** 立即写入（点保存 / 关闭面板 / 失焦时调用） */
-  function flush() {
+  async function flush() {
     if (disposed) { return Promise.resolve(); }
+    clearTimeout(timer);
+    timer = null;
+    pendingAgain = false;
+    // 上一次写入还在飞：以前这里直接 return，等于「点保存 / 关面板」那一下什么都没写，
+    // 磁盘上留着的还是上一轮的旧内容（标签就是踩在这里丢的）。现在等它结束再补写一次。
+    if (inflight) await new Promise((resolve) => inflightWaiters.push(resolve));
+    if (disposed) return;
     clearTimeout(timer);
     timer = null;
     pendingAgain = false;

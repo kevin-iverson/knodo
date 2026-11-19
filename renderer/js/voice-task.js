@@ -13,11 +13,16 @@
  *    卡片打开时再按快捷键直接忽略（当前录音已经结束，正在识别或等人确认）。
  * 3. **提交后必须显式回调宿主刷新**：与 shot-task.js 同因 —— ui:data-changed 会被
  *    卡片的 busy/focus 两条守则拦掉，见 refreshAfterShotAdd 的注释。
+ *
+ * 计划日期与截图卡同口径：口语里的「周五 / 下周」按提示词要求**不推算**（落今天），
+ * 用户可以在卡上逐行改，或底部一次改整批；逻辑在 due-chip.js。
  */
 import { api, PRIORITY_TEXT, PRIORITY_COLOR } from './api.js';
 import { isRecording as isMeetingRecording } from './recorder.js';
 import { openPanelModal } from './modal.js';
 import { openSettings } from './settings.js';
+// 日期胶囊与截图卡共用一份实现（说辞、回落、切换逻辑完全一致）
+import { todayStr, dueText, dueTitle, safeDay, bindDueChip } from './due-chip.js';
 
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -287,7 +292,7 @@ export function openVoiceCard(audio) {
     </div>
     <div class="shot-loading-note">${S.slow ? '转写 + 整理都在云端，通常 5–15 秒' : '正在听你说了什么…'}</div>`;
 
-  // 与 shot-task.js#rowHtml 完全同构：勾选 / 就地改标题 / 优先级 / 删除
+  // 与 shot-task.js#rowHtml 完全同构：勾选 / 就地改标题 / 日期 / 优先级 / 删除
   const rowHtml = (t, i) => `
     <div class="shot-row${t.checked ? '' : ' is-off'}${S.fallback ? ' is-ocr' : ''}" data-i="${i}">
       <label class="shot-check">
@@ -299,14 +304,32 @@ export function openVoiceCard(audio) {
              data-role="title" role="textbox" aria-label="任务标题">${esc(t.title)}</div>
         ${t.note ? `<div class="shot-note">${esc(t.note)}</div>` : ''}
       </div>
+      <button type="button" class="shot-due${t.due ? ' is-set' : ''}" data-role="due"
+              title="${esc(dueTitle(t.due))}">${esc(dueText(t.due))}</button>
+      <input type="date" class="shot-due-input" data-role="due-input"
+             value="${esc(t.due || '')}" tabindex="-1" aria-label="计划日期" hidden />
       <button type="button" class="shot-pri" data-role="pri" data-p="${t.priority}"
               title="点击切换优先级：低 → 中 → 高 → 紧急"
               style="--p:${PRIORITY_COLOR[t.priority] || PRIORITY_COLOR[1]}">${PRIORITY_TEXT[t.priority] || '中'}</button>
       <button type="button" class="shot-del" data-role="del" title="从这次添加里去掉" aria-label="去掉这一条">✕</button>
     </div>`;
 
+  /** 批量日期：2 条以上才出现，点一下把所有条目改到同一天 */
+  const batchHtml = () => {
+    if (S.tasks.length < 2) return '';
+    const first = S.tasks[0] ? (S.tasks[0].due || '') : '';
+    const same = S.tasks.every((t) => (t.due || '') === first);
+    return `<div class="shot-batch">
+      <span class="shot-batch-label">${same ? '这批全部在' : '这批日期不同，全部设为'}</span>
+      <button type="button" class="shot-due${first ? ' is-set' : ''}" data-role="batch-due"
+              title="把所有条目改到同一天">${same ? esc(dueText(first)) : '同一天'}</button>
+      <input type="date" class="shot-due-input" data-role="batch-input" tabindex="-1"
+             aria-label="把所有条目设为同一天" hidden />
+    </div>`;
+  };
+
   const listHtml = () => (S.tasks.length
-    ? `<div class="shot-list">${S.tasks.map(rowHtml).join('')}</div>`
+    ? `<div class="shot-list">${S.tasks.map(rowHtml).join('')}</div>${batchHtml()}`
     : '<div class="shot-empty-hint">没有可添加的条目</div>');
 
   const emptyHtml = () => `
@@ -344,17 +367,22 @@ export function openVoiceCard(audio) {
     if (!body) return;
     body.innerHTML = bodyHtml();
     body.classList.toggle('is-loading', S.phase === 'loading');
-    if (okBtn) {
-      const ready = S.phase === 'ready' && S.tasks.some((t) => t.checked && t.title.trim());
-      okBtn.disabled = S.phase !== 'ready' || !ready;
-      okBtn.textContent = S.phase === 'submitting' ? '添加中…' : '添加到今天';
-    }
+    syncSubmitState();
     bindBody();
   }
 
+  /** 只刷新主按钮（文案 + 可用性），不重绘列表：勾选 / 改日期时别把焦点搞丢 */
   function syncSubmitState() {
     if (!okBtn) return;
-    okBtn.disabled = S.phase !== 'ready' || !S.tasks.some((t) => t.checked && t.title.trim());
+    const picked = S.tasks.filter((t) => t.checked && String(t.title || '').trim());
+    okBtn.disabled = S.phase !== 'ready' || !picked.length;
+    if (S.phase === 'submitting') {
+      okBtn.textContent = '添加中…';
+      return;
+    }
+    const today = todayStr();
+    const allToday = picked.every((t) => !t.due || t.due === today);
+    okBtn.textContent = picked.length && !allToday ? `添加 ${picked.length} 条` : '添加到今天';
   }
 
   /* ------------------------------ 行内交互 ------------------------------ */
@@ -403,11 +431,31 @@ export function openVoiceCard(audio) {
         btn.textContent = PRIORITY_TEXT[t.priority];
         btn.style.setProperty('--p', PRIORITY_COLOR[t.priority]);
       });
+
+      bindDueChip(row.querySelector('[data-role="due"]'), row.querySelector('[data-role="due-input"]'), {
+        read: () => t.due || '',
+        write: (v) => { t.due = v; },
+      }, syncSubmitState);
+
       row.querySelector('[data-role="del"]')?.addEventListener('click', () => {
         S.tasks.splice(i, 1);
         repaintList();
       });
     });
+
+    // 批量日期：所有条目改成同一天，改完重绘（此刻没有输入焦点，安全）
+    const batchChip = body.querySelector('[data-role="batch-due"]');
+    const batchInput = body.querySelector('[data-role="batch-input"]');
+    if (batchChip && batchInput) {
+      bindDueChip(batchChip, batchInput, {
+        read: () => (S.tasks[0] ? S.tasks[0].due || '' : ''),
+        write: (v) => {
+          if (!v) return;
+          S.tasks.forEach((x) => { x.due = v; });
+          repaintList();
+        },
+      }, syncSubmitState);
+    }
 
     body.querySelectorAll('[data-act]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -430,7 +478,7 @@ export function openVoiceCard(audio) {
   }
 
   function startManual() {
-    S.tasks = [{ title: '', note: '', priority: 1, checked: true }];
+    S.tasks = [{ title: '', note: '', priority: 1, due: '', checked: true }];
     S.fallback = false;
     S.phase = 'ready';
     paint();
@@ -471,7 +519,11 @@ export function openVoiceCard(audio) {
       S.aiModel = r.aiModel || '';
       S.durationMs = audio.durationMs || 0;
       S.fallback = r.fallback === 'text';
-      S.tasks = (r.tasks || []).map((t) => ({ ...t, checked: true }));
+      S.tasks = (r.tasks || []).map((t) => ({
+        ...t,
+        checked: true,
+        due: safeDay(t && t.due),
+      }));
       S.phase = S.tasks.length ? 'ready' : 'empty';
     } catch (e) {
       clearTimeout(slowTimer);
@@ -508,14 +560,22 @@ export function openVoiceCard(audio) {
       if (S.phase !== 'ready') return '识别还没结束，稍等一下';
       const chosen = S.tasks
         .filter((t) => t.checked && String(t.title || '').trim())
-        .map((t) => ({ title: t.title.trim(), note: t.note, priority: t.priority }));
+        .map((t) => ({
+          title: t.title.trim(), note: t.note, priority: t.priority, due: t.due || '',
+        }));
       if (!chosen.length) return '至少勾选一条；都不想建就点左下角「全不选」';
       S.phase = 'submitting';
       paint();
       try {
         const r = await voiceApi(api.voiceTask.commit({ tasks: chosen, transcript: S.transcript }));
         S.added = r;
-        toast(`已添加 ${r.created} 条到 ${r.group ? r.group.name : '今天'}`);
+        const away = (r.days || []).filter((d) => d && d !== todayStr()).length;
+        if (away) {
+          // 落在别的日期的任务不会出现在「今天」里，不说清楚会以为没保存上
+          toast(`已添加 ${r.created} 条，其中 ${away} 条不在今天（在对应日期或「即将到期」里查看）`);
+        } else {
+          toast(`已添加 ${r.created} 条到 ${r.group ? r.group.name : '今天'}`);
+        }
         return undefined; // 成功 → modal close(true)
       } catch (e) {
         S.phase = 'ready';

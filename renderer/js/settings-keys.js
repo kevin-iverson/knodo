@@ -8,6 +8,7 @@
  * 对外只暴露三个东西：keysPaneHtml() / mountKeysPane() / disposeKeysPane()。
  */
 import { api } from './api.js';
+import { t as tr } from './i18n.js';
 
 let toast = (msg) => console.warn('[settings:keys]', msg);
 /** 列表重绘后通知壳层重跑搜索过滤（重绘会丢掉 hidden 状态） */
@@ -98,13 +99,13 @@ function accelOf(e, key) {
 }
 
 function liveText() {
-  return liveMods.length ? `${liveMods.join(' + ')} + …` : '按下新组合键…';
+  return liveMods.length ? `${liveMods.join(' + ')} + …` : tr('按下新组合键…');
 }
 
 /** `Control+Alt+B` → `Ctrl + Alt + B` */
 function textOf(accel) {
   const a = actions.find((x) => x.accel === accel);
-  if (a) return a.text;
+  if (a) return tr(a.text);
   return String(accel || '')
     .split('+')
     .map((p) => (p === 'Control' ? 'Ctrl' : p === 'Super' ? 'Win' : p))
@@ -115,24 +116,24 @@ function textOf(accel) {
 
 function rowHtml(a) {
   const isRec = recording === a.id;
-  const capText = isRec ? liveText() : (a.text || '未设置');
+  const capText = isRec ? liveText() : (a.text ? tr(a.text) : tr('未设置'));
   const msg = msgs.get(a.id);
   // 启动时就没注册上的键（多半被别的软件抢了）要主动说一声，否则用户按了没反应找不到原因
   const autoWarn = !msg && !isRec && a.accel && !a.registered
-    ? { text: '该组合已被系统或其他程序占用，未能注册', kind: 'err' }
+    ? { text: tr('该组合已被系统或其他程序占用，未能注册'), kind: 'err' }
     : null;
   const shown = msg || autoWarn;
   const search = `${a.label} ${a.hint || ''} ${a.text || ''}`.toLowerCase();
   return `
     <div class="st-row st-krow${isRec ? ' is-recording' : ''}" data-key="${esc(a.id)}" data-search="${esc(search)}">
       <div class="st-row-main">
-        <div class="st-row-title">${esc(a.label)}</div>
-        ${a.hint ? `<div class="st-row-desc">${esc(a.hint)}</div>` : ''}
+        <div class="st-row-title">${esc(tr(a.label))}</div>
+        ${a.hint ? `<div class="st-row-desc">${esc(tr(a.hint))}</div>` : ''}
       </div>
       <div class="st-row-ctl">
         <button type="button" class="st-cap${a.accel ? '' : ' is-empty'}" data-role="cap"
-                title="点击后按下新的组合键">${esc(capText)}</button>
-        ${a.accel && !isRec ? '<button type="button" class="st-cap-clear" data-role="clear" title="清除这个键">✕</button>' : ''}
+                title="${tr("点击后按下新的组合键")}">${esc(capText)}</button>
+        ${a.accel && !isRec ? `<button type="button" class="st-cap-clear" data-role="clear" title="${tr('清除这个键')}">✕</button>` : ''}
       </div>
       <div class="st-kmsg ${shown ? KIND_OF[shown.kind] : ''}">${shown ? esc(shown.text) : ''}</div>
     </div>`;
@@ -141,11 +142,11 @@ function rowHtml(a) {
 function inAppHtml() {
   if (!inApp.length) return '';
   const items = inApp
-    .map((k) => `<div class="st-inapp-row"><span class="st-inapp-key">${esc(k.key)}</span><span>${esc(k.label)}</span></div>`)
+    .map((k) => `<div class="st-inapp-row"><span class="st-inapp-key">${esc(k.key)}</span><span>${esc(tr(k.label))}</span></div>`)
     .join('');
   return `
     <details class="st-inapp">
-      <summary>应用内快捷键<span class="st-tag">只读</span></summary>
+      <summary>${tr("应用内快捷键")}<span class="st-tag">${tr("只读")}</span></summary>
       <div class="st-inapp-list">${items}</div>
     </details>`;
 }
@@ -154,33 +155,32 @@ function inAppHtml() {
 export function keysPaneHtml() {
   return `
     <section class="st-sec">
-      <div class="st-sec-title">全局快捷键</div>
-      <div class="st-sec-desc">在任意应用中都能使用，修改后立即生效。点一下右侧的组合键，再按下你想用的键。</div>
-      <div class="st-card" id="st-keys-list"><div class="st-loading">载入中…</div></div>
+      <div class="st-sec-title">${tr("全局快捷键")}</div>
+      <div class="st-sec-desc">${tr("在任意应用中都能使用，修改后立即生效。点一下右侧的组合键，再按下你想用的键。")}</div>
+      <div class="st-card" id="st-keys-list"><div class="st-loading">${tr("载入中…")}</div></div>
     </section>
     <section class="st-sec">
-      <div class="st-sec-title">键位管理</div>
+      <div class="st-sec-title">${tr("键位管理")}</div>
       <div class="st-card">
         <div class="st-row" data-search="恢复默认快捷键 出厂设置">
           <div class="st-row-main">
-            <div class="st-row-title">恢复默认</div>
-            <div class="st-row-desc">把全部动作改回出厂键位（自定义与手动清除都会被覆盖）</div>
+            <div class="st-row-title">${tr("恢复默认")}</div>
+            <div class="st-row-desc">${tr("把全部动作改回出厂键位（自定义与手动清除都会被覆盖）")}</div>
           </div>
-          <div class="st-row-ctl"><button type="button" class="st-btn" data-keys-act="reset">恢复默认</button></div>
+          <div class="st-row-ctl"><button type="button" class="st-btn" data-keys-act="reset">${tr("恢复默认")}</button></div>
         </div>
         <div class="st-row" data-search="全部清除 关闭全局快捷键">
           <div class="st-row-main">
-            <div class="st-row-title">全部清除</div>
-            <div class="st-row-desc">所有全局键都不再响应，之后可用「恢复默认」找回</div>
+            <div class="st-row-title">${tr("全部清除")}</div>
+            <div class="st-row-desc">${tr("所有全局键都不再响应，之后可用「恢复默认」找回")}</div>
           </div>
-          <div class="st-row-ctl"><button type="button" class="st-btn" data-keys-act="clearAll">全部清除</button></div>
+          <div class="st-row-ctl"><button type="button" class="st-btn" data-keys-act="clearAll">${tr("全部清除")}</button></div>
         </div>
       </div>
     </section>
     <div id="st-keys-inapp">${inAppHtml()}</div>
     <div class="st-foot-note">
-      提示：当前台窗口以管理员权限运行时（任务管理器、管理员终端等），Windows 会拦下普通权限进程注册的
-      全局热键——这是系统限制，此时请从托盘菜单操作。
+      ${tr('提示：当前台窗口以管理员权限运行时（任务管理器、管理员终端等），Windows 会拦下普通权限进程注册的全局热键——这是系统限制，此时请从托盘菜单操作。')}
     </div>`;
 }
 
@@ -191,7 +191,7 @@ function repaint(root) {
   if (box) {
     box.innerHTML = actions.length
       ? actions.map(rowHtml).join('')
-      : '<div class="st-loading">没有可配置的快捷键</div>';
+      : `<div class="st-loading">${tr('没有可配置的快捷键')}</div>`;
     const recEl = recording ? box.querySelector(`.st-krow[data-key="${recording}"] .st-cap`) : null;
     // 让 Esc 先给录制态，别把整个设置面板关掉（modal.js 的 Esc 在 document 捕获）
     if (recEl) recEl.setAttribute('data-esc-stop', '');
@@ -231,7 +231,7 @@ function startRecording(root, actionId) {
   document.addEventListener('keydown', onRecordKey, true);
   // 8 秒没有任何输入：自动退出，恢复原值
   recordTimer = setTimeout(() => {
-    if (recording) toast('录制超时，键位未修改');
+    if (recording) toast(tr('录制超时，键位未修改'));
     stopRecording(root);
   }, 8000);
 }
@@ -261,7 +261,7 @@ function onRecordKey(e) {
 
   // Esc：取消录制，键位不变
   if (e.key === 'Escape') {
-    setMsg(actionId, '已取消，键位未修改', 'warn');
+    setMsg(actionId, tr('已取消，键位未修改'), 'warn');
     stopRecording(mask);
     return;
   }
@@ -277,8 +277,8 @@ function onRecordKey(e) {
   const hasStrong = e.ctrlKey || e.altKey || e.metaKey;
   if (!hasStrong) {
     setMsg(actionId, e.shiftKey
-      ? 'Shift + 字母只能打出大写，抢不到；请再加上 Ctrl 或 Alt'
-      : '全局键必须包含 Ctrl 或 Alt（否则会抢走所有应用的输入）', 'err');
+      ? tr('Shift + 字母只能打出大写，抢不到；请再加上 Ctrl 或 Alt')
+      : tr('全局键必须包含 Ctrl 或 Alt（否则会抢走所有应用的输入）'), 'err');
     stopRecording(mask);
     return;
   }
@@ -293,7 +293,7 @@ async function commit(root, actionId, accel) {
     msgs.clear();
     if (!r || !r.ok) {
       // L2：被系统 / 其它程序占用 → 旧键仍然可用，就地让用户重按
-      setMsg(actionId, (r && r.message) || '该组合无法注册，请换一个', 'err');
+      setMsg(actionId, (r && r.message) || tr('该组合无法注册，请换一个'), 'err');
       await load();
       repaint(root);
       startRecording(root, actionId);
@@ -301,15 +301,15 @@ async function commit(root, actionId, accel) {
     }
     if (r.takenFrom) {
       // L1：本来属于别的动作 → 已从那里摘除（两处同时更新）
-      setMsg(actionId, `该组合原属「${r.takenFrom}」，已从那里摘除`, 'warn');
+      setMsg(actionId, tr('该组合原属「{owner}」，已从那里摘除', { owner: r.takenFrom }), 'warn');
     } else {
-      setMsg(actionId, `已更新为 ${textOf(accel)}`, 'ok');
+      setMsg(actionId, tr('已更新为 {key}', { key: textOf(accel) }), 'ok');
     }
     await load();
     repaint(root);
   } catch (e) {
     stopRecording(null);
-    setMsg(actionId, (e && e.message) || '设置失败', 'err');
+    setMsg(actionId, (e && e.message) || tr('设置失败'), 'err');
     await load();
     repaint(root);
   }
@@ -320,11 +320,11 @@ async function applyClear(root, actionId) {
   try {
     await api.keys.clear(actionId);
     msgs.clear();
-    setMsg(actionId, '已清除（重启后仍然是未设置）', 'ok');
+    setMsg(actionId, tr('已清除（重启后仍然是未设置）'), 'ok');
     await load();
     repaint(root);
   } catch (e) {
-    setMsg(actionId, (e && e.message) || '清除失败', 'err');
+    setMsg(actionId, (e && e.message) || tr('清除失败'), 'err');
     await load();
     repaint(root);
   }
@@ -352,20 +352,20 @@ function onClick(root, e) {
         await load();
         repaint(root);
         if (r && r.failed && r.failed.length) {
-          toast(`已恢复默认，但 ${r.failed.join('、')} 被其它程序占用，未能注册`);
+          toast(tr('已恢复默认，但 {list} 被其它程序占用，未能注册', { list: r.failed.join(', ') }));
         } else {
-          toast('已恢复默认快捷键');
+          toast(tr('已恢复默认快捷键'));
         }
-      }).catch((err) => toast(`恢复默认失败：${(err && err.message) || err}`));
+      }).catch((err) => toast(tr('恢复默认失败：{msg}', { msg: (err && err.message) || err })));
     } else if (which === 'clearAll') {
-      if (!confirm('清除全部全局快捷键？清除后所有全局键都不再响应（可用「恢复默认」找回）。')) return;
+      if (!confirm(tr('清除全部全局快捷键？清除后所有全局键都不再响应（可用「恢复默认」找回）。'))) return;
       stopRecording(root);
       api.keys.clearAll().then(async () => {
         msgs.clear();
         await load();
         repaint(root);
-        toast('已清除全部全局快捷键');
-      }).catch((err) => toast(`清除失败：${(err && err.message) || err}`));
+        toast(tr('已清除全部全局快捷键'));
+      }).catch((err) => toast(tr('清除失败：{msg}', { msg: (err && err.message) || err })));
     }
     return;
   }
@@ -390,7 +390,7 @@ export function mountKeysPane(paneEl, { toast: t, onChange } = {}) {
     .then(() => repaint(paneEl))
     .catch((e) => {
       const box = paneEl.querySelector('#st-keys-list');
-      if (box) box.innerHTML = `<div class="st-error">读取快捷键失败：${esc((e && e.message) || e)}</div>`;
+      if (box) box.innerHTML = `<div class="st-error">${tr('读取快捷键失败：{msg}', { msg: esc((e && e.message) || e) })}</div>`;
     });
 }
 

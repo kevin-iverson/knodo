@@ -86,7 +86,22 @@ function todayLocal() {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+const WEEKDAY_CN = ['日', '一', '二', '三', '四', '五', '六'];
+
+/**
+ * 给模型看的一句「今天是几号、星期几」。
+ *
+ * 为什么要喂给模型：提示词要求它把「明天 / 本周五 / 下周一」换算成具体日期，
+ * 而模型本身不知道今天是哪天（训练数据里的"今天"是旧的）。不告诉它，
+ * 换算出来的日期会比现实差好几年 —— 比不换算更糟。
+ */
+function todaySentence() {
+  const d = todayLocal();
+  const w = dayOfWeek(d);
+  return `今天是 ${d}（星期${WEEKDAY_CN[w >= 0 ? w : 0]}）。`;
+}
+
 module.exports = {
   DAY_MS, pad2, toDay, toMs, addDays, addMonths, monthLength,
-  dayOfWeek, eachDay, localTimeToIso, todayLocal,
+  dayOfWeek, eachDay, localTimeToIso, todayLocal, todaySentence,
 };

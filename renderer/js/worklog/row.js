@@ -14,6 +14,7 @@
 import { api } from '../api.js';
 import { toast } from '../ui.js';
 import { openFormModal } from '../modal.js';
+import { t as tr } from '../i18n.js';
 import { hm, fmtDay, fmtClock, esc, dateKey, SOURCE_TEXT } from './shared.js';
 
 /** taskId -> { ownSec, ownCnt, aggSec, parentId, title }（全时段，与 worklog:task 口径一致） */
@@ -57,8 +58,8 @@ function chipText(taskId, snap) {
     ? Math.max(0, Date.now() - (snap.segStart || Date.now())) : 0)) / 1000) : 0;
   const own = a.ownSec + liveSec;
   const sub = a.aggSec - a.ownSec;
-  const more = sub > 0 ? ` <span class="wl-row-log-sub">+${hm(sub)}子</span>` : '';
-  return `⏱ ${hm(own)} · ${a.ownCnt}条${more}`;
+  const more = sub > 0 ? ` <span class="wl-row-log-sub">+${hm(sub)}${tr('子')}</span>` : '';
+  return `⏱ ${hm(own)} · ${tr('{n} 条', { n: a.ownCnt })}${more}`;
 }
 
 /** 只改文本，不重建 DOM（沿用 index.js#paintRow 的范式） */
@@ -102,13 +103,13 @@ function entryRow(e) {
 
 function panelHtml(taskId) {
   const list = entriesCache.get(Number(taskId));
-  if (!list) return '<div class="wl-re-loading">读取记录…</div>';
-  if (!list.length) return '<div class="wl-re-empty">还没有工时记录，点右上「＋补录」添加</div>';
+  if (!list) return `<div class="wl-re-loading">${tr('读取记录…')}</div>`;
+  if (!list.length) return `<div class="wl-re-empty">${tr('还没有工时记录，点右上「＋补录」添加')}</div>`;
   const sorted = list.slice().sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
   const total = sorted.reduce((s, e) => s + (Number(e.sec) || 0), 0);
   return `<div class="wl-re-head">
-      <span>${sorted.length} 条 · 共 ${hm(total)}</span>
-      <button type="button" class="wl-re-add" data-wl-row-add="${taskId}">＋补录</button>
+      <span>${tr('{n} 条 · 共 {total}', { n: sorted.length, total: hm(total) })}</span>
+      <button type="button" class="wl-re-add" data-wl-row-add="${taskId}">＋${tr('补录')}</button>
     </div>
     <div class="wl-re-list">${sorted.map(entryRow).join('')}</div>`;
 }
@@ -124,7 +125,7 @@ async function loadEntries(taskId, el) {
   } catch (e) {
     if (!el.isConnected) return;
     const panel = el.querySelector(`[data-wl-row-log-panel="${taskId}"]`);
-    if (panel) panel.innerHTML = `<div class="wl-re-empty">读取失败：${esc((e && e.message) || e)}</div>`;
+    if (panel) panel.innerHTML = `<div class="wl-re-empty">${tr('读取失败：{msg}', { msg: esc((e && e.message) || e) })}</div>`;
   }
 }
 
@@ -157,14 +158,14 @@ function togglePanel(taskId, el) {
 export async function manualAddFor(taskId) {
   try {
     const ok = await openFormModal({
-      title: '补录工时',
-      okText: '补录',
+      title: tr('补录工时'),
+      okText: tr('补录'),
       grid: true,
       fields: [
-        { name: 'date', label: '日期', value: dateKey(new Date()), placeholder: 'YYYY-MM-DD', span: 2, hint: '跨天按开始日归属' },
-        { name: 'start', label: '开始', placeholder: '09:00' },
-        { name: 'end', label: '结束', placeholder: '10:30' },
-        { name: 'note', label: '备注', placeholder: '这段时间做了什么', span: 2 },
+        { name: 'date', label: tr('日期'), value: dateKey(new Date()), placeholder: 'YYYY-MM-DD', span: 2, hint: tr('跨天按开始日归属') },
+        { name: 'start', label: tr('开始'), placeholder: '09:00' },
+        { name: 'end', label: tr('结束'), placeholder: '10:30' },
+        { name: 'note', label: tr('备注'), placeholder: tr('这段时间做了什么'), span: 2 },
       ],
       onSubmit: async (v) => {
         try {
@@ -173,12 +174,12 @@ export async function manualAddFor(taskId) {
           });
           return undefined;
         } catch (err) {
-          return (err && err.message) || '补录失败';
+          return (err && err.message) || tr('补录失败');
         }
       },
     });
     if (ok) {
-      toast('已补录');
+      toast(tr('已补录'));
       entriesCache.delete(Number(taskId));
       refreshAll();
       // 明展开时就地重拉，不整表重绘
@@ -190,7 +191,7 @@ export async function manualAddFor(taskId) {
     }
     return false;
   } catch (e) {
-    toast((e && e.message) || '补录失败');
+    toast((e && e.message) || tr('补录失败'));
     return false;
   }
 }
@@ -211,7 +212,7 @@ export function renderRowLog({ task, el }) {
   chip.type = 'button';
   chip.className = 'wl-row-log-chip';
   chip.dataset.wlLogChip = String(id);
-  chip.title = '查看这条任务的工时记录 / 补录';
+  chip.title = tr('查看这条任务的工时记录 / 补录');
   chip.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();

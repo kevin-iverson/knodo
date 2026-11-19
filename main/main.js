@@ -13,6 +13,7 @@ const db = require('./db');
 const storage = require('./storage');
 const attachments = require('./attachments');
 const theme = require('./theme');
+const i18n = require('./i18n');
 const { registerIpc } = require('./ipc');
 const { setupTray, destroyTray, refreshTrayMenu } = require('./tray');
 const desktopWindow = require('./desktop-window');
@@ -1186,6 +1187,13 @@ app.whenReady().then(async () => {
   }
 
   applyTheme();
+  // 界面语言：必须在建菜单 / 托盘之前读出来，否则首屏菜单会先闪一下中文。
+  // 切语言后重建这两处（渲染层由 ipc 的 i18n:set 广播 reload，不在这里管）。
+  i18n.load();
+  i18n.setOnChange(() => {
+    buildAppMenu();
+    refreshTrayMenu();
+  });
   // 功能插件：先读开关再注册 IPC —— 关闭态下这里只装一个 60 行的注册中心，
   // main/worklog/ 整个目录不会进内存（方案 §四 第一层）。
   features.init();
@@ -3538,9 +3546,11 @@ app.whenReady().then(async () => {
               // 再走设置那条偏好通道打开，验一次真实挂载后的入口与浮层；
               // 只验开启态会让「关=零成本」坏掉没人发现，只验关闭态则等于放弃覆盖这个功能。
               const buddy = document.getElementById('btn-buddy');
-              // 文案只算文字部分：图标是 <span class="nav-ico">，textContent 会把它一起带上
+              // 文案取「去掉图标后的整段文字」：文本节点可能被一层 <span data-i18n> 包着
+              // （i18n 需要把属性挂在元素上），所以不能只扫 childNodes 里的裸文本节点
+              const buddyIco = buddy ? buddy.querySelector('.nav-ico') : null;
               const buddyLabel = buddy
-                ? Array.from(buddy.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim()
+                ? buddy.textContent.replace(buddyIco ? buddyIco.textContent : '', '').trim()
                 : '';
               out.buddyBtn = !!buddy && buddyLabel === '搭子';
               out.buddyOffHidden = !!buddy && buddy.hidden === true;

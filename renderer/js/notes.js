@@ -67,7 +67,6 @@ let activeNoteId = null;   // 右栏当前笔记
 let editor = null;         // wysiwyg.js 实例（value / setContent / setEditing）
 let saver = null;
 let currentNote = null;
-let currentTagIds = [];
 let baseline = null;       // 最近一次「已保存」的快照：「取消」据此回滚
 let dirty = false;         // 有未落库的改动
 let previewTimer = null;
@@ -237,11 +236,16 @@ async function loadSide(root) {
     ].join('');
   }
 
-  const tagUl = root.querySelector('#nt-tags');
-  if (tagUl) {
-    tagUl.innerHTML = tagList.length
-      ? tagList.map((t) => `
-          <li class="nt-tag${tagId === t.id ? ' active' : ''}" data-nt-act="tag" data-id="${t.id}">
+  renderSideTags(root);
+}
+
+/** 侧栏「标签」列表：只画，不查库（数据在 tagList 里） */
+function renderSideTags(root = boundRoot) {
+  const tagUl = root && root.querySelector ? root.querySelector('#nt-tags') : null;
+  if (!tagUl) return;
+  tagUl.innerHTML = tagList.length
+    ? tagList.map((t) => `
+          <li class="nt-tag${String(tagId) === String(t.id) ? ' active' : ''}" data-nt-act="tag" data-id="${t.id}">
             <span class="nt-dot" style="background:${esc(t.color || '#8896ab')}"></span>
             <span class="nt-tag-name">${esc(t.name)}</span>
             <span class="nt-tag-count">${Number(t.note_count) || 0}</span>
@@ -250,8 +254,27 @@ async function loadSide(root) {
               <button class="mini-btn" data-nt-act="tag-del" data-id="${t.id}" title="删除标签">✕</button>
             </span>
           </li>`).join('')
-      : '<li class="nt-empty">暂无标签</li>';
-  }
+    : '<li class="nt-empty">暂无标签</li>';
+}
+
+/** 标签指纹：名字 / 颜色 / 挂载数任一变化才重绘，避免每次自动保存都重建侧栏 DOM */
+function noteTagsSig(list) {
+  return (list || []).map((t) => `${t.id}:${t.name}:${t.color}:${Number(t.note_count) || 0}`).join('|');
+}
+
+/**
+ * 保存后同步侧栏标签。
+ * 在笔记的「标签」框里现敲的名字是在**保存时**才在库里建出来的，而侧栏读的是 tagList
+ * 这份缓存，以前只有切走视图（重新挂载 → loadSide）才更新 —— 表现就是「标签写完了，
+ * 左边标签列表里没有」，得切个视图才冒出来。挂载数与改名同理。
+ */
+async function syncSideTags() {
+  const fresh = await api.noteTags.list().catch(() => null);
+  if (!fresh) return;
+  if (noteTagsSig(fresh) === noteTagsSig(tagList)) return;
+  tagList = fresh;
+  // 主视图和单篇弹窗两个宿主都试一遍（只有挂着 #nt-tags 的那个会真的画）
+  for (const root of [boundRoot, modalRoot]) if (root) renderSideTags(root);
 }
 
 /** 目录扁平化（带缩进层级），与分组树同一套展开逻辑 */
@@ -494,8 +517,7 @@ export async function openNote(id, opts = {}) {
 
   activeNoteId = note.id;
   currentNote = note;
-  currentTagIds = (note.tags || []).map((t) => t.id);
-  baseline = { id: note.id, title: note.title || '', content_md: note.content_md || '', folder_id: note.folder_id ?? null, tagIds: [...currentTagIds] };
+  baseline = { id: note.id, title: note.title || '', content_md: note.content_md || '', folder_id: note.folder_id ?? null, tagNames: normTagText((note.tags || []).map((t) => t.name).join('，')) };
   discardSave = false;
   dirty = false;
   focusTerm = opts.focusTerm || (keyword && !showTrash ? keyword : '');
@@ -911,6 +933,14 @@ function onFsKey(e) {
   toggleFullscreen();
 }
 
+/**
+ * 标签文本归一：分隔符统一成半角逗号、去首尾空白、丢掉空项。
+ * 比较（没改动就不写库）与落库都用同一份文本，避免「a，b」和「a, b」被当成两次改动。
+ */
+function normTagText(raw) {
+  return String(raw || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean).join(',');
+}
+
 /** 当前表单值（自动保存与「保存」按钮共用，保证两条路径写入一致） */
 function readPayload() {
   const pane = detailPane();
@@ -922,7 +952,12 @@ function readPayload() {
     title: (pane.querySelector('.nt-dp-title')?.value || '').trim(),
     content_md: editor ? editor.value() : '',
     folder_id: Number(pane.querySelector('.nt-folder-select')?.value) || null,
-    tagIds: currentTagIds,
+    // 标签以**输入框里的文本**为准，不再读缓存的 currentTagIds：
+    // 那份缓存以前只在 change（失焦）时才更新，而自动保存在 input 后 900ms 就写库，
+    // 于是「打完标签不点别处」会先把旧标签（往往是空的）写回去并标成「已保存」，
+    // 失焦后补的那次解析又因为面板已销毁而落空 —— 标签就这么静默丢了。
+    // 名称 → id 的解析统一交给主进程 updateNote(tagNames)，见 main/db.js。
+    tagNames: normTagText(pane.querySelector('.nt-tag-input')?.value),
   };
 }
 
@@ -957,6 +992,8 @@ function bindSaver(pane, note) {
       // 不重绘详情（会打断输入 / 丢失光标），只同步列表行与字数
       updateListItem(updated);
       updateDetailMeta(pane, updated);
+      // 侧栏标签列表也跟上：现敲的新标签是这次保存才在库里建出来的
+      syncSideTags();
       // 基线跟着「已保存」往前走：否则自动保存写库后再点「取消」会把已保存的内容一起撤掉，
       // 用户看到「已保存 14:53」却回到更早的版本，语义自相矛盾。取消 = 撤销自上次保存以来的改动。
       baseline = {
@@ -964,7 +1001,7 @@ function bindSaver(pane, note) {
         title: payload.title || '',
         content_md: payload.content_md || '',
         folder_id: payload.folder_id ?? null,
-        tagIds: [...(payload.tagIds || [])],
+        tagNames: payload.tagNames || '',
       };
       return updated;
     },
@@ -992,18 +1029,17 @@ async function cancelEdit() {
   const same = cur && cur.title === baseline.title
     && cur.content_md === baseline.content_md
     && (cur.folder_id || null) === (baseline.folder_id || null)
-    && (cur.tagIds || []).join(',') === (baseline.tagIds || []).join(',');
+    && (cur.tagNames || '') === (baseline.tagNames || '');
   if (same) { notify('没有需要放弃的改动'); return; }
   if (saver) saver.cancel();
   const updated = await api.notes.update(baseline.id, {
     title: baseline.title,
     content_md: baseline.content_md,
     folder_id: baseline.folder_id,
-    tagIds: baseline.tagIds,
+    tagNames: baseline.tagNames || '',
   }).catch(() => null);
   if (!updated) { notify('放弃改动失败，请重试'); return; }
   currentNote = updated;
-  currentTagIds = [...baseline.tagIds];
   dirty = false;
   const pane = detailPane();
   if (pane) {
@@ -1146,7 +1182,7 @@ function bindModalEvents(mask) {
   mask.addEventListener('change', async (e) => {
     if (!e.target.closest || !e.target.closest('.nt-dp')) return;
     if (e.target.classList.contains('nt-tag-input')) {
-      await syncTagIds(e.target.value);
+      // 与右栏同语义：不 flush，交给防抖保存（否则「取消」回滚不掉 tag）
       if (saver) saver.schedule();
     } else if (e.target.classList.contains('nt-folder-select')) {
       if (saver) await saver.flush();
@@ -1293,7 +1329,9 @@ function bindEvents(root) {
   root.addEventListener('change', async (e) => {
     if (!e.target.closest('.nt-dp')) return;
     if (e.target.classList.contains('nt-tag-input')) {
-      await syncTagIds(e.target.value);
+      // 标签失焦：交给防抖保存（readPayload 直接读输入框文本，写库时一定是最新值）。
+      // 这里**不能** flush —— 那会在「点取消」的 mousedown 阶段先把标签写进库，
+      // 基线随之前移，取消就再也回滚不了这次标签改动了。
       if (saver) saver.schedule();
     } else if (e.target.classList.contains('nt-folder-select')) {
       if (saver) await saver.flush();
@@ -1734,33 +1772,16 @@ async function removeTag(id) {
   notify('标签已删除');
 }
 
-/** 标签增删改后，同步右栏正在编辑的笔记：标签输入框显示、currentTagIds 与保存基线 */
+/** 标签增删改后，同步右栏正在编辑的笔记：标签输入框显示与保存基线 */
 async function syncOpenNoteTags() {
   if (!activeNoteId || !currentNote) return;
   const fresh = await api.notes.get(currentNote.id).catch(() => null);
   if (!fresh) return;
   currentNote = { ...currentNote, tags: fresh.tags };
-  currentTagIds = (fresh.tags || []).map((x) => x.id);
   const input = detailPane()?.querySelector('.nt-tag-input');
   if (input) input.value = (fresh.tags || []).map((x) => x.name).join('，');
   if (baseline && Number(baseline.id) === Number(currentNote.id)) {
-    baseline = { ...baseline, tagIds: [...currentTagIds] };
-  }
-}
-
-/** 标签输入（逗号分隔）→ 标签 id；不存在的标签自动创建（与任务标签行为一致） */
-async function syncTagIds(raw) {
-  const names = String(raw || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean);
-  try {
-    const all = await api.noteTags.list();
-    const ids = [];
-    for (const n of names) {
-      const hit = all.find((t) => String(t.name).toLowerCase() === n.toLowerCase());
-      ids.push(hit ? hit.id : (await api.noteTags.create(n)).id);
-    }
-    currentTagIds = ids;
-  } catch (e) {
-    notify((e && e.message) || '标签解析失败');
+    baseline = { ...baseline, tagNames: normTagText((fresh.tags || []).map((x) => x.name).join('，')) };
   }
 }
 

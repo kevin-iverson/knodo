@@ -10,6 +10,7 @@
  */
 import { api } from '../api.js';
 import { toast } from '../ui.js';
+import { t as tr } from '../i18n.js';
 import { openDetail } from '../detail.js';
 import { flattenGroupTree } from '../group-tree.js';
 import { openFormModal } from '../modal.js';
@@ -17,6 +18,9 @@ import { DATE_RANGE_EVENT, dateRangeFieldHtml, bindDateRangeFields } from '../co
 import * as row from './row.js';
 import { live, hm, esc, dateKey, fmtDay, fmtClock } from './shared.js';
 import { money, rateText, openRateModal } from './pay.js';
+
+/** 折线图的星期短名：中文「周一」对英文「Mon」，整句进词典（不要拿「周」+「一」拼） */
+const WEEK_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'].map((s) => tr(s));
 
 /* ------------------------------ 视图状态 ------------------------------ */
 
@@ -59,12 +63,12 @@ function bounds() {
   if (V.range === 'lastweek') {
     const thisMon = mondayOf(now);
     const from = new Date(thisMon); from.setDate(from.getDate() - 7);
-    return { from, to: thisMon, label: '上周' };
+    return { from, to: thisMon, label: tr('上周') };
   }
   if (V.range === 'month') {
     const from = startOfDay(now); from.setDate(1);
     const to = new Date(now.getTime() + 60 * 1000);
-    return { from, to, label: '本月' };
+    return { from, to, label: tr('本月') };
   }
   if (V.range === 'custom') {
     const from = V.customFrom ? startOfDay(new Date(`${V.customFrom}T00:00:00`)) : startOfDay(now);
@@ -74,7 +78,7 @@ function bounds() {
   }
   const from = mondayOf(now);
   const to = new Date(now.getTime() + 60 * 1000);
-  return { from, to, label: '本周' };
+  return { from, to, label: tr('本周') };
 }
 
 /** 范围内的工作日数（周一到周五，已过去的 + 今天），用于「日均」 */
@@ -167,26 +171,30 @@ function toolbarHtml() {
     .join('');
   return `
   <div class="wl-toolbar">
-    ${chipGroup('mode', [['time', '工时'], ['value', '价值']], V.mode)}
+    ${chipGroup('mode', [['time', tr('工时')], ['value', tr('价值')]], V.mode)}
     <span class="wl-vmode-sep"></span>
-    <span class="wl-tb-label">分组</span>
-    <select class="wl-select" data-wl="group" aria-label="按分组筛选" title="按分组筛选">
-      <option value="">全部分组</option>${groupOpts}
-    </select>
-    <span class="wl-tb-label">标签</span>
-    <select class="wl-select" data-wl="tag" aria-label="按标签筛选" title="按标签筛选">
-      <option value="">全部标签</option>${tagOpts}
-    </select>
-    <span class="wl-tb-label">范围</span>
-    ${chipGroup('range', [['week', '本周'], ['lastweek', '上周'], ['month', '本月'], ['custom', '自定义']], V.range)}
-    <span class="wl-tb-label">口径</span>
-    ${chipGroup('scope', [['top', '含子任务'], ['all', '仅主任务']], V.scope)}
+    <span class="wl-tb-group"><span class="wl-tb-label">${tr('分组')}</span>
+      <select class="wl-select" data-wl="group" aria-label="${tr('按分组筛选')}" title="${tr('按分组筛选')}">
+        <option value="">${tr('全部分组')}</option>${groupOpts}
+      </select>
+    </span>
+    <span class="wl-tb-group"><span class="wl-tb-label">${tr('标签')}</span>
+      <select class="wl-select" data-wl="tag" aria-label="${tr('按标签筛选')}" title="${tr('按标签筛选')}">
+        <option value="">${tr('全部标签')}</option>${tagOpts}
+      </select>
+    </span>
+    <span class="wl-tb-group"><span class="wl-tb-label">${tr('范围')}</span>
+      ${chipGroup('range', [['week', tr('本周')], ['lastweek', tr('上周')], ['month', tr('本月')], ['custom', tr('自定义')]], V.range)}
+    </span>
+    <span class="wl-tb-group"><span class="wl-tb-label">${tr('口径')}</span>
+      ${chipGroup('scope', [['top', tr('含子任务')], ['all', tr('仅主任务')]], V.scope)}
+    </span>
     <div class="wl-spacer"></div>
-    <button type="button" class="wl-btn" data-wl="manual" title="补录一段没有计时的工时">＋ 补录</button>
-    <button type="button" class="wl-btn" data-wl="export" title="导出当前范围与筛选的报工表（CSV）">导出</button>
+    <button type="button" class="wl-btn" data-wl="manual" title="${tr('补录一段没有计时的工时')}">＋ ${tr('补录')}</button>
+    <button type="button" class="wl-btn" data-wl="export" title="${tr('导出当前范围与筛选的报工表（CSV）')}">${tr('导出')}</button>
   </div>
   ${V.range === 'custom' ? `<div class="wl-custom-range">
-    ${dateRangeFieldHtml(V.customFrom, V.customTo, { placeholder: '选择自定义范围' })}
+    ${dateRangeFieldHtml(V.customFrom, V.customTo, { placeholder: tr('选择自定义范围') })}
   </div>` : ''}`;
 }
 
@@ -198,13 +206,13 @@ function rowHtml(node, depth, displaySec, total, maxSec) {
   const indent = depth * 22;
   const running = live.snap.mode !== 'idle' && Number(live.snap.taskId) === Number(node.id);
   const active = live.snap.mode !== 'idle' && Number(live.snap.taskId) === Number(node.id);
-  const runLabel = active ? (live.snap.mode === 'paused' ? '已暂停' : '计时中') : '开始';
+  const runLabel = active ? (live.snap.mode === 'paused' ? tr('已暂停') : tr('计时中')) : tr('开始');
   return `<tr class="wl-row${depth ? ' is-child' : ''}" data-wl-row="${node.id}">
     <td>
       <div class="wl-task-cell" style="padding-left:${indent}px">
-        <button type="button" class="wl-twist${hasChild ? '' : ' is-ph'}" data-wl-twist="${node.id}" aria-label="${open ? '收起' : '展开'}子任务">${open ? '▾' : '▸'}</button>
+        <button type="button" class="wl-twist${hasChild ? '' : ' is-ph'}" data-wl-twist="${node.id}" aria-label="${open ? tr('收起') : tr('展开')}${tr('子任务')}">${open ? '▾' : '▸'}</button>
         <span class="wl-t-title${depth ? ' is-sub' : ''}">${esc(node.title)}</span>
-        ${depth ? '<span class="wl-t-group">· 子任务</span>' : (node.groupName ? `<span class="wl-t-group">· ${esc(node.groupName)}</span>` : '')}
+        ${depth ? `<span class="wl-t-group">· ${tr('子任务')}</span>` : (node.groupName ? `<span class="wl-t-group">· ${esc(node.groupName)}</span>` : '')}
       </div>
     </td>
     <td class="wl-r wl-mono${depth ? ' is-muted' : ' is-own'}">${hm(node.ownSec)}</td>
@@ -254,7 +262,7 @@ function chartHtml(entries, ids, from, to) {
   const labels = days.map((d, i) => {
     const isToday = dateKey(d) === todayKey;
     if (days.length <= 7) {
-      return { text: `周${'日一二三四五六'[d.getDay()]}`, isToday };
+      return { text: tr(WEEK_LABELS[d.getDay()]), isToday };
     }
     const show = i === 0 || i === days.length - 1 || i % stride === 0;
     return { text: show ? fmtDay(d.toISOString()) : '', isToday };
@@ -324,33 +332,33 @@ function valueCardsHtml(pay, label, days) {
     return `<div class="wl-pay-guide">
       <div class="wl-pay-guide-mark">¥</div>
       <div class="wl-pay-guide-body">
-        <div class="wl-pay-guide-t">先设置你的时薪</div>
-        <div class="wl-pay-guide-d">设置后，已记录的工时会按时薪估算成价值。这只是给自己看的估算，不是工资条；没有时薪前不会显示 ¥0.00。</div>
+        <div class="wl-pay-guide-t">${tr('先设置你的时薪')}</div>
+        <div class="wl-pay-guide-d">${tr('设置后，已记录的工时会按时薪估算成价值。这只是给自己看的估算，不是工资条；没有时薪前不会显示 ¥0.00。')}</div>
       </div>
-      <button type="button" class="wl-btn is-accent" data-wl="rate">设置时薪</button>
+      <button type="button" class="wl-btn is-accent" data-wl="rate">${tr('设置时薪')}</button>
     </div>`;
   }
   const excludedHm = hm(pay.excludedSec);
   return `<div class="wl-sum-grid">
-    <div class="wl-sum-card is-accent" data-wl="rate" title="点击修改时薪">
-      <div class="wl-k">折算价值 · 估算</div>
+    <div class="wl-sum-card is-accent" data-wl="rate" title="${tr('点击修改时薪')}">
+      <div class="wl-k">${tr('折算价值 · 估算')}</div>
       <div class="wl-v num">${money(pay.totalCents)}</div>
-      <div class="wl-s">${esc(label)} · 点击查看时薪</div>
+      <div class="wl-s">${esc(label)} · ${tr('点击查看时薪')}</div>
     </div>
     <div class="wl-sum-card">
-      <div class="wl-k">可计费时长</div>
+      <div class="wl-k">${tr('可计费时长')}</div>
       <div class="wl-v num">${hm(pay.billableSec)}</div>
-      <div class="wl-s">按 ${days} 个工作日 · ${pay.rows.length} 条记录</div>
+      <div class="wl-s">${tr('按 {days} 个工作日 · {rows} 条记录', { days, rows: pay.rows.length })}</div>
     </div>
-    <div class="wl-sum-card${pay.excludedSec > 0 ? ' is-excluded' : ''}"${pay.excludedSec > 0 ? ' data-wl="excluded"' : ''} title="${pay.excludedSec > 0 ? '点击查看被排除的记录' : ''}">
-      <div class="wl-k">已排除</div>
+    <div class="wl-sum-card${pay.excludedSec > 0 ? ' is-excluded' : ''}"${pay.excludedSec > 0 ? ' data-wl="excluded"' : ''} title="${pay.excludedSec > 0 ? tr('点击查看被排除的记录') : ''}">
+      <div class="wl-k">${tr('已排除')}</div>
       <div class="wl-v num">${excludedHm}</div>
-      <div class="wl-s">${pay.excludedSec > 0 ? '标记为不计薪，金额记 0' : '没有不计薪的记录'}</div>
+      <div class="wl-s">${pay.excludedSec > 0 ? tr('标记为不计薪，金额记 0') : tr('没有不计薪的记录')}</div>
     </div>
-    <div class="wl-sum-card" title="总价值 ÷ 可计费小时，按记录费率加权">
-      <div class="wl-k">平均时薪</div>
+    <div class="wl-sum-card" title="${tr('总价值 ÷ 可计费小时，按记录费率加权')}">
+      <div class="wl-k">${tr('平均时薪')}</div>
       <div class="wl-v num">${pay.billableSec > 0 ? rateText(pay.avgRateCents) : '—'}</div>
-      <div class="wl-s">按记录生效费率加权</div>
+      <div class="wl-s">${tr('按记录生效费率加权')}</div>
     </div>
   </div>`;
 }
@@ -360,7 +368,7 @@ function payEntryRow(r) {
   const clock = r.startedAt && r.endedAt
     ? `${fmtClock(r.startedAt)}–${fmtClock(r.endedAt)}`
     : fmtClock(r.startedAt);
-  const estimate = r.useEarliest ? '<span class="wl-pay-tag">按最早费率估算</span>' : '';
+  const estimate = r.useEarliest ? `<span class="wl-pay-tag">${tr('按最早费率估算')}</span>` : '';
   return `<div class="wl-pay-entry${r.billable ? '' : ' is-excluded'}" data-pay-entry="${r.id}">
     <span class="wl-pe-day">${esc(r.localDay)}</span>
     <span class="wl-pe-clock">${esc(clock)}</span>
@@ -368,7 +376,7 @@ function payEntryRow(r) {
     <span class="wl-pe-rate num">${r.rateCents ? rateText(r.rateCents) : '—'} ${estimate}</span>
     <span class="wl-pe-amt num">${money(r.amountCents)}</span>
     <button type="button" class="wl-pe-bill${r.billable ? ' is-on' : ''}" data-wl-billable="${r.id}"
-      title="${r.billable ? '点击标为不计薪（金额归零，但时长仍显示）' : '点击恢复计薪'}">${r.billable ? '计薪' : '不计薪'}</button>
+      title="${r.billable ? tr('点击标为不计薪（金额归零，但时长仍显示）') : tr('点击恢复计薪')}">${r.billable ? tr('计薪') : tr('不计薪')}</button>
   </div>`;
 }
 
@@ -394,9 +402,9 @@ function valueRowHtml(node, depth, totalCents, maxCents) {
   return `<tr class="wl-row${depth ? ' is-child' : ''}" data-wl-pay-row="${node.id}">
     <td>
       <div class="wl-task-cell" style="padding-left:${indent}px">
-        <button type="button" class="wl-twist${hasChild ? '' : ' is-ph'}" data-wl-pay-twist="${node.id}" aria-label="${open ? '收起' : '展开'}子任务">${open ? '▾' : '▸'}</button>
+        <button type="button" class="wl-twist${hasChild ? '' : ' is-ph'}" data-wl-pay-twist="${node.id}" aria-label="${open ? tr('收起') : tr('展开')}${tr('子任务')}">${open ? '▾' : '▸'}</button>
         <span class="wl-t-title${depth ? ' is-sub' : ''}">${esc(node.title)}</span>
-        ${depth ? '<span class="wl-t-group">· 子任务</span>' : (node.groupName ? `<span class="wl-t-group">· ${esc(node.groupName)}</span>` : '')}
+        ${depth ? `<span class="wl-t-group">· ${tr('子任务')}</span>` : (node.groupName ? `<span class="wl-t-group">· ${esc(node.groupName)}</span>` : '')}
       </div>
     </td>
     <td class="wl-r wl-mono is-muted">${V.scope === 'all' ? hm(sec) : '—'}</td>
@@ -407,11 +415,11 @@ function valueRowHtml(node, depth, totalCents, maxCents) {
         ${depth ? '' : `<span class="wl-mono is-muted wl-pct">${pct}%</span>`}
       </div>
     </td>
-    <td class="wl-r"><button type="button" class="wl-mini-act${open ? ' is-open' : ''}" data-wl-pay-open="${node.id}" title="回溯到原始记录">${open ? '收起' : '明细'}</button></td>
+    <td class="wl-r"><button type="button" class="wl-mini-act${open ? ' is-open' : ''}" data-wl-pay-open="${node.id}" title="${tr('回溯到原始记录')}">${open ? tr('收起') : tr('明细')}</button></td>
   </tr>
   ${open && collected.length ? `<tr class="wl-pay-detail-row"><td colspan="5">
     <div class="wl-pay-detail">
-      <div class="wl-pay-detail-head">${esc(node.title)} · ${collected.length} 条记录 · 金额可逐级回溯到原始工时</div>
+      <div class="wl-pay-detail-head">${esc(node.title)} · ${tr('{n} 条记录 · 金额可逐级回溯到原始工时', { n: collected.length })}</div>
       ${collected.map(payEntryRow).join('')}
     </div>
   </td></tr>` : ''}`;
@@ -458,12 +466,12 @@ export async function render(root) {
     rows = r || [];
     entries = e || [];
   } catch (err) {
-    toast(`加载工时失败：${(err && err.message) || err}`);
+    toast(tr('加载工时失败：{msg}', { msg: (err && err.message) || err }));
   }
   try {
     pay = (await api.worklog.pay(payload)) || pay;
   } catch (err) {
-    if (V.mode === 'value') toast(`加载价值估算失败：${(err && err.message) || err}`);
+    if (V.mode === 'value') toast(tr('加载价值估算失败：{msg}', { msg: (err && err.message) || err }));
   }
   lastRows = rows || [];
   lastPay = pay;
@@ -516,25 +524,25 @@ export async function render(root) {
     ? valueCardsHtml(pay, label, days)
     : `<div class="wl-sum-grid">
       <div class="wl-sum-card is-accent">
-        <div class="wl-k">总工时</div>
+        <div class="wl-k">${tr('总工时')}</div>
         <div class="wl-v num">${hm(total)}</div>
-        <div class="wl-s">${V.range === 'week' ? '周一 00:00 至今'
-    : V.range === 'month' ? '本月 1 日至今'
-      : V.range === 'lastweek' ? '上周一 ~ 本周一'
+        <div class="wl-s">${V.range === 'week' ? tr('周一 00:00 至今')
+    : V.range === 'month' ? tr('本月 1 日至今')
+      : V.range === 'lastweek' ? tr('上周一 ~ 本周一')
         : esc(label)}</div>
       </div>
       <div class="wl-sum-card">
-        <div class="wl-k">日均</div>
+        <div class="wl-k">${tr('日均')}</div>
         <div class="wl-v num">${hm(avg)}</div>
-        <div class="wl-s">按 ${days} 个工作日</div>
+        <div class="wl-s">${tr('按 {days} 个工作日', { days })}</div>
       </div>
       <div class="wl-sum-card">
-        <div class="wl-k">涉及任务</div>
-        <div class="wl-v num">${ownTasks + subTasks}<small>项</small></div>
-        <div class="wl-s">主任务 ${ownTasks} · 子任务 ${subTasks}</div>
+        <div class="wl-k">${tr('涉及任务')}</div>
+        <div class="wl-v num">${ownTasks + subTasks}<small>${tr('项')}</small></div>
+        <div class="wl-s">${tr('主任务 {own} · 子任务 {sub}', { own: ownTasks, sub: subTasks })}</div>
       </div>
       <div class="wl-sum-card">
-        <div class="wl-k">最长单项</div>
+        <div class="wl-k">${tr('最长单项')}</div>
         <div class="wl-v num">${longest ? hm(valueOf(longest)) : '0m'}</div>
         <div class="wl-s">${longest ? esc(longest.title) : '—'}</div>
       </div>
@@ -543,42 +551,42 @@ export async function render(root) {
   const tablePanel = isValue
     ? `<div class="wl-panel">
       <div class="wl-panel-head">
-        <h3>按任务</h3>
-        <span class="wl-sub">金额 = 逐条工时 × 生效费率，逐级相加可回溯</span>
+        <h3>${tr('按任务')}</h3>
+        <span class="wl-sub">${tr('金额 = 逐条工时 × 生效费率，逐级相加可回溯')}</span>
         <div class="wl-spacer"></div>
         <span class="wl-sub wl-mono">${pay.hasRates ? money(payTotalCents) : '—'}</span>
       </div>
       <table class="wl-table">
         <thead><tr>
-          <th>任务</th>
-          <th class="wl-r" style="width:80px">${V.scope === 'all' ? '自身工时' : '工时'}</th>
-          <th class="wl-r" style="width:112px">金额 · 估算</th>
-          <th style="width:154px">占比</th>
+          <th>${tr('任务')}</th>
+          <th class="wl-r" style="width:80px">${V.scope === 'all' ? tr('自身工时') : tr('工时')}</th>
+          <th class="wl-r" style="width:112px">${tr('金额 · 估算')}</th>
+          <th style="width:154px">${tr('占比')}</th>
           <th class="wl-r" style="width:70px"></th>
         </tr></thead>
         <tbody>${roots.length
     ? valueTreeHtml(roots, payTotalCents, payMaxCents)
-    : '<tr><td colspan="5"><div class="wl-empty-view">本区间没有可计薪的工时。先给任务计时或补录，再回来看估算价值。</div></td></tr>'}</tbody>
+    : `<tr><td colspan="5"><div class="wl-empty-view">${tr('本区间没有可计薪的工时。先给任务计时或补录，再回来看估算价值。')}</div></td></tr>`}</tbody>
       </table>
     </div>`
     : `<div class="wl-panel">
       <div class="wl-panel-head">
-        <h3>按任务</h3>
-        <span class="wl-sub">父任务合计 = 自身 + 全部后代，不重复计入</span>
+        <h3>${tr('按任务')}</h3>
+        <span class="wl-sub">${tr('父任务合计 = 自身 + 全部后代，不重复计入')}</span>
         <div class="wl-spacer"></div>
         <span class="wl-sub wl-mono">${hm(total)}</span>
       </div>
       <table class="wl-table">
         <thead><tr>
-          <th>任务</th>
-          <th class="wl-r" style="width:88px">自身</th>
-          <th class="wl-r" style="width:100px">含子任务</th>
-          <th style="width:154px">占比</th>
+          <th>${tr('任务')}</th>
+          <th class="wl-r" style="width:88px">${tr('自身')}</th>
+          <th class="wl-r" style="width:100px">${tr('含子任务')}</th>
+          <th style="width:154px">${tr('占比')}</th>
           <th class="wl-r" style="width:76px"></th>
         </tr></thead>
         <tbody>${roots.length
     ? treeHtml(roots, total, maxSec)
-    : '<tr><td colspan="5"><div class="wl-empty-view">本期还没有工时记录。把鼠标移到任意任务上，点「▶」开始计时，或点工具栏右侧的「＋ 补录」。</div></td></tr>'}</tbody>
+    : `<tr><td colspan="5"><div class="wl-empty-view">${tr('本期还没有工时记录。把鼠标移到任意任务上，点「▶」开始计时，或点工具栏右侧的「＋ 补录」。')}</div></td></tr>`}</tbody>
       </table>
     </div>`;
 
@@ -587,10 +595,10 @@ export async function render(root) {
     ${cardsHtml}
     ${tablePanel}
     <div class="wl-panel">
-      <div class="wl-panel-head"><h3>每日分布</h3><div class="wl-spacer"></div><span class="wl-sub">${esc(label)}${isValue ? ' · 按工时' : ''}</span></div>
+      <div class="wl-panel-head"><h3>${tr('每日分布')}</h3><div class="wl-spacer"></div><span class="wl-sub">${esc(label)}${isValue ? ` · ${tr('按工时')}` : ''}</span></div>
       ${chartHtml(entries || [], ids, from, chartTo)}
     </div>
-    ${isValue ? '<div class="wl-pay-footnote">金额是按你设定的时薪做的估算，不代表实际收入；跨天工时按开始日归属，不计薪的记录金额记 0 但时长仍保留。</div>' : ''}`;
+    ${isValue ? `<div class="wl-pay-footnote">${tr('金额是按你设定的时薪做的估算，不代表实际收入；跨天工时按开始日归属，不计薪的记录金额记 0 但时长仍保留。')}</div>` : ''}`;
 
   bind(root);
 }
@@ -639,7 +647,7 @@ async function onClick(e) {
       }
     } else if (kind === 'scope') {
       V.scope = v;
-      toast(v === 'all' ? '口径：仅主任务自身工时（不累积子任务）' : '口径：父任务含全部后代工时');
+      toast(v === 'all' ? tr('口径：仅主任务自身工时（不累积子任务）') : tr('口径：父任务含全部后代工时'));
     }
     render(document.getElementById('view'));
     return;
@@ -656,7 +664,7 @@ async function onClick(e) {
     for (const r of (lastPay && lastPay.rows) || []) {
       if (!r.billable) { expandedPay.add(Number(r.taskId)); shown += 1; }
     }
-    toast(shown ? `已展开被排除的记录（${shown} 条）` : '没有不计薪的记录');
+    toast(shown ? tr('已展开被排除的记录（{n} 条）', { n: shown }) : tr('没有不计薪的记录'));
     render(document.getElementById('view'));
     return;
   }
@@ -672,9 +680,9 @@ async function onClick(e) {
       await api.worklog.entryBillable({ id, billable: next });
       // store 直写不发 worklog:changed：手动同步任务行摘要缓存，切回列表时才是最新
       row.refreshAll();
-      toast(next ? '已恢复计薪' : '已标为不计薪：金额归零，时长仍保留');
+      toast(next ? tr('已恢复计薪') : tr('已标为不计薪：金额归零，时长仍保留'));
     } catch (err) {
-      toast((err && err.message) || '操作失败');
+      toast((err && err.message) || tr('操作失败'));
       return;
     }
     render(document.getElementById('view'));
@@ -720,7 +728,7 @@ async function onClick(e) {
         await api.worklog.start({ taskId: id, source: 'timer' });
       }
     } catch (err) {
-      toast((err && err.message) || '操作失败');
+      toast((err && err.message) || tr('操作失败'));
     }
     return;
   }
@@ -734,10 +742,10 @@ async function onClick(e) {
     try {
       const { from, to } = bounds();
       const r = await api.worklog.exportCsv({ from: from.toISOString(), to: to.toISOString() });
-      if (r && r.ok) toast(`已导出 ${r.count} 条记录`);
+      if (r && r.ok) toast(tr('已导出 {n} 条记录', { n: r.count }));
       else if (r && r.reason && r.reason !== '已取消') toast(r.reason);
     } catch (err) {
-      toast(`导出失败：${(err && err.message) || err}`);
+      toast(tr('导出失败：{msg}', { msg: (err && err.message) || err }));
     }
     return;
   }
@@ -757,11 +765,11 @@ async function manualAdd() {
   try {
     tasks = await api.tasks.list({ status: 'active', sort: 'due' });
   } catch (err) {
-    toast(`读取任务列表失败：${(err && err.message) || err}`);
+    toast(tr('读取任务列表失败：{msg}', { msg: (err && err.message) || err }));
     return;
   }
   if (!tasks || !tasks.length) {
-    toast('还没有任务，先建一条再补录');
+    toast(tr('还没有任务，先建一条再补录'));
     return;
   }
   const opts = tasks.map((t) => ({
@@ -769,20 +777,20 @@ async function manualAdd() {
     label: t.parent_id ? `　↳ ${t.title}` : t.title,
   }));
   const ok = await openFormModal({
-    title: '补录工时',
-    okText: '补录',
+    title: tr('补录工时'),
+    okText: tr('补录'),
     grid: true,
     fields: [
       {
-        name: 'taskId', label: '任务', type: 'select', options: opts, span: 2, value: tasks[0].id,
+        name: 'taskId', label: tr('任务'), type: 'select', options: opts, span: 2, value: tasks[0].id,
       },
       {
-        name: 'date', label: '日期', value: dateKey(new Date()), placeholder: 'YYYY-MM-DD', span: 2, hint: '跨天按开始日归属',
+        name: 'date', label: tr('日期'), value: dateKey(new Date()), placeholder: 'YYYY-MM-DD', span: 2, hint: tr('跨天按开始日归属'),
       },
-      { name: 'start', label: '开始', placeholder: '09:00' },
-      { name: 'end', label: '结束', placeholder: '10:30' },
+      { name: 'start', label: tr('开始'), placeholder: '09:00' },
+      { name: 'end', label: tr('结束'), placeholder: '10:30' },
       {
-        name: 'note', label: '备注', placeholder: '这段时间做了什么', span: 2,
+        name: 'note', label: tr('备注'), placeholder: tr('这段时间做了什么'), span: 2,
       },
     ],
     onSubmit: async (v) => {
@@ -794,10 +802,10 @@ async function manualAdd() {
           end: v.end,
           note: v.note,
         });
-        toast('已补录');
+        toast(tr('已补录'));
         return undefined;
       } catch (err) {
-        return (err && err.message) || '补录失败';
+        return (err && err.message) || tr('补录失败');
       }
     },
   });

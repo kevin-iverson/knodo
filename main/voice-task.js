@@ -20,6 +20,7 @@ const db = require('./db');
 const crypto = require('./crypto');
 const asr = require('./asr');
 const ai = require('./ai');
+const dateU = require('./date-utils');
 
 /** 20MB webm(opus) 约十几分钟，再长就该用「会议录音」而不是快速录入了 */
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
@@ -40,12 +41,6 @@ function userError(msg, code) {
 }
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-
-function todayStr() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
 
 const escHtml = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -84,7 +79,8 @@ function status() {
 /**
  * 口语转写 → 待办草稿的系统提示。
  * 输出格式刻意与截图识别（ai.js#SHOT_SYSTEM_PROMPT）一致，直接复用 parseShotReply 解析；
- * 差别只在输入是口语：先滤掉语气词与寒暄，只留"要动手做的事"，禁止推算日期。
+ * 差别只在输入是口语：先滤掉语气词与寒暄，只留"要动手做的事"。
+ * 日期与截图卡同规则：明确的日历词（明天 / 本周五 / 11月25日）换算，模糊说法留空。
  */
 const VOICE_SYSTEM_PROMPT = [
   '你在把一段中文语音转写稿变成待办清单。说话人是口语表达，会有语气词、重复、跑题。',
@@ -94,7 +90,8 @@ const VOICE_SYSTEM_PROMPT = [
   '3. title 是一句可执行的动宾短语，不超过 30 字，去掉「嗯」「那个」「记得哦」这类口头前缀；',
   '4. note 只补转写里明确说出的关键信息（时间、人名、地点、金额、编号），没有就留空字符串，不要自己编；',
   '5. priority 只能是 0（低）/ 1（中）/ 2（高）/ 3（紧急）；说话人没强调就给 1，不要瞎猜；',
-  '6. due 只填转写里**明说**的日期，格式 YYYY-MM-DD；「明天」「下周」也算没写，留 null，绝不推算；',
+  '6. due 是计划完成日期，格式 YYYY-MM-DD：说了「明天」「后天」「本周五」「下周一上午」这类明确的日子，',
+  '   按末尾给出的今天换算；说了具体日期就照写；「尽快」「这几天」这种说不准的填 null —— 绝不编一个日子凑数；',
   '7. summary 一句话概括这段话说了什么（不超过 40 字）；',
   '8. 只输出 JSON，不要 Markdown 代码块，不要任何解释文字。',
   '输出格式：{"summary":"...","tasks":[{"title":"...","note":"...","priority":1,"due":null}]}',
@@ -150,7 +147,8 @@ async function submit(payload = {}) {
       rawReply = await ai.callLLM({
         ...c,
         messages: [
-          { role: 'system', content: VOICE_SYSTEM_PROMPT },
+          // 今天日期必须给：口语里「明天 / 周五」要换算成具体日期，模型自己不知道今天是哪天
+          { role: 'system', content: `${VOICE_SYSTEM_PROMPT}\n${dateU.todaySentence()}` },
           { role: 'user', content: `【语音转写】\n${input}` },
         ],
         temperature: 0.2,
@@ -211,11 +209,15 @@ function resolveGroup() {
  * 没有附件、没有 recordings 目录、不进备份包。
  */
 function commit(payload = {}) {
+  const today = dateU.todayLocal();
   const list = (Array.isArray(payload.tasks) ? payload.tasks : [])
     .map((t) => ({
       title: String((t && t.title) || '').replace(/\s+/g, ' ').trim().slice(0, 200),
       note: String((t && t.note) || '').replace(/\s+/g, ' ').trim().slice(0, 500),
       priority: clamp(Math.round(Number(t && t.priority) || 0), 0, 3),
+      // 与截图卡同口径：模型只在话里**明说**日期时给 due，用户在卡上还能改；
+      // 这里再校验一次，认不出就按今天算
+      due: dateU.toDay(t && t.due) || today,
     }))
     .filter((t) => t.title);
   if (!list.length) throw userError('至少要留一条任务', 'EMPTY');
@@ -223,15 +225,14 @@ function commit(payload = {}) {
   const group = resolveGroup();
   if (!group) throw userError('还没有清单，先在主窗口建一个', 'NO_GROUP');
 
-  const today = todayStr();
   const transcript = String(payload.transcript || '').replace(/\s+/g, ' ').trim().slice(0, MAX_NOTE_TRANSCRIPT);
   const taskIds = [];
   list.forEach((t) => {
     const task = db.createTask({
       title: t.title,
       groupId: group.id,
-      planStart: today,
-      planEnd: today,
+      planStart: t.due,
+      planEnd: t.due,
       priority: t.priority,
     });
     taskIds.push(task.id);
@@ -246,7 +247,15 @@ function commit(payload = {}) {
   try { db.setSetting('ui.lastAddGroupId', String(group.id)); } catch (e) { /* 非关键 */ }
   try { onDataChange({ created: taskIds.length }); } catch (e) { /* 刷新失败不影响已保存 */ }
 
-  return { ok: true, created: taskIds.length, taskIds, group };
+  return {
+    ok: true,
+    created: taskIds.length,
+    taskIds,
+    group,
+    // 卡片据此提示「有几条不在今天」（与截图卡同构）
+    days: [...new Set(list.map((t) => t.due))],
+    today,
+  };
 }
 
 /* ------------------------------ IPC ------------------------------ */

@@ -19,6 +19,8 @@ import { openPanelModal } from './modal.js';
 import { keysPaneHtml, mountKeysPane, disposeKeysPane } from './settings-keys.js';
 import { openSponsorQr } from './sponsor.js';
 import { normalizeConfig } from './encourager-core.js';
+// t 别名成 tr：本文件多处用 `const t` 表示主题对象，直接叫 t 会被局部变量遮蔽
+import { t as tr, getLocale as getLocaleNow, LOCALE_LABELS } from './i18n.js';
 import {
   getTheme, setTheme, pickBackdrop, clearBackdrop, resetTheme, previewOpacity,
 } from './theme.js';
@@ -44,13 +46,13 @@ export function setSettingsHandlers({ toast: t, onCalendarPrefs, onAction } = {}
  */
 function runAction(name, payload) {
   if (!ext.onAction) {
-    toast('该功能暂时不可用（动作入口未注册）');
+    toast(tr('该功能暂时不可用（动作入口未注册）'));
     return;
   }
   try {
     ext.onAction(name, payload);
   } catch (e) {
-    toast(`操作失败：${(e && e.message) || e}`);
+    toast(tr('操作失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -63,6 +65,8 @@ const S = {
   /** 刚选完图时的文件信息（名称 / 压缩前后体积），只在本次面板里显示 */
   bgInfo: null,
   autoStart: { enabled: false, supported: true, reason: '' },
+  /** 界面语言（主进程 settings.locale，值域 zh-CN / en） */
+  locale: 'zh-CN',
   version: '',
   storage: null,
   backup: null,
@@ -181,8 +185,11 @@ function styleCardsHtml(mode) {
     const s = KT.STYLES[id];
     const t = s[mode] || s.light;
     const vars = `--c-bg:${t.bg};--c-panel:${t['bg-panel']};--c-side:${t['bg-sidebar']};--c-text:${t.text};--c-border:${t.border};--c-primary:${t.primary}`;
+    // 风格名是产品名（雾灰 / 故宫…），英文态从词典取；en 副标题与译名常常撞车（Mist / MIST），撞了就不重复显示
+    const name = tr(s.name);
+    const en = String(name).toLowerCase() === String(s.en).toLowerCase() ? '' : `<span class="ap-card-en">${esc(s.en)}</span>`;
     return `<button type="button" class="ap-card${id === cur ? ' is-on' : ''}" data-style="${id}"
-      role="radio" aria-checked="${id === cur}" title="${esc(s.name)}（${esc(s.en)}）">
+      role="radio" aria-checked="${id === cur}" title="${esc(name)} · ${esc(s.en)}">
       <span class="ap-thumb" style="${vars}">
         <span class="ap-thumb-side"><i class="is-on"></i><i></i><i></i><i></i></span>
         <span class="ap-thumb-main">
@@ -191,7 +198,7 @@ function styleCardsHtml(mode) {
           <span class="ap-thumb-cta"></span>
         </span>
       </span>
-      <span class="ap-card-name">${esc(s.name)}<span class="ap-card-en">${esc(s.en)}</span></span>
+      <span class="ap-card-name">${esc(name)}${en}</span>
       <span class="ap-card-check" aria-hidden="true">✓</span>
     </button>`;
   }).join('');
@@ -199,7 +206,7 @@ function styleCardsHtml(mode) {
 
 function bgThumbHtml(r) {
   if (!r.url) {
-    return '<div class="ap-bg-empty"><span class="ap-bg-plus">＋</span><span>未设置背景图</span></div>';
+    return `<div class="ap-bg-empty"><span class="ap-bg-plus">＋</span><span>${tr('未设置背景图')}</span></div>`;
   }
   return `<div class="ap-bg-pic" style="background-image:url(&quot;${esc(r.url)}&quot;)"></div>`;
 }
@@ -212,15 +219,15 @@ function appearanceHtml() {
   const dwOp = t.desktop.opacity;
   return `
   <div class="ap-top">
-    <div class="ap-top-text">配色只换色相与质感，圆角、间距、字号不动；背景与面板透明度互不影响文字</div>
-    <button type="button" class="ap-reset" data-act="reset">恢复默认</button>
+    <div class="ap-top-text">${tr("配色只换色相与质感，圆角、间距、字号不动；背景与面板透明度互不影响文字")}</div>
+    <button type="button" class="ap-reset" data-act="reset">${tr("恢复默认")}</button>
   </div>
 
   <section class="st-sec" data-search="${APPEARANCE_SEARCH} 明暗 模式 深色 浅色 暗色 跟随系统 mode 夜间 白天">
-    <div class="st-sec-title">明暗模式<span class="ap-hint">与系统同步，窗口标题栏一起变</span></div>
+    <div class="st-sec-title">${tr("明暗模式")}<span class="ap-hint">${tr("与系统同步，窗口标题栏一起变")}</span></div>
     <div class="st-card ap-card-body">
-      <div class="ap-seg" data-seg="mode" role="radiogroup" aria-label="明暗模式">
-        ${[['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']].map(([v, label]) =>
+      <div class="ap-seg" data-seg="mode" role="radiogroup" aria-label="${tr("明暗模式")}">
+        ${[['system', tr('跟随系统')], ['light', tr('浅色')], ['dark', tr('深色')]].map(([v, label]) =>
     `<button type="button" data-mode="${v}" role="radio" aria-checked="${t.mode === v}"
             class="${t.mode === v ? 'is-on' : ''}">${label}</button>`).join('')}
       </div>
@@ -228,97 +235,97 @@ function appearanceHtml() {
   </section>
 
   <section class="st-sec" data-search="${APPEARANCE_SEARCH} 风格 雾灰 石墨 苔绿 宣纸 樱粉 故宫 宫殿 脊兽 高对比 style 夜间盯屏 护眼 笔记">
-    <div class="st-sec-title">风格<span class="ap-hint">七套气质，随时可换</span></div>
+    <div class="st-sec-title">${tr("风格")}<span class="ap-hint">${tr("七套气质，随时可换")}</span></div>
     <div class="st-card ap-card-body">
-      <div class="ap-styles" data-grid="styles" data-mode="${r.mode}" role="radiogroup" aria-label="风格">${styleCardsHtml(r.mode)}</div>
-      ${r.style === 'palace' ? '<div class="ap-palace-note">故宫风格会在窗口底部陈列太和殿的十一尊脊兽：悬停或点击任意一尊，可查看来历与寓意。切到其他风格时檐口会自动收起。</div>' : ''}
+      <div class="ap-styles" data-grid="styles" data-mode="${r.mode}" role="radiogroup" aria-label="${tr("风格")}">${styleCardsHtml(r.mode)}</div>
+      ${r.style === 'palace' ? `<div class="ap-palace-note">${tr('故宫风格会在窗口底部陈列太和殿的十一尊脊兽：悬停或点击任意一尊，可查看来历与寓意。切到其他风格时檐口会自动收起。')}</div>` : ''}
     </div>
   </section>
 
   <section class="st-sec" data-search="${APPEARANCE_SEARCH} 背景图 壁纸 上传 更换 移除 透明度 填充 模糊 毛玻璃 backdrop image">
-    <div class="st-sec-title">背景图<span class="ap-hint">JPG / PNG / WebP，自动压缩至长边 2560</span></div>
+    <div class="st-sec-title">${tr("背景图")}<span class="ap-hint">${tr("JPG / PNG / WebP，自动压缩至长边 2560")}</span></div>
     <div class="st-card ap-card-body">
 
     <div class="ap-bg">
       <div class="ap-bg-thumb" data-role="thumb">${bgThumbHtml(r)}</div>
       <div class="ap-bg-actions">
-        <button type="button" class="st-btn is-accent" data-act="pick">${bd.image ? '更换图片' : '选择图片'}</button>
-        <button type="button" class="st-btn" data-act="clear"${bd.image ? '' : ' disabled'}>移除</button>
+        <button type="button" class="st-btn is-accent" data-act="pick">${bd.image ? tr('更换图片') : tr('选择图片')}</button>
+        <button type="button" class="st-btn" data-act="clear"${bd.image ? '' : ' disabled'}>${tr('移除')}</button>
         <div class="ap-bg-note" data-role="bgnote">${bgNoteText(r)}</div>
       </div>
     </div>
 
     <div class="ap-slider-row${locked ? ' is-locked' : ''}">
-      <span class="ap-slider-lab">背景透明度</span>
+      <span class="ap-slider-lab">${tr("背景透明度")}</span>
       <input type="range" id="ap-opacity" min="0" max="100" step="5" value="${r.opacity}"
-             aria-label="背景透明度"${locked || !r.hasImage ? ' disabled' : ''}>
+             aria-label="${tr("背景透明度")}"${locked || !r.hasImage ? ' disabled' : ''}>
       <span class="ap-slider-val" data-role="opval">${r.opacity}%</span>
     </div>
-    <div class="ap-scale"><span>0 隐藏</span><span>60 默认</span><span>100 完全呈现</span></div>
+    <div class="ap-scale"><span>${tr("0 隐藏")}</span><span>${tr("60 默认")}</span><span>${tr("100 完全呈现")}</span></div>
     <div class="ap-note" data-role="alphanote">${alphaNote(r)}</div>
     <div class="ap-guard" data-role="guard"${r.guardPct > 0 ? '' : ' hidden'}>
       <span>ⓘ</span>
-      <span>当前组合下正文对比度接近下限，已自动把面板加深 <b>${r.guardPct}%</b>；调低透明度即可恢复。</span>
+      <span>${tr('当前组合下正文对比度接近下限，已自动把面板加深 {pct}%；调低透明度即可恢复。', { pct: `<b>${r.guardPct}%</b>` })}</span>
     </div>
 
     <div class="ap-adv-row">
-      <span class="ap-adv-lab">填充方式</span>
+      <span class="ap-adv-lab">${tr("填充方式")}</span>
       <div class="ap-seg ap-seg-sm" data-seg="fit">
-        ${[['cover', '铺满'], ['contain', '完整'], ['repeat', '平铺']].map(([v, label]) =>
+        ${[['cover', tr('铺满')], ['contain', tr('完整')], ['repeat', tr('平铺')]].map(([v, label]) =>
     `<button type="button" data-fit="${v}" class="${bd.fit === v ? 'is-on' : ''}">${label}</button>`).join('')}
       </div>
-      <span class="ap-adv-hint">铺满会裁掉边缘，完整保留整张图</span>
+      <span class="ap-adv-hint">${tr("铺满会裁掉边缘，完整保留整张图")}</span>
     </div>
 
     <div class="ap-adv">
-      <div class="ap-adv-title">高级</div>
+      <div class="ap-adv-title">${tr("高级")}</div>
       <div class="ap-adv-row">
-        <span class="ap-adv-lab">图片模糊</span>
+        <span class="ap-adv-lab">${tr("图片模糊")}</span>
         <div class="ap-seg ap-seg-sm" data-seg="blur">
           ${[0, 8, 16].map((v) =>
-    `<button type="button" data-blur="${v}" class="${Number(bd.blur) === v ? 'is-on' : ''}">${v === 0 ? '关' : v + 'px'}</button>`).join('')}
+    `<button type="button" data-blur="${v}" class="${Number(bd.blur) === v ? 'is-on' : ''}">${v === 0 ? tr('关') : v + 'px'}</button>`).join('')}
         </div>
-        <span class="ap-adv-hint">模糊只作用在背景层，大图建议 8px</span>
+        <span class="ap-adv-hint">${tr("模糊只作用在背景层，大图建议 8px")}</span>
       </div>
       <div class="ap-adv-row">
-        <span class="ap-adv-lab">面板毛玻璃</span>
+        <span class="ap-adv-lab">${tr("面板毛玻璃")}</span>
         ${ctlSwitch('ap-glass', bd.glass !== false && r.style !== 'contrast', r.style === 'contrast')}
-        <span class="ap-adv-hint">${r.style === 'contrast' ? '高对比风格强制关闭' : '关闭后滚动更省 GPU'}</span>
+        <span class="ap-adv-hint">${r.style === 'contrast' ? tr('高对比风格强制关闭') : tr('关闭后滚动更省 GPU')}</span>
       </div>
       <div class="ap-adv-row">
-        <span class="ap-adv-lab">面板浓度</span>
-        <span class="ap-adv-hint">跟随风格自动补偿（单滑块模式，不单独暴露）</span>
+        <span class="ap-adv-lab">${tr("面板浓度")}</span>
+        <span class="ap-adv-hint">${tr("跟随风格自动补偿（单滑块模式，不单独暴露）")}</span>
       </div>
     </div>
     </div>
   </section>
 
   <section class="st-sec" data-search="${APPEARANCE_SEARCH} 桌面浮窗 贴纸 便签 钉图 不透明度 透明 浓度 dock desktop sticky">
-    <div class="st-sec-title">桌面浮窗<span class="ap-hint">钉到桌面的清单 / 便签（贴图纸）</span></div>
+    <div class="st-sec-title">${tr("桌面浮窗")}<span class="ap-hint">${tr("钉到桌面的清单 / 便签（贴图纸）")}</span></div>
     <div class="st-card ap-card-body">
       <div class="ap-slider-row">
-        <span class="ap-slider-lab">不透明度</span>
+        <span class="ap-slider-lab">${tr("不透明度")}</span>
         <input type="range" id="ap-dw-opacity" min="55" max="100" step="5" value="${dwOp}"
-               aria-label="桌面浮窗不透明度">
+               aria-label="${tr("桌面浮窗不透明度")}">
         <span class="ap-slider-val" data-role="dwval">${dwOp}%</span>
       </div>
-      <div class="ap-scale"><span>55 通透</span><span>100 实心</span></div>
-      <div class="ap-note">浮窗底色跟随当前风格（现在是 <b>${esc(KT.STYLES[t.style].name)}</b>），只有材质浓淡可调；已钉的浮窗改完立即生效。</div>
+      <div class="ap-scale"><span>${tr("55 通透")}</span><span>${tr("100 实心")}</span></div>
+      <div class="ap-note">${tr('浮窗底色跟随当前风格（现在是 {style}），只有材质浓淡可调；已钉的浮窗改完立即生效。', { style: `<b>${esc(tr(KT.STYLES[t.style].name))}</b>` })}</div>
     </div>
   </section>`;
 }
 
 function bgNoteText(r) {
-  if (!r.hasImage && !r.missing) return '未设置背景图：面板保持不透明';
-  if (r.missing) return '⚠ 原文件已丢失，请重新选择';
+  if (!r.hasImage && !r.missing) return tr('未设置背景图：面板保持不透明');
+  if (r.missing) return tr('⚠ 原文件已丢失，请重新选择');
   // 只显示文件尾段，太长会把这一行撑爆
   const name = String(S.bgInfo && S.bgInfo.name ? S.bgInfo.name : r.url.split('/').pop() || '');
-  return `当前：${esc(name)}`;
+  return tr('当前：{name}', { name: esc(name) });
 }
 
 function alphaNote(r) {
-  if (!r.hasImage) return '设置背景图后，面板不透明度会随透明度自动补偿，保证正文可读。';
-  return `面板不透明度自动补偿为 <b>${r.alpha.toFixed(2)}</b> —— 图片越明显，面板同步变实，保证正文可读。`;
+  if (!r.hasImage) return tr('设置背景图后，面板不透明度会随透明度自动补偿，保证正文可读。');
+  return tr('面板不透明度自动补偿为 <b>{alpha}</b> —— 图片越明显，面板同步变实，保证正文可读。', { alpha: r.alpha.toFixed(2) });
 }
 
 /** 只刷新动态文案与选中态，不重建 DOM（拖滑块时重建会闪、还会丢焦点） */
@@ -354,7 +361,7 @@ function refreshAppearance(pane) {
   const note = pane.querySelector('[data-role="bgnote"]');
   if (note) note.textContent = bgNoteText(r);
   const pickBtn = pane.querySelector('[data-act="pick"]');
-  if (pickBtn) pickBtn.textContent = bd.image ? '更换图片' : '选择图片';
+  if (pickBtn) pickBtn.textContent = bd.image ? tr('更换图片') : tr('选择图片');
   const clearBtn = pane.querySelector('[data-act="clear"]');
   if (clearBtn) clearBtn.disabled = !bd.image;
 
@@ -407,7 +414,7 @@ function mountAppearance(pane) {
     } catch (e) {
       S.theme = getTheme();
       refreshAppearance(pane);
-      toast(`外观设置保存失败：${(e && e.message) || e}`);
+      toast(tr('外观设置保存失败：{msg}', { msg: (e && e.message) || e }));
       return null;
     }
   };
@@ -446,9 +453,9 @@ function mountAppearance(pane) {
         S.theme = await resetTheme();
         S.bgInfo = null;
         refreshAppearance(pane);
-        toast('已恢复默认外观');
+        toast(tr('已恢复默认外观'));
       } catch (err) {
-        toast(`恢复默认失败：${(err && err.message) || err}`);
+        toast(tr('恢复默认失败：{msg}', { msg: (err && err.message) || err }));
       }
       return;
     }
@@ -460,12 +467,12 @@ function mountAppearance(pane) {
           S.theme = getTheme();
           S.bgInfo = r.info || null;
           const kb = r.info ? `${r.info.outKB} KB` : '';
-          toast(r.info ? `背景图已更新（${kb}）` : '背景图已更新');
+          toast(r.info ? tr('背景图已更新（{kb}）', { kb }) : tr('背景图已更新'));
         } else if (r && r.reason && r.reason !== 'cancel') {
           toast(r.reason);
         }
       } catch (err) {
-        toast(`选择背景图失败：${(err && err.message) || err}`);
+        toast(tr('选择背景图失败：{msg}', { msg: (err && err.message) || err }));
       } finally {
         act.disabled = false;
         refreshAppearance(pane);
@@ -477,9 +484,9 @@ function mountAppearance(pane) {
         S.theme = await clearBackdrop();
         S.bgInfo = null;
         refreshAppearance(pane);
-        toast('已移除背景图');
+        toast(tr('已移除背景图'));
       } catch (err) {
-        toast(`移除失败：${(err && err.message) || err}`);
+        toast(tr('移除失败：{msg}', { msg: (err && err.message) || err }));
       }
     }
   });
@@ -542,11 +549,26 @@ function generalHtml() {
   // 两个入口写同一个 settings 键只会让用户以为改了一个还有另一个没改。
   return [
     sectionHtml({
-      title: '启动',
+      title: tr('界面语言'),
       rows: [
         rowHtml({
-          title: '开机自启动',
-          desc: supported ? '登录系统后在后台驻留托盘，不弹主窗口' : (auto.reason || '当前环境不支持开机自启动'),
+          title: tr('界面语言'),
+          desc: tr('切换后界面会重新加载一次；任务 / 笔记等内容数据不受影响'),
+          ctl: ctlSelect('st-locale', S.locale || 'zh-CN', [
+            ['zh-CN', LOCALE_LABELS['zh-CN']],
+            ['en', LOCALE_LABELS.en],
+          ]),
+          search: '语言 英文 English language i18n locale 中文',
+          id: 'locale',
+        }),
+      ],
+    }),
+    sectionHtml({
+      title: tr('启动'),
+      rows: [
+        rowHtml({
+          title: tr('开机自启动'),
+          desc: supported ? tr('登录系统后在后台驻留托盘，不弹主窗口') : (auto.reason || tr('当前环境不支持开机自启动')),
           ctl: ctlSwitch('st-autostart', !!auto.enabled, !supported),
           search: '启动项 登录时启动 自启 startup',
           id: 'autostart',
@@ -557,6 +579,25 @@ function generalHtml() {
 }
 
 function mountGeneral(pane) {
+  // 界面语言：写库 → 主进程广播 locale:changed → 所有窗口 reload（含当前窗口）。
+  // 因此这里不需要自己重绘，只把失败态回滚；成功时给一句过渡提示。
+  const locSel = pane.querySelector('#st-locale');
+  locSel?.addEventListener('change', async (e) => {
+    const want = e.target.value;
+    const cur = S.locale || getLocaleNow();
+    if (want === cur) return;
+    e.target.disabled = true;
+    toast(tr('正在切换界面语言…'));
+    try {
+      const next = await api.i18n.set(want);
+      S.locale = next || want;
+    } catch (err) {
+      e.target.value = cur;
+      e.target.disabled = false;
+      toast(tr('设置失败：{msg}', { msg: (err && err.message) || err }));
+    }
+  });
+
   const autoSw = pane.querySelector('#st-autostart');
   autoSw?.addEventListener('change', async (e) => {
     const want = e.target.checked;
@@ -565,15 +606,15 @@ function mountGeneral(pane) {
       const r = await api.app.setAutoStart(want);
       if (!r || !r.ok) {
         e.target.checked = !want;
-        toast((r && r.reason) || '开机自启动设置失败');
+        toast((r && r.reason) || tr('开机自启动设置失败'));
         return;
       }
       S.autoStart = { ...S.autoStart, enabled: !!r.enabled, supported: true };
       e.target.checked = !!r.enabled;
-      toast(r.enabled ? '已开启开机自启动' : '已关闭开机自启动');
+      toast(r.enabled ? tr('已开启开机自启动') : tr('已关闭开机自启动'));
     } catch (err) {
       e.target.checked = !want;
-      toast(`设置失败：${(err && err.message) || err}`);
+      toast(tr('保存失败：{msg}', { msg: (err && err.message) || err }));
     } finally {
       e.target.disabled = false;
     }
@@ -591,8 +632,8 @@ function presetValueOf(presets, url, model) {
 }
 
 const keyStateText = (o) => (o && o.hasKey
-  ? (o.encryptionDegraded ? 'Key 已保存（非加密降级）' : 'Key 已保存（本地加密）')
-  : 'Key 未配置');
+  ? (o.encryptionDegraded ? tr('Key 已保存（非加密降级）') : tr('Key 已保存（本地加密）'))
+  : tr('Key 未配置'));
 
 /**
  * 视觉模型的「生效状态」文案。
@@ -601,35 +642,43 @@ const keyStateText = (o) => (o && o.hasKey
  * 报错会出现在按快捷键之后，那时用户已经截完图了。
  */
 function visionStateText(v) {
-  if (!v || !v.effective) return '未读取到配置';
+  if (!v || !v.effective) return tr('未读取到配置');
   const e = v.effective;
   if (!e.hasKey) {
     return e.source === 'fallback'
-      ? `还没有可用的 Key：识别会提示先配置（当前会回落到对话模型 ${e.label}）`
-      : '视觉模型还没有可用的 Key：识别会提示先配置';
+      ? tr('还没有可用的 Key：识别会提示先配置（当前会回落到对话模型 {model}）', { model: e.label })
+      : tr('视觉模型还没有可用的 Key：识别会提示先配置');
   }
   if (e.source === 'fallback') {
     return e.imageCapability === 'yes'
-      ? `未单独配置，回落到对话模型 ${e.label}（能读图）`
-      : `未单独配置，回落到对话模型 ${e.label}（是否支持图片未确认，识别失败就换一个视觉模型）`;
+      ? tr('未单独配置，回落到对话模型 {model}（能读图）', { model: e.label })
+      : tr('未单独配置，回落到对话模型 {model}（是否支持图片未确认，识别失败就换一个视觉模型）', { model: e.label });
   }
-  const unconfirmed = e.imageCapability === 'yes' ? '' : '（未收录，点「测试读图」可验证）';
+  const unconfirmed = e.imageCapability === 'yes' ? '' : tr('（未收录，点「测试读图」可验证）');
   return e.keyReused
-    ? `使用视觉模型 ${e.label}，Key 复用对话模型（同一服务商）${unconfirmed}`
-    : `使用视觉模型 ${e.label}（独立 Key）${unconfirmed}`;
+    ? tr('使用视觉模型 {model}，Key 复用对话模型（同一服务商）{extra}', { model: e.label, extra: unconfirmed })
+    : tr('使用视觉模型 {model}（独立 Key）{extra}', { model: e.label, extra: unconfirmed });
 }
 
-/** 视觉模型下拉：当前预设的模型 + 「自定义…」；手填过的名字回显为「自定义…」+ 输入框 */
+/**
+ * 视觉模型下拉：当前预设的模型 + 「自定义…」；手填过的名字回显为「自定义…」+ 输入框。
+ *
+ * 第一项必须是「不使用」：这一组配置默认就该是空的（对话模型能读图就够了）。
+ * 没有这一项时，用户只能改不能清 —— 清掉模型再打开面板还会被自动填成预设里的第一个，
+ * 于是永远退不出「一直走视觉模型」。空值统一用 __none 表示，别用空字符串当 option value。
+ */
+const VISION_NONE = '__none';
 function visionModelCtl(presets, baseUrl, model) {
   const preset = (presets || []).find((p) => p.baseUrl === baseUrl) || null;
   const models = preset ? preset.models : [];
   const known = models.some((m) => m.id === model);
-  const opts = models.map((m) => [m.id, m.free ? `${m.label} · ${m.free}` : m.label]);
-  opts.push(['__custom', '自定义…']);
-  const value = !model ? (models[0] ? models[0].id : '__custom') : (known ? model : '__custom');
+  const opts = [[VISION_NONE, tr('不使用（用对话模型）')]]
+    .concat(models.map((m) => [m.id, m.free ? `${m.label} · ${m.free}` : m.label]));
+  opts.push(['__custom', tr('自定义…')]);
+  const value = !model ? VISION_NONE : (known ? model : '__custom');
   return ctlSelect('st-vision-model', value, opts)
     + `<input class="st-input" id="st-vision-model-custom" type="text" spellcheck="false"
-         placeholder="填模型名，如 qwen3.8-flash 或 glm-4v-flash" value="${esc(known ? '' : (model || ''))}"
+         placeholder="${tr("填模型名，如 qwen3.8-flash 或 glm-4v-flash")}" value="${esc(known ? '' : (model || ''))}"
          style="max-width:210px;${value === '__custom' ? '' : 'display:none'}" />`;
 }
 
@@ -647,148 +696,149 @@ function aiHtml() {
 
   return [
     sectionHtml({
-      title: '对话模型',
-      desc: '用于 AI 日报 / 周报、笔记问答与会议纪要；不配置时报告降级为本地模板。',
+      title: tr('对话模型'),
+      desc: tr('用于 AI 日报 / 周报、笔记问答与会议纪要；不配置时报告降级为本地模板。'),
       rows: [
         rowHtml({
-          title: '接口预设',
-          desc: '选中后自动填好地址与模型，也可以手动改',
+          title: tr('接口预设'),
+          desc: tr('选中后自动填好地址与模型，也可以手动改'),
           ctl: ctlSelect('st-ai-preset', presetValueOf(presets, c.baseUrl, c.model),
-            [['', '自定义']].concat(presets.map((p) => [p.id, p.label]))),
+            [['', tr('自定义')]].concat(presets.map((p) => [p.id, tr(p.label)]))),
           search: 'deepseek openai 接口 服务商 preset',
         }),
         rowHtml({
-          title: '模型',
+          title: tr('模型'),
           ctl: ctlInput('st-ai-model', c.model || '', { placeholder: 'deepseek-chat', wide: true }),
           search: 'model',
         }),
         rowHtml({
-          title: '接口地址',
+          title: tr('接口地址'),
           ctl: ctlInput('st-ai-baseurl', c.baseUrl || '', { placeholder: 'https://api.deepseek.com', wide: true }),
           search: 'base url 端点 地址',
         }),
         rowHtml({
           title: 'API Key',
           desc: keyStateText(c),
-          ctl: ctlInput('st-ai-key', '', { type: 'password', placeholder: c.hasKey ? '已保存，留空则不变' : '输入 API Key', wide: true }),
+          ctl: ctlInput('st-ai-key', '', { type: 'password', placeholder: c.hasKey ? tr('已保存，留空则不变') : tr('输入 API Key'), wide: true }),
           search: '密钥 token 秘钥 key',
         }),
         rowHtml({
-          title: '连接测试',
-          desc: '用当前配置发一次最小请求，确认地址 / 模型 / Key 都可用',
-          ctl: ctlButton('test-ai', '测试连接'),
+          title: tr('连接测试'),
+          desc: tr('用当前配置发一次最小请求，确认地址 / 模型 / Key 都可用'),
+          ctl: ctlButton('test-ai', tr('测试连接')),
           search: '连通 检测 ping 测试 test',
         }),
       ],
     }),
     sectionHtml({
-      title: '视觉模型',
-      desc: '截图建任务专用：只负责「看图」，与对话模型分开配置。不配也能用 —— 会回落到对话模型，前提是那个模型能读图。',
+      title: tr('视觉模型'),
+      desc: tr('截图建任务专用：只负责「看图」，与对话模型分开配置。不配也能用 —— 会回落到对话模型，前提是那个模型能读图。'),
       rows: [
         rowHtml({
           id: 'vision-state',
-          title: '当前生效',
+          title: tr('当前生效'),
           desc: visionStateText(vision),
           search: '识图 vision 视觉模型 生效 回落',
         }),
         rowHtml({
-          title: '接口预设',
-          desc: '选中后自动填好地址与默认模型，也可以手动改',
+          title: tr('接口预设'),
+          desc: tr('选中后自动填好地址与默认模型，也可以手动改'),
           ctl: ctlSelect('st-vision-preset', vPresetId,
-            [['', '自定义']].concat(visionPresets.map((p) => [p.id, p.label]))),
+            [['', tr('自定义')]].concat(visionPresets.map((p) => [p.id, tr(p.label)]))),
           search: '智谱 glm 通义 qwen openai ollama 硅基流动',
         }),
         rowHtml({
-          title: '视觉模型',
-          desc: '预设是省事的默认值，不是白名单：自建中转 / 私有部署直接选「自定义…」填名字',
+          title: tr('视觉模型'),
+          desc: tr('选「不使用」就整组回落（截图识别走上面的对话模型）；自建中转 / 私有部署选「自定义…」填名字'),
           ctl: visionModelCtl(visionPresets, vision.baseUrl, vision.model),
           search: 'model 4v vl vision llava 自定义',
         }),
         rowHtml({
-          title: '视觉接口地址',
-          ctl: ctlInput('st-vision-baseurl', vision.baseUrl || '', { placeholder: '留空 = 用对话模型的地址', wide: true }),
+          title: tr('视觉接口地址'),
+          ctl: ctlInput('st-vision-baseurl', vision.baseUrl || '', { placeholder: tr('留空 = 用对话模型的地址'), wide: true }),
           search: 'base url 端点',
         }),
         rowHtml({
-          title: '视觉 API Key',
+          title: tr('视觉 API Key'),
           desc: vision.hasKey
-            ? `${keyStateText(vision)}；留空则保持不变`
-            : '与对话模型同一服务商时可留空（自动复用）；不同服务商必须单独填',
-          ctl: ctlInput('st-vision-key', '', { type: 'password', placeholder: vision.hasKey ? '已保存，留空则不变' : '输入 API Key', wide: true }),
+            ? tr('{state}；留空则保持不变', { state: keyStateText(vision) })
+            : tr('与对话模型同一服务商时可留空（自动复用）；不同服务商必须单独填'),
+          ctl: ctlInput('st-vision-key', '', { type: 'password', placeholder: vision.hasKey ? tr('已保存，留空则不变') : tr('输入 API Key'), wide: true }),
           search: '密钥 token key',
         }),
         rowHtml({
-          title: '连接测试',
-          desc: '会真发一张 256×256 白图，验的是「这个模型能读图」，不是「地址能通」',
-          ctl: ctlButton('test-vision', '测试读图'),
+          title: tr('连接测试'),
+          desc: tr('会真发一张 256×256 白图，验的是「这个模型能读图」，不是「地址能通」'),
+          ctl: ctlButton('test-vision', tr('测试读图')),
           search: '连通 检测 测试 vision ping',
         }),
       ],
     }),
     sectionHtml({
-      title: '语音转写',
-      desc: '用于会议纪要与录音转写；不配置时录音仍可保存，但不会自动转文字。',
+      title: tr('语音转写'),
+      desc: tr('用于会议纪要与录音转写；不配置时录音仍可保存，但不会自动转文字。'),
       rows: [
         rowHtml({
-          title: '语音接口预设',
+          title: tr('语音接口预设'),
           ctl: ctlSelect('st-asr-preset', presetValueOf(asrPresets, asr.baseUrl, asr.model),
-            [['', '自定义']].concat(asrPresets.map((p) => [p.id, p.label]))),
+            [['', tr('自定义')]].concat(asrPresets.map((p) => [p.id, tr(p.label)]))),
           search: 'whisper asr 语音',
         }),
-        rowHtml({ title: '语音模型', ctl: ctlInput('st-asr-model', asr.model || '', { placeholder: 'whisper-1', wide: true }), search: 'model' }),
+        rowHtml({ title: tr('语音模型'), ctl: ctlInput('st-asr-model', asr.model || '', { placeholder: 'whisper-1', wide: true }), search: 'model' }),
         rowHtml({
-          title: '语音接口地址',
+          title: tr('语音接口地址'),
           ctl: ctlInput('st-asr-baseurl', asr.baseUrl || '', { placeholder: 'https://api.openai.com/v1', wide: true }),
           search: 'base url',
         }),
         rowHtml({
-          title: '语音 API Key',
+          title: tr('语音 API Key'),
           desc: keyStateText(asr),
-          ctl: ctlInput('st-asr-key', '', { type: 'password', placeholder: asr.hasKey ? '已保存，留空则不变' : '输入 API Key', wide: true }),
+          ctl: ctlInput('st-asr-key', '', { type: 'password', placeholder: asr.hasKey ? tr('已保存，留空则不变') : tr('输入 API Key'), wide: true }),
           search: '密钥 token',
         }),
       ],
     }),
     sectionHtml({
-      title: '截图建任务',
-      desc: '把截图里的待办直接建成任务：识别结果先落一张可编辑的卡片，勾选后才进库。没拆出明确待办时，会把图里的文字识别成一条草稿，别让你空手而归。',
+      title: tr('截图建任务'),
+      desc: tr('把截图里的待办直接建成任务：识别结果先落一张可编辑的卡片，勾选后才进库。没拆出明确待办时，会把图里的文字识别成一条草稿，别让你空手而归。'),
       rows: [
         rowHtml({
-          title: '读取剪贴板',
-          desc: '默认主入口：先用 Win + Shift + S 截好，再按这个键。不会隐藏窗口，也更快',
+          title: tr('读取剪贴板'),
+          desc: tr('默认主入口：先用 Win + Shift + S 截好，再按这个键。不会隐藏窗口，也更快'),
           ctl: ctlInfo('Ctrl + Alt + V'),
           search: '截图 快捷键 剪贴板 screenshot paste',
         }),
         rowHtml({
-          title: '框选屏幕区域',
-          desc: '直接在屏幕上拖一块，松手后还能拖动边角改大小、拖内部挪位置，回车确认',
+          title: tr('框选屏幕区域'),
+          desc: tr('直接在屏幕上拖一块，松手后还能拖动边角改大小、拖内部挪位置，回车确认'),
           ctl: ctlInfo('Ctrl + Alt + S'),
           search: '框选 区域 截屏 screenshot region',
         }),
         rowHtml({
-          title: '图片去哪了',
-          desc: '截图只在你按键时截取，本地不保留原图；确认添加后才作为附件存进数据目录。识别时图片会发给你配置的视觉模型服务商。',
+          title: tr('图片去哪了'),
+          desc: tr('截图只在你按键时截取，本地不保留原图；确认添加后才作为附件存进数据目录。识别时图片会发给你配置的视觉模型服务商。'),
           search: '隐私 安全 外发 附件',
         }),
         rowHtml({
-          title: '改键 / 关闭',
-          desc: '两个键都在「快捷键」分区里，可以改键，也可以清空 —— 清空后这个功能对你就不存在了',
+          title: tr('改键 / 关闭'),
+          desc: tr('两个键都在「快捷键」分区里，可以改键，也可以清空 —— 清空后这个功能对你就不存在了'),
           search: '自定义 快捷键 keybinding',
         }),
       ],
     }),
-    `<div class="st-foot-note">Key 只在保存时写进本地数据库（加密存储），不会随导出 / 同步带出去。</div>`,
+    `<div class="st-foot-note">${tr("Key 只在保存时写进本地数据库（加密存储），不会随导出 / 同步带出去。")}</div>`,
   ].join('');
 }
 
 async function saveAi(pane) {
   const val = (sel) => (pane.querySelector(sel)?.value || '').trim();
-  // 视觉模型是「下拉 + 自定义」二态：选到「自定义…」时真值在旁边的输入框里
+  // 视觉模型是「下拉 + 自定义」二态：选到「自定义…」时真值在旁边的输入框里；
+  // 选到「不使用」时清空 —— 不能把 __none 当模型名写进库
   const vSel = pane.querySelector('#st-vision-model');
   const vCustom = pane.querySelector('#st-vision-model-custom');
-  const visionModel = vSel && vSel.value === '__custom'
-    ? (vCustom?.value || '').trim()
-    : (vSel?.value || '').trim();
+  const visionModel = !vSel || vSel.value === VISION_NONE
+    ? ''
+    : (vSel.value === '__custom' ? (vCustom?.value || '').trim() : (vSel.value || '').trim());
 
   const payload = {
     baseUrl: val('#st-ai-baseurl'),
@@ -811,17 +861,17 @@ async function saveAi(pane) {
   const keyInput = pane.querySelector('#st-ai-key');
   if (keyInput) {
     keyInput.value = '';
-    keyInput.placeholder = r.hasKey ? '已保存，留空则不变' : '输入 API Key';
+    keyInput.placeholder = r.hasKey ? tr('已保存，留空则不变') : tr('输入 API Key');
   }
   const asrKeyInput = pane.querySelector('#st-asr-key');
   if (asrKeyInput) {
     asrKeyInput.value = '';
-    asrKeyInput.placeholder = (r.asr && r.asr.hasKey) ? '已保存，留空则不变' : '输入 API Key';
+    asrKeyInput.placeholder = (r.asr && r.asr.hasKey) ? tr('已保存，留空则不变') : tr('输入 API Key');
   }
   const vKeyInput = pane.querySelector('#st-vision-key');
   if (vKeyInput) {
     vKeyInput.value = '';
-    vKeyInput.placeholder = (r.vision && r.vision.hasKey) ? '已保存，留空则不变' : '输入 API Key';
+    vKeyInput.placeholder = (r.vision && r.vision.hasKey) ? tr('已保存，留空则不变') : tr('输入 API Key');
   }
   // 「当前生效」这一行必须跟着变：它决定用户下一次按快捷键时请求打给谁
   const vState = pane.querySelector('[data-item="vision-state"] .st-row-desc');
@@ -832,9 +882,34 @@ async function saveAi(pane) {
     const desc = row.querySelector('.st-row-desc');
     if (!desc) return;
     if (title === 'API Key') desc.textContent = keyStateText(r);
-    if (title === '语音 API Key') desc.textContent = keyStateText(r.asr);
+    if (title === tr('语音 API Key')) desc.textContent = keyStateText(r.asr);
   });
-  toast('AI 配置已保存');
+  toast(tr('AI 配置已保存'));
+}
+
+/**
+ * 取消视觉模型的独立配置 = 改回「用对话模型」。
+ * 三步：地址清空 → 保存（模型也跟着写空）→ 清掉残留的视觉 Key。
+ * 顺序不能反：Key 先清而模型还没清时，库里会短暂存在"有模型没 Key"的坏组合。
+ */
+async function clearVisionConfig(pane) {
+  const urlInput = pane.querySelector('#st-vision-baseurl');
+  if (urlInput) urlInput.value = '';
+  const pSel = pane.querySelector('#st-vision-preset');
+  if (pSel) pSel.value = ''; // 地址清了，预设下拉也得退回「自定义」，否则界面自相矛盾
+  await saveAi(pane);
+  const v = await api.ai.clearVisionKey();
+  if (v) S.ai = { ...(S.ai || {}), vision: v };
+  const keyInput = pane.querySelector('#st-vision-key');
+  if (keyInput) {
+    keyInput.value = '';
+    keyInput.placeholder = tr('输入 API Key');
+  }
+  const keyDesc = keyInput?.closest('.st-row')?.querySelector('.st-row-desc');
+  if (keyDesc) keyDesc.textContent = tr('与对话模型同一服务商时可留空（自动复用）；不同服务商必须单独填');
+  const state = pane.querySelector('[data-item="vision-state"] .st-row-desc');
+  if (state) state.textContent = visionStateText(v || (S.ai && S.ai.vision));
+  toast(tr('已改为使用对话模型'));
 }
 
 function mountAi(pane) {
@@ -844,7 +919,7 @@ function mountAi(pane) {
       if (!p) return;
       pane.querySelector(urlId).value = p.baseUrl;
       pane.querySelector(modelId).value = p.model;
-      saveAi(pane).catch((err) => toast(`保存失败：${(err && err.message) || err}`));
+      saveAi(pane).catch((err) => toast(tr('保存失败：{msg}', { msg: (err && err.message) || err })));
     });
   };
   bindPreset('#st-ai-preset', '#st-ai-baseurl', '#st-ai-model', (S.ai || {}).presets);
@@ -855,8 +930,10 @@ function mountAi(pane) {
   const rebuildVisionModels = (models, selected) => {
     const sel = pane.querySelector('#st-vision-model');
     if (!sel) return;
-    sel.innerHTML = (models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.free ? `${m.label} · ${m.free}` : m.label)}</option>`).join('')
-      + '<option value="__custom">自定义…</option>';
+    sel.innerHTML = `<option value="${VISION_NONE}">${tr('不使用（用对话模型）')}</option>`
+      + (models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.free ? `${m.label} · ${m.free}` : m.label)}</option>`).join('')
+      + `<option value="__custom">${tr('自定义…')}</option>`;
+    // 换预设 = 明确要用视觉模型，默认挑该预设的第一个（想取消再选回「不使用」）
     sel.value = selected && (models || []).some((m) => m.id === selected)
       ? selected
       : ((models && models[0] && models[0].id) || '__custom');
@@ -872,7 +949,7 @@ function mountAi(pane) {
     const urlInput = pane.querySelector('#st-vision-baseurl');
     if (urlInput) urlInput.value = p.baseUrl;
     rebuildVisionModels(p.models, null);
-    saveAi(pane).catch((err) => toast(`保存失败：${(err && err.message) || err}`));
+    saveAi(pane).catch((err) => toast(tr('保存失败：{msg}', { msg: (err && err.message) || err })));
   });
   pane.querySelector('#st-vision-model')?.addEventListener('change', (e) => {
     const custom = pane.querySelector('#st-vision-model-custom');
@@ -881,7 +958,14 @@ function mountAi(pane) {
       custom.style.display = isCustom ? '' : 'none';
       if (isCustom) { custom.focus(); return; } // 等用户把名字填完再落库
     }
-    saveAi(pane).catch((err) => toast(`保存失败：${(err && err.message) || err}`));
+    // 「不使用」= 把这一组彻底清掉：模型、地址、Key 三样一起清。
+    // 只清模型也能回落（主进程按整组判定），但残留的地址 / 过期 Key 留在库里，
+    // 用户下次打开设置会以为"还在用视觉模型"，所以顺手擦干净。
+    if (e.target.value === VISION_NONE) {
+      clearVisionConfig(pane).catch((err) => toast(tr('保存失败：{msg}', { msg: (err && err.message) || err })));
+      return;
+    }
+    saveAi(pane).catch((err) => toast(tr('保存失败：{msg}', { msg: (err && err.message) || err })));
   });
 
   // 文本类字段失焦 / 回车提交：WorkBuddy 的设置项没有「保存」按钮，改完即生效
@@ -891,7 +975,7 @@ function mountAi(pane) {
       const el = pane.querySelector(sel);
       if (!el) return;
       el.addEventListener('change', () => {
-        saveAi(pane).catch((err) => toast(`保存失败：${(err && err.message) || err}`));
+        saveAi(pane).catch((err) => toast(tr('保存失败：{msg}', { msg: (err && err.message) || err })));
       });
       el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
     });
@@ -902,15 +986,17 @@ function mountAi(pane) {
     if (btn) {
       const desc = btn.closest('.st-row')?.querySelector('.st-row-desc');
       btn.disabled = true;
-      if (desc) desc.textContent = '正在测试…';
+      if (desc) desc.textContent = tr('正在测试…');
       try {
         const r = await api.ai.test({
           baseUrl: (pane.querySelector('#st-ai-baseurl')?.value || '').trim(),
           model: (pane.querySelector('#st-ai-model')?.value || '').trim(),
         });
-        if (desc) desc.textContent = r && r.ok ? `连接成功：${r.message || '模型响应正常'}` : `连接失败：${(r && r.message) || '未知错误'}`;
+        if (desc) desc.textContent = r && r.ok
+          ? tr('连接成功：{msg}', { msg: r.message || tr('模型响应正常') })
+          : tr('连接失败：{msg}', { msg: (r && r.message) || tr('未知错误') });
       } catch (err) {
-        if (desc) desc.textContent = `连接失败：${(err && err.message) || err}`;
+        if (desc) desc.textContent = tr('连接失败：{msg}', { msg: (err && err.message) || err });
       } finally {
         btn.disabled = false;
       }
@@ -926,16 +1012,18 @@ function mountAi(pane) {
         ? (vCustom?.value || '').trim()
         : (vSel?.value || '').trim();
       vBtn.disabled = true;
-      if (desc) desc.textContent = '正在发一张测试图…';
+      if (desc) desc.textContent = tr('正在发一张测试图…');
       try {
         const r = await api.ai.testVision({
           baseUrl: (pane.querySelector('#st-vision-baseurl')?.value || '').trim(),
           model,
           apiKey: (pane.querySelector('#st-vision-key')?.value || '').trim(),
         });
-        if (desc) desc.textContent = r && r.ok ? (r.message || '读图正常') : `失败：${(r && r.message) || '未知错误'}`;
+        if (desc) desc.textContent = r && r.ok
+          ? (r.message || tr('读图正常'))
+          : tr('失败：{msg}', { msg: (r && r.message) || tr('未知错误') });
       } catch (err) {
-        if (desc) desc.textContent = `失败：${(err && err.message) || err}`;
+        if (desc) desc.textContent = tr('失败：{msg}', { msg: (err && err.message) || err });
       } finally {
         vBtn.disabled = false;
       }
@@ -949,29 +1037,29 @@ function calendarHtml() {
   const cal = S.calendar || {};
   return [
     sectionHtml({
-      title: '日历视图',
-      desc: '格子显示的是「负载」：按优先级加权，默认容量 6 相当于一天能扛 6 个中等任务。',
+      title: tr('日历视图'),
+      desc: tr('格子显示的是「负载」：按优先级加权，默认容量 6 相当于一天能扛 6 个中等任务。'),
       rows: [
         rowHtml({
-          title: '每日容量',
-          desc: '4 – 10 之间可调，超载只在 ≥100% 变色',
+          title: tr('每日容量'),
+          desc: tr('4 – 10 之间可调，超载只在 ≥100% 变色'),
           ctl: ctlInput('st-cal-capacity', String(cal.capacity ?? 6), { type: 'number', placeholder: '6' }),
           search: '负载 容量 权重 calendar',
         }),
         rowHtml({
-          title: '每周起始日',
-          ctl: ctlSelect('st-cal-weekstart', String(cal.weekStart ?? 1), [['1', '周一'], ['0', '周日']]),
+          title: tr('每周起始日'),
+          ctl: ctlSelect('st-cal-weekstart', String(cal.weekStart ?? 1), [['1', tr('周一')], ['0', tr('周日')]]),
           search: '周视图 星期 calendar',
         }),
         rowHtml({
-          title: '隐藏已完成任务',
-          desc: '默认显示：完成的任务留在当天格子里，只是不计入负载',
+          title: tr('隐藏已完成任务'),
+          desc: tr('默认显示：完成的任务留在当天格子里，只是不计入负载'),
           ctl: ctlSwitch('st-cal-hidedone', !!cal.hideCompleted),
           search: '完成态 calendar',
         }),
       ],
     }),
-    `<div class="st-foot-note">点侧栏「今天」下面的「🗓 日历」，或按 Ctrl + Alt + M 打开日历；月 / 周在日历里切换。这里的改动会立刻重绘当前日历。</div>`,
+    `<div class="st-foot-note">${tr("点侧栏「今天」下面的「🗓 日历」，或按 Ctrl + Alt + M 打开日历；月 / 周在日历里切换。这里的改动会立刻重绘当前日历。")}</div>`,
   ].join('');
 }
 
@@ -990,9 +1078,9 @@ function mountCalendar(pane) {
       await api.ui.setToolPref('calendar', next);
       S.calendar = next;
       if (ext.onCalendarPrefs) ext.onCalendarPrefs(next);
-      toast('日历设置已保存');
+      toast(tr('日历设置已保存'));
     } catch (e) {
-      toast(`保存失败：${(e && e.message) || e}`);
+      toast(tr('保存失败：{msg}', { msg: (e && e.message) || e }));
     }
   };
   ['#st-cal-capacity', '#st-cal-weekstart', '#st-cal-hidedone'].forEach((sel) => {
@@ -1014,9 +1102,9 @@ function bindSalaryInputs(pane) {
       try {
         S.salary = await api.ui.setSalary({ monthly, start, end });
         document.dispatchEvent(new CustomEvent('app:encourager-config'));
-        if (!silent) toast('薪资设置已保存');
+        if (!silent) toast(tr('薪资设置已保存'));
       } catch (e) {
-        toast(`保存失败：${(e && e.message) || e}`);
+        toast(tr('保存失败：{msg}', { msg: (e && e.message) || e }));
       }
     }, 450);
   };
@@ -1036,96 +1124,96 @@ function funHtml() {
   const buys = Object.entries(c.purchases).slice(0, 3);
   const buddyOn = !!(S.buddy && S.buddy.enabled);
   return [
-    `<div class="st-foot-note" id="fun-plugin-off"${buddyOn ? ' hidden' : ''}>工位搭子是插件，当前未启用 —— 标题栏入口、快捷键与浮窗都隐藏。先到「功能插件 → 工位搭子」打开开关，这里的内容才会出现。</div>`,
+    `<div class="st-foot-note" id="fun-plugin-off"${buddyOn ? ' hidden' : ''}>${tr('工位搭子是插件，当前未启用 —— 标题栏入口、快捷键与浮窗都隐藏。先到「功能插件 → 工位搭子」打开开关，这里的内容才会出现。')}</div>`,
     `<div id="fun-plugin-body"${buddyOn ? '' : ' hidden'}>`,
     // 原来在「趣味功能」菜单里的两个浮窗入口：菜单栏撤掉后落到这里
     sectionHtml({
-      title: '浮窗入口',
-      desc: '上班鼓励器与今日牛马卡都是独立浮窗，随时可开；全局键 Ctrl+Alt+E 也能直接唤起鼓励器。',
+      title: tr('浮窗入口'),
+      desc: tr('上班鼓励器与今日牛马卡都是独立浮窗，随时可开；全局键 Ctrl+Alt+E 也能直接唤起鼓励器。'),
       rows: [
         rowHtml({
-          title: '上班鼓励器',
-          desc: '今日进账 / 牛马币 / 工位搭子，边干活边冒话。',
-          ctl: ctlButton('open-encourager', '打开'),
+          title: tr('上班鼓励器'),
+          desc: tr('今日进账 / 牛马币 / 工位搭子，边干活边冒话。'),
+          ctl: ctlButton('open-encourager', tr('打开')),
           search: '鼓励器 上班 进账 摸鱼 牛马币 encourager',
           id: 'open-encourager',
         }),
         rowHtml({
-          title: '今日牛马卡',
-          desc: '把今天的工作量做成一张可保存的卡片。',
-          ctl: ctlButton('open-card', '打开'),
+          title: tr('今日牛马卡'),
+          desc: tr('把今天的工作量做成一张可保存的卡片。'),
+          ctl: ctlButton('open-card', tr('打开')),
           search: '牛马卡 卡片 分享 海报 card',
           id: 'open-card',
         }),
       ],
     }),
     sectionHtml({
-      title: '薪资与班次',
-      desc: '按「月薪 ÷ 当月工作日 ÷ 每日工时」换算，只统计上班到下班区间内的在岗时间。填一次，进账数字立刻生效；上班鼓励器浮窗右上角的 ⚙ 或「设置」页签改的也是这三项。',
+      title: tr('薪资与班次'),
+      desc: tr('按「月薪 ÷ 当月工作日 ÷ 每日工时」换算，只统计上班到下班区间内的在岗时间。填一次，进账数字立刻生效；上班鼓励器浮窗右上角的 ⚙ 或「设置」页签改的也是这三项。'),
       rows: [
         rowHtml({
-          title: '月薪',
-          ctl: `${ctlInput('st-salary-monthly', s.monthly ? String(s.monthly) : '', { type: 'number', placeholder: '0' })}<span class="st-unit">元</span>`,
+          title: tr('月薪'),
+          ctl: `${ctlInput('st-salary-monthly', s.monthly ? String(s.monthly) : '', { type: 'number', placeholder: '0' })}<span class="st-unit">${tr("元")}</span>`,
           search: '工资 收入 salary 月薪',
         }),
         rowHtml({
-          title: '上班时间',
+          title: tr('上班时间'),
           ctl: ctlInput('st-salary-start', s.start || '', { type: 'time' }),
           search: '考勤 打卡 开始 班次',
         }),
         rowHtml({
-          title: '下班时间',
+          title: tr('下班时间'),
           ctl: ctlInput('st-salary-end', s.end || '', { type: 'time' }),
           search: '考勤 打卡 结束 班次',
         }),
       ],
     }),
     sectionHtml({
-      title: '工位搭子',
-      desc: '搭子说话的方式；完成一个任务时会按这个语气冒一句。',
+      title: tr('工位搭子'),
+      desc: tr('搭子说话的方式；完成一个任务时会按这个语气冒一句。'),
       rows: [
         rowHtml({
-          title: '默认语气',
-          ctl: ctlSelect('st-enc-tone', c.buddy.tone, [['warm', '暖心'], ['salty', '阴阳'], ['sharp', '毒舌']]),
+          title: tr('默认语气'),
+          ctl: ctlSelect('st-enc-tone', c.buddy.tone, [['warm', tr('暖心')], ['salty', tr('阴阳')], ['sharp', tr('毒舌')]]),
           search: '语气 搭子 台词 暖心 阴阳 毒舌',
         }),
       ],
     }),
     sectionHtml({
-      title: '牛马币与隐私',
-      desc: '牛马币只换皮肤、不换钱，与真实金额在刷新节奏、数值形态、颜色与区块上完全分离。',
+      title: tr('牛马币与隐私'),
+      desc: tr('牛马币只换皮肤、不换钱，与真实金额在刷新节奏、数值形态、颜色与区块上完全分离。'),
       rows: [
         rowHtml({
-          title: '显示牛马币',
-          desc: '关闭后隐藏 HUD 格子与发币提示，不清空已有币值',
+          title: tr('显示牛马币'),
+          desc: tr('关闭后隐藏 HUD 格子与发币提示，不清空已有币值'),
           ctl: ctlSwitch('st-enc-coins', c.coinsEnabled),
           search: '牛马币 玩法货币 coins',
         }),
         rowHtml({
-          title: '分享卡默认显示真实金额',
-          desc: '默认关闭；即使在卡片页临时开启，导出前仍会二次确认',
+          title: tr('分享卡默认显示真实金额'),
+          desc: tr('默认关闭；即使在卡片页临时开启，导出前仍会二次确认'),
           ctl: ctlSwitch('st-enc-share-amount', c.privacy.shareAmount),
           search: '分享卡 金额 隐私',
         }),
         rowHtml({
-          title: '分享卡默认包含任务标题',
-          desc: '默认关闭；开启后仍需逐条勾选，导出前二次确认',
+          title: tr('分享卡默认包含任务标题'),
+          desc: tr('默认关闭；开启后仍需逐条勾选，导出前二次确认'),
           ctl: ctlSwitch('st-enc-share-titles', c.share.includeTaskTitles),
           search: '分享卡 任务标题 隐私',
         }),
       ],
     }),
     sectionHtml({
-      title: '购买力换算',
-      desc: '把「今日已赚」换算成生活里的东西。单价是虚构演示值，不是真实物价。',
+      title: tr('购买力换算'),
+      desc: tr('把「今日已赚」换算成生活里的东西。单价是虚构演示值，不是真实物价。'),
       rows: buys.map(([name, price], i) => rowHtml({
-        title: name,
-        ctl: `${ctlInput(`st-enc-buy-${i}`, String(price), { type: 'number' })}<span class="st-unit">元</span>`,
+        title: tr(name),
+        ctl: `${ctlInput(`st-enc-buy-${i}`, String(price), { type: 'number' })}<span class="st-unit">${tr("元")}</span>`,
         search: `购买力 单价 ${name}`,
         id: `enc-buy-${i}`,
       })),
     }),
-    `<div class="st-foot-note">主浮窗：Ctrl + Alt + E 或菜单「趣味功能 → 上班鼓励器」；月薪与班次也能直接在主浮窗的「设置」页签里改。<br>主题跟随应用明暗，唯一入口在「通用 → 界面主题」，这里不另设开关。<br>牛马币与连续打卡是情绪数据，会被整体备份 / 恢复回滚，不参与导入校验，请不要当成资产；解锁项仅存本机，换设备或重装不继承。</div>`,
+    `<div class="st-foot-note">${tr("主浮窗：Ctrl + Alt + E 或菜单「趣味功能 → 上班鼓励器」；月薪与班次也能直接在主浮窗的「设置」页签里改。")}<br>${tr("主题跟随应用明暗，唯一入口在「通用 → 界面主题」，这里不另设开关。")}<br>${tr("牛马币与连续打卡是情绪数据，会被整体备份 / 恢复回滚，不参与导入校验，请不要当成资产；解锁项仅存本机，换设备或重装不继承。")}</div>`,
     `</div>`,
   ].join('');
 }
@@ -1150,9 +1238,9 @@ function mountFun(pane) {
       await api.ui.setToolPref('encourager', latest);
       S.encourager = latest;
       document.dispatchEvent(new CustomEvent('app:encourager-config'));
-      toast('趣味功能设置已保存');
+      toast(tr('趣味功能设置已保存'));
     } catch (e) {
-      toast(`保存失败：${(e && e.message) || e}`);
+      toast(tr('保存失败：{msg}', { msg: (e && e.message) || e }));
     }
   };
   const bindChange = (sel, mutate) => {
@@ -1191,22 +1279,22 @@ function mountFun(pane) {
 function toolsHtml() {
   return [
     sectionHtml({
-      title: '重复事项与习惯',
-      desc: '统一管理所有重复规则：改周期、暂停、看打卡记录。',
+      title: tr('重复事项与习惯'),
+      desc: tr('统一管理所有重复规则：改周期、暂停、看打卡记录。'),
       rows: [
         rowHtml({
-          title: '重复事项与习惯',
-          desc: '统一管理所有重复规则：改周期、暂停、看打卡记录。',
-          ctl: ctlButton('open-recurrence', '管理…'),
+          title: tr('重复事项与习惯'),
+          desc: tr('统一管理所有重复规则：改周期、暂停、看打卡记录。'),
+          ctl: ctlButton('open-recurrence', tr('管理…')),
           search: '重复 习惯 规则 周期 打卡 recurring repeat habit',
           id: 'tool-recurrence',
         }),
       ],
     }),
     sectionHtml({
-      title: '桌面浮窗',
-      desc: '钉在桌面上的清单 / 视图。隐藏不等于删除，随时可以再显示；位置跑偏了点「复位」回到默认角。',
-      html: `<div id="st-desk-list"><span class="st-sub">读取中…</span></div>`,
+      title: tr('桌面浮窗'),
+      desc: tr('钉在桌面上的清单 / 视图。隐藏不等于删除，随时可以再显示；位置跑偏了点「复位」回到默认角。'),
+      html: `<div id="st-desk-list"><span class="st-sub">${tr("读取中…")}</span></div>`,
     }),
   ].join('');
 }
@@ -1218,26 +1306,26 @@ async function paintDeskList(pane) {
   try {
     items = await api.desktop.list();
   } catch (e) {
-    box.innerHTML = `<span class="st-sub">读取桌面浮窗失败：${esc((e && e.message) || e)}</span>`;
+    box.innerHTML = `<span class="st-sub">${tr('读取桌面浮窗失败：{msg}', { msg: esc((e && e.message) || e) })}</span>`;
     return;
   }
   if (!Array.isArray(items) || !items.length) {
-    box.innerHTML = '<span class="st-sub">还没有钉到桌面的清单。在侧栏分组 / 「今天」/ 「即将到期」上右键 →「钉到桌面」即可。</span>';
+    box.innerHTML = `<span class="st-sub">${tr('还没有钉到桌面的清单。在侧栏分组 / 「今天」/ 「即将到期」上右键 →「钉到桌面」即可。')}</span>`;
     return;
   }
   box.innerHTML = items.map((p) => {
-    const title = esc(p.title || '未命名');
-    const kindText = p.kind === 'note' ? '笔记' : `${p.done || 0}/${p.total || 0}`;
-    const missing = p.missing ? ' · 源已删除' : '';
+    const title = esc(p.title || tr('未命名'));
+    const kindText = p.kind === 'note' ? tr('笔记') : `${p.done || 0}/${p.total || 0}`;
+    const missing = p.missing ? tr(' · 源已删除') : '';
     const search = esc(`浮窗 ${p.title || ''} ${kindText}`.toLowerCase());
     return `<div class="st-row" data-search="${search}" data-item="desk-${p.id}">
       <div class="st-row-main">
         <div class="st-row-title">${title}</div>
-        <div class="st-row-desc"><span class="st-sub">${kindText}${missing}${p.visible ? '' : ' · 已隐藏'}</span></div>
+        <div class="st-row-desc"><span class="st-sub">${kindText}${missing}${p.visible ? '' : tr(' · 已隐藏')}</span></div>
       </div>
       <div class="st-row-ctl">
-        <button type="button" class="st-btn" data-act="${p.visible ? 'desk-hide' : 'desk-show'}" data-id="${p.id}">${p.visible ? '隐藏' : '显示'}</button>
-        <button type="button" class="st-btn" data-act="desk-reset" data-id="${p.id}">复位</button>
+        <button type="button" class="st-btn" data-act="${p.visible ? 'desk-hide' : 'desk-show'}" data-id="${p.id}">${p.visible ? tr('隐藏') : tr('显示')}</button>
+        <button type="button" class="st-btn" data-act="desk-reset" data-id="${p.id}">${tr('复位')}</button>
       </div>
     </div>`;
   }).join('');
@@ -1261,7 +1349,7 @@ function mountTools(pane) {
       else return;
       paintDeskList(pane);
     } catch (err) {
-      toast(`操作失败：${(err && err.message) || err}`);
+      toast(tr('操作失败：{msg}', { msg: (err && err.message) || err }));
     }
   });
 }
@@ -1297,17 +1385,17 @@ function fmtDay(ms) {
 }
 
 /** 长路径单独占一行（右侧放按钮行得通，但路径会被挤成两行说明，看着很乱） */
-const pathLine = (text) => `<span class="st-path" title="${esc(text || '')}">${esc(text || '未知')}</span>`;
+const pathLine = (text) => `<span class="st-path" title="${esc(text || '')}">${esc(text || tr('未知'))}</span>`;
 
 /** 全量备份行的说明文字（dataHtml 与「立即备份」完成后的局部刷新共用） */
 function fullBackupDesc(bk) {
   const full = (bk && bk.full) || {};
   const text = full.latest
-    ? `最近一次 ${fmtDay(full.latest.time)} · 共 ${full.count} 份 · ${fmtBytes(full.totalBytes)}`
-    : '还没有全量备份（启动 6 分钟后自动检查）';
+    ? tr('最近一次 {time} · 共 {n} 份 · {size}', { time: fmtDay(full.latest.time), n: full.count, size: fmtBytes(full.totalBytes) })
+    : tr('还没有全量备份（启动 6 分钟后自动检查）');
   const next = full.nextDueTime
-    ? `每 ${full.intervalDays || 15} 天一份，下一份约 ${fmtDay(full.nextDueTime)}；只保留最近 ${full.keepMonths || 2} 个月`
-    : `每 ${full.intervalDays || 15} 天一份，只保留最近 ${full.keepMonths || 2} 个月`;
+    ? tr('每 {n} 天一份，下一份约 {time}；只保留最近 {m} 个月', { n: full.intervalDays || 15, time: fmtDay(full.nextDueTime), m: full.keepMonths || 2 })
+    : tr('每 {n} 天一份，只保留最近 {m} 个月', { n: full.intervalDays || 15, m: full.keepMonths || 2 });
   return `<span class="st-sub">${esc(text)}</span><span class="st-sub">${esc(next)}</span>${pathLine(full.dir || bk.dir)}`;
 }
 
@@ -1315,65 +1403,74 @@ function dataHtml() {
   const st = S.storage || {};
   const bk = S.backup || {};
   const lastText = bk.latest
-    ? `最近一次 ${fmtTime(bk.latest.time)} · 共 ${bk.count} 份 · ${fmtBytes(bk.totalBytes)}`
-    : '还没有自动备份（应用启动 5 分钟后会做第一次）';
+    ? tr('最近一次 {time} · 共 {n} 份 · {size}', { time: fmtTime(bk.latest.time), n: bk.count, size: fmtBytes(bk.totalBytes) })
+    : tr('还没有自动备份（应用启动 5 分钟后会做第一次）');
   const srcText = st.source === 'fallback'
-    ? '配置的目录当前不可用，本次临时使用默认目录'
-    : st.isCustom ? '自定义目录' : '默认目录（在系统用户数据目录下）';
+    ? tr('配置的目录当前不可用，本次临时使用默认目录')
+    : st.isCustom ? tr('自定义目录') : tr('默认目录（在系统用户数据目录下）');
 
   return [
     sectionHtml({
-      title: '存储位置',
+      title: tr('存储位置'),
       rows: [
         rowHtml({
-          title: '数据目录',
+          title: tr('数据目录'),
           desc: `<span class="st-sub">${esc(srcText)}</span>${pathLine(st.dir)}`,
-          ctl: `${ctlButton('open-data', '打开')}${ctlButton('change-dir', '更改…')}`,
+          ctl: `${ctlButton('open-data', tr('打开'))}${ctlButton('change-dir', tr('更改…'))}`,
           search: '路径 数据库 todo.db 附件 位置 path',
           id: 'data-dir',
         }),
       ],
     }),
     sectionHtml({
-      title: '维护',
-      desc: '低频但需要能找得到的两个动作：归档是「从列表里收起来」，不是删除；导入 Markdown 是迁移入口。',
+      title: tr('维护'),
+      desc: tr('低频但需要能找得到的动作：归档是「从列表里收起来」，不是删除；导入 Markdown 用于从别的笔记工具迁移（换机 / 恢复整库见下方「备份」组）。'),
       rows: [
         rowHtml({
-          title: '归档已完成任务',
-          desc: '把已完成的任务收进「归档」视图，任务列表里不再占行。随时可从侧栏「归档」取回。',
-          ctl: ctlButton('archive-done', '立即归档'),
+          title: tr('归档已完成任务'),
+          desc: tr('把已完成的任务收进「归档」视图，任务列表里不再占行。随时可从侧栏「归档」取回。'),
+          ctl: ctlButton('archive-done', tr('立即归档')),
           search: '归档 archive 收起来 清理已完成',
           id: 'archive-done',
         }),
         rowHtml({
-          title: '导入 Markdown 笔记',
-          desc: '从外部笔记工具迁移：正文原样入库，文中的本地图片一起搬进附件目录。',
-          ctl: ctlButton('import-md', '选择文件…'),
+          title: tr('导入 Markdown 笔记'),
+          desc: tr('从外部笔记工具迁移：正文原样入库，文中的本地图片一起搬进附件目录。'),
+          ctl: ctlButton('import-md', tr('选择文件…')),
           search: 'markdown md 导入 迁移 import 笔记',
           id: 'import-md',
         }),
       ],
     }),
     sectionHtml({
-      title: '备份',
+      title: tr('备份'),
       rows: [
+        // 顶栏那个「📥 导入」的正式归宿：换机 / 恢复是低频动作，和天天点的「📤 备份」摆一起会被当成一对
+        // 日常按钮，还白占搜索框的行宽。功能一条没少 —— 底下仍走 ui.js#importData（含二次确认）。
         rowHtml({
-          title: '日快照（仅数据库）',
-          desc: `<span class="st-sub">${esc(lastText)}</span><span class="st-sub">每天 1 份，只保留最近 ${bk.keepMonths || 2} 个月；总量上限 500MB</span>${pathLine(bk.dir)}`,
-          ctl: `${ctlButton('open-backup', '打开')}${ctlButton('backup-dialog', '备份与恢复…')}`,
+          title: tr('从备份包恢复（导入）'),
+          desc: `<span class="st-sub">${tr("读取「📤 备份」导出的 .zip 完整包（任务 / 笔记 / 附件 / 录音）或旧版 JSON。会")}<b>${tr("覆盖")}</b>${tr("当前的任务、分组、标签、笔记与会议纪要，附件合并到数据目录；选完文件还会再确认一次。")}</span>`,
+          ctl: ctlButton('import-data', tr('选择文件…')),
+          search: '导入 恢复 还原 restore import zip json 换机 迁移 覆盖 backup',
+          id: 'import-data',
+        }),
+        rowHtml({
+          title: tr('日快照（仅数据库）'),
+          desc: `<span class="st-sub">${esc(lastText)}</span><span class="st-sub">${tr('每天 1 份，只保留最近 {m} 个月；总量上限 500MB', { m: bk.keepMonths || 2 })}</span>${pathLine(bk.dir)}`,
+          ctl: `${ctlButton('open-backup', tr('打开'))}${ctlButton('backup-dialog', tr('备份与恢复…'))}`,
           search: '快照 snapshot 恢复 还原 backup 每日',
           id: 'backup',
         }),
         rowHtml({
-          title: '全量备份（含附件与录音）',
+          title: tr('全量备份（含附件与录音）'),
           desc: fullBackupDesc(bk),
-          ctl: `${ctlButton('open-full', '打开')}${ctlButton('full-backup-now', '立即备份')}`,
+          ctl: `${ctlButton('open-full', tr('打开'))}${ctlButton('full-backup-now', tr('立即备份'))}`,
           search: '全量 完整 zip 附件 录音 换机 迁移 半个月 两个月 full',
           id: 'backup-full',
         }),
       ],
     }),
-    `<div class="st-foot-note">日快照只保数据库（任务 / 笔记 / 会议记录 / 设置），每天启动 5 分钟后做一份；全量备份与主界面「📤 备份」导出同构，含附件与录音，每 ${(bk.full && bk.full.intervalDays) || 15} 天自动一份、只留最近 ${(bk.full && bk.full.keepMonths) || 2} 个月，可直接在「📥 导入」里恢复。恢复会用备份覆盖当前库，操作前会二次确认。</div>`,
+    `<div class="st-foot-note">${tr('日快照只保数据库（任务 / 笔记 / 会议记录 / 设置），每天启动 5 分钟后做一份；全量备份与主界面「📤 备份」导出同构，含附件与录音，每 {n} 天自动一份、只留最近 {m} 个月，可在上方「从备份包恢复（导入）」里用它恢复。恢复会用备份覆盖当前库，操作前会二次确认。', { n: (bk.full && bk.full.intervalDays) || 15, m: (bk.full && bk.full.keepMonths) || 2 })}</div>`,
   ].join('');
 }
 
@@ -1386,7 +1483,7 @@ function mountData(pane) {
       if (act === 'open-data' || act === 'open-backup' || act === 'open-full') {
         const kind = act === 'open-data' ? 'data' : act === 'open-full' ? 'backup-full' : 'backup';
         const r = await api.env.openPath(kind);
-        if (r && !r.ok) toast(r.reason || '无法打开目录');
+        if (r && !r.ok) toast(r.reason || tr('无法打开目录'));
       } else if (act === 'change-dir') {
         await api.app.openStorageDialog();
       } else if (act === 'backup-dialog') {
@@ -1394,6 +1491,9 @@ function mountData(pane) {
       } else if (act === 'archive-done') {
         // 原 File 菜单项：只发动作，真正的归档仍由 ui.js 的 archiveCompleted() 执行
         runAction('archive-done');
+      } else if (act === 'import-data') {
+        // 设置面板会先收起（runMenuAction 的默认行为），再弹选文件 + 覆盖确认
+        runAction('import-data');
       } else if (act === 'import-md') {
         runAction('import-md');
       } else if (act === 'full-backup-now') {
@@ -1401,16 +1501,16 @@ function mountData(pane) {
         if (btn.disabled) return;
         const label = btn.textContent;
         btn.disabled = true;
-        btn.textContent = '备份中…';
+        btn.textContent = tr('备份中…');
         try {
           const r = await api.env.runFullBackup();
           if (r && r.ok) {
-            toast(`全量备份完成 · ${fmtBytes(r.size)}`);
+            toast(tr('全量备份完成 · {size}', { size: fmtBytes(r.size) }));
             S.backup = await api.env.getBackupInfo().catch(() => S.backup);
             const descEl = pane.querySelector('[data-item="backup-full"] .st-row-desc');
             if (descEl) descEl.innerHTML = fullBackupDesc(S.backup || {});
           } else {
-            toast((r && r.reason) || '全量备份失败');
+            toast((r && r.reason) || tr('全量备份失败'));
           }
         } finally {
           btn.disabled = false;
@@ -1418,7 +1518,7 @@ function mountData(pane) {
         }
       }
     } catch (err) {
-      toast(`操作失败：${(err && err.message) || err}`);
+      toast(tr('操作失败：{msg}', { msg: (err && err.message) || err }));
     }
   });
 }
@@ -1454,55 +1554,55 @@ function docUrl(path) {
 const DOC_ITEMS = [
   {
     id: 'start',
-    title: '开始读',
+    title: tr('开始读'),
     rows: [
       {
         key: 'index', path: 'docs/README.md',
-        title: '文档目录',
-        desc: '按「安装 / 使用 / 开发维护」分好主题的目录页（分篇文档还在陆续补到仓库，个别条目暂时打不开）',
+        title: tr('文档目录'),
+        desc: tr('按「安装 / 使用 / 开发维护」分好主题的目录页（分篇文档还在陆续补到仓库，个别条目暂时打不开）'),
         search: 'docs 文档 目录 首页 索引 手册 教程 学习 guide',
       },
       {
         key: 'home', path: 'README.md',
-        title: '功能总览（项目主页）',
-        desc: '为什么这么设计，以及任务 / 日历 / 笔记 / 会议 / AI / 工时 / 快捷键每一块怎么用，含快速开始与源码运行',
+        title: tr('功能总览（项目主页）'),
+        desc: tr('为什么这么设计，以及任务 / 日历 / 笔记 / 会议 / AI / 工时 / 快捷键每一块怎么用，含快速开始与源码运行'),
         search: 'readme 功能 总览 亮点 介绍 快速开始 上手 入门 源码 运行',
       },
     ],
   },
   {
     id: 'get',
-    title: '安装与更新',
+    title: tr('安装与更新'),
     rows: [
       {
         key: 'download', url: `${DOC_REPO}/releases/latest`,
-        title: '下载最新版',
-        desc: '安装版 exe 与便携版 7z 都在这里；被 Windows 拦下时点「更多信息 → 仍要运行」',
+        title: tr('下载最新版'),
+        desc: tr('安装版 exe 与便携版 7z 都在这里；被 Windows 拦下时点「更多信息 → 仍要运行」'),
         search: '下载 安装 便携版 最新版 发行版 release download 拦截 未知发布者',
       },
       {
         key: 'releases', url: `${DOC_REPO}/releases`,
-        title: '历史版本与更新记录',
-        desc: '每个版本改了什么；想回退旧版也从这里取',
+        title: tr('历史版本与更新记录'),
+        desc: tr('每个版本改了什么；想回退旧版也从这里取'),
         search: '历史 版本 记录 更新日志 changelog 回退 releases',
       },
     ],
   },
   {
     id: 'mirror',
-    title: '打不开的时候',
+    title: tr('打不开的时候'),
     rows: [
       {
         key: 'mirror', url: DOC_REPO_MIRROR,
-        title: 'GitHub 镜像',
-        desc: '同一份代码与文档，两站同版本。Gitee 被企业网或杀软拦掉时用这条',
+        title: tr('GitHub 镜像'),
+        desc: tr('同一份代码与文档，两站同版本。Gitee 被企业网或杀软拦掉时用这条'),
         search: '镜像 github 打不开 备用 备用地址 mirror',
       },
     ],
   },
 ];
 
-const docBtn = (key, label = '打开') =>
+const docBtn = (key, label = tr('打开')) =>
   `<button type="button" class="st-btn" data-act="open-doc" data-doc="${esc(key)}">${label}</button>`;
 
 function docsHtml() {
@@ -1514,8 +1614,7 @@ function docsHtml() {
   }));
   return [
     ...sections,
-    '<div class="st-foot-note">文档都在浏览器里打开，需要联网；读到的始终是仓库里的最新版本，不用等应用升级。'
-      + '顺手可以把链接分享给别人。</div>',
+    `<div class="st-foot-note">${tr('文档都在浏览器里打开，需要联网；读到的始终是仓库里的最新版本，不用等应用升级。顺手可以把链接分享给别人。')}</div>`,
   ].join('');
 }
 
@@ -1529,7 +1628,7 @@ function mountDocs(pane) {
     btn.disabled = true;
     try {
       const r = await api.app.openExternal(url);
-      if (r && r.ok === false) throw new Error(r.reason || '系统没有默认浏览器');
+      if (r && r.ok === false) throw new Error(r.reason || tr('系统没有默认浏览器'));
     } catch (err) {
       // 打不开就把地址复制走：toast 只是一行字，长链接塞不进去，用户也没法选中复制
       let copied = false;
@@ -1538,8 +1637,8 @@ function mountDocs(pane) {
         copied = true;
       } catch (e) { /* 剪贴板不可用：下面照样给出原因 */ }
       toast(copied
-        ? `打不开：${(err && err.message) || err}。链接已复制，可以粘到浏览器里`
-        : `打不开：${(err && err.message) || err}`);
+        ? tr('打不开：{msg}。链接已复制，可以粘到浏览器里', { msg: (err && err.message) || err })
+        : tr('打不开：{msg}', { msg: (err && err.message) || err }));
     } finally {
       btn.disabled = false;
     }
@@ -1558,49 +1657,49 @@ function aboutHtml() {
   const sponsorRows = [];
   if (SPONSOR_URL) {
     sponsorRows.push(rowHtml({
-      title: '爱发电',
-      desc: '按月或单次赞助都可以。捐赠只用于覆盖 Windows 代码签名证书——不签的话，安装时会弹“未知发布者”警告。',
-      ctl: ctlButton('sponsor', '去支持'),
+      title: tr('爱发电'),
+      desc: tr('按月或单次赞助都可以。捐赠只用于覆盖 Windows 代码签名证书——不签的话，安装时会弹“未知发布者”警告。'),
+      ctl: ctlButton('sponsor', tr('去支持')),
       search: '捐赠 赞助 打赏 支持 donate sponsor 爱发电 afdian',
     }));
   }
   sponsorRows.push(rowHtml({
-    title: '微信赞赏码',
-    desc: '扫码金额随意。不捐也完全不影响使用。',
-    ctl: ctlButton('qr', '扫码支持', 'is-accent'),
+    title: tr('微信赞赏码'),
+    desc: tr('扫码金额随意。不捐也完全不影响使用。'),
+    ctl: ctlButton('qr', tr('扫码支持'), 'is-accent'),
     search: '捐赠 赞助 打赏 支持 donate sponsor 微信 赞赏 收款码 二维码 qr',
   }));
-  const sponsor = sectionHtml({ title: '支持 Knodo', rows: sponsorRows });
+  const sponsor = sectionHtml({ title: tr('支持 Knodo'), rows: sponsorRows });
   return [
     sectionHtml({
       rows: [
-        rowHtml({ title: '版本', ctl: ctlInfo(S.version ? `Knodo ${S.version}` : '未知', { mono: false }), search: 'version 版本号' }),
+        rowHtml({ title: tr('版本'), ctl: ctlInfo(S.version ? `Knodo ${S.version}` : tr('未知'), { mono: false }), search: 'version 版本号' }),
         rowHtml({
-          title: '检查更新',
-          desc: '从 Gitee 发布页查询最新版本；只提示，不自动下载或改动本机数据。',
-          ctl: ctlButton('check-update', '检查更新…'),
+          title: tr('检查更新'),
+          desc: tr('从 Gitee 发布页查询最新版本；只提示，不自动下载或改动本机数据。'),
+          ctl: ctlButton('check-update', tr('检查更新…')),
           search: 'update 更新 升级 版本 检查更新 新版本',
         }),
         rowHtml({
-          title: '学习文档',
-          desc: '功能怎么用、快捷键、出问题怎么办 —— 都在 Gitee 上的文档里，按主题分好',
-          ctl: ctlButton('open-docs', '去看看'),
+          title: tr('学习文档'),
+          desc: tr('功能怎么用、快捷键、出问题怎么办 —— 都在 Gitee 上的文档里，按主题分好'),
+          ctl: ctlButton('open-docs', tr('去看看')),
           search: '文档 教程 学习 帮助 手册 说明 docs help guide',
         }),
-        rowHtml({ title: '开源许可', ctl: ctlInfo('MIT', { mono: false }), search: 'license 协议' }),
+        rowHtml({ title: tr('开源许可'), ctl: ctlInfo('MIT', { mono: false }), search: 'license 协议' }),
         rowHtml({
-          title: '退出 Knodo',
-          desc: '窗口右上角 ✕ 只是最小化到托盘（后台继续提醒）；要连托盘一起退掉用这里。',
-          ctl: ctlButton('quit', '退出'),
+          title: tr('退出 Knodo'),
+          desc: tr('窗口右上角 ✕ 只是最小化到托盘（后台继续提醒）；要连托盘一起退掉用这里。'),
+          ctl: ctlButton('quit', tr('退出')),
           search: '退出 关闭 托盘 quit exit',
           id: 'quit-app',
         }),
-        rowHtml({ title: '数据目录', desc: pathLine(st.dir), search: '路径' }),
-        rowHtml({ title: '备份目录', desc: pathLine(bk.dir), search: '路径 snapshot' }),
+        rowHtml({ title: tr('数据目录'), desc: pathLine(st.dir), search: '路径' }),
+        rowHtml({ title: tr('备份目录'), desc: pathLine(bk.dir), search: '路径 snapshot' }),
       ],
     }),
     sponsor,
-    `<div class="st-foot-note">所有任务、笔记与附件都保存在本机数据目录，不上传服务器；AI 功能只在你主动触发时把必要内容发给你配置的接口。</div>`,
+    `<div class="st-foot-note">${tr("所有任务、笔记与附件都保存在本机数据目录，不上传服务器；AI 功能只在你主动触发时把必要内容发给你配置的接口。")}</div>`,
   ].join('');
 }
 
@@ -1611,7 +1710,7 @@ function mountAbout(pane) {
     try {
       if (btn.dataset.act === 'sponsor' && SPONSOR_URL) {
         const r = await api.app.openExternal(SPONSOR_URL);
-        if (r && !r.ok) toast(r.reason || '无法打开链接');
+        if (r && !r.ok) toast(r.reason || tr('无法打开链接'));
       } else if (btn.dataset.act === 'check-update') {
         await api.app.checkUpdate();
       } else if (btn.dataset.act === 'open-docs') {
@@ -1625,7 +1724,7 @@ function mountAbout(pane) {
         openSponsorQr();
       }
     } catch (err) {
-      toast(`操作失败：${(err && err.message) || err}`);
+      toast(tr('操作失败：{msg}', { msg: (err && err.message) || err }));
     }
   });
 }
@@ -1633,11 +1732,11 @@ function mountAbout(pane) {
 /* ------------------------------ 分区注册表 ------------------------------ */
 
 const GROUPS = [
-  { id: 'base', label: '设置' },
-  { id: 'feature', label: '功能' },
-  { id: 'data', label: '数据与安全' },
+  { id: 'base', label: tr('设置') },
+  { id: 'feature', label: tr('功能') },
+  { id: 'data', label: tr('数据与安全') },
   // 帮助单列一组：学习文档与「关于」都属于「先看说明 / 看版本」，不该混进数据与备份
-  { id: 'help', label: '帮助' },
+  { id: 'help', label: tr('帮助') },
 ];
 
 /**
@@ -1671,32 +1770,32 @@ function pluginsCardHtml() {
     <div class="wl-set-head">
       <div class="wl-set-ico">🕒</div>
       <div class="wl-set-main">
-        <div class="wl-set-title">工时记录 <span class="wl-badge">插件</span></div>
-        <div class="wl-set-desc">给任务加上「开始 / 暂停 / 结束」计时，结果挂回任务；子任务时长自动向上累积成父任务合计，可按分组导出报工表。</div>
+        <div class="wl-set-title">${tr('工时记录')} <span class="wl-badge">${tr('插件')}</span></div>
+        <div class="wl-set-desc">${tr('给任务加上「开始 / 暂停 / 结束」计时，结果挂回任务；子任务时长自动向上累积成父任务合计，可按分组导出报工表。')}</div>
       </div>
-      <label class="st-switch" title="${on ? '关闭工时插件' : '启用工时插件'}">
-        <input type="checkbox" id="wl-enabled"${on ? ' checked' : ''} aria-label="启用工时记录">
+      <label class="st-switch" title="${on ? tr('关闭工时插件') : tr('启用工时插件')}">
+        <input type="checkbox" id="wl-enabled"${on ? ' checked' : ''} aria-label="${tr('启用工时记录')}">
         <span class="st-switch-track"><span class="st-switch-dot"></span></span>
       </label>
     </div>
     <div class="wl-set-body"${on ? '' : ' hidden'}>
       <div class="wl-field">
-        <span class="wl-field-label">计时入口</span>
-        <span class="wl-chip is-active is-static">任务行内 ▶ / ☯</span>
-        <span class="wl-field-hint">鼠标移到任务上即可看到两个按钮：▶ 计时、☯ 禅模式</span>
+        <span class="wl-field-label">${tr('计时入口')}</span>
+        <span class="wl-chip is-active is-static">${tr('任务行内 ▶ / ☯')}</span>
+        <span class="wl-field-hint">${tr('鼠标移到任务上即可看到两个按钮：▶ 计时、☯ 禅模式')}</span>
       </div>
       <div class="wl-field">
-        <span class="wl-field-label">禅模式默认</span>
-        ${wlChips('zenDefaultSec', [[3600, '60 分钟'], [5400, '90 分钟'], [7200, '120 分钟'], [0, '不限时']], p.zenDefaultSec)}
+        <span class="wl-field-label">${tr('禅模式默认')}</span>
+        ${wlChips('zenDefaultSec', [[3600, tr('60 分钟')], [5400, tr('90 分钟')], [7200, tr('120 分钟')], [0, tr('不限时')]], p.zenDefaultSec)}
       </div>
       <div class="wl-field">
-        <span class="wl-field-label">日期归属</span>
-        <span class="wl-chip is-active is-static">按开始时间</span>
-        <span class="wl-field-hint">跨天记录归属开始日，不切分</span>
+        <span class="wl-field-label">${tr('日期归属')}</span>
+        <span class="wl-chip is-active is-static">${tr('按开始时间')}</span>
+        <span class="wl-field-hint">${tr('跨天记录归属开始日，不切分')}</span>
       </div>
       <div class="wl-set-note">${on
-    ? '已启用：任务行内出现 ▶ 计时与 ☯ 禅模式，计时中底部浮出「🕒 工时计时」条（与录制条同一形态），标题栏（「统计」右侧）的「工时」入口可看报工表。<br>关闭后计时与视图立即卸载、入口保留（点进去变成开启引导），历史记录留在数据库里，随时可再开启。'
-    : '当前为关闭状态 —— 主进程未注册工时 IPC，未启动计时器，渲染层没有加载任何工时模块；标题栏入口保留，点进去是开启引导。'}</div>
+    ? tr('已启用：任务行内出现 ▶ 计时与 ☯ 禅模式，计时中底部浮出「🕒 工时计时」条（与录制条同一形态），标题栏（「统计」右侧）的「工时」入口可看报工表。<br>关闭后计时与视图立即卸载、入口保留（点进去变成开启引导），历史记录留在数据库里，随时可再开启。')
+    : tr('当前为关闭状态 —— 主进程未注册工时 IPC，未启动计时器，渲染层没有加载任何工时模块；标题栏入口保留，点进去是开启引导。')}</div>
     </div>
   </div>`;
 }
@@ -1708,59 +1807,62 @@ function buddyCardHtml() {
     <div class="wl-set-head">
       <div class="wl-set-ico">🐮</div>
       <div class="wl-set-main">
-        <div class="wl-set-title">工位搭子 <span class="wl-badge">插件</span></div>
-        <div class="wl-set-desc">今日进账 / 抽签 / 抱团 / 牛马卡，完成任务时搭子会冒一句。默认关闭，开启后才显示标题栏入口。</div>
+        <div class="wl-set-title">${tr('工位搭子')} <span class="wl-badge">${tr('插件')}</span></div>
+        <div class="wl-set-desc">${tr('今日进账 / 抽签 / 抱团 / 牛马卡，完成任务时搭子会冒一句。默认关闭，开启后才显示标题栏入口。')}</div>
       </div>
-      <label class="st-switch" title="${on ? '关闭工位搭子插件' : '启用工位搭子插件'}">
-        <input type="checkbox" id="buddy-enabled"${on ? ' checked' : ''} aria-label="启用工位搭子">
+      <label class="st-switch" title="${on ? tr('关闭工位搭子插件') : tr('启用工位搭子插件')}">
+        <input type="checkbox" id="buddy-enabled"${on ? ' checked' : ''} aria-label="${tr('启用工位搭子')}">
         <span class="st-switch-track"><span class="st-switch-dot"></span></span>
       </label>
     </div>
     <div class="wl-set-body"${on ? '' : ' hidden'}>
       <div class="wl-field">
-        <span class="wl-field-label">标题栏入口</span>
-        <span class="wl-chip is-active is-static">🐮 搭子</span>
-        <span class="wl-field-hint">紧跟在「🕒 工时」右侧，点开默认落在「搭子」页</span>
+        <span class="wl-field-label">${tr('标题栏入口')}</span>
+        <span class="wl-chip is-active is-static">🐮 ${tr('搭子')}</span>
+        <span class="wl-field-hint">${tr('紧跟在「🕒 工时」右侧，点开默认落在「搭子」页')}</span>
       </div>
       <div class="wl-field">
-        <span class="wl-field-label">快捷唤起</span>
+        <span class="wl-field-label">${tr('快捷唤起')}</span>
         <span class="wl-chip is-active is-static">Ctrl + Alt + E</span>
-        <span class="wl-field-hint">插件关闭时该快捷键与菜单入口同样不生效</span>
+        <span class="wl-field-hint">${tr('插件关闭时该快捷键与菜单入口同样不生效')}</span>
       </div>
       <div class="wl-set-note">${on
-    ? '已启用：标题栏出现「🐮 搭子」，趣味功能设置与浮窗已加载；关闭后入口、浮窗、样式与发币监听一起卸载，配置留在数据库里，随时可再开启。'
-    : '当前为关闭状态 —— 标题栏入口隐藏，浮窗模块与样式未加载，不监听任务完成事件；只有这里能打开它。'}</div>
+    ? tr('已启用：标题栏出现「🐮 搭子」，趣味功能设置与浮窗已加载；关闭后入口、浮窗、样式与发币监听一起卸载，配置留在数据库里，随时可再开启。')
+    : tr('当前为关闭状态 —— 标题栏入口隐藏，浮窗模块与样式未加载，不监听任务完成事件；只有这里能打开它。')}</div>
     </div>
   </div>`;
 }
 
-const JR_DEFAULTS = { enabled: false, cellLabels: ['心智', '身体', '连结', '事业'] };
+const JR_DEFAULTS = { enabled: false, cellLabels: [tr('心智'), tr('身体'), tr('连结'), tr('事业')].map((s) => tr(s)) };
 
 function journalCardHtml() {
   const p = { ...JR_DEFAULTS, ...(S.journal || {}) };
   const on = !!p.enabled;
-  const labels = Array.isArray(p.cellLabels) && p.cellLabels.length === 4 ? p.cellLabels : JR_DEFAULTS.cellLabels;
+  // 库里存的出厂名是中文：英文态下列表要按位置换成英文，否则输入框里冒出中文默认值
+  const zh = [tr('心智'), tr('身体'), tr('连结'), tr('事业')];
+  const labels = (Array.isArray(p.cellLabels) && p.cellLabels.length === 4 ? p.cellLabels : zh)
+    .map((s, i) => (String(s == null ? '' : s).trim() === zh[i] ? JR_DEFAULTS.cellLabels[i] : s));
   return `<div class="st-card wl-set-card jr-set-card${on ? ' is-on' : ''}" data-journal-card>
     <div class="wl-set-head">
       <div class="wl-set-ico">📔</div>
       <div class="wl-set-main">
-        <div class="wl-set-title">四象日记 <span class="wl-badge">插件</span></div>
-        <div class="wl-set-desc">一天一页：心智 / 身体 / 连结 / 事业四格整理，白天随手丢碎碎念，晚上归到四格。按日回看，不打卡、不提醒。</div>
+        <div class="wl-set-title">${tr('四象日记')} <span class="wl-badge">${tr('插件')}</span></div>
+        <div class="wl-set-desc">${tr('一天一页：心智 / 身体 / 连结 / 事业四格整理，白天随手丢碎碎念，晚上归到四格。按日回看，不打卡、不提醒。')}</div>
       </div>
-      <label class="st-switch" title="${on ? '关闭日记插件' : '启用日记插件'}">
-        <input type="checkbox" id="jr-enabled"${on ? ' checked' : ''} aria-label="启用四象日记">
+      <label class="st-switch" title="${on ? tr('关闭日记插件') : tr('启用日记插件')}">
+        <input type="checkbox" id="jr-enabled"${on ? ' checked' : ''} aria-label="${tr('启用四象日记')}">
         <span class="st-switch-track"><span class="st-switch-dot"></span></span>
       </label>
     </div>
     <div class="wl-set-body"${on ? '' : ' hidden'}>
       <div class="wl-field">
-        <span class="wl-field-label">四格名称</span>
+        <span class="wl-field-label">${tr('四格名称')}</span>
         <div class="jr-label-grid">
-          ${labels.map((label, i) => `<label class="jr-label-row"><span class="jr-label-ix jr-ix-${i}">${i + 1}</span><input type="text" data-jr-label="${i}" value="${esc(label)}" maxlength="8" aria-label="第 ${i + 1} 格名称"></label>`).join('')}
+          ${labels.map((label, i) => `<label class="jr-label-row"><span class="jr-label-ix jr-ix-${i}">${i + 1}</span><input type="text" data-jr-label="${i}" value="${esc(label)}" maxlength="8" aria-label="${tr('第 {n} 格名称', { n: i + 1 })}"></label>`).join('')}
         </div>
-        <span class="wl-field-hint">格子位置固定，只改名（如「工作 / 生活 / 学习 / 情绪」）；改名不影响历史内容。</span>
+        <span class="wl-field-hint">${tr('格子位置固定，只改名（如「工作 / 生活 / 学习 / 情绪」）；改名不影响历史内容。')}</span>
       </div>
-      <div class="wl-set-note">日记只存在本地数据库，<b>不参与 AI 检索与报告</b>，也不进笔记的目录 / 标签。关闭后入口保留，历史记录全部留在库里；JSON 备份会带上日记。</div>
+      <div class="wl-set-note">${tr('日记只存在本地数据库，')}<b>${tr('不参与 AI 检索与报告')}</b>${tr('，也不进笔记的目录 / 标签。关闭后入口保留，历史记录全部留在库里；JSON 备份会带上日记。')}</div>
     </div>
   </div>`;
 }
@@ -1768,8 +1870,8 @@ function journalCardHtml() {
 function pluginsHtml() {
   return `<section class="st-sec"
     data-search="功能插件 插件 工时 worklog 计时 报工 子任务 禅模式 行内计时 补录 搭子 鼓励器 牛马币 抽签 抱团 日记 journal 四格 碎碎念">
-    <div class="st-sec-title">功能插件</div>
-    <div class="st-sec-desc">默认全部关闭。关闭状态的插件不加载任何模块 —— 没有计时器、不监听事件、不注入样式；搭子入口随开关隐藏（工时 / 日记入口保留为开启引导），这里始终能看到开关。</div>
+    <div class="st-sec-title">${tr('功能插件')}</div>
+    <div class="st-sec-desc">${tr('默认全部关闭。关闭状态的插件不加载任何模块 —— 没有计时器、不监听事件、不注入样式；搭子入口随开关隐藏（工时 / 日记入口保留为开启引导），这里始终能看到开关。')}</div>
     <div class="wl-set-host">${pluginsCardHtml()}${buddyCardHtml()}${journalCardHtml()}</div>
   </section>`;
 }
@@ -1794,7 +1896,7 @@ function mountPlugins(paneEl) {
     sw.disabled = true;
     try {
       const r = await api.features.setPref(name, { enabled: want });
-      if (!r || r.ok === false) throw new Error((r && r.reason) || '切换失败');
+      if (!r || r.ok === false) throw new Error((r && r.reason) || tr('切换失败'));
       if (isBuddy) {
         S.buddy = r.pref;
         applyFunGate(document);
@@ -1806,19 +1908,19 @@ function mountPlugins(paneEl) {
       repaintPlugins(paneEl);
       toast(isBuddy
         ? (want
-          ? '工位搭子插件已启用 · 标题栏出现「🐮 搭子」'
-          : '工位搭子插件已关闭 · 入口与浮窗已卸载，配置保留')
+          ? tr('工位搭子插件已启用 · 标题栏出现「🐮 搭子」')
+          : tr('工位搭子插件已关闭 · 入口与浮窗已卸载，配置保留'))
         : isJournal
           ? (want
-            ? '四象日记已启用 · 标题栏出现「📔 日记」'
-            : '日记插件已关闭 · 视图与样式已卸载，历史记录保留')
+            ? tr('四象日记已启用 · 标题栏出现「📔 日记」')
+            : tr('日记插件已关闭 · 视图与样式已卸载，历史记录保留'))
           : (want
-            ? '工时插件已启用 · 任务行内出现 ▶ 计时 / ☯ 禅模式'
-            : '工时插件已关闭 · 计时与视图已卸载，历史记录保留'));
+            ? tr('工时插件已启用 · 任务行内出现 ▶ 计时 / ☯ 禅模式')
+            : tr('工时插件已关闭 · 计时与视图已卸载，历史记录保留')));
     } catch (err) {
       sw.checked = !want;
       sw.disabled = false;
-      toast(`切换失败：${(err && err.message) || err}`);
+      toast(tr('切换失败：{msg}', { msg: (err && err.message) || err }));
     }
   });
 
@@ -1831,11 +1933,11 @@ function mountPlugins(paneEl) {
     if (key === 'zenDefaultSec') value = Number(value);
     try {
       const r = await api.features.setPref({ [key]: value });
-      if (!r || r.ok === false) throw new Error((r && r.reason) || '保存失败');
+      if (!r || r.ok === false) throw new Error((r && r.reason) || tr('保存失败'));
       S.worklog = r.pref;
       repaintPlugins(paneEl);
     } catch (err) {
-      toast(`保存失败：${(err && err.message) || err}`);
+      toast(tr('保存失败：{msg}', { msg: (err && err.message) || err }));
     }
   });
 
@@ -1850,31 +1952,31 @@ function mountPlugins(paneEl) {
     else inp.value = labels[i];
     try {
       const r = await api.features.setPref('journal', { cellLabels: labels });
-      if (!r || r.ok === false) throw new Error((r && r.reason) || '保存失败');
+      if (!r || r.ok === false) throw new Error((r && r.reason) || tr('保存失败'));
       S.journal = r.pref;
       inp.value = labels[i];
-      toast(`第 ${i + 1} 格已改为「${labels[i]}」`);
+      toast(tr('第 {n} 格已改为「{label}」', { n: i + 1, label: labels[i] }));
     } catch (err) {
-      toast(`保存失败：${(err && err.message) || err}`);
+      toast(tr('保存失败：{msg}', { msg: (err && err.message) || err }));
     }
   });
 }
 
 const PANES = [
   // 外观置顶：换主题是最常做、也最容易找不到的一件事（原来藏在「通用」里一个下拉框）
-  { id: 'appearance', group: 'base', label: '外观', icon: ICON.appearance, build: appearanceHtml, mount: mountAppearance },
-  { id: 'general', group: 'base', label: '通用', icon: ICON.general, build: generalHtml, mount: mountGeneral },
-  { id: 'keys', group: 'base', label: '快捷键', icon: ICON.keys, build: keysPaneHtml, mount: null },
+  { id: 'appearance', group: 'base', label: tr('外观'), icon: ICON.appearance, build: appearanceHtml, mount: mountAppearance },
+  { id: 'general', group: 'base', label: tr('通用'), icon: ICON.general, build: generalHtml, mount: mountGeneral },
+  { id: 'keys', group: 'base', label: tr('快捷键'), icon: ICON.keys, build: keysPaneHtml, mount: null },
   // 功能插件常驻第一位：默认全关，用户需要一个能找到开关的地方
-  { id: 'plugins', group: 'feature', label: '功能插件', icon: ICON.plugins, build: pluginsHtml, mount: mountPlugins },
-  { id: 'ai', group: 'feature', label: 'AI 与语音', icon: ICON.ai, build: aiHtml, mount: mountAi },
-  { id: 'calendar', group: 'feature', label: '日历', icon: ICON.calendar, build: calendarHtml, mount: mountCalendar },
-  { id: 'tools', group: 'feature', label: '工具', icon: ICON.tools, build: toolsHtml, mount: mountTools },
-  { id: 'fun', group: 'feature', label: '趣味功能', icon: ICON.fun, build: funHtml, mount: mountFun },
-  { id: 'data', group: 'data', label: '数据与备份', icon: ICON.data, build: dataHtml, mount: mountData },
+  { id: 'plugins', group: 'feature', label: tr('功能插件'), icon: ICON.plugins, build: pluginsHtml, mount: mountPlugins },
+  { id: 'ai', group: 'feature', label: tr('AI 与语音'), icon: ICON.ai, build: aiHtml, mount: mountAi },
+  { id: 'calendar', group: 'feature', label: tr('日历'), icon: ICON.calendar, build: calendarHtml, mount: mountCalendar },
+  { id: 'tools', group: 'feature', label: tr('工具'), icon: ICON.tools, build: toolsHtml, mount: mountTools },
+  { id: 'fun', group: 'feature', label: tr('趣味功能'), icon: ICON.fun, build: funHtml, mount: mountFun },
+  { id: 'data', group: 'data', label: tr('数据与备份'), icon: ICON.data, build: dataHtml, mount: mountData },
   // 帮助组：学习文档在「关于」之前 —— 找说明的人比看版本号的人多
-  { id: 'docs', group: 'help', label: '学习文档', icon: ICON.docs, build: docsHtml, mount: mountDocs },
-  { id: 'about', group: 'help', label: '关于', icon: ICON.about, build: aboutHtml, mount: mountAbout },
+  { id: 'docs', group: 'help', label: tr('学习文档'), icon: ICON.docs, build: docsHtml, mount: mountDocs },
+  { id: 'about', group: 'help', label: tr('关于'), icon: ICON.about, build: aboutHtml, mount: mountAbout },
 ];
 
 const PANE_IDS = PANES.map((p) => p.id);
@@ -1886,9 +1988,9 @@ function navHtml() {
     const items = PANES.filter((p) => p.group === g.id);
     if (!items.length) return '';
     return `<div class="st-group">
-      <div class="st-group-label">${g.label}</div>
+      <div class="st-group-label">${esc(tr(g.label))}</div>
       ${items.map((p) => `<button type="button" class="st-nav-item" data-nav="${p.id}">
-        ${p.icon}<span class="st-nav-text">${p.label}</span>
+        ${p.icon}<span class="st-nav-text">${esc(tr(p.label))}</span>
       </button>`).join('')}
     </div>`;
   }).join('');
@@ -1899,16 +2001,16 @@ function shellHtml() {
     <aside class="st-nav">
       <label class="st-search">
         ${svg('<circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2 13.4 13.4"/>')}
-        <input id="st-search" type="search" placeholder="搜索设置项" autocomplete="off" spellcheck="false">
+        <input id="st-search" type="search" placeholder="${esc(tr('搜索设置项'))}" autocomplete="off" spellcheck="false">
       </label>
       <div class="st-nav-scroll">${navHtml()}</div>
     </aside>
     <section class="st-content" id="st-content">
       ${PANES.map((p) => `<div class="st-pane" data-pane="${p.id}"${p.id === active ? '' : ' hidden'}>
-        <div class="st-page-title">${p.label}</div>
+        <div class="st-page-title">${esc(tr(p.label))}</div>
         ${p.build()}
       </div>`).join('')}
-      <div class="st-empty" hidden>没有找到匹配的设置项</div>
+      <div class="st-empty" hidden>${esc(tr('没有找到匹配的设置项'))}</div>
     </section>
   </div>`;
 }
@@ -1937,7 +2039,10 @@ function applyFilter(root) {
     if (!paneEl) return;
     let visible = 0;
     paneEl.querySelectorAll('[data-search]').forEach((el) => {
-      const hit = !needle || el.dataset.search.includes(needle);
+      // data-search 是手写的中文关键词表（给中文态用）；英文态靠行内可见文案匹配，
+      // 否则切成英文后搜 "salary" 什么都搜不到
+      const hit = !needle || el.dataset.search.includes(needle)
+        || el.textContent.toLowerCase().includes(needle);
       el.hidden = !hit;
       if (hit) visible++;
     });
@@ -1974,9 +2079,9 @@ function applyFilter(root) {
 
 async function loadState() {
   const soft = async (p, fb) => { try { return await p; } catch (e) { return fb; } };
-  const [themeRaw, autoStart, version, storage, backup, salary, ai, calendar, encourager, worklog, buddy, journal] = await Promise.all([
+  const [themeRaw, autoStart, version, storage, backup, salary, ai, calendar, encourager, worklog, buddy, journal, locale] = await Promise.all([
     soft(api.theme.get(), null),
-    soft(api.app.getAutoStart(), { enabled: false, supported: false, reason: '读取开机自启动状态失败' }),
+    soft(api.app.getAutoStart(), { enabled: false, supported: false, reason: tr('读取开机自启动状态失败') }),
     soft(api.app.getVersion(), ''),
     soft(api.env.getStorageInfo(), null),
     soft(api.env.getBackupInfo(), null),
@@ -1987,11 +2092,13 @@ async function loadState() {
     soft(api.features.pref(), null),
     soft(api.features.pref('buddy'), null),
     soft(api.features.pref('journal'), null),
+    soft(api.i18n.get(), getLocaleNow()),
   ]);
   Object.assign(S, {
     // 老库 / 读取失败时回落出厂值，界面永远有东西可渲染
     theme: KT.normalize(themeRaw),
     autoStart, version, storage, backup, salary, ai, calendar, encourager,
+    locale: locale || getLocaleNow(),
     worklog: worklog || null,
     buddy: buddy || null,
     journal: journal || null,
@@ -2009,7 +2116,7 @@ export async function openSettings(paneId = '') {
   try {
     await loadState();
   } catch (e) {
-    toast(`读取设置失败：${(e && e.message) || e}`);
+    toast(tr('读取设置失败：{msg}', { msg: (e && e.message) || e }));
     return;
   }
 
@@ -2022,7 +2129,7 @@ export async function openSettings(paneId = '') {
 
   // 返回弹窗的关闭 Promise：调用方（标题栏齿轮）靠它点亮 / 熄灭激活态
   return openPanelModal({
-    title: '设置',
+    title: tr('设置'),
     className: 'modal-settings',
     html: shellHtml(),
     showClose: true,
@@ -2051,7 +2158,7 @@ export async function openSettings(paneId = '') {
       if (foot && !foot.querySelector('.st-foot-hint')) {
         const hint = document.createElement('span');
         hint.className = 'st-foot-hint';
-        hint.textContent = '所有更改即时生效，无需保存';
+        hint.textContent = tr('所有更改即时生效，无需保存');
         foot.insertBefore(hint, foot.firstChild);
       }
 
@@ -2086,7 +2193,7 @@ export async function openSettings(paneId = '') {
           return;
         }
         if (typeof p.mount === 'function') {
-          try { p.mount(paneEl); } catch (e) { console.error('[settings] 分区事件绑定失败：', p.id, e); }
+          try { p.mount(paneEl); } catch (e) { console.error(tr('[settings] 分区事件绑定失败：'), p.id, e); }
         }
       });
 

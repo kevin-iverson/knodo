@@ -6,7 +6,10 @@
  * wall clock 口径（窗口隐藏时 setInterval 会被节流，累加式计时会停摆）。
  */
 
-export const SOURCE_TEXT = { timer: '计时', zen: '禅模式', pomodoro: '番茄', manual: '补录' };
+// 顶层求值即可：i18n.js 在模块加载时就按 localStorage 定好语言，切语言走整窗 reload
+import { t as tr } from '../i18n.js';
+
+export const SOURCE_TEXT = { timer: tr('计时'), zen: tr('禅模式'), pomodoro: tr('番茄'), manual: tr('补录') };
 
 export function esc(s) {
   return String(s == null ? '' : s)

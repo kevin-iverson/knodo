@@ -15,6 +15,7 @@ import { api, PRIORITY_COLOR, PRIORITY_TEXT } from './api.js';
 import { state, todayStr, noteCompletionChange } from './store.js';
 import { openContextMenu, closeContextMenu } from './ctx-menu.js';
 import { openPanelModal } from './modal.js';
+import { t as tr } from './i18n.js';
 
 /* ---------------- 常量与纯函数 ---------------- */
 
@@ -25,9 +26,15 @@ const DEFAULT_PREFS = {
   // 「今天勾掉、第二天别消失」），老库里存的 showCompleted: false 因此自动失效，无需迁移。
   capacity: 6, weekStart: 1, hideCompleted: false, view: 'month', seenHint: false,
 };
-const WEEK_MON = ['一', '二', '三', '四', '五', '六', '日'];
-const WEEK_SUN = ['日', '一', '二', '三', '四', '五', '六'];
-const WEEK_CN = ['日', '一', '二', '三', '四', '五', '六'];
+// 星期一律用**整词**做 key：中文「周一」对英文「Mon」，拿单字去拼会得到「周Mon」
+const WEEK_MON = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'].map((s) => tr(s));
+const WEEK_SUN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'].map((s) => tr(s));
+const WEEK_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'].map((s) => tr(s));
+/** 7 列头/周视图列头很窄，英文全称（Wednesday）会被挤爆 → 只对「纯 ASCII 且超过 4 字符」的周名截前三字母；
+ *  中文「周一」长度 2 不受影响，其它语言也照原样。这样不用再往词典里塞一套 Mon/Tue 短词条。 */
+const shortWeekLabel = (s) => (/^[\x20-\x7e]+$/.test(s) && s.length > 4 ? s.slice(0, 3) : s);
+const WEEK_MON_SHORT = WEEK_MON.map(shortWeekLabel);
+const WEEK_SUN_SHORT = WEEK_SUN.map(shortWeekLabel);
 /** 任务卡底色：与设计稿取样一致（淡灰 / 淡蓝 / 淡黄 / 淡粉） */
 const PRIORITY_SOFT = ['#f7f7fa', '#f4f7ff', '#fdf6ec', '#fef7f7'];
 const DAY_MS = 86400000;
@@ -73,9 +80,9 @@ function weekdayIndex(s, weekStart) {
   return (new Date(parseDay(s)).getUTCDay() - weekStart + 7) % 7;
 }
 function weekStartOf(s, weekStart) { return addDays(s, -weekdayIndex(s, weekStart)); }
-function weekName(s) { return `周${WEEK_CN[new Date(parseDay(s)).getUTCDay()]}`; }
-function monthLabel(s) { return `${Number(s.slice(0, 4))} 年 ${Number(s.slice(5, 7))} 月`; }
-function dateLabel(s) { return `${Number(s.slice(5, 7))} 月 ${Number(s.slice(8))} 日`; }
+function weekName(s) { return WEEK_CN[new Date(parseDay(s)).getUTCDay()]; }
+function monthLabel(s) { return tr('{y} 年 {m} 月', { y: Number(s.slice(0, 4)), m: Number(s.slice(5, 7)) }); }
+function dateLabel(s) { return tr('{m} 月 {d} 日', { m: Number(s.slice(5, 7)), d: Number(s.slice(8)) }); }
 
 /** 日期归属规则（方案 6.2）：两个日期都有 = 跨天；只有一个 = 当天；都没有 = 待安排池 */
 function taskRange(t) {
@@ -107,18 +114,18 @@ const weightOf = (t) => WEIGHT[priorityOf(t)];
 
 /** 撤销条只有一行宽：长标题会把它撑爆，截到 12 字 */
 function clipTitle(s) {
-  const v = String(s || '未命名任务').trim();
+  const v = String(s || tr('未命名任务')).trim();
   return v.length > 12 ? `${v.slice(0, 12)}…` : v;
 }
 
 /** 超载四形态（方案 3.3）：颜色 + 形态双编码，色弱也能分辨 */
 function loadStateOf(load, cap) {
   const rate = cap > 0 ? load / cap : 0;
-  if (rate <= 0) return { cls: 'is-empty', pct: 0, rate, label: '空闲' };
-  if (rate < 0.6) return { cls: 'is-room', pct: rate * 100, rate, label: '有余量' };
-  if (rate < 1) return { cls: 'is-near', pct: rate * 100, rate, label: '接近满' };
-  if (rate <= 1.4) return { cls: 'is-over', pct: 100, rate, label: '超载' };
-  return { cls: 'is-critical', pct: 100, rate, label: '严重超载' };
+  if (rate <= 0) return { cls: 'is-empty', pct: 0, rate, label: tr('空闲') };
+  if (rate < 0.6) return { cls: 'is-room', pct: rate * 100, rate, label: tr('有余量') };
+  if (rate < 1) return { cls: 'is-near', pct: rate * 100, rate, label: tr('接近满') };
+  if (rate <= 1.4) return { cls: 'is-over', pct: 100, rate, label: tr('超载') };
+  return { cls: 'is-critical', pct: 100, rate, label: tr('严重超载') };
 }
 
 /* ---------------- 模块状态 ---------------- */
@@ -172,7 +179,7 @@ async function loadData() {
   cfg.prefs.weekStart = Number(cfg.prefs.weekStart) === 0 ? 0 : 1;
   let tasks = [];
   try { tasks = await api.tasks.list({ status: 'any' }); } catch (e) {
-    ext.toast(`读取任务失败：${(e && e.message) || e}`);
+    ext.toast(tr('读取任务失败：{msg}', { msg: (e && e.message) || e }));
   }
   cfg.tasks = Array.isArray(tasks) ? tasks : [];
   // 重复事项的打卡历史：一条重复事项只有一行任务，跨天会被推到下一次发生日，
@@ -275,9 +282,9 @@ function shellHtml() {
   return `<div class="cal-wrap" data-mode="month">
     <div class="cal-intro" ${cfg.introHidden ? 'hidden' : ''}>
       <div class="cal-intro-tag">01 · LOAD, NOT LIST</div>
-      <div class="cal-intro-title">格子回答的不是「有什么」，是「排得下吗」</div>
-      <div class="cal-intro-sub">负载 = Σ 优先级权重（低 0.5 / 中 1 / 高 2 / 紧急 3），容量默认 6。一屏扫过去看到的是「周三爆了、周五空着」。</div>
-      <button class="cal-intro-close" data-cal-act="intro-close" title="不再显示">✕</button>
+      <div class="cal-intro-title">${tr('格子回答的不是「有什么」，是「排得下吗」')}</div>
+      <div class="cal-intro-sub">${tr('负载 = Σ 优先级权重（低 0.5 / 中 1 / 高 2 / 紧急 3），容量默认 6。一屏扫过去看到的是「周三爆了、周五空着」。')}</div>
+      <button class="cal-intro-close" data-cal-act="intro-close" title="${tr('不再显示')}">✕</button>
     </div>
     <div class="cal-layout">
       <aside class="cal-left"></aside>
@@ -285,22 +292,22 @@ function shellHtml() {
         <div class="cal-card cal-board">
           <header class="cal-head">
             <div class="cal-nav">
-              <button type="button" class="cal-arrow" data-cal-nav="prev" title="上一个月 / 上一周">‹</button>
+              <button type="button" class="cal-arrow" data-cal-nav="prev" title="${tr('上一个月 / 上一周')}">‹</button>
               <span class="cal-month"></span>
-              <button type="button" class="cal-arrow" data-cal-nav="next" title="下一个月 / 下一周">›</button>
+              <button type="button" class="cal-arrow" data-cal-nav="next" title="${tr('下一个月 / 下一周')}">›</button>
             </div>
             <div class="cal-head-right">
-              <button type="button" class="cal-today" data-cal-nav="today">回到今天</button>
+              <button type="button" class="cal-today" data-cal-nav="today">${tr('回到今天')}</button>
               <div class="cal-seg">
-                <button type="button" data-cal-view="month">月</button>
-                <button type="button" data-cal-view="week">周</button>
+                <button type="button" data-cal-view="month">${tr('月')}</button>
+                <button type="button" data-cal-view="week">${tr('周')}</button>
               </div>
             </div>
           </header>
           <div class="cal-body"></div>
           <div class="cal-empty" hidden>
             <span class="cal-empty-arrow">↖</span>
-            从待安排池拖一个进来
+            ${tr('从待安排池拖一个进来')}
           </div>
         </div>
         <div class="cal-legend-slot"></div>
@@ -379,29 +386,29 @@ function onTitleHover(e) {
   if (!elided || !t) { tip.hidden = true; return; }
   const pri = priorityOf(t);
   const range = taskRange(t);
-  const when = range ? (range[0] === range[1] ? range[0] : `${range[0]} → ${range[1]}`) : '待安排';
+  const when = range ? (range[0] === range[1] ? range[0] : `${range[0]} → ${range[1]}`) : tr('待安排');
   const priBit = `<span class="cal-tip-dot" style="background:${PRIORITY_COLOR[pri]}"></span>${PRIORITY_TEXT[pri]}`;
   // 历史打卡格子：日期说的是「那一天」，不是任务行现在被滚到的下一次
   const bits = occ
     ? [
       priBit,
       t.group_name ? esc(t.group_name) : '',
-      `${esc(occ)} 已完成`,
-      '重复事项打卡',
+      `${esc(occ)} ${tr('已完成')}`,
+      tr('重复事项打卡'),
     ].filter(Boolean)
     : [
       priBit,
       t.group_name ? esc(t.group_name) : '',
       esc(when),
-      Number(t.subtask_count) ? `${Number(t.subtask_count)} 个子任务` : '',
-      host.classList.contains('is-cont') ? '跨天延续' : '',
-      t.completed ? '已完成' : '',
-      isOverdue(t, todayStr()) ? '<span class="cal-tip-bad">已超期</span>' : '',
+      Number(t.subtask_count) ? tr('{n} 个子任务', { n: Number(t.subtask_count) }) : '',
+      host.classList.contains('is-cont') ? tr('跨天延续') : '',
+      t.completed ? tr('已完成') : '',
+      isOverdue(t, todayStr()) ? `<span class="cal-tip-bad">${tr('已超期')}</span>` : '',
     ].filter(Boolean);
   const canOpen = host.matches('.cal-task, .cal-pool-item');
-  tip.innerHTML = `<div class="cal-tip-title">${esc(t.title || '未命名任务')}</div>
+  tip.innerHTML = `<div class="cal-tip-title">${esc(t.title || tr('未命名任务'))}</div>
     <div class="cal-tip-meta">${bits.join('<i>·</i>')}</div>
-    ${canOpen ? '<div class="cal-tip-hint">右键详情 · 选中日期后右栏编辑</div>' : ''}`;
+    ${canOpen ? `<div class="cal-tip-hint">${tr('右键详情 · 选中日期后右栏编辑')}</div>` : ''}`;
   tip.hidden = false;
   const r = label.getBoundingClientRect();
   const w = tip.offsetWidth;
@@ -428,7 +435,7 @@ function loadBarHtml(load, cap) {
   const num = st.rate >= 1 ? `<span class="cal-load-num">${fmtLoad(load)}/${cap}</span>` : '';
   const overflow = st.cls === 'is-over' ? '<span class="cal-load-overflow"></span>' : '';
   const bang = st.cls === 'is-critical' ? '<span class="cal-load-bang">!</span>' : '';
-  return `<div class="cal-load ${st.cls}" title="负载 ${fmtLoad(load)} / ${cap} · ${st.label}">
+  return `<div class="cal-load ${st.cls}" title="${tr('负载 {load} / {cap} · {state}', { load: fmtLoad(load), cap, state: st.label })}">
     <span class="cal-load-fill" style="width:${st.pct.toFixed(1)}%"></span>
     ${overflow}${num}${bang}
   </div>`;
@@ -452,16 +459,16 @@ function taskCardHtml(entry, opts = {}) {
   // 已完成条目不能再拖（拖了会改掉历史那天的排期，语义是错的）
   const check = `<button type="button" class="cal-check${t.completed ? ' is-checked' : ''}${locked ? ' is-locked' : ''}" data-cal-act="toggle"
     data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}${day ? ` data-cal-day="${day}"` : ''}${locked ? ' aria-disabled="true"' : ''}
-    title="${locked ? LOCK_HINT : (t.completed ? '取消完成' : '标记完成')}">${t.completed ? '✓' : ''}</button>`;
-  const flag = pri === 3 ? '<span class="cal-flag" title="紧急">⚑</span>' : '';
+    title="${locked ? LOCK_HINT : (t.completed ? tr('取消完成') : tr('标记完成'))}">${t.completed ? '✓' : ''}</button>`;
+  const flag = pri === 3 ? `<span class="cal-flag" title="${tr('紧急')}">⚑</span>` : '';
   const dot = safeColor(t.group_color) ? `<span class="cal-gdot" style="background:${safeColor(t.group_color)}" title="${esc(t.group_name || '')}"></span>` : '';
   // 月视图格子只有 ~65px：长串「含 N 个子任务」会把标题挤到只剩一个字，只留 +N 角标。
   // 完整标题 / 子任务数交给悬停浮层与右栏面板承载。
   const kids = Number(t.subtask_count || 0)
-    ? `<span class="cal-kids" aria-label="${Number(t.subtask_count)} 个子任务">+${Number(t.subtask_count)}</span>` : '';
-  const lateDot = late ? '<span class="cal-late-dot" title="已超期"></span>' : '';
+    ? `<span class="cal-kids" aria-label="${tr('{n} 个子任务', { n: Number(t.subtask_count) })}">+${Number(t.subtask_count)}</span>` : '';
+  const lateDot = late ? `<span class="cal-late-dot" title="${tr('已超期')}"></span>` : '';
   // 跨天延续的格子里照样显示任务标题：只写「续」等于白占一个卡片位，看不出在做什么
-  const title = esc(t.title || '未命名任务');
+  const title = esc(t.title || tr('未命名任务'));
   return `<div class="${cls}" draggable="${t.completed ? 'false' : 'true'}" data-task-id="${t.id}" data-priority="${pri}"${occ ? ` data-occ="${occ}"` : ''}
     style="--cal-pri:${PRIORITY_COLOR[pri]};--cal-soft:${PRIORITY_SOFT[pri]}">
     <span class="cal-task-bar"></span>${check}
@@ -477,15 +484,15 @@ function poolCardHtml() {
     return `<div class="cal-pool-item" draggable="true" data-task-id="${t.id}"
       style="--cal-pri:${PRIORITY_COLOR[pri]}">
       <span class="cal-pool-bar"></span>
-      <span class="cal-pool-title">${esc(t.title || '未命名任务')}</span>
+      <span class="cal-pool-title">${esc(t.title || tr('未命名任务'))}</span>
       ${isOverdue(t, todayStr()) ? '<span class="cal-late-dot" title="已超期"></span>' : ''}
     </div>`;
   }).join('');
   return `<section class="cal-card cal-pool" data-dropzone="pool">
-    <div class="cal-card-head"><span class="cal-card-title">待安排</span><span class="cal-card-count">${cfg.pool.length}</span></div>
-    <div class="cal-card-sub">拖到日历上排期</div>
-    <div class="cal-pool-list">${items || '<div class="cal-pool-empty">暂无未排期任务</div>'}</div>
-    ${cfg.pool.length > 20 ? `<div class="cal-pool-more">还有 ${cfg.pool.length - 20} 条…</div>` : ''}
+    <div class="cal-card-head"><span class="cal-card-title">${tr('待安排')}</span><span class="cal-card-count">${cfg.pool.length}</span></div>
+    <div class="cal-card-sub">${tr('拖到日历上排期')}</div>
+    <div class="cal-pool-list">${items || `<div class="cal-pool-empty">${tr('暂无未排期任务')}</div>`}</div>
+    ${cfg.pool.length > 20 ? `<div class="cal-pool-more">${tr('还有 {n} 条…', { n: cfg.pool.length - 20 })}</div>` : ''}
   </section>`;
 }
 
@@ -495,32 +502,32 @@ function howCardHtml() {
     <span>${PRIORITY_TEXT[p]}</span><b>${WEIGHT[p]}</b>
   </div>`).join('');
   return `<section class="cal-card cal-how">
-    <div class="cal-card-title">负载怎么算</div>
-    <div class="cal-card-sub">按优先级权重累加，不用填工时</div>
+    <div class="cal-card-title">${tr('负载怎么算')}</div>
+    <div class="cal-card-sub">${tr('按优先级权重累加，不用填工时')}</div>
     <div class="cal-weight-list">${rows}</div>
-    <div class="cal-how-note">容量默认 ${cfg.prefs.capacity} —— 意思是这天能扛几个中等任务。界面上只说「6.5 / 6」，不出现「权重」二字。</div>
+    <div class="cal-how-note">${tr('容量默认 {n} —— 意思是这天能扛几个中等任务。界面上只说「6.5 / 6」，不出现「权重」二字。', { n: cfg.prefs.capacity })}</div>
   </section>`;
 }
 
 function previewCardHtml() {
   return `<section class="cal-card cal-preview-card">
-    <div class="cal-card-title">放下之前就看到后果</div>
-    <div class="cal-card-sub">拖到已满的日子上，目标格负载条实时变化，并浮出提示。松手前就能改主意。</div>
+    <div class="cal-card-title">${tr('放下之前就看到后果')}</div>
+    <div class="cal-card-sub">${tr('拖到已满的日子上，目标格负载条实时变化，并浮出提示。松手前就能改主意。')}</div>
     <div class="cal-preview-box">
-      <div class="cal-preview-line">周四 <b>7 / 6</b> · <span class="is-bad">将超载 117%</span></div>
+      <div class="cal-preview-line">${tr('周四')} <b>7 / 6</b> · <span class="is-bad">${tr('将超载 117%')}</span></div>
       <div class="cal-preview-track"><span style="width:100%"></span></div>
     </div>
   </section>`;
 }
 
 function weekdaysHtml() {
-  const labels = cfg.prefs.weekStart === 1 ? WEEK_MON : WEEK_SUN;
+  const labels = cfg.prefs.weekStart === 1 ? WEEK_MON_SHORT : WEEK_SUN_SHORT;
   return `<div class="cal-weekdays">${labels.map((w) => `<span>${w}</span>`).join('')}</div>`;
 }
 
 function backlogRowHtml(n, earliest) {
   return `<button type="button" class="cal-backlog" data-cal-act="overdue">
-    ⚠ 积压 ${n} 条${earliest ? `（最早 ${earliest.slice(5).replace('-', '-')}）` : ''}
+    ⚠ ${tr('积压 {n} 条', { n })}${earliest ? `（${tr('最早 {day}', { day: earliest.slice(5) })}）` : ''}
   </button>`;
 }
 
@@ -550,12 +557,12 @@ function monthGridHtml() {
     const more = cell.tasks.length > 2
       ? `<button type="button" class="cal-more" data-cal-act="more" data-date="${d}">+${cell.tasks.length - 2}</button>` : '';
     const badge = d === today && cfg.overdue.length
-      ? `<span class="cal-badge" title="超期积压 ${cfg.overdue.length} 条">${cfg.overdue.length}</span>` : '';
+      ? `<span class="cal-badge" title="${tr('超期积压 {n} 条', { n: cfg.overdue.length })}">${cfg.overdue.length}</span>` : '';
     const backlog = d === today && cfg.overdue.length ? backlogRowHtml(cfg.overdue.length, earliest) : '';
     html += `<div class="${classes}" data-date="${d}" data-load="${cell.load}">
       <div class="cal-cell-top">
         <span class="cal-daynum">${Number(d.slice(8))}</span>
-        ${d === today ? '<span class="cal-today-txt">今天</span>' : ''}${badge}
+        ${d === today ? `<span class="cal-today-txt">${tr('今天')}</span>` : ''}${badge}
       </div>
       ${loadBarHtml(cell.load, cfg.prefs.capacity)}
       <div class="cal-cards">${cards}${more}</div>
@@ -568,7 +575,7 @@ function monthGridHtml() {
 function weekGridHtml() {
   const today = todayStr();
   const start = weekStartOf(cfg.anchor, cfg.prefs.weekStart);
-  const labels = cfg.prefs.weekStart === 1 ? WEEK_MON : WEEK_SUN;
+  const labels = cfg.prefs.weekStart === 1 ? WEEK_MON_SHORT : WEEK_SUN_SHORT;
   const earliest = cfg.overdue.length ? cfg.overdue[0].plan_end : '';
   let html = '<div class="cal-week">';
   for (let i = 0; i < 7; i += 1) {
@@ -580,7 +587,7 @@ function weekGridHtml() {
     html += `<div class="cal-week-col ${d === today ? 'is-today' : ''} ${cfg.selected === d ? 'is-selected' : ''} ${st.rate >= 1 ? 'is-alert' : ''}"
       data-date="${d}" data-load="${cell.load}">
       <div class="cal-week-head">
-        <span>周${labels[i]} · ${d.slice(5).replace('-', '/')}</span>
+        <span>${labels[i]} · ${d.slice(5).replace('-', '/')}</span>
         <b>${fmtLoad(cell.load)} / ${cfg.prefs.capacity}</b>
       </div>
       ${loadBarHtml(cell.load, cfg.prefs.capacity)}
@@ -594,12 +601,12 @@ function weekGridHtml() {
 function legendHtml() {
   return `<div class="cal-card cal-legend">
     <div class="cal-legend-items">
-      <span><i class="cal-lg is-over"></i>超载 ≥100%</span>
-      <span><i class="cal-lg is-near"></i>接近满</span>
-      <span><i class="cal-lg is-room"></i>有余量</span>
-      <span><i class="cal-lg is-empty"></i>空闲</span>
+      <span><i class="cal-lg is-over"></i>${tr('超载 ≥100%')}</span>
+      <span><i class="cal-lg is-near"></i>${tr('接近满')}</span>
+      <span><i class="cal-lg is-room"></i>${tr('有余量')}</span>
+      <span><i class="cal-lg is-empty"></i>${tr('空闲')}</span>
     </div>
-    <span class="cal-legend-note">超载另有边框与溢出块 —— 不只靠颜色</span>
+    <span class="cal-legend-note">${tr('超载另有边框与溢出块 —— 不只靠颜色')}</span>
   </div>`;
 }
 
@@ -625,15 +632,15 @@ function trendHtml() {
     return `<span class="cal-trend-bar ${st.cls}" style="height:${Math.max(8, Math.min(100, st.rate * 100))}%"
       title="${d} · ${fmtLoad(load)} / ${cap}"></span>`;
   }).join('');
-  return `<div class="cal-trend"><span class="cal-trend-label">整月负载趋势</span>
+  return `<div class="cal-trend"><span class="cal-trend-label">${tr('整月负载趋势')}</span>
     <div class="cal-trend-bars">${bars}</div></div>`;
 }
 
 function statsHtml() {
   const { active, over, avg } = monthStats();
   return `<div class="cal-stats">
-    <span>本月 ${active} 天有安排 · ${over} 天超载 · 平均负载 ${avg}%</span>
-    <button type="button" data-cal-act="capacity">调整每日容量</button>
+    <span>${tr('本月 {active} 天有安排 · {over} 天超载 · 平均负载 {avg}%', { active, over, avg })}</span>
+    <button type="button" data-cal-act="capacity">${tr('调整每日容量')}</button>
   </div>`;
 }
 
@@ -643,17 +650,17 @@ function backlogListHtml() {
     const days = Math.max(1, diffDays(t.plan_end, today));
     return `<div class="cal-backlog-row" data-task-id="${t.id}">
       <span class="cal-backlog-dot" style="background:${PRIORITY_COLOR[priorityOf(t)]}"></span>
-      <span class="cal-backlog-title">${esc(t.title || '未命名任务')}</span>
-      <span class="cal-backlog-days" title="${t.plan_end}">已超期 ${days} 天</span>
-      <button type="button" data-cal-act="backlog-one" data-task-id="${t.id}">改到今天</button>
+      <span class="cal-backlog-title">${esc(t.title || tr('未命名任务'))}</span>
+      <span class="cal-backlog-days" title="${t.plan_end}">${tr('已超期 {n} 天', { n: days })}</span>
+      <button type="button" data-cal-act="backlog-one" data-task-id="${t.id}">${tr('改到今天')}</button>
     </div>`;
   }).join('');
   return `<div class="cal-panel-backlog">
-    <div class="cal-panel-sec-title">超期积压（${cfg.overdue.length}）
-      <button type="button" data-cal-act="backlog-all">全部改到今天</button>
+    <div class="cal-panel-sec-title">${tr('超期积压（{n}）', { n: cfg.overdue.length })}
+      <button type="button" data-cal-act="backlog-all">${tr('全部改到今天')}</button>
     </div>
     ${rows}
-    ${cfg.overdue.length > 30 ? '<div class="cal-backlog-more">只显示最早 30 条</div>' : ''}
+    ${cfg.overdue.length > 30 ? `<div class="cal-backlog-more">${tr('只显示最早 30 条')}</div>` : ''}
   </div>`;
 }
 
@@ -664,22 +671,22 @@ function panelRowHtml(entry, day) {
   const locked = isPastDay(day);
   const opts = [3, 2, 1, 0].map((p) => `<option value="${p}"${p === pri ? ' selected' : ''}>${PRIORITY_TEXT[p]}</option>`).join('');
   const metaTail = occ
-    ? '<span class="cal-occ-tag" title="重复事项在这一天的打卡记录">已完成 · 重复打卡</span>'
-    : (isOverdue(t, todayStr()) ? '<span class="is-bad">已超期</span>' : PRIORITY_TEXT[pri]);
+    ? `<span class="cal-occ-tag" title="${tr('重复事项在这一天的打卡记录')}">${tr('已完成 · 重复打卡')}</span>`
+    : (isOverdue(t, todayStr()) ? `<span class="is-bad">${tr('已超期')}</span>` : PRIORITY_TEXT[pri]);
   return `<div class="cal-panel-row ${t.completed ? 'is-done' : ''}" data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}>
     <button type="button" class="cal-check${t.completed ? ' is-checked' : ''}${locked ? ' is-locked' : ''}" data-cal-act="toggle"
       data-task-id="${t.id}"${occ ? ` data-occ="${occ}"` : ''}${day ? ` data-cal-day="${day}"` : ''}${locked ? ' aria-disabled="true"' : ''}
-      title="${locked ? LOCK_HINT : (t.completed ? '取消完成' : '标记完成')}">${t.completed ? '✓' : ''}</button>
+      title="${locked ? LOCK_HINT : (t.completed ? tr('取消完成') : tr('标记完成'))}">${t.completed ? '✓' : ''}</button>
     <div class="cal-panel-main">
-      <div class="cal-panel-title">${entry.continuation ? '↳ ' : ''}${esc(t.title || '未命名任务')}</div>
+      <div class="cal-panel-title">${entry.continuation ? '↳ ' : ''}${esc(t.title || tr('未命名任务'))}</div>
       <div class="cal-panel-meta">
         ${t.group_name ? `<span class="cal-gdot" style="background:${safeColor(t.group_color) || PRIORITY_COLOR[pri]}"></span>${esc(t.group_name)} · ` : ''}
         ${metaTail}
       </div>
     </div>
-    <select class="cal-panel-priority" data-cal-act="priority" data-task-id="${t.id}" title="改优先级">${opts}</select>
-    <button type="button" class="cal-panel-act" data-cal-act="edit" data-task-id="${t.id}" title="编辑任务（标题 / 优先级 / 分组 / 日期）">✎</button>
-    <button type="button" class="cal-panel-act" data-cal-act="defer" data-task-id="${t.id}" title="延期一天"${occ ? ' disabled' : ''}>→</button>
+    <select class="cal-panel-priority" data-cal-act="priority" data-task-id="${t.id}" title="${tr('改优先级')}">${opts}</select>
+    <button type="button" class="cal-panel-act" data-cal-act="edit" data-task-id="${t.id}" title="${tr('编辑任务（标题 / 优先级 / 分组 / 日期）')}">✎</button>
+    <button type="button" class="cal-panel-act" data-cal-act="defer" data-task-id="${t.id}" title="${tr('延期一天')}"${occ ? ' disabled' : ''}>→</button>
   </div>`;
 }
 
@@ -689,33 +696,33 @@ function panelHtml() {
   const st = loadStateOf(cell.load, cfg.prefs.capacity);
   const groups = new Map();
   cell.tasks.forEach((e) => {
-    const k = e.task.group_name || '未分组';
+    const k = e.task.group_name || tr('未分组');
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(e);
   });
   const list = [...groups.entries()].map(([name, entries]) => `<div class="cal-panel-group">
     <div class="cal-panel-group-name">${esc(name)}</div>
     ${entries.map((e) => panelRowHtml(e, d)).join('')}
-  </div>`).join('') || '<div class="cal-panel-empty">这一天还没有安排</div>';
+  </div>`).join('') || `<div class="cal-panel-empty">${tr('这一天还没有安排')}</div>`;
   return `<aside class="cal-right ${cfg.showPanel ? '' : 'is-collapsed'}">
     ${cfg.showPanel ? `<div class="cal-card cal-day-panel">
       <div class="cal-panel-head">
         <div><div class="cal-panel-date">${dateLabel(d)}</div>
           <div class="cal-panel-week">${weekName(d)} · ${d}</div></div>
-        <button type="button" class="cal-panel-toggle" data-cal-act="panel-close" title="收起当日面板">›</button>
+        <button type="button" class="cal-panel-toggle" data-cal-act="panel-close" title="${tr('收起当日面板')}">›</button>
       </div>
       <div class="cal-panel-load">
         <div class="cal-panel-load-num">${fmtLoad(cell.load)} <span>/ ${cfg.prefs.capacity}</span></div>
-        <div class="cal-panel-load-desc">${st.label} · ${Math.round(st.rate * 100)}% · ${cell.tasks.length} 项安排</div>
+        <div class="cal-panel-load-desc">${tr('{state} · {pct}% · {n} 项安排', { state: st.label, pct: Math.round(st.rate * 100), n: cell.tasks.length })}</div>
         ${loadBarHtml(cell.load, cfg.prefs.capacity)}
       </div>
-      <div class="cal-panel-sec-title">任务清单（${cell.tasks.length}）
-        <button type="button" class="cal-panel-add-btn" data-cal-act="add-task" title="为这一天新增任务">＋ 新增任务</button>
+      <div class="cal-panel-sec-title">${tr('任务清单（{n}）', { n: cell.tasks.length })}
+        <button type="button" class="cal-panel-add-btn" data-cal-act="add-task" title="${tr('为这一天新增任务')}">＋ ${tr('新增任务')}</button>
       </div>
       <div class="cal-panel-list">${list}</div>
       ${editorHtml()}
       ${cfg.showBacklog ? backlogListHtml() : ''}
-    </div>` : '<button type="button" class="cal-panel-reopen" data-cal-act="panel-open" title="展开当日面板">‹</button>'}
+    </div>` : `<button type="button" class="cal-panel-reopen" data-cal-act="panel-open" title="${tr('展开当日面板')}">‹</button>`}
   </aside>`;
 }
 
@@ -733,8 +740,8 @@ function updateDesc() {
   const el = document.getElementById('view-desc');
   if (!el) return;
   const { active, over } = monthStats();
-  const prefix = cfg.mode === 'month' ? monthLabel(cfg.anchor) : `${monthLabel(cfg.anchor)} · 本周`;
-  el.textContent = `${prefix} · ${active} 天有安排 · ${over} 天超载`;
+  const prefix = cfg.mode === 'month' ? monthLabel(cfg.anchor) : `${monthLabel(cfg.anchor)} · ${tr('本周')}`;
+  el.textContent = tr('{range} · {active} 天有安排 · {over} 天超载', { range: prefix, active, over });
   el.title = el.textContent;
 }
 
@@ -838,7 +845,7 @@ async function reloadAndPaint() {
  */
 function blockRecurringSchedule(t) {
   if (!t || t.recurring_id == null) return false;
-  ext.toast('这是重复事项：日期由规则派生，请在「重复规则」里改生效日 / 截止日偏移');
+  ext.toast(tr('这是重复事项：日期由规则派生，请在「重复规则」里改生效日 / 截止日偏移'));
   return true;
 }
 
@@ -853,11 +860,11 @@ async function writeSchedule(drag, date) {
   else planEnd = date;
   try {
     await api.tasks.update(t.id, { planStart, planEnd });
-    cfg.undo = { id: t.id, prev: { planStart: t.plan_start || null, planEnd: t.plan_end || null }, label: `已移到 ${dateLabel(date)}` };
+    cfg.undo = { id: t.id, prev: { planStart: t.plan_start || null, planEnd: t.plan_end || null }, label: tr('已移到 {day}', { day: dateLabel(date) }) };
     await reloadAndPaint();
     showUndo();
   } catch (e) {
-    ext.toast(`排期失败：${(e && e.message) || e}`);
+    ext.toast(tr('排期失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -866,11 +873,11 @@ async function writeUnschedule(drag) {
   if (blockRecurringSchedule(t)) return;
   try {
     await api.tasks.update(t.id, { planStart: null, planEnd: null });
-    cfg.undo = { id: t.id, prev: { planStart: t.plan_start || null, planEnd: t.plan_end || null }, label: '已移回待安排池' };
+    cfg.undo = { id: t.id, prev: { planStart: t.plan_start || null, planEnd: t.plan_end || null }, label: tr('已移回待安排池') };
     await reloadAndPaint();
     showUndo();
   } catch (e) {
-    ext.toast(`取消排期失败：${(e && e.message) || e}`);
+    ext.toast(tr('取消排期失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -889,7 +896,7 @@ async function patchTask(id, patch, label) {
     await reloadAndPaint();
     if (label) showUndo();
   } catch (e) {
-    ext.toast(`操作失败：${(e && e.message) || e}`);
+    ext.toast(tr('操作失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -910,13 +917,13 @@ async function toggleTask(id, occ = '') {
       // 不留撤销入口用户就再也勾不回来了。
       cfg.undo = {
         kind: 'occ', ruleId: t.recurring_id, occ,
-        label: `已撤销 ${occ} 的打卡`, ttl: 10000,
+        label: tr('已撤销 {day} 的打卡', { day: occ }), ttl: 10000,
       };
       await reloadAndPaint();
       showUndo();
-      ext.toast(`已撤销 ${occ} 的打卡`);
+      ext.toast(tr('已撤销 {day} 的打卡', { day: occ }));
     } catch (e) {
-      ext.toast(`撤销打卡失败：${(e && e.message) || e}`);
+      ext.toast(tr('撤销打卡失败：{msg}', { msg: (e && e.message) || e }));
     }
     return;
   }
@@ -929,12 +936,12 @@ async function toggleTask(id, occ = '') {
     // 勾错了要能一键勾回来，否则用户会觉得「历史日期不让改了」。
     cfg.undo = {
       kind: 'complete', id,
-      label: `${wasDone ? '已取消完成' : '已完成'}「${clipTitle(t.title)}」`, ttl: 10000,
+      label: tr('{state}「{title}」', { state: wasDone ? tr('已取消完成') : tr('已完成'), title: clipTitle(t.title) }), ttl: 10000,
     };
     await reloadAndPaint();
     showUndo();
   } catch (e) {
-    ext.toast(`切换完成态失败：${(e && e.message) || e}`);
+    ext.toast(tr('切换完成态失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -943,10 +950,10 @@ function deferOneDay(id) {
   if (!t) return;
   const r = taskRange(t);
   if (!r) { return; }
-  patchTask(id, { planStart: addDays(r[0], 1), planEnd: addDays(r[1], 1) }, `已延期到 ${dateLabel(addDays(r[1], 1))}`);
+  patchTask(id, { planStart: addDays(r[0], 1), planEnd: addDays(r[1], 1) }, tr('已延期到 {day}', { day: dateLabel(addDays(r[1], 1)) }));
 }
 
-function unschedule(id) { patchTask(id, { planStart: null, planEnd: null }, '已移回待安排池'); }
+function unschedule(id) { patchTask(id, { planStart: null, planEnd: null }, tr('已移回待安排池')); }
 function setPriority(id, p) { patchTask(id, { priority: p }, ''); }
 
 async function batchToToday() {
@@ -954,7 +961,7 @@ async function batchToToday() {
   // 重复事项由规则排期，不参与「欠账改到今天」
   const targets = cfg.overdue.filter((t) => t.recurring_id == null);
   if (!targets.length) {
-    ext.toast('没有需要改期的一次性任务');
+    ext.toast(tr('没有需要改期的一次性任务'));
     return;
   }
   try {
@@ -962,10 +969,10 @@ async function batchToToday() {
       // 超期任务整段都在过去，直接改成今天单日
       await api.tasks.update(t.id, { planStart: null, planEnd: today });
     }
-    ext.toast(`已把 ${targets.length} 条欠账改到今天`);
+    ext.toast(tr('已把 {n} 条欠账改到今天', { n: targets.length }));
     await reloadAndPaint();
   } catch (e) {
-    ext.toast(`批量改期失败：${(e && e.message) || e}`);
+    ext.toast(tr('批量改期失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -975,8 +982,8 @@ function showUndo() {
   const bar = document.querySelector('.cal-undo');
   if (!bar || !cfg.undo) return;
   bar.innerHTML = `<span>${esc(cfg.undo.label)}</span>
-    <button type="button" data-cal-act="undo">撤销</button>
-    <button type="button" class="cal-undo-x" data-cal-act="undo-close" title="关闭">✕</button>`;
+    <button type="button" data-cal-act="undo">${tr('撤销')}</button>
+    <button type="button" class="cal-undo-x" data-cal-act="undo-close" title="${tr('关闭')}">✕</button>`;
   bar.hidden = false;
   if (cfg.undoTimer) clearTimeout(cfg.undoTimer);
   // 完成态 / 打卡类的撤销窗口给到 10 秒：它会改变任务在日历上的归属，用户需要时间反应
@@ -1002,8 +1009,8 @@ async function undoLast() {
     const bar = document.querySelector('.cal-undo');
     if (bar) bar.hidden = true;
     await reloadAndPaint();
-    ext.toast('已撤销');
-  } catch (e) { ext.toast(`撤销失败：${(e && e.message) || e}`); }
+    ext.toast(tr('已撤销'));
+  } catch (e) { ext.toast(tr('撤销失败：{msg}', { msg: (e && e.message) || e })); }
 }
 
 /* ---------------- 设置弹窗 ---------------- */
@@ -1011,21 +1018,21 @@ async function undoLast() {
 function openCapacityDialog() {
   const p = cfg.prefs;
   openPanelModal({
-    title: '调整每日容量',
+    title: tr('调整每日容量'),
     className: 'modal-cal-settings',
-    okText: '完成',
+    okText: tr('完成'),
     showClose: true,
     html: `<div class="cal-set">
-      <div class="cal-set-row"><label>每日容量 <small>4 – 10</small></label>
+      <div class="cal-set-row"><label>${tr('每日容量')} <small>4 – 10</small></label>
         <input id="cal-set-cap" type="number" min="4" max="10" value="${p.capacity}"></div>
-      <div class="cal-set-row"><label>每周起始日</label>
+      <div class="cal-set-row"><label>${tr('每周起始日')}</label>
         <select id="cal-set-week">
-          <option value="1"${p.weekStart === 1 ? ' selected' : ''}>周一</option>
-          <option value="0"${p.weekStart === 0 ? ' selected' : ''}>周日</option>
+          <option value="1"${p.weekStart === 1 ? ' selected' : ''}>${WEEK_MON[0]}</option>
+          <option value="0"${p.weekStart === 0 ? ' selected' : ''}>${WEEK_SUN[0]}</option>
         </select></div>
-      <div class="cal-set-row"><label>隐藏已完成任务 <small>默认显示：勾掉的任务留在当天格子里，只是不计入负载</small></label>
+      <div class="cal-set-row"><label>${tr('隐藏已完成任务')} <small>${tr('默认显示：勾掉的任务留在当天格子里，只是不计入负载')}</small></label>
         <input id="cal-set-done" type="checkbox"${p.hideCompleted ? ' checked' : ''}></div>
-      <div class="cal-set-note">6 是这天能扛的量，超过就该挪 —— 容量是你自己的校准口。也可以在 设置 → 日历 里改。</div>
+      <div class="cal-set-note">${tr('6 是这天能扛的量，超过就该挪 —— 容量是你自己的校准口。也可以在 设置 → 日历 里改。')}</div>
     </div>`,
     onSubmit: async (mask) => {
       const cap = clamp(Number(mask.querySelector('#cal-set-cap').value) || 6, 4, 10);
@@ -1043,17 +1050,16 @@ function openCapacityDialog() {
 function openOverloadChoice(drag, date, predicted) {
   const cap = cfg.prefs.capacity;
   openPanelModal({
-    title: '这一天会超载',
+    title: tr('这一天会超载'),
     className: 'modal-cal-overload',
-    okText: '仍然放入',
+    okText: tr('仍然放入'),
     showClose: true,
     html: `<div class="cal-overload">
-      把「${esc(drag.task.title || '未命名任务')}」放到 <b>${dateLabel(date)}</b> 后，
-      负载将达到 <b class="is-bad">${fmtLoad(predicted)} / ${cap}</b>（${Math.round((predicted / cap) * 100)}%）。
-      <div class="cal-overload-tip">放到下一个空日推荐：一键挪到余量充足的那天，不用自己翻日历。</div>
+      ${tr('把「{title}」放到 {day} 后，负载将达到 {load} / {cap}（{pct}%）。', { title: esc(drag.task.title || tr('未命名任务')), day: `<b>${dateLabel(date)}</b>`, load: `<b class="is-bad">${fmtLoad(predicted)}</b>`, cap, pct: Math.round((predicted / cap) * 100) })}
+      <div class="cal-overload-tip">${tr('放到下一个空日推荐：一键挪到余量充足的那天，不用自己翻日历。')}</div>
     </div>`,
     extraButtons: [{
-      label: '放到下一个空日',
+      label: tr('放到下一个空日'),
       handler: async (_mask, close) => {
         await writeSchedule(drag, nextFreeDay(date, drag));
         close();
@@ -1212,29 +1218,29 @@ function editorHtml() {
   const ed = cfg.editor;
   if (!ed) return '';
   const groups = cfg.editorGroups || [];
-  const groupOpts = ['<option value="">无分组</option>']
-    .concat(groups.map((g) => `<option value="${g.id}"${ed.groupId === String(g.id) ? ' selected' : ''}>${esc(g.name || `分组 ${g.id}`)}</option>`))
+  const groupOpts = [`<option value="">${tr('无分组')}</option>`]
+    .concat(groups.map((g) => `<option value="${g.id}"${ed.groupId === String(g.id) ? ' selected' : ''}>${esc(g.name || tr('分组 {id}', { id: g.id }))}</option>`))
     .join('');
   const priOpts = [3, 2, 1, 0].map((p) => `<option value="${p}"${ed.priority === p ? ' selected' : ''}>${PRIORITY_TEXT[p]}</option>`).join('');
   const dates = ed.recurring
-    ? '<div class="cal-editor-note">重复事项的日期由规则派生，请在「重复规则」里改</div>'
+    ? `<div class="cal-editor-note">${tr('重复事项的日期由规则派生，请在「重复规则」里改')}</div>`
     : `<div class="cal-editor-dates">
-        <input class="cal-editor-date" type="date" data-cal-ed="planStart" value="${esc(ed.planStart)}" title="开始日期" />
+        <input class="cal-editor-date" type="date" data-cal-ed="planStart" value="${esc(ed.planStart)}" title="${tr('开始日期')}" />
         <span class="cal-editor-arrow">→</span>
-        <input class="cal-editor-date" type="date" data-cal-ed="planEnd" value="${esc(ed.planEnd)}" title="结束日期" />
+        <input class="cal-editor-date" type="date" data-cal-ed="planEnd" value="${esc(ed.planEnd)}" title="${tr('结束日期')}" />
       </div>`;
   return `<div class="cal-editor${ed.id ? ' is-edit' : ''}">
-    <div class="cal-editor-head">${ed.id ? '编辑任务' : '新增任务'} <span>· ${dateLabel(ed.planEnd || cfg.selected)}</span></div>
-    <input class="cal-editor-title" type="text" data-cal-ed="title" maxlength="120" placeholder="要做什么？" value="${esc(ed.title)}" />
+    <div class="cal-editor-head">${ed.id ? tr('编辑任务') : tr('新增任务')} <span>· ${dateLabel(ed.planEnd || cfg.selected)}</span></div>
+    <input class="cal-editor-title" type="text" data-cal-ed="title" maxlength="120" placeholder="${tr('要做什么？')}" value="${esc(ed.title)}" />
     <div class="cal-editor-row">
-      <select class="cal-editor-pri" data-cal-ed="priority" title="优先级">${priOpts}</select>
-      <select class="cal-editor-group" data-cal-ed="groupId" title="分组">${groupOpts}</select>
+      <select class="cal-editor-pri" data-cal-ed="priority" title="${tr('优先级')}">${priOpts}</select>
+      <select class="cal-editor-group" data-cal-ed="groupId" title="${tr('分组')}">${groupOpts}</select>
     </div>
     ${dates}
     ${ed.error ? `<div class="cal-editor-error">${esc(ed.error)}</div>` : ''}
     <div class="cal-editor-foot">
-      <button type="button" class="cal-editor-cancel" data-cal-act="editor-cancel">取消</button>
-      <button type="button" class="cal-editor-save" data-cal-act="editor-save">${ed.id ? '保存' : '创建'}</button>
+      <button type="button" class="cal-editor-cancel" data-cal-act="editor-cancel">${tr('取消')}</button>
+      <button type="button" class="cal-editor-save" data-cal-act="editor-save">${ed.id ? tr('保存') : tr('创建')}</button>
     </div>
   </div>`;
 }
@@ -1257,10 +1263,10 @@ async function saveEditor() {
     box.querySelectorAll('[data-cal-ed]').forEach((f) => { ed[f.dataset.calEd] = f.value; });
   }
   const title = String(ed.title || '').trim();
-  if (!title) { cfg.editor.error = '请输入任务标题'; paintPanel(); return; }
+  if (!title) { cfg.editor.error = tr('请输入任务标题'); paintPanel(); return; }
   const ps = String(ed.planStart || '').trim();
   const pe = String(ed.planEnd || '').trim();
-  if (!ed.recurring && ps && pe && pe < ps) { cfg.editor.error = '结束日期不能早于开始日期'; paintPanel(); return; }
+  if (!ed.recurring && ps && pe && pe < ps) { cfg.editor.error = tr('结束日期不能早于开始日期'); paintPanel(); return; }
   const payload = {
     title,
     priority: Number(ed.priority) || 0,
@@ -1275,7 +1281,7 @@ async function saveEditor() {
     if (isEdit) await api.tasks.update(ed.id, payload);
     else await api.tasks.create(payload);
   } catch (err) {
-    cfg.editor.error = (err && err.message) || (isEdit ? '保存失败，请重试' : '创建失败，请重试');
+    cfg.editor.error = (err && err.message) || (isEdit ? tr('保存失败，请重试') : tr('创建失败，请重试'));
     paintPanel();
     return;
   }
@@ -1283,7 +1289,7 @@ async function saveEditor() {
   cfg.editor = null;
   await reloadAndPaint();
   ext.renderSidebar();
-  ext.toast(isEdit ? '任务已更新' : (backdated ? '任务已创建 · 历史日期进入今天的欠账区' : '任务已创建'));
+  ext.toast(isEdit ? tr('任务已更新') : (backdated ? tr('任务已创建 · 历史日期进入今天的欠账区') : tr('任务已创建')));
 }
 
 function onContextMenu(e) {
@@ -1300,24 +1306,24 @@ function onContextMenu(e) {
   // 历史打卡格子：排期 / 优先级 / 完成态都不属于"这一天"，只留详情与撤销
   if (occ) {
     openContextMenu([
-      { label: '打开详情', icon: '↗', onClick: () => ext.openTaskDetail(id) },
+      { label: tr('打开详情'), icon: '↗', onClick: () => ext.openTaskDetail(id) },
       { type: 'sep' },
-      { label: `撤销 ${occ} 的打卡`, icon: '↺', disabled: past, onClick: () => toggleTask(id, occ) },
+      { label: tr('撤销 {day} 的打卡', { day: occ }), icon: '↺', disabled: past, onClick: () => toggleTask(id, occ) },
     ], { x: e.clientX, y: e.clientY });
     return;
   }
   openContextMenu([
-    { label: '打开详情', icon: '↗', onClick: () => ext.openTaskDetail(id) },
+    { label: tr('打开详情'), icon: '↗', onClick: () => ext.openTaskDetail(id) },
     { type: 'sep' },
     ...[3, 2, 1, 0].map((p) => ({
-      label: `优先级：${PRIORITY_TEXT[p]}`,
+      label: tr('优先级：{p}', { p: PRIORITY_TEXT[p] }),
       checked: priorityOf(t) === p,
       onClick: () => setPriority(id, p),
     })),
     { type: 'sep' },
-    { label: '延期一天', icon: '→', disabled: !taskRange(t) || !!t.completed, onClick: () => deferOneDay(id) },
-    { label: '移出排期', icon: '⌫', disabled: !taskRange(t), onClick: () => unschedule(id) },
-    { label: past ? '完成状态（历史只读）' : (t.completed ? '取消完成' : '标记完成'), icon: '✓', disabled: past, onClick: () => toggleTask(id) },
+    { label: tr('延期一天'), icon: '→', disabled: !taskRange(t) || !!t.completed, onClick: () => deferOneDay(id) },
+    { label: tr('移出排期'), icon: '⌫', disabled: !taskRange(t), onClick: () => unschedule(id) },
+    { label: past ? tr('完成状态（历史只读）') : (t.completed ? tr('取消完成') : tr('标记完成')), icon: '✓', disabled: past, onClick: () => toggleTask(id) },
   ], { x: e.clientX, y: e.clientY });
 }
 
@@ -1444,7 +1450,7 @@ function showPreview(dateEl, date, zone, key) {
   const tip = document.createElement('span');
   tip.className = `cal-drop-tip ${st.rate >= 1 ? 'is-bad' : ''}`;
   tip.textContent = st.rate >= 1
-    ? `将超载 ${Math.round(st.rate * 100)}%`
+    ? tr('将超载 {pct}%', { pct: Math.round(st.rate * 100) })
     : `${fmtLoad(predicted)} / ${cap}`;
   dateEl.appendChild(tip);
   updatePreviewCard({ date, predicted, cap, st });
@@ -1454,13 +1460,13 @@ function updatePreviewCard(info) {
   const box = document.querySelector('.cal-preview-box');
   if (!box) return;
   if (!info) {
-    box.innerHTML = `<div class="cal-preview-line">松手即取消排期</div>
+    box.innerHTML = `<div class="cal-preview-line">${tr('松手即取消排期')}</div>
       <div class="cal-preview-track"><span style="width:0%"></span></div>`;
     return;
   }
   const pct = Math.round(info.st.rate * 100);
   box.innerHTML = `<div class="cal-preview-line">${weekName(info.date)} <b>${fmtLoad(info.predicted)} / ${info.cap}</b>
-      · <span class="${info.st.rate >= 1 ? 'is-bad' : ''}">${info.st.rate >= 1 ? `将超载 ${pct}%` : '排得下'}</span></div>
+      · <span class="${info.st.rate >= 1 ? 'is-bad' : ''}">${info.st.rate >= 1 ? tr('将超载 {pct}%', { pct }) : tr('排得下')}</span></div>
     <div class="cal-preview-track ${info.st.rate >= 1 ? 'is-bad' : ''}"><span style="width:${info.st.pct.toFixed(1)}%"></span></div>`;
 }
 
@@ -1522,7 +1528,7 @@ function endDrag() {
   updatePreviewCard(null);
   const box = document.querySelector('.cal-preview-box');
   if (box) {
-    box.innerHTML = `<div class="cal-preview-line">周四 <b>7 / 6</b> · <span class="is-bad">将超载 117%</span></div>
+    box.innerHTML = `<div class="cal-preview-line">${tr('周四')} <b>7 / 6</b> · <span class="is-bad">${tr('将超载 117%')}</span></div>
       <div class="cal-preview-track"><span style="width:100%"></span></div>`;
   }
   cfg.drag = null;

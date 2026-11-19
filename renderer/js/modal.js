@@ -1,4 +1,5 @@
 'use strict';
+import { t } from './i18n.js';
 /**
  * 轻量模态框：用于替代原生 prompt()，支持输入校验、错误提示、Enter 提交 / Esc 关闭。
  *
@@ -34,14 +35,14 @@ const esc = (s) =>
 export function openPromptModal(opts) {
   const {
     title, label = '', value = '', placeholder = '',
-    choices = null, choicesLabel = '', okText = '确定', maxLength = 30, onSubmit,
+    choices = null, choicesLabel = '', okText = t('确定'), maxLength = 30, onSubmit,
   } = opts;
 
   return new Promise((resolve) => {
     const mask = document.createElement('div');
     mask.className = 'modal-mask';
     const choicesHtml = choices
-      ? `<div class="field-label">${esc(choicesLabel || '颜色')}</div>
+      ? `<div class="field-label">${esc(choicesLabel || t('颜色'))}</div>
          <div class="choice-row">${choices.map((c, i) => `
            <label class="choice" style="--c:${esc(c.color || '#c3cad6')}">
              <input type="radio" name="prompt-choice" value="${esc(c.value)}"${i === 0 ? ' checked' : ''} />
@@ -93,7 +94,7 @@ export function openPromptModal(opts) {
         close(true);
       } catch (e) {
         // 兜底：任何异常都就地展示原因，绝不静默失败
-        showError((e && e.message) || '保存失败，请重试');
+        showError((e && e.message) || t('保存失败，请重试'));
         busy = false;
         okBtn.disabled = false;
       }
@@ -144,7 +145,7 @@ export function openPromptModal(opts) {
  * @returns {Promise<boolean>} 是否以“确认”关闭
  */
 export function openPanelModal({
-  title, html = '', className = '', onMount, okText = '关闭',
+  title, html = '', className = '', onMount, okText = t('关闭'),
   extraButtons = [], onSubmit, onClose, showClose = false, headHtml = '',
   resizable = false, resizeKey = '', minWidth = 520, minHeight = 380,
   closeOnMask = true, closeOnEsc = true, escGuard = null,
@@ -157,7 +158,7 @@ export function openPanelModal({
         <div class="modal-head">
           <span class="modal-head-text">${esc(title)}</span>
           ${headHtml}
-          ${showClose ? `<button type="button" class="modal-icon-btn" data-modal="close" title="${closeOnEsc ? '关闭（Esc）' : '关闭'}" aria-label="关闭">✕</button>` : ''}
+          ${showClose ? `<button type="button" class="modal-icon-btn" data-modal="close" title="${esc(closeOnEsc ? t('关闭（Esc）') : t('关闭'))}" aria-label="${esc(t('关闭'))}">✕</button>` : ''}
         </div>
         <div class="modal-body">${html}</div>
         <div class="modal-error" hidden></div>
@@ -215,7 +216,7 @@ export function openPanelModal({
         if (msg) { showError(msg); return; }
         close(true);
       } catch (e) {
-        showError((e && e.message) || '操作失败，请重试');
+        showError((e && e.message) || t('操作失败，请重试'));
       }
     });
     // 点遮罩关闭是可选项：问答弹窗这类「误点一下就丢整个提问结果」的场景要关掉，
@@ -237,7 +238,7 @@ export function openPanelModal({
           const msg = await b.handler(mask, () => close(false));
           if (msg) showError(msg);
         } catch (e) {
-          showError((e && e.message) || '操作失败，请重试');
+          showError((e && e.message) || t('操作失败，请重试'));
         }
       });
     });
@@ -306,9 +307,9 @@ function mountResize(modal, { key = '', minWidth = 520, minHeight = 380 } = {}) 
 
   const grip = document.createElement('div');
   grip.className = 'modal-resize';
-  grip.title = '拖动调整窗口大小（双击恢复默认）';
+  grip.title = t('拖动调整窗口大小（双击恢复默认）');
   grip.setAttribute('role', 'separator');
-  grip.setAttribute('aria-label', '调整弹窗大小');
+  grip.setAttribute('aria-label', t('调整弹窗大小'));
   modal.appendChild(grip);
 
   const onGripDown = (e) => {
@@ -564,7 +565,7 @@ function readFields(root, fields) {
  */
 export function openFormModal(opts) {
   const {
-    title, fields = [], okText = '保存', extraButtons = [], onSubmit, width, grid = true,
+    title, fields = [], okText = t('保存'), extraButtons = [], onSubmit, width, grid = true,
   } = opts;
 
   return new Promise((resolve) => {
@@ -628,7 +629,7 @@ export function openFormModal(opts) {
         if (msg) { showError(msg); setBusy(false); return; }
         close(true);
       } catch (e) {
-        showError((e && e.message) || '保存失败，请重试');
+        showError((e && e.message) || t('保存失败，请重试'));
         setBusy(false);
       }
     };
@@ -650,12 +651,12 @@ export function openFormModal(opts) {
         showError('');
         setBusy(true);
         const label = el.textContent;
-        el.textContent = '处理中…';
+        el.textContent = t('处理中…');
         try {
           const msg = await b.handler(readFields(mask, fields));
           if (msg) showError(msg);
         } catch (e) {
-          showError((e && e.message) || '操作失败，请重试');
+          showError((e && e.message) || t('操作失败，请重试'));
         }
         el.textContent = label;
         setBusy(false);

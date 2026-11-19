@@ -27,6 +27,7 @@ const holidays = require('./holidays-cn');
 const dateU = require('./date-utils');
 const theme = require('./theme');
 const features = require('./features');
+const i18n = require('./i18n');
 
 /**
  * 附件相对路径 → 笔记正文里可引用的 todo-media:// URL。
@@ -64,15 +65,19 @@ function sameBase(a, b) {
  * 视觉模型的**生效值**（界面要显示「你配的」与「实际在用的」两件事）。
  * 回落规则与 main/shot.js#readVisionConfig 必须完全一致 —— 设置页说"会用 GLM"，
  * 卡片就不能按 DeepSeek 去发请求。
+ *
+ * 回落是**整组**的：只有填了模型才算"要用单独的视觉模型"。清掉模型但地址 / Key
+ * 还残留时，必须整组回落到对话模型，而不是拿视觉地址配对话模型名（那必然 401）。
  */
 function visionView() {
   const c = getAiConfig();
   const v = getVisionConfig();
-  const baseUrl = v.baseUrl || c.baseUrl;
-  const model = v.model || c.model;
-  const source = v.model ? 'vision' : 'fallback';
-  const reuse = !v.apiKey && sameBase(baseUrl, c.baseUrl);
-  const hasKey = !!(v.apiKey || (reuse ? c.apiKey : ''));
+  const useVision = !!v.model;
+  const baseUrl = useVision ? (v.baseUrl || c.baseUrl) : c.baseUrl;
+  const model = useVision ? v.model : c.model;
+  const source = useVision ? 'vision' : 'fallback';
+  const reuse = useVision && !v.apiKey && sameBase(baseUrl, c.baseUrl);
+  const hasKey = useVision ? !!(v.apiKey || (reuse ? c.apiKey : '')) : c.hasKey;
   return {
     // 用户自己填的那一份
     baseUrl: v.baseUrl,
@@ -1335,6 +1340,22 @@ function registerIpc() {
       fullScreen: !!w && w.isFullScreen(),
     };
   }));
+
+  /* ---------- 国际化 ---------- */
+  // 语言只有界面文案意义，不涉及数据：读 = 当前值，写 = 落库 + 广播各窗口重载。
+  // 之所以让窗口 reload 而不是热替换 DOM：界面是「整块重写」渲染，热替换必然有漏网的
+  // 长生命周期节点（抽屉 / 弹窗 / 浮窗），一次 reload 反而确定。
+  ipcMain.handle('i18n:get', () => i18n.getLocale());
+  ipcMain.handle('i18n:list', () => i18n.LOCALES.map((v) => ({ value: v, label: v === 'en' ? 'English' : '简体中文' })));
+  ipcMain.handle('i18n:set', (_e, v) => {
+    const loc = i18n.setLocale(v);
+    BrowserWindow.getAllWindows().forEach((w) => {
+      if (!w.isDestroyed()) {
+        try { w.webContents.send('locale:changed', loc); } catch (err) { /* 窗口正在销毁 */ }
+      }
+    });
+    return loc;
+  });
 
   /* ---------- 应用 / 主题 ---------- */
   // 主题是一份对象（mode × style × backdrop），不再是一个字符串。老值 'dark' 由

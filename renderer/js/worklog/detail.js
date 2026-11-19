@@ -14,6 +14,7 @@
  * 4. 异步拉数据回来必须校验 drawer.dataset.taskId 仍是本任务（A/B 任务快速切换防串）。
  */
 import { api } from '../api.js';
+import { t as tr } from '../i18n.js';
 import { hm, fmtDay, fmtClock, esc, SOURCE_TEXT } from './shared.js';
 import { manualAddFor } from './row.js';
 
@@ -28,11 +29,11 @@ export function renderDetailSection({ drawer, task, signal }) {
   slot.innerHTML = `
     <div class="wl-ds">
       <div class="wl-ds-head">
-        <span class="wl-ds-title">工时记录</span>
+        <span class="wl-ds-title">${tr('工时记录')}</span>
         <span class="wl-ds-sum" data-wl-ds-sum></span>
-        <button type="button" class="wl-ds-add" data-wl-ds-add title="为这条任务补录工时">＋补录</button>
+        <button type="button" class="wl-ds-add" data-wl-ds-add title="${tr('为这条任务补录工时')}">＋${tr('补录')}</button>
       </div>
-      <div class="wl-ds-body" data-wl-ds-body><div class="wl-ds-loading">读取中…</div></div>
+      <div class="wl-ds-body" data-wl-ds-body><div class="wl-ds-loading">${tr('读取中…')}</div></div>
     </div>`;
 
   const sumEl = slot.querySelector('[data-wl-ds-sum]');
@@ -70,15 +71,15 @@ async function load(id, drawer, sumEl, bodyEl) {
     // 身份校验：抽屉已切到别的任务 / 区块已脱离文档 → 放弃，别把 B 的数据写进 A 的抽屉
     if (!bodyEl.isConnected || Number(drawer.dataset.taskId) !== id) return;
     const entries = (data && data.entries) || [];
-    sumEl.textContent = entries.length ? `累计 ${hm(data.ownSec)} · ${entries.length} 条` : '';
+    sumEl.textContent = entries.length ? tr('累计 {hm} · {n} 条', { hm: hm(data.ownSec), n: entries.length }) : '';
     if (!entries.length) {
-      bodyEl.innerHTML = '<div class="wl-ds-empty">还没有工时记录。点右上「＋补录」添加，或在任务行点 ▶ 开始计时。</div>';
+      bodyEl.innerHTML = `<div class="wl-ds-empty">${tr('还没有工时记录。点右上「＋补录」添加，或在任务行点 ▶ 开始计时。')}</div>`;
       return;
     }
     const sorted = entries.slice().sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
     bodyEl.innerHTML = `<div class="wl-ds-list">${sorted.map(entryRow).join('')}</div>`;
   } catch (e) {
     if (!bodyEl.isConnected || Number(drawer.dataset.taskId) !== id) return;
-    bodyEl.innerHTML = `<div class="wl-ds-empty">读取失败：${esc((e && e.message) || e)}</div>`;
+    bodyEl.innerHTML = `<div class="wl-ds-empty">${tr('读取失败：{msg}', { msg: esc((e && e.message) || e) })}</div>`;
   }
 }

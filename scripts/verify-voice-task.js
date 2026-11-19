@@ -303,6 +303,7 @@ async function main() {
       allChecked: r.every((x) => x.querySelector('input[type=checkbox]').checked),
       titles: r.map((x) => x.querySelector('.shot-title').textContent),
       pri: r.map((x) => x.querySelector('.shot-pri').textContent),
+      due: r.map((x) => x.querySelector('.shot-due').textContent),
       mic: !!document.querySelector('.modal-voice .voice-mic'),
       transcriptFold: !!document.querySelector('.modal-voice .voice-transcript'),
       okEnabled: !document.querySelector('.modal-voice [data-modal="ok"]').disabled,
@@ -314,6 +315,20 @@ async function main() {
   check('语音卡有麦克风块（与截图卡区分）', rowState.mic === true);
   check('可展开查看语音原文', rowState.transcriptFold === true);
   check('可以提交', rowState.okEnabled === true);
+  // mock 里两条 due 都是 null（模型没给出确定日期）→ 卡片按今天显示
+  check('没给出确定日期时显示「今天」', rowState.due.join(',') === '今天,今天', rowState.due.join(','));
+
+  // 手改第 1 行日期：这条要真的落库，验的是「改了算数」
+  const dueAfterEdit = await main.evaluate(`(() => {
+    const row = document.querySelectorAll('.modal-voice .shot-row')[0];
+    const input = row.querySelector('.shot-due-input');
+    input.value = '2026-12-05';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return row.querySelector('.shot-due').textContent;
+  })()`);
+  check('手改一行日期，胶囊立刻更新', dueAfterEdit === '12月5日', dueAfterEdit);
+  const voiceOkText = await main.evaluate('document.querySelector(\'.modal-voice [data-modal="ok"]\').textContent');
+  check('有条目不在今天时按钮改成「添加 N 条」', voiceOkText === '添加 2 条', voiceOkText);
 
   // 取消勾选第二条 + 第一条改成紧急
   await main.evaluate(`(() => {
@@ -348,6 +363,9 @@ async function main() {
     await sleep(100);
   }
   check('提交后不用切视图，列表立刻出现', shown === 1, `命中 ${shown} 行`);
+  // 日期全在未来时「今天」里本来就没有这些任务，宿主要把人送到能看见它们的地方
+  const voiceView = await main.evaluate('document.getElementById("view-title").textContent');
+  check('未来日期的条目提交后切到「即将到期」', voiceView === '即将到期', voiceView);
 
   const tasks = await main.evaluate(`(async () => {
     const list = await window.api.tasks.list({ status: 'any' });
@@ -356,7 +374,8 @@ async function main() {
   check('只建了勾选的那一条', tasks.length === 1, String(tasks.length));
   const t0 = tasks[0] || {};
   check('优先级 = 紧急(3)', t0.priority === 3, String(t0.priority));
-  check('计划日期是今天', !!t0.plan_start && t0.plan_start === t0.plan_end, `${t0.plan_start}`);
+  check('手改的计划日期落库', t0.plan_start === '2026-12-05' && t0.plan_end === '2026-12-05',
+    `${t0.plan_start} ~ ${t0.plan_end}`);
   check('描述里有语音原文', /语音原文/.test(t0.notes || ''), (t0.notes || '').slice(0, 40));
   check('没有附件（识别后丢弃）', !t0.attachments || t0.attachments.length === 0);
 

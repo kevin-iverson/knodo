@@ -6,6 +6,7 @@
  * 原地展开编辑器；“计划开始日期 / 计划完成日期”直接放在新增行主表单中填写。
  */
 import { api, localToIso, isoToLocal, fmtDateTime, PRIORITY_TEXT, PRIORITY_COLOR } from './api.js';
+import { t as tr } from './i18n.js';
 import {
   state, loadGroups, loadTags, loadTasks, refreshAll, todayStr,
   noteCompletionChange, clearRecentlyDone, initRecentlyDone,
@@ -76,20 +77,32 @@ const esc = (s) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+/**
+ * 视图元信息。文案用 getter 就地翻译：语言是运行时确定的，对象字面量若直接存字符串
+ * 就会在模块求值时被钉死成中文。
+ */
+function vmeta(title, desc, long) {
+  return {
+    get title() { return tr(title); },
+    get desc() { return tr(desc); },
+    get long() { return tr(long == null ? desc : long); },
+  };
+}
+
 const VIEW_META = {
-  today: { title: '今天', desc: '今天 + 已逾期', long: '今天或已逾期的进行中任务（按计划完成日期）' },
+  today: vmeta('今天', '今天 + 已逾期', '今天或已逾期的进行中任务（按计划完成日期）'),
   // 一级视图：侧栏「今天」下面的「日历」；描述由 calendar.js 按当月 / 当周统计动态写入
-  calendar: { title: '日历', desc: '', long: '按日负载排布任务，月 / 周缩放，拖拽即可改期' },
-  upcoming: { title: '即将到期', desc: '计划完成日期在今天或之后的任务' },
+  calendar: vmeta('日历', '', '按日负载排布任务，月 / 周缩放，拖拽即可改期'),
+  upcoming: vmeta('即将到期', '计划完成日期在今天或之后的任务'),
   // 「未完成」= 全部进行中任务，跨分组汇总，逾期也在里面（与「即将到期」互补：一个看将来，一个看欠账）
-  unfinished: { title: '未完成', desc: '所有还没勾掉的任务（含逾期 / 未排期）' },
-  all: { title: '全部任务', desc: '所有进行中与已完成任务' },
-  completed: { title: '已完成', desc: '已完成但未归档的任务' },
-  archived: { title: '归档', desc: '已归档的完成任务' },
-  stats: { title: '统计', desc: '任务完成情况概览' },
-  reports: { title: 'AI 报告', desc: '基于本地数据自动生成日报 / 周报 / 月报' },
-  meetings: { title: '会议纪要', desc: '录制 / 导入会议音频 → 语音转写 → AI 纪要 → 待办入库' },
-  notes: { title: '笔记', desc: 'Markdown 笔记 → 按目录 / 标签沉淀为知识库，可关联到任务并供 AI 检索' },
+  unfinished: vmeta('未完成', '所有还没勾掉的任务（含逾期 / 未排期）'),
+  all: vmeta('全部任务', '所有进行中与已完成任务'),
+  completed: vmeta('已完成', '已完成但未归档的任务'),
+  archived: vmeta('归档', '已归档的完成任务'),
+  stats: vmeta('统计', '任务完成情况概览'),
+  reports: vmeta('AI 报告', '基于本地数据自动生成日报 / 周报 / 月报'),
+  meetings: vmeta('会议纪要', '录制 / 导入会议音频 → 语音转写 → AI 纪要 → 待办入库'),
+  notes: vmeta('笔记', 'Markdown 笔记 → 按目录 / 标签沉淀为知识库，可关联到任务并供 AI 检索'),
 };
 
 /** 会展示任务列表、因而消费分组/标签筛选的视图 */
@@ -397,9 +410,8 @@ function bindStaticEvents() {
   // 应用内快捷键（固定，不开放自定义）
   bindInAppKeys();
 
-  // 数据导入 / 导出
+  // 数据导出留在顶栏；导入是低频的换机 / 恢复动作，入口在设置中心「数据与备份」
   document.getElementById('btn-export').addEventListener('click', exportData);
-  document.getElementById('btn-import').addEventListener('click', importData);
 
   // 搜索
   const searchInput = document.getElementById('search-input');
@@ -571,8 +583,10 @@ function updateTimeFilterBadge() {
   if (!btn) return;
   const n = TF_RANGES.filter((r) => state.timeFilters[r.from] || state.timeFilters[r.to]).length;
   btn.classList.toggle('active', n > 0);
-  btn.textContent = n ? `⏱ 时间筛选 · ${n}` : '⏱ 时间筛选';
-  btn.title = n ? `已启用 ${n} 组时间范围，点击查看或修改` : '按计划开始 / 计划完成 / 实际完成时间筛选';
+  btn.textContent = n ? tr('⏱ 时间筛选 · {n}', { n }) : tr('⏱ 时间筛选');
+  btn.title = n
+    ? tr('已启用 {n} 组时间范围，点击查看或修改', { n })
+    : tr('按计划开始 / 计划完成 / 实际完成时间筛选');
 }
 
 /**
@@ -677,6 +691,14 @@ async function refreshAfterShotAdd(info) {
     state.currentGroup = 'all';
   }
   renderSidebarList();
+  // 计划和提醒带出来的日期全在未来：留在「今天」等于让用户对着空列表怀疑没存上，
+  // 直接切到「即将到期」——那是这些任务真正待的地方（用户刚改的日期，得看见它才安心）
+  const days = info && Array.isArray(info.days) ? info.days.filter(Boolean) : [];
+  const today = (info && info.today) || todayStr();
+  if (days.length && days.every((d) => d > today) && state.view === 'today') {
+    await navigateTo('upcoming');
+    return;
+  }
   if (!TASK_VIEWS.includes(state.view) || state.view === 'completed' || state.view === 'archived') {
     await navigateTo('today');
     return;
@@ -702,9 +724,9 @@ async function render() {
   const meta = extView
     ? { title: extView.title, desc: extView.desc || '', long: extView.long || extView.desc || '' }
     : wlOff
-      ? { title: '工时', desc: '功能插件 · 未开启', long: '在 设置 → 功能插件 中开启「工时记录」后可用' }
+      ? { title: tr('工时'), desc: tr('功能插件 · 未开启'), long: tr('在 设置 → 功能插件 中开启「工时记录」后可用') }
       : jrOff
-        ? { title: '四象日记', desc: '功能插件 · 未开启', long: '在 设置 → 功能插件 中开启「四象日记」后可用' }
+        ? { title: tr('四象日记'), desc: tr('功能插件 · 未开启'), long: tr('在 设置 → 功能插件 中开启「四象日记」后可用') }
         : (VIEW_META[state.view] || VIEW_META.all);
   document.getElementById('view-title').textContent = meta.title;
   const descEl = document.getElementById('view-desc');
@@ -718,7 +740,7 @@ async function render() {
   const isCalendar = state.view === 'calendar';
   // 新建编辑行是列表的尾项（在 #view 内），离开任务视图时随重绘一起消失，
   // 不需要额外的收起动作 —— 这里只保留一句提示，免得后来人再去找那个面板。
-  // 工时页有自己的工具栏（＋补录/导出/分组/范围），顶栏那排（搜索/AI/笔记/导入/备份/录制/新建）
+  // 工时页有自己的工具栏（＋补录/导出/分组/范围），顶栏那排（搜索/AI/笔记/备份/录制/新建）
   // 在这里是干扰，用户拍板整排收起。别的插件视图仍保留顶栏。
   // 只用 hidden 切换，不删 DOM / 不碰 innerHTML —— 切回任务/日历视图时按钮要原样可用。
   const isWorklogView = state.view === 'worklog';
@@ -753,14 +775,14 @@ function renderWorklogOff(root) {
   root.innerHTML = `
     <div class="wl-off">
       <div class="wl-off-ico" aria-hidden="true">🕒</div>
-      <div class="wl-off-title">工时记录未开启</div>
-      <div class="wl-off-text">请在 <b>设置 → 功能插件</b> 中开启「工时记录」</div>
-      <button type="button" class="primary-btn wl-off-btn" id="wl-off-open">去开启</button>
+      <div class="wl-off-title">${esc(tr('工时记录未开启'))}</div>
+      <div class="wl-off-text">${tr('请在 <b>设置 → 功能插件</b> 中开启「工时记录」')}</div>
+      <button type="button" class="primary-btn wl-off-btn" id="wl-off-open">${esc(tr('去开启'))}</button>
     </div>`;
   const btn = root.querySelector('#wl-off-open');
   if (btn) {
     btn.addEventListener('click', () => {
-      openSettings('plugins').catch((e) => toast(`打开设置失败：${(e && e.message) || e}`));
+      openSettings('plugins').catch((e) => toast(tr('打开设置失败：{msg}', { msg: (e && e.message) || e })));
     });
   }
 }
@@ -773,10 +795,10 @@ function renderJournalOff(root) {
   root.innerHTML = `
     <div class="wl-off jr-off" data-journal-off>
       <div class="wl-off-ico" aria-hidden="true">📔</div>
-      <div class="wl-off-title">四象日记未开启</div>
-      <div class="wl-off-text">一天一页：四格整理 + 随手碎碎念。只在本地，不进 AI 检索与报告。</div>
-      <button type="button" class="primary-btn wl-off-btn" id="jr-off-open">开启四象日记</button>
-      <div class="jr-off-hint">也可到 设置 → 功能插件 开启，并自定义四个格子的名字</div>
+      <div class="wl-off-title">${esc(tr('四象日记未开启'))}</div>
+      <div class="wl-off-text">${tr('一天一页：四格整理 + 随手碎碎念。只在本地，不进 AI 检索与报告。')}</div>
+      <button type="button" class="primary-btn wl-off-btn" id="jr-off-open">${esc(tr('开启四象日记'))}</button>
+      <div class="jr-off-hint">${esc(tr('也可到 设置 → 功能插件 开启，并自定义四个格子的名字'))}</div>
     </div>`;
   const btn = root.querySelector('#jr-off-open');
   if (btn) {
@@ -830,7 +852,7 @@ function groupEmptyHint(groups, groupList) {
   if (groups.length) return;
   const empty = document.createElement('li');
   empty.className = 'list-empty';
-  empty.textContent = '暂无分组，点击 ＋ 新增';
+  empty.textContent = tr('暂无分组，点击 ＋ 新增');
   groupList.appendChild(empty);
 }
 
@@ -941,20 +963,20 @@ function pinMenuItems(kind, refId, label) {
   const pin = pinnedOf(kind, refId);
   const items = [];
   if (pin) {
-    items.push({ label: '取消钉住（从桌面移除）', icon: '📌', checked: true, onClick: () => unpinFromDesktop(pin, label) });
+    items.push({ label: tr('取消钉住（从桌面移除）'), icon: '📌', checked: true, onClick: () => unpinFromDesktop(pin, label) });
     if (!pin.visible) {
-      items.push({ label: '在桌面显示这个窗口', icon: '👁', onClick: () => api.desktop.show(pin.id).catch(() => {}) });
+      items.push({ label: tr('在桌面显示这个窗口'), icon: '👁', onClick: () => api.desktop.show(pin.id).catch(() => {}) });
     } else {
-      items.push({ label: '暂时收起这个窗口', icon: '—', onClick: () => api.desktop.hide(pin.id).catch(() => {}) });
+      items.push({ label: tr('暂时收起这个窗口'), icon: '—', onClick: () => api.desktop.hide(pin.id).catch(() => {}) });
     }
-    items.push({ label: '恢复默认位置', icon: '⌖', onClick: () => api.desktop.resetPosition(pin.id).catch(() => {}) });
+    items.push({ label: tr('恢复默认位置'), icon: '⌖', onClick: () => api.desktop.resetPosition(pin.id).catch(() => {}) });
   } else {
     const full = desktopPins.length >= 6;
     items.push({
-      label: '钉到桌面',
+      label: tr('钉到桌面'),
       icon: '📌',
       disabled: full,
-      hint: full ? '已钉满 6 个，请先在「桌面浮窗」菜单里收起一个' : '在桌面上单独开一个小窗，常驻显示',
+      hint: tr(full ? '已钉满 6 个，请先在「桌面浮窗」菜单里收起一个' : '在桌面上单独开一个小窗，常驻显示'),
       onClick: () => pinToDesktop(kind, refId, label),
     });
   }
@@ -971,25 +993,25 @@ function showGroupContextMenu(g, e) {
     ...pinMenuItems('group', g.id, label),
     { type: 'sep' },
     // 位置调整：上移/下移按同级序号走，首尾置灰（点了也不会有变化，不如直接不可用）
-    { label: '上移', icon: '↑', disabled: idx <= 0, hint: '与上一个同级分组交换位置', onClick: () => moveGroupTo(g.id, g.parent_id, idx - 1) },
-    { label: '下移', icon: '↓', disabled: idx < 0 || idx >= sibs.length - 1, hint: '与下一个同级分组交换位置', onClick: () => moveGroupTo(g.id, g.parent_id, idx + 1) },
-    { label: '移到最前', icon: '⇤', disabled: idx === 0, onClick: () => moveGroupTo(g.id, g.parent_id, 0) },
-    { label: '移到最后', icon: '⇥', disabled: idx >= sibs.length - 1, onClick: () => moveGroupTo(g.id, g.parent_id, sibs.length) },
+    { label: tr('上移'), icon: '↑', disabled: idx <= 0, hint: tr('与上一个同级分组交换位置'), onClick: () => moveGroupTo(g.id, g.parent_id, idx - 1) },
+    { label: tr('下移'), icon: '↓', disabled: idx < 0 || idx >= sibs.length - 1, hint: tr('与下一个同级分组交换位置'), onClick: () => moveGroupTo(g.id, g.parent_id, idx + 1) },
+    { label: tr('移到最前'), icon: '⇤', disabled: idx === 0, onClick: () => moveGroupTo(g.id, g.parent_id, 0) },
+    { label: tr('移到最后'), icon: '⇥', disabled: idx >= sibs.length - 1, onClick: () => moveGroupTo(g.id, g.parent_id, sibs.length) },
     {
-      label: '移动到分组…',
+      label: tr('移动到分组…'),
       icon: '↪',
-      hint: `当前在第 ${idx + 1}/${total} 位`,
+      hint: tr('当前在第 {i}/{n} 位', { i: idx + 1, n: total }),
       onClick: () => promptMoveGroup(g),
     },
     ...(g.parent_id == null
       ? []
-      : [{ label: '移到顶层', icon: '⤒', hint: '成为顶级分组，排在最后', onClick: () => moveGroupTo(g.id, null, siblingsOf(null).length) }]),
+      : [{ label: tr('移到顶层'), icon: '⤒', hint: tr('成为顶级分组，排在最后'), onClick: () => moveGroupTo(g.id, null, siblingsOf(null).length) }]),
     { type: 'sep' },
-    { label: '在此分组新增任务', icon: '＋', onClick: () => addTaskToGroup(g.id) },
-    { label: '新增子分组', icon: '⊞', onClick: () => promptAddGroup(g.id) },
-    { label: '编辑分组', icon: '✎', onClick: () => editGroup(g) },
+    { label: tr('在此分组新增任务'), icon: '＋', onClick: () => addTaskToGroup(g.id) },
+    { label: tr('新增子分组'), icon: '⊞', onClick: () => promptAddGroup(g.id) },
+    { label: tr('编辑分组'), icon: '✎', onClick: () => editGroup(g) },
     { type: 'sep' },
-    { label: '删除分组', icon: '×', danger: true, onClick: () => deleteGroup(g) },
+    { label: tr('删除分组'), icon: '×', danger: true, onClick: () => deleteGroup(g) },
   ], { x: e.clientX, y: e.clientY });
 }
 
@@ -1224,10 +1246,10 @@ function showViewContextMenu(view, e) {
   if (view === 'unfinished') {
     const dockPin = desktopPins.find((p) => p.kind === 'unfinished' && p.dock);
     items.push({
-      label: dockPin ? '取消便签' : '钉到屏幕顶边（悬停展开）',
+      label: tr(dockPin ? '取消便签' : '钉到屏幕顶边（悬停展开）'),
       icon: '📌',
       checked: !!dockPin,
-      hint: '贴在屏幕边缘，收起成一条，鼠标碰一下展开；拖到左/右边缘可改成侧吸',
+      hint: tr('贴在屏幕边缘，收起成一条，鼠标碰一下展开；拖到左/右边缘可改成侧吸'),
       onClick: () => { toggleDock(); },
     });
     items.push({ type: 'sep' });
@@ -1237,7 +1259,7 @@ function showViewContextMenu(view, e) {
     ...pinMenuItems(view, null, label),
     { type: 'sep' },
     {
-      label: `在「${label}」里新建任务`,
+      label: tr('在「{name}」里新建任务', { name: label }),
       icon: '＋',
       onClick: () => {
         state.view = view;
@@ -1259,7 +1281,7 @@ function renderSidebarList() {
   const allItem = document.createElement('li');
   allItem.className = 'group-item' + (state.currentGroup === 'all' ? ' active' : '');
   allItem.innerHTML = `<span class="group-dot" style="background:#c3cad6"></span>
-    <span class="group-name">全部</span>`;
+    <span class="group-name">${esc(tr('全部'))}</span>`;
   allItem.addEventListener('click', () => {
     state.currentGroup = 'all';
     renderSidebarList();
@@ -1350,7 +1372,7 @@ function renderSidebarList() {
   if (!tagList) return;
   tagList.innerHTML = '';
   if (!state.tags.length) {
-    tagList.innerHTML = '<li class="list-empty">暂无标签，点击 ＋ 新增</li>';
+    tagList.innerHTML = `<li class="list-empty">${esc(tr('暂无标签，点击 ＋ 新增'))}</li>`;
     return;
   }
   for (const t of state.tags) {
@@ -1578,6 +1600,10 @@ function runMenuAction(name) {
     case 'import-md':
       importMarkdownNotes().catch((e) => toast(`导入 Markdown 失败：${(e && e.message) || e}`));
       return;
+    case 'import-data':
+      // 原顶栏「📥 导入」：完整备份包（.zip）/ 旧版 JSON 覆盖式恢复，二次确认在 importData 里
+      importData().catch((e) => toast(`导入失败：${(e && e.message) || e}`));
+      return;
     default:
       toast('未知动作');
   }
@@ -1635,15 +1661,15 @@ async function renderTasks(opts = {}) {
 
   if (keptCount) {
     html += `<div class="keep-done-bar">
-      <span class="keep-done-text">✅ 今日已完成 <b>${keptCount}</b> 个任务，已保留在列表中（打勾 / 置灰 / 删除线）</span>
-      <button class="link-btn" data-act="hide-done" title="立即移出列表（切换视图或重启后仍会保留，跨天自动清空）">隐藏已完成</button>
+      <span class="keep-done-text">${tr('✅ 今日已完成 {n} 个任务，已保留在列表中（打勾 / 置灰 / 删除线）', { n: `<b>${keptCount}</b>` })}</span>
+      <button class="link-btn" data-act="hide-done" title="${esc(tr('立即移出列表（切换视图或重启后仍会保留，跨天自动清空）'))}">${esc(tr('隐藏已完成'))}</button>
     </div>`;
   }
 
   if (tasks.length === 0) {
     const emptyText = isArchived
-      ? '还没有归档的任务'
-      : '暂无符合条件的任务';
+      ? tr('还没有归档的任务')
+      : tr('暂无符合条件的任务');
     html += `<div class="empty"><span class="big">🎉</span>${esc(emptyText)}</div>`;
   } else if (isArchived || hasFilters) {
     html += buildTaskList(flattenTree(tasks));
@@ -1659,14 +1685,14 @@ async function renderTasks(opts = {}) {
     const grouped = groupBy(tasks, topGroup);
     for (const [gid, items] of grouped) {
       const g = state.groups.find((x) => x.id === gid);
-      const gName = g ? g.name : '未分组';
+      const gName = g ? g.name : tr('未分组');
       const gColor = g ? g.color : '#c3cad6';
       const key = taskGroupKey(gid);
       const collapsed = state.collapsedTaskGroups.has(key);
       // 分组头本身就是折叠开关：点一下展开 / 收起，状态按分组独立记忆
       html += `<button type="button" class="task-group-head${collapsed ? ' is-collapsed' : ''}" data-act="toggle-task-group"
         data-group="${esc(key)}" aria-expanded="${!collapsed}"
-        title="${collapsed ? '展开' : '收起'}「${esc(gName)}」的 ${items.length} 个任务">
+        title="${esc(tr(collapsed ? '展开「{name}」的 {n} 个任务' : '收起「{name}」的 {n} 个任务', { name: gName, n: items.length }))}">
         <span class="group-toggle">${collapsed ? '▸' : '▾'}</span>
         <span class="g-dot" style="background:${esc(gColor)}"></span>
         <span class="tg-name">${esc(gName)}</span>
@@ -1972,10 +1998,10 @@ function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
   //    否则只看到一个"↳ 某标题"，既点不动也不知道它在哪儿。
   if (isSub && t.parent_title) {
     meta.push(parentVisible
-      ? `<span class="meta-item parent-tag" title="父任务：${esc(t.parent_title)}">↳ ${esc(t.parent_title)}</span>`
+      ? `<span class="meta-item parent-tag" title="${esc(tr('父任务：{name}', { name: t.parent_title }))}">↳ ${esc(t.parent_title)}</span>`
       : `<span class="meta-item parent-tag parent-link" role="link" tabindex="0"
            data-act="goto-parent" data-parent="${t.parent_id}"
-           title="父任务不在当前列表，点击打开：${esc(t.parent_title)}">↳ 父任务：${esc(t.parent_title)}</span>`);
+           title="${esc(tr('父任务不在当前列表，点击打开：{name}', { name: t.parent_title }))}">↳ ${esc(tr('父任务：{name}', { name: t.parent_title }))}</span>`);
   }
   meta.push(`<span class="pri-badge pri-${t.priority}">${PRIORITY_TEXT[t.priority]}</span>`);
   if (isRecur) {
@@ -1984,9 +2010,9 @@ function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
     // 今天就是发生日 → 「本次 + 截止」；今天不是 → 只留状态角标（下次是几号由它来说）。
     const st = recurState(t, recurRule);
     if (st.state === 'today') {
-      meta.push(`<span class="meta-item recur-on">🔁 本次 ${esc(t.occurrence_date.slice(5))}</span>`);
+      meta.push(`<span class="meta-item recur-on">🔁 ${esc(tr('本次 {d}', { d: t.occurrence_date.slice(5) }))}</span>`);
       if (t.plan_end && t.plan_end !== t.occurrence_date) {
-        meta.push(`<span class="meta-item due ${isOverdue ? 'overdue' : ''}">⏰ 截止 ${esc(t.plan_end.slice(5))}</span>`);
+        meta.push(`<span class="meta-item due ${isOverdue ? 'overdue' : ''}">⏰ ${esc(tr('截止 {d}', { d: t.plan_end.slice(5) }))}</span>`);
       }
     } else {
       const stateBadge = recurStateBadgeHtml(t, recurRule);
@@ -1997,17 +2023,17 @@ function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
     if (t.plan_end) meta.push(`<span class="meta-item due ${isOverdue ? 'overdue' : ''}">📅 ${esc(t.plan_end)}</span>`);
   }
   // 子任务进度不放 meta 行了：跟标题同一行、紧挨着标题右侧，扫一眼就知道这个任务拆了几条
-  if (t.completed && t.completed_at) meta.push(`<span class="meta-item done-at">✅ 完成于 ${fmtDateTime(t.completed_at)}</span>`);
+  if (t.completed && t.completed_at) meta.push(`<span class="meta-item done-at">✅ ${esc(tr('完成于 {d}', { d: fmtDateTime(t.completed_at) }))}</span>`);
   if (t.reminder_at && !isRecur) meta.push(`<span class="meta-item">🔔 ${fmtDateTime(t.reminder_at)}</span>`);
   // 创建时间：行内只放日期（完整时间走 title），避免把 meta 行撑得太长
-  if (t.created_at) meta.push(`<span class="meta-item created-at" title="创建于 ${esc(fmtDateTime(t.created_at))}">🕒 ${esc(t.created_at.slice(0, 10))}</span>`);
+  if (t.created_at) meta.push(`<span class="meta-item created-at" title="${esc(tr('创建于 {d}', { d: fmtDateTime(t.created_at) }))}">🕒 ${esc(t.created_at.slice(0, 10))}</span>`);
   for (const n of t.tag_names) meta.push(`<span class="tag-chip">${esc(n)}</span>`);
   // 附件角标：列表里就能看出这条任务带了文件，不用点进详情
   const attCount = Array.isArray(t.attachments) ? t.attachments.length : 0;
-  if (attCount) meta.push(`<span class="meta-item att-badge" title="附件 ${attCount} 个">📎 ${attCount}</span>`);
+  if (attCount) meta.push(`<span class="meta-item att-badge" title="${esc(tr('附件 {n} 个', { n: attCount }))}">📎 ${attCount}</span>`);
   // 关联笔记角标：列表里就能看出这条任务引用了几篇笔记（数量由 renderTasks 一次批量拉取）
   const noteCount = Number(noteCounts[t.id]) || 0;
-  if (noteCount) meta.push(`<span class="meta-item note-badge" title="关联笔记 ${noteCount} 篇">📝 ${noteCount}</span>`);
+  if (noteCount) meta.push(`<span class="meta-item note-badge" title="${esc(tr('关联笔记 {n} 篇', { n: noteCount }))}">📝 ${noteCount}</span>`);
   // 分组标签显示完整路径（"工作 / 前端"），否则同名子分组看不出归属
   const groupLabel = t.group_name
     ? `<span class="meta-item group-tag" style="color:${esc(t.group_color)}" title="${esc(groupPathAt(t.group_id))}">● ${esc(groupPathAt(t.group_id))}</span>`
@@ -2015,21 +2041,21 @@ function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
 
   return `
   <li class="task-item${done}${isSub ? ' is-subtask' : ''}${pendingRow ? ' is-recur-pending' : ''}" draggable="false" data-id="${t.id}" style="margin-left:${depth * 20}px">
-    <span class="task-gutter">${isSub ? '' : '<span class="drag-handle" data-act="drag" title="按住拖拽调整顺序">⠿</span>'}</span>
+    <span class="task-gutter">${isSub ? '' : `<span class="drag-handle" data-act="drag" title="${esc(tr('按住拖拽调整顺序'))}">⠿</span>`}</span>
     <!-- 展开箭头固定在完成按钮左侧，两者成组、间距固定；无子任务时槽位仍占同宽，
          这样每一行的完成按钮都落在同一条竖线上 -->
     <span class="task-leading">
-      <span class="task-expand-slot">${!pendingRow && t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" aria-expanded="${state.expandedTasks.has(t.id)}" title="${state.expandedTasks.has(t.id) ? '收起子任务' : '展开子任务'}">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}</span>
+      <span class="task-expand-slot">${!pendingRow && t.subtask_count > 0 ? `<button class="task-expand" data-act="toggle-expand" aria-expanded="${state.expandedTasks.has(t.id)}" title="${esc(tr(state.expandedTasks.has(t.id) ? '收起子任务' : '展开子任务'))}">${state.expandedTasks.has(t.id) ? '▾' : '▸'}</button>` : ''}</span>
       ${pendingRow
-    ? `<button class="task-check" disabled title="今天不是发生日，不能打卡">${t.completed ? '✓' : ''}</button>`
-    : `<button class="task-check" data-act="toggle" title="完成/取消">${t.completed ? '✓' : ''}</button>`}
+    ? `<button class="task-check" disabled title="${esc(tr('今天不是发生日，不能打卡'))}">${t.completed ? '✓' : ''}</button>`
+    : `<button class="task-check" data-act="toggle" title="${esc(tr('完成/取消'))}">${t.completed ? '✓' : ''}</button>`}
     </span>
     <div class="task-body">
       <div class="task-title">
-        <span class="task-title-text" data-act="rename" title="点击直接修改标题">${esc(t.title)}</span>
+        <span class="task-title-text" data-act="rename" title="${esc(tr('点击直接修改标题'))}">${esc(t.title)}</span>
         ${t.subtask_count > 0
-    ? `<span class="task-subtask-badge" title="子任务进度：已完成 ${t.subtask_done} / 共 ${t.subtask_count}"
-         aria-label="子任务 ${t.subtask_done}/${t.subtask_count}">☑ ${t.subtask_done}/${t.subtask_count}</span>`
+    ? `<span class="task-subtask-badge" title="${esc(tr('子任务进度：已完成 {done} / 共 {n}', { done: t.subtask_done, n: t.subtask_count }))}"
+         aria-label="${esc(tr('子任务 {done}/{n}', { done: t.subtask_done, n: t.subtask_count }))}">☑ ${t.subtask_done}/${t.subtask_count}</span>`
     : ''}
         ${recurBadgeHtml(t)}
       </div>
@@ -2037,11 +2063,11 @@ function taskItemHtml(t, depth = 0, parentVisible = true, opts = {}) {
       ${noteSummaryHtml(t)}
     </div>
     <div class="task-actions">
-      <button data-act="edit" title="编辑">✎ 编辑</button>
+      <button data-act="edit" title="${esc(tr('编辑'))}">✎ ${esc(tr('编辑'))}</button>
       ${state.view === 'archived'
-        ? `<button data-act="unarchive" title="恢复">↩ 恢复</button>`
-        : `<button data-act="archive" title="归档">🗂 归档</button>`}
-      <button class="del" data-act="del" title="删除">🗑 删除</button>
+        ? `<button data-act="unarchive" title="${esc(tr('恢复'))}">↩ ${esc(tr('恢复'))}</button>`
+        : `<button data-act="archive" title="${esc(tr('归档'))}">🗂 ${esc(tr('归档'))}</button>`}
+      <button class="del" data-act="del" title="${esc(tr('删除'))}">🗑 ${esc(tr('删除'))}</button>
     </div>
   </li>`;
 }
@@ -2257,32 +2283,32 @@ function taskEditorHtml(task) {
   const derived = isEdit && t.recurring_id != null;
   // 计划日期：开始 / 完成合并为单一范围控件；新建任务的默认值由 NEW_TASK_RANGE_MODE 决定，
   // 但「今天」视图下默认填今天（否则新建的任务 plan_end 为空，根本不会出现在今天列表里）
-  const rangeOpts = { required: PLAN_DATE_REQUIRED, placeholder: '计划开始 ~ 完成' };
+  const rangeOpts = { required: PLAN_DATE_REQUIRED, placeholder: tr('计划开始 ~ 完成') };
   const newRangeMode = state.view === 'today' ? 'today' : NEW_TASK_RANGE_MODE;
   const range = isEdit ? { start: t.plan_start, end: t.plan_end } : defaultDateRange(newRangeMode);
   return `
   <div class="task-editor" data-editor="${isEdit ? t.id : 'new'}"${derived ? ' data-derived="1"' : ''}>
     <div class="editor-row">
-      <input class="editor-title" type="text" placeholder="任务标题（回车保存，Esc 取消）" value="${esc(t.title || '')}" />
-      <select class="editor-priority" data-pri="${priority}" title="优先级" aria-label="优先级">${priorityPickerOptionsHtml(t.priority)}</select>
-      <select class="editor-group" title="分组" aria-label="分组">${groupPickerOptionsHtml(state.groups, defaultGroup)}</select>
+      <input class="editor-title" type="text" placeholder="${esc(tr('任务标题（回车保存，Esc 取消）'))}" value="${esc(t.title || '')}" />
+      <select class="editor-priority" data-pri="${priority}" title="${esc(tr('优先级'))}" aria-label="${esc(tr('优先级'))}">${priorityPickerOptionsHtml(t.priority)}</select>
+      <select class="editor-group" title="${esc(tr('分组'))}" aria-label="${esc(tr('分组'))}">${groupPickerOptionsHtml(state.groups, defaultGroup)}</select>
       ${derived
-    ? '<span class="editor-derived" title="重复事项的计划时间与提醒由规则派生，下方有只读明细；要改请改重复规则">🔁 按规则排期</span>'
+    ? `<span class="editor-derived" title="${esc(tr('重复事项的计划时间与提醒由规则派生，下方有只读明细；要改请改重复规则'))}">🔁 ${esc(tr('按规则排期'))}</span>`
     : dateRangeFieldHtml(range.start, range.end, rangeOpts)}
-      ${isEdit ? '<button class="danger-btn" data-act="editor-delete" title="删除任务">删除</button>' : ''}
+      ${isEdit ? `<button class="danger-btn" data-act="editor-delete" title="${esc(tr('删除任务'))}">${esc(tr('删除'))}</button>` : ''}
     </div>
     <div class="editor-details">
       ${derived ? '' : reminderHtml(t.reminder_at, t.plan_end)}
-      <input class="editor-tags" type="text" placeholder="标签（逗号分隔）" value="${esc((t.tag_names || []).join(', '))}" />
-      ${showCompletedAt ? `<input class="editor-completed-at" type="datetime-local" value="${isoToLocal(t.completed_at)}" title="实际完成时间" />` : ''}
+      <input class="editor-tags" type="text" placeholder="${esc(tr('标签（逗号分隔）'))}" value="${esc((t.tag_names || []).join(', '))}" />
+      ${showCompletedAt ? `<input class="editor-completed-at" type="datetime-local" value="${isoToLocal(t.completed_at)}" title="${esc(tr('实际完成时间'))}" />` : ''}
       <!-- 取消 / 保存跟在「标签」右端（同一行）：主行留给标题 + 优先级 + 分组 + 计划时间，
            1080 宽的老窗口下标题才不会被挤成 190px；也不额外占一行高度。 -->
       <div class="editor-actions">
-        ${isEdit ? '<span class="editor-save-state" hidden title="修改会自动保存"></span>' : ''}
-        <button class="ghost-btn" data-act="editor-cancel">取消</button>
-        <button class="primary-btn" data-act="editor-save">${isEdit ? '保存' : '添加'}</button>
+        ${isEdit ? `<span class="editor-save-state" hidden title="${esc(tr('修改会自动保存'))}"></span>` : ''}
+        <button class="ghost-btn" data-act="editor-cancel">${esc(tr('取消'))}</button>
+        <button class="primary-btn" data-act="editor-save">${esc(isEdit ? tr('保存') : tr('添加'))}</button>
       </div>
-      <textarea class="editor-notes" rows="2" placeholder="备注">${esc(notesToPlain(t.notes).text)}</textarea>
+      <textarea class="editor-notes" rows="2" placeholder="${esc(tr('备注'))}">${esc(notesToPlain(t.notes).text)}</textarea>
     </div>
     ${repeatEditorHtml(t, recurRule)}
   </div>`;
@@ -2299,7 +2325,7 @@ function newEditorHtml() {
 }
 
 function addRowHtml() {
-  return `<div class="add-row"><button class="add-row-btn" data-act="start-add"><span class="add-plus">＋</span> 添加任务</button></div>`;
+  return `<div class="add-row"><button class="add-row-btn" data-act="start-add"><span class="add-plus">＋</span> ${esc(tr('添加任务'))}</button></div>`;
 }
 
 function bindEditorEvents(container) {
@@ -2900,12 +2926,12 @@ async function archiveTask(id) {
   await refreshAll();
   renderSidebarList();
   renderTasks();
-  toast('任务已归档');
+  toast(tr('任务已归档'));
 }
 
 async function archiveCompleted() {
   const n = await api.tasks.archiveCompleted(state.currentGroup === 'all' ? null : state.currentGroup);
-  toast(`已归档 ${n} 个已完成任务`);
+  toast(tr('已归档 {n} 个已完成任务', { n }));
   await refreshAll();
   renderSidebarList();
   if (state.view === 'calendar') render();
@@ -3259,7 +3285,7 @@ const TREND_RANGES = [
   { key: '1m', label: '近一个月' },
   { key: '6m', label: '近半年' },
   { key: '1y', label: '近一年' },
-];
+].map((r) => ({ ...r, label: tr(r.label) }));
 /** 当前趋势范围：切换视图再回到统计页时保留用户上次的选择 */
 let trendRange = '7d';
 /** 统计口径：false = 只算主任务（默认，与历史行为一致），true = 主任务 + 全部子任务 */
@@ -3267,7 +3293,7 @@ let statsIncludeSubtasks = false;
 
 async function renderStats() {
   const viewEl = document.getElementById('view');
-  viewEl.innerHTML = '<div class="empty">加载中…</div>';
+  viewEl.innerHTML = `<div class="empty">${tr('加载中…')}</div>`;
   const ov = await api.stats.overview({ includeSubtasks: statsIncludeSubtasks });
 
   // 按分组树的前序顺序排列（父分组后紧跟其子分组），与侧边栏层级一致；
@@ -3287,7 +3313,7 @@ async function renderStats() {
       const total = g.active + g.done;
       const pct = Math.round((total / maxGroup) * 100);
       const label = groupLabelOf(g);
-      return `<div class="bar-row" title="${esc(label)}（进行中 ${g.active} · 已完成 ${g.done}）">
+      return `<div class="bar-row" title="${tr('{label}（进行中 {active} · 已完成 {done}）', { label: esc(label), active: g.active, done: g.done })}">
         <span class="bar-label">${esc(label)}</span>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${esc(g.color)}"></div></div>
         <span class="bar-val">${total}</span>
@@ -3311,35 +3337,35 @@ async function renderStats() {
     .join('');
 
   viewEl.innerHTML = `
-    <div class="stats-scope" id="stats-scope" role="group" aria-label="统计范围">
-      <span class="stats-scope-label">统计范围</span>
+    <div class="stats-scope" id="stats-scope" role="group" aria-label="${tr('统计范围')}">
+      <span class="stats-scope-label">${tr('统计范围')}</span>
       <button type="button" class="chip scope-chip${statsIncludeSubtasks ? '' : ' active'}"
-        data-scope="top" aria-pressed="${!statsIncludeSubtasks}">仅主任务</button>
+        data-scope="top" aria-pressed="${!statsIncludeSubtasks}">${tr('仅主任务')}</button>
       <button type="button" class="chip scope-chip${statsIncludeSubtasks ? ' active' : ''}"
-        data-scope="all" aria-pressed="${statsIncludeSubtasks}">含子任务</button>
-      <span class="stats-scope-hint">${statsIncludeSubtasks ? '主任务 + 全部子任务' : '不含子任务'}</span>
+        data-scope="all" aria-pressed="${statsIncludeSubtasks}">${tr('含子任务')}</button>
+      <span class="stats-scope-hint">${statsIncludeSubtasks ? tr('主任务 + 全部子任务') : tr('不含子任务')}</span>
     </div>
     <div class="stats-grid">
-      ${statCardHtml('total', ov.total, '总任务', '')}
-      ${statCardHtml('active', ov.active, '进行中', 'primary')}
-      ${statCardHtml('completed', ov.completed, '已完成', 'green')}
-      ${statCardHtml('overdue', ov.overdue, '已逾期', 'danger')}
-      <div class="stat-card is-static"><div class="num">${ov.rate}%</div><div class="label">完成率</div></div>
-      ${statCardHtml('archived', ov.archived, '已归档', '')}
+      ${statCardHtml('total', ov.total, tr('总任务'), '')}
+      ${statCardHtml('active', ov.active, tr('进行中'), 'primary')}
+      ${statCardHtml('completed', ov.completed, tr('已完成'), 'green')}
+      ${statCardHtml('overdue', ov.overdue, tr('已逾期'), 'danger')}
+      <div class="stat-card is-static"><div class="num">${ov.rate}%</div><div class="label">${tr('完成率')}</div></div>
+      ${statCardHtml('archived', ov.archived, tr('已归档'), '')}
     </div>
     <div class="stats-tip">${statsTipHtml()}</div>
     <div class="panel">
       <div class="panel-head">
-        <h3 id="trend-title">完成趋势</h3>
-        <div class="trend-range" id="trend-range" role="group" aria-label="完成趋势时间范围">
+        <h3 id="trend-title">${tr('完成趋势')}</h3>
+        <div class="trend-range" id="trend-range" role="group" aria-label="${tr('完成趋势时间范围')}">
           ${TREND_RANGES.map((r) => `<button type="button" class="chip trend-chip${r.key === trendRange ? ' active' : ''}"
             data-trend="${esc(r.key)}" aria-pressed="${r.key === trendRange}">${esc(r.label)}</button>`).join('')}
         </div>
       </div>
-      <div class="trend-body" id="trend-body"><div class="trend-loading">加载中…</div></div>
+      <div class="trend-body" id="trend-body"><div class="trend-loading">${tr('加载中…')}</div></div>
     </div>
-    <div class="panel"><h3>分组任务量</h3>${groupBars || '<span class="meta-item">暂无分组</span>'}</div>
-    <div class="panel"><h3>优先级分布（进行中）</h3>${priBars}</div>`;
+    <div class="panel"><h3>${tr('分组任务量')}</h3>${groupBars || `<span class="meta-item">${tr('暂无分组')}</span>`}</div>
+    <div class="panel"><h3>${tr('优先级分布（进行中）')}</h3>${priBars}</div>`;
 
   viewEl.querySelectorAll('.stat-card[data-stat]').forEach((card) => {
     card.addEventListener('click', () => openStatDrilldown(card.dataset.stat, card));
@@ -3395,35 +3421,38 @@ async function renderTrend() {
   const body = document.getElementById('trend-body');
   if (!body) return;
   const titleEl = document.getElementById('trend-title');
-  body.innerHTML = '<div class="trend-loading">加载中…</div>';
+  body.innerHTML = `<div class="trend-loading">${tr('加载中…')}</div>`;
 
   let t;
   try {
     t = await api.stats.trend({ range: trendRange, includeSubtasks: statsIncludeSubtasks });
   } catch (e) {
-    body.innerHTML = `<div class="trend-empty">趋势加载失败：${esc((e && e.message) || '未知错误')}</div>`;
+    body.innerHTML = `<div class="trend-empty">${tr('趋势加载失败：{msg}', { msg: esc((e && e.message) || tr('未知错误')) })}</div>`;
     return;
   }
-  const label = (t && t.label) || '';
-  if (titleEl) titleEl.textContent = `${label}完成趋势`;
+  // 范围名一律取渲染层这份（已按当前语言求过值）。主进程 stats.trend 也会回一个 label，
+  // 但它是中文原文，英文态下会漏出来（H3 变成「近 7 天 · completion trend」）。
+  const rangeMeta = TREND_RANGES.find((r) => r.key === trendRange);
+  const label = (rangeMeta && rangeMeta.label) || (t && t.label) || '';
+  if (titleEl) titleEl.textContent = tr('{label}完成趋势', { label });
 
   const pts = (t && t.points) || [];
   // 无数据：直接给一句人话，而不是画一排高度 0 的柱子
   if (!pts.length || !t.total) {
-    body.innerHTML = `<div class="trend-empty">${esc(label || '所选范围')}内还没有已完成的任务</div>`;
+    body.innerHTML = `<div class="trend-empty">${tr('{label}内还没有已完成的任务', { label: esc(label || tr('所选范围')) })}</div>`;
     return;
   }
 
   const maxCount = Math.max(1, ...pts.map((p) => p.count));
   // 坐标轴文案随粒度变：天 = 当天，周 = 该周起始日，月 = 年月
-  const unitText = t.granularity === 'week' ? ' 起一周' : t.granularity === 'month' ? '（整月）' : '';
+  const unitText = t.granularity === 'week' ? tr(' 起一周') : t.granularity === 'month' ? tr('（整月）') : '';
   // 柱子多时每隔 N 个才显示一个坐标标签，否则标签会挤成一团
   const step = Math.ceil(pts.length / 15);
   const cols = pts
     .map((p, i) => {
       const h = Math.max(3, Math.round((p.count / maxCount) * 100));
       const showLabel = i === pts.length - 1 || i % step === 0;
-      return `<div class="trend-col" title="${esc(`${p.label}${unitText}：${p.count} 个`)}">
+      return `<div class="trend-col" title="${tr('{date}{unit}：{n} 个', { date: esc(p.label), unit: unitText, n: p.count })}">
         <span class="trend-count">${p.count ? p.count : ''}</span>
         <div class="trend-bar" style="height:${h}px"></div>
         <span class="trend-date"${showLabel ? '' : ' style="visibility:hidden"'}">${esc(p.label)}</span>
@@ -3432,7 +3461,7 @@ async function renderTrend() {
     .join('');
 
   body.innerHTML = `<div class="trend-chart">${cols}</div>
-    <div class="trend-summary">${esc(label)}共完成 ${t.total} 个任务</div>`;
+    <div class="trend-summary">${tr('{label}共完成 {n} 个任务', { label: esc(label), n: t.total })}</div>`;
 }
 
 /**
@@ -3442,15 +3471,15 @@ async function renderTrend() {
  */
 function statsTipHtml() {
   const t = state.tags.find((x) => x.id === state.currentTag);
-  const base = '点击卡片上的数字可查看对应任务明细';
+  const base = tr('点击卡片上的数字可查看对应任务明细');
   if (!t) return base;
-  return `${base}　<span class="stats-warn">当前已按标签「${esc(t.name)}」筛选任务列表，统计仍按全部任务计算</span>`;
+  return `${base}　<span class="stats-warn">${tr('当前已按标签「{tag}」筛选任务列表，统计仍按全部任务计算', { tag: esc(t.name) })}</span>`;
 }
 
 /** 统计卡片：数字与标题都可点（整卡点击区域更大，但只有数字带下划线提示） */
 function statCardHtml(key, num, label, tone) {
   return `<button type="button" class="stat-card ${tone}" data-stat="${key}"
-      title="查看「${esc(label)}」的任务明细" aria-label="${esc(label)} ${num} 个，点击查看明细">
+      title="${tr('查看「{label}」的任务明细', { label: esc(label) })}" aria-label="${tr('{label} {n} 个，点击查看明细', { label: esc(label), n: num })}">
       <div class="num">${num}</div><div class="label">${esc(label)}</div></button>`;
 }
 
@@ -3484,14 +3513,14 @@ const DRILL_SORTS = [
   { key: 'plan_end', label: '截止时间' },
   { key: 'status', label: '状态' },
   { key: 'priority', label: '优先级' },
-];
+].map((s) => ({ ...s, label: tr(s.label) }));
 
 /** 任务在列表里展示的状态文案（逾期是派生状态，库里只有 completed/archived 两个标记） */
 function drillStatusOf(t) {
-  if (t.archived) return { text: '已归档', cls: 'st-archived' };
-  if (t.completed) return { text: '已完成', cls: 'st-done' };
-  if (t.plan_end && t.plan_end < todayStr()) return { text: '已逾期', cls: 'st-overdue' };
-  return { text: '进行中', cls: 'st-active' };
+  if (t.archived) return { text: tr('已归档'), cls: 'st-archived' };
+  if (t.completed) return { text: tr('已完成'), cls: 'st-done' };
+  if (t.plan_end && t.plan_end < todayStr()) return { text: tr('已逾期'), cls: 'st-overdue' };
+  return { text: tr('进行中'), cls: 'st-active' };
 }
 
 /**
@@ -3501,7 +3530,7 @@ function drillStatusOf(t) {
 async function openStatDrilldown(key, cardEl) {
   const f = statFilterOf(key);
   if (!f) return;
-  const title = `${STAT_TITLES[key] || '任务'}明细`;
+  const title = tr('{label}明细', { label: tr(STAT_TITLES[key] || '任务') });
   let tasks = [];
   let sortKey = 'plan_end';
   let sortDir = 1; // 1 升序 / -1 降序
@@ -3525,11 +3554,11 @@ async function openStatDrilldown(key, cardEl) {
   };
 
   const rowsHtml = () => {
-    if (!tasks.length) return '<div class="drill-empty">没有符合条件的任务</div>';
+    if (!tasks.length) return `<div class="drill-empty">${tr('没有符合条件的任务')}</div>`;
     return tasks.map((t) => {
       const st = drillStatusOf(t);
       const pri = Number(t.priority) || 0;
-      return `<tr class="drill-row" data-id="${t.id}" tabindex="0" title="点击查看任务详情">
+      return `<tr class="drill-row" data-id="${t.id}" tabindex="0" title="${tr('点击查看任务详情')}">
         <td class="drill-title">${esc(t.title)}</td>
         <td>${t.plan_end ? esc(t.plan_end) : '<span class="drill-dim">—</span>'}</td>
         <td><span class="drill-status ${st.cls}">${st.text}</span></td>
@@ -3546,7 +3575,7 @@ async function openStatDrilldown(key, cardEl) {
     .join('');
 
   const tableHtml = () => `
-    <div class="drill-meta">共 ${tasks.length} 个任务 · 点击表头排序 · 点击行打开详情</div>
+    <div class="drill-meta">${tr('共 {n} 个任务 · 点击表头排序 · 点击行打开详情', { n: tasks.length })}</div>
     <div class="drill-wrap"><table class="drill-table">
       <thead><tr>${headHtml()}</tr></thead>
       <tbody>${rowsHtml()}</tbody>
@@ -3555,20 +3584,20 @@ async function openStatDrilldown(key, cardEl) {
   await openPanelModal({
     title,
     className: 'modal-drill',
-    html: '<div class="drill-loading">加载中…</div>',
+    html: `<div class="drill-loading">${tr('加载中…')}</div>`,
     onMount: async (root, close) => {
       const body = root.querySelector('.modal-body');
       try {
         tasks = await api.tasks.list(f);
       } catch (e) {
-        body.innerHTML = `<div class="drill-empty">加载失败：${esc((e && e.message) || e)}</div>`;
+        body.innerHTML = `<div class="drill-empty">${tr('加载失败：{msg}', { msg: esc((e && e.message) || e) })}</div>`;
         return;
       }
       // 与卡片数字对不上时明确提示，避免"看起来是 bug"的静默不一致
       const shown = cardEl ? Number(cardEl.querySelector('.num').textContent) : null;
       sortTasks();
       body.innerHTML = (Number.isFinite(shown) && shown !== tasks.length
-        ? `<div class="drill-warn">统计值 ${shown} 与当前查询结果 ${tasks.length} 不一致，可能数据刚有变动</div>`
+        ? `<div class="drill-warn">${tr('统计值 {shown} 与当前查询结果 {actual} 不一致，可能数据刚有变动', { shown, actual: tasks.length })}</div>`
         : '') + tableHtml();
 
       const resort = (key) => {

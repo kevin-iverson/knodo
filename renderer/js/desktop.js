@@ -235,12 +235,56 @@ function priOf(t) {
   return Number.isInteger(p) && p >= 0 && p <= 3 ? p : 1;
 }
 
+/** 分组色只认 #rrggbb(a)：别把库里的脏值原样拼进 style（与 calendar.js#safeColor 同口径） */
+const safeColor = (c) => (/^#[0-9a-f]{3,8}$/i.test(String(c || '')) ? String(c) : '');
+
+/** 标题的比较键：只 trim，不做大小写归一 —— 「周报」和「周报 」是重名，「周报」和「周报A」不是 */
+const titleKey = (t) => String(t && t.title != null ? t.title : '').trim();
+
+/**
+ * 重名行的归属小字：按标题分组，**只在归属真能区分出这几条时**才给。
+ *
+ * 为什么不做「有重名就塞分组名」：两条同名任务往往就躺在同一个清单里
+ * （用户连着建了两条「周会准备」），此时写两遍一样的「项目甲」既没有区分力，
+ * 又把 34px 的行白白撑成 37px。判据是「组内分组名取值 ≥2 种」：
+ *  - 「项目甲 / 项目乙」→ 给（跨清单撞名，正是这条需求的靶子）；
+ *  - 一条有分组、一条没有 → 给，空的那个写「未分组」（这也可以区分）；
+ *  - 两条都在项目甲 → 不给（分组名不承担区分职责，也没有别的维度可退）。
+ *
+ * 父任务名不进这个维度：父可见时有缩进 + └ 引导线，父被筛掉时行内已有
+ * 「↳ 父任务名」标签 —— 浮窗里父属关系已有表达，不必在第二行重复一遍。
+ *
+ * @param {Array} rows 真正会被画出来的行（flattenTree 之后），不是原始任务表：
+ *                     未展开的子任务不渲染，也就谈不上「同屏撞名」。
+ * @returns {Map<number, string>} taskId → 归属文案（不在表里 = 不显示）
+ */
+function ownersByTask(rows) {
+  const groups = new Map();
+  for (const t of rows) {
+    const k = titleKey(t);
+    if (!k) continue;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(t);
+  }
+  const out = new Map();
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    const names = list.map((t) => String(t && t.group_name != null ? t.group_name : '').trim());
+    if (new Set(names).size < 2) continue;
+    // 空串也算一种取值（「这条没归到任何清单」），写出来同样能区分。
+    // 「未分组」直接写中文：浮窗渲染层整体没接 i18n（本文件其余文案同此）。
+    list.forEach((t, i) => out.set(t.id, names[i] || '未分组'));
+  }
+  return out;
+}
+
 function signature() {
   if (!view) return 'none';
-  const t = (view.tasks || []).map((x) => `${x.id}:${x.completed ? 1 : 0}:${x.title}:${x.parent_id || ''}:${x.parent_title || ''}:${x.subtask_count || 0}:${x.subtask_done || 0}:${x.plan_end || ''}:${priOf(x)}`).join('|');
+  const t = (view.tasks || []).map((x) => `${x.id}:${x.completed ? 1 : 0}:${x.title}:${x.parent_id || ''}:${x.parent_title || ''}:${x.subtask_count || 0}:${x.subtask_done || 0}:${x.plan_end || ''}:${priOf(x)}:${x.group_name || ''}:${x.group_color || ''}`).join('|');
   const p = view.projection || {};
   // 优先级必须进指纹：否则主列表改了优先级，浮窗不重绘 = 「色标永远不变」。
   // parent_title / subtask_* 决定层级徽标，wlEnabled 决定工时按钮组，变了都要重建 DOM。
+  // group_name / group_color 决定重名行的归属小字（与色点），同样必须重建。
   // 注意计时秒数**不进**指纹：那是瞬态，交给 paintWorklogRows 每秒就地改，重绘会丢滚动位置。
   return `${view.title}|${view.counts ? view.counts.done : 0}/${view.counts ? view.counts.total : 0}|${view.error || ''}|${view.missing ? 1 : 0}|${isCollapsed() ? 1 : 0}|${p.kind || ''}|${p.dock || ''}|${view.pending == null ? '' : view.pending}/${view.overdue == null ? '' : view.overdue}|${t}|${highlightId || ''}|${wlEnabled ? 1 : 0}`;
 }
@@ -409,6 +453,8 @@ function rowHtml(t, opts = {}) {
   const done = !!t.completed;
   const pri = priOf(t);
   const timing = wlMine(t.id);
+  // 归属小字（只有重名的行才有，由 renderList 判定后传进来）
+  const owner = String(opts.owner || '').trim();
   const node = opts.node || { depth: 0, hasKids: false, expanded: false, parentVisible: true };
   const depth = Math.max(0, Number(node.depth) || 0);
   const cls = [
@@ -421,6 +467,8 @@ function rowHtml(t, opts = {}) {
     // 紧急行额外强化：左侧竖条 + 标题加粗 + 淡红底（色点太弱，一眼扫不到）
     pri === 3 && !done ? 'is-urgent' : '',
     timing ? 'is-timing' : '',
+    // 重名行多长一行归属小字（34px → 自适应高度），不重名的行保持单行
+    owner ? 'has-sub' : '',
   ].filter(Boolean).join(' ');
   const due = opts.due || '';
   const tail = opts.tail || '';
@@ -440,11 +488,23 @@ function rowHtml(t, opts = {}) {
   const subTotal = Number(t.subtask_count) || 0;
   const subDone = Number(t.subtask_done) || 0;
   const subTag = subTotal > 0 ? `<span class="dw-rel dw-rel-count" title="子任务 ${subDone}/${subTotal} 已完成">☑ ${subDone}/${subTotal}</span>` : '';
+  // 重名行：标题下面再给一行 10px 归属（分组名 / 「未分组」）+ 分组色圆点。
+  // 286px 里把归属拼进标题会直接挤掉标题本身；而同一屏出现两条同名任务时，
+  // 光看标题是分不出「这是哪个项目的」—— 这是这一行唯一的区分手段。
+  // 圆点只在归属确实是一个分组名时才上色（「未分组」没有颜色可给，走 currentColor 灰）。
+  const dotColor = owner && owner === String(t.group_name == null ? '' : t.group_name).trim()
+    ? safeColor(t.group_color) : '';
+  const textHtml = owner
+    ? `<span class="dw-t">${esc(t.title)}</span>`
+      + `<span class="dw-sub" title="归属：${esc(owner)}">`
+      + `<span class="dw-sub-dot"${dotColor ? ` style="background:${esc(dotColor)}"` : ''}></span>`
+      + `<span class="dw-sub-name">${esc(owner)}</span></span>`
+    : esc(t.title);
   return `<div class="${cls}" data-id="${t.id}"${opts.sec ? ` data-sec="${opts.sec}"` : ''}${depth ? ` data-depth="${depth}"` : ''} draggable="false" title="${esc(t.title)}">
       <span class="dw-lead">${lead}</span>
       <button type="button" class="dw-check${done ? ' on' : ''}" data-act="toggle" role="checkbox" aria-checked="${done}" title="${done ? '取消完成' : '标记完成'}"></button>
       <span class="dw-pri p${pri}" title="优先级：${['低', '中', '高', '紧急'][pri]}"></span>
-      <span class="dw-text">${esc(t.title)}</span>
+      <span class="dw-text">${textHtml}</span>
       ${parentTag}${subTag}
       <span class="dw-pri-tag p${pri}" title="优先级：${['低', '中', '高', '紧急'][pri]}">${['低', '中', '高', '紧急'][pri]}</span>
       ${due ? `<span class="dw-due${due === '今天' || due === '明天' ? ' is-soon' : ''}">${esc(due)}</span>` : ''}
@@ -581,16 +641,21 @@ function renderList() {
     return;
   }
 
+  // 归属小字按「真正画出来的行」算：未展开的子任务不渲染，不算同屏撞名。
+  // 没有能区分的归属时 owner 一律空串 → DOM 与改造前完全一致（单行 34px）。
   if (kind === 'unfinished') {
     const html = groupSections(tasks).map((sec) => {
-      // 每段各自成树：逾期段里的一对父子也在展开后紧跟在一起
-      const rows = flattenTree(sec.rows).map((node) => {
+      // 每段各自成树：逾期段里的一对父子也在展开后紧跟在一起；
+      // 重名也按段内算 —— 两段各自只剩一条同名时，本来就不需要区分。
+      const nodes = flattenTree(sec.rows);
+      const owners = ownersByTask(nodes.map((n) => n.task));
+      const rows = nodes.map((node) => {
         const t = node.task;
         const overdue = sec.key === 'overdue' && !t.completed ? `逾期 ${overdueDays(t.plan_end)} 天` : '';
         const due = sec.key === 'later' ? dueLabel(t.plan_end) : '';
         // 逾期段行尾给天数，之后段给短日期；今天 / 未安排不占宽度
         return rowHtml(t, {
-          ...opts, due, tail: overdue, sec: sec.key, node,
+          ...opts, due, tail: overdue, sec: sec.key, node, owner: owners.get(t.id) || '',
         });
       }).join('');
       return `<div class="dw-sec ${sec.cls}" data-sec="${sec.key}">
@@ -601,8 +666,11 @@ function renderList() {
     el.list.innerHTML = html;
   } else {
     const showDue = kind === 'upcoming';
-    el.list.innerHTML = flattenTree(tasks).map((node) => rowHtml(node.task, {
-      ...opts, due: showDue ? dueLabel(node.task.plan_end) : '', node,
+    const nodes = flattenTree(tasks);
+    // 单清单浮窗里所有任务同属一个清单：分组名恒等于清单名，一行都别给
+    const owners = kind === 'group' ? new Map() : ownersByTask(nodes.map((n) => n.task));
+    el.list.innerHTML = nodes.map((node) => rowHtml(node.task, {
+      ...opts, due: showDue ? dueLabel(node.task.plan_end) : '', node, owner: owners.get(node.task.id) || '',
     })).join('');
   }
   el.list.scrollTop = scrollTop;

@@ -58,17 +58,19 @@
           <circle cx="110" cy="175" r="17" fill="#D9472E" />
         </svg>
       </span>
-      <span class="tb-name" title="Knodo — 知识化待办（Knowledge + Todo）">Knodo</span>
+      <span class="tb-name" title="Knodo — 知识化待办（Knowledge + Todo）" data-i18n-title="Knodo — 知识化待办（Knowledge + Todo）">Knodo</span>
       <!-- 版本号跟着品牌名（只是弱提示，取不到就空着，不影响布局） -->
       <span class="tb-ver" id="sb-ver"></span>
       <!-- 有新版本角标：紧贴版本号右侧，默认 hidden；主进程查到新版后由渲染层揭开。
            点击 = 检查更新并弹出下载对话框。标题栏整条是 drag 区，故必须 no-drag。 -->
       <button type="button" class="tb-update-badge" id="sb-update-badge" hidden
-              title="发现新版本：点击查看更新说明并下载" aria-label="发现新版本，点击查看">有新版本</button>
+              title="发现新版本：点击查看更新说明并下载" aria-label="发现新版本，点击查看"
+              data-i18n-title="发现新版本：点击查看更新说明并下载" data-i18n-aria="发现新版本，点击查看" data-i18n="有新版本">有新版本</button>
       <!-- 设置入口：骑在标题栏「侧栏段 / 主区段」分界线上的齿轮（另有 Ctrl+, 与托盘菜单两条路）。
            位置由 CSS 按 --sidebar-width 算，拖动侧栏宽度它会跟着走；
            标题栏整条是 drag 区，按钮必须 no-drag，否则点不动只会拖窗。 -->
-      <button type="button" class="tb-set" id="btn-settings" title="设置（Ctrl+,）" aria-label="打开设置">
+      <button type="button" class="tb-set" id="btn-settings" title="设置（Ctrl+,）" aria-label="打开设置"
+              data-i18n-title="设置（Ctrl+,）" data-i18n-aria="打开设置">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3.2" />
@@ -79,34 +81,38 @@
            .tb-nav 只负责定位与间距，按钮自带尺寸 —— 再加一个入口时不用重算绝对偏移。
            日历 / 统计：从侧栏搬来，保留 .nav-item 类与 data-view ——
            点击切换、active 高亮、视图重绘全都复用既有逻辑。 -->
-      <div class="tb-nav" role="group" aria-label="快捷入口">
+      <div class="tb-nav" role="group" aria-label="快捷入口" data-i18n-aria="快捷入口">
         <button type="button" class="nav-item tb-cal" data-view="calendar"
-                title="日历视图：月 / 周负载总览（Ctrl+Alt+M）"><span class="nav-ico">🗓</span>日历</button>
+                title="日历视图：月 / 周负载总览（Ctrl+Alt+M）" data-i18n-title="日历视图：月 / 周负载总览（Ctrl+Alt+M）"><span class="nav-ico">🗓</span><span data-i18n="日历">日历</span></button>
         <!-- 统计：用户指定夹在日历与搭子中间（原先在侧栏底部） -->
         <button type="button" class="nav-item tb-stats" data-view="stats"
-                title="统计视图：任务完成情况概览（按分组 / 标签 / 优先级看欠账与产出）"><span class="nav-ico">📊</span>统计</button>
+                title="统计视图：任务完成情况概览（按分组 / 标签 / 优先级看欠账与产出）"
+                data-i18n-title="统计视图：任务完成情况概览（按分组 / 标签 / 优先级看欠账与产出）"><span class="nav-ico">📊</span><span data-i18n="统计">统计</span></button>
         <!-- 工时：用户要求放在「统计」右侧，且不再标「插件」角标。
              入口**常驻**（不随功能开关出现 / 消失）—— 功能关闭时点进来是「未启用」引导页，
              否则用户既看不到入口、也无从知道该去哪儿开启（见 ui.js#renderWorklogOff）。 -->
         <button type="button" class="nav-item tb-worklog" data-view="worklog"
-                title="工时：子任务向上累积，可按分组 / 标签筛选后导出报工表"><span class="nav-ico">🕒</span>工时</button>
+                title="工时：子任务向上累积，可按分组 / 标签筛选后导出报工表"
+                data-i18n-title="工时：子任务向上累积，可按分组 / 标签筛选后导出报工表"><span class="nav-ico">🕒</span><span data-i18n="工时">工时</span></button>
         <!-- 四象日记：常驻入口（与工时同规矩），关闭时点进来是引导页（见 ui.js#renderJournalOff）。
              关闭态这里不出现任何日记 DOM —— 视图与样式都由 renderer/js/journal/index.js 动态挂。 -->
         <button type="button" class="nav-item tb-journal" data-view="journal"
-                title="四象日记：四格整理 + 随手碎碎念，按天记录（Ctrl+Alt+J）"><span class="nav-ico">📔</span>日记</button>
+                title="四象日记：四格整理 + 随手碎碎念，按天记录（Ctrl+Alt+J）"
+                data-i18n-title="四象日记：四格整理 + 随手碎碎念，按天记录（Ctrl+Alt+J）"><span class="nav-ico">📔</span><span data-i18n="日记">日记</span></button>
         <!-- 搭子：工位搭子面板（五页签主浮窗的「搭子」页）。
              它不是视图，所以不挂 .nav-item / data-view —— 点击只开模态，不切 state.view。
              插件默认关闭：入口带 hidden，只有 feature.buddy.enabled 时由 app.js 揭开。 -->
         <button type="button" class="tb-buddy" id="btn-buddy" hidden
                 title="搭子：工位搭子（戳一戳 / 抽签 / 抱团 / 牛马卡，Ctrl+Alt+E）"
-                aria-label="打开工位搭子"><span class="nav-ico">🐮</span>搭子</button>
+                aria-label="打开工位搭子"
+                data-i18n-title="搭子：工位搭子（戳一戳 / 抽签 / 抱团 / 牛马卡，Ctrl+Alt+E）" data-i18n-aria="打开工位搭子"><span class="nav-ico">🐮</span><span data-i18n="搭子">搭子</span></button>
       </div>
       <!-- 明暗滑块：一枚「日 / 月 盘」，落在主区段右端的空位（窗口三键左侧 37px）。
            视觉两态只由 :root[data-theme] 驱动 —— 首帧就是对的，不靠 JS 补；
            JS 只负责点击 / ←→ 改 mode 与 aria-checked，「跟随系统」仍留在设置中心。
            标题栏整条是 drag 区，所以它必须 no-drag（见 styles.css 的 .tb-mode）。 -->
       <button type="button" class="tb-mode" id="btn-theme-mode" role="switch"
-              aria-checked="false" aria-label="深色主题" title="切换明暗主题">
+              aria-checked="false" aria-label="深色主题" title="切换明暗主题" data-i18n-aria="深色主题" data-i18n-title="切换明暗主题">
         <span class="tbm-track" aria-hidden="true">
           <span class="tbm-orb">
             <!-- 两枚字形都常驻 DOM，靠透明度 / 旋转互换：太阳是实心圆盘 + 八道短线，
@@ -126,18 +132,18 @@
       <!-- 窗口控制三键：自绘（系统 overlay 已撤，见 main/main.js 的注释）。
            46×40 是 Windows 的惯例尺寸；图标是 10px 细线 SVG，跟 currentColor 走，
            所以换主题 / 换风格不用重新推一次原生配色。最大化↔还原由 js/win-controls.js 切换。 -->
-      <div class="tb-win" id="tb-win" role="group" aria-label="窗口控制">
-        <button type="button" class="tb-win-btn" data-win="min" title="最小化" aria-label="最小化">
+      <div class="tb-win" id="tb-win" role="group" aria-label="窗口控制" data-i18n-aria="窗口控制">
+        <button type="button" class="tb-win-btn" data-win="min" title="最小化" aria-label="最小化" data-i18n-title="最小化" data-i18n-aria="最小化">
           <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 5.5h7" /></svg>
         </button>
-        <button type="button" class="tb-win-btn" data-win="max" title="最大化" aria-label="最大化">
+        <button type="button" class="tb-win-btn" data-win="max" title="最大化" aria-label="最大化" data-i18n-title="最大化" data-i18n-aria="最大化">
           <svg class="ico-max" viewBox="0 0 10 10" aria-hidden="true"><rect x="1.6" y="1.6" width="6.8" height="6.8" rx="0.8" /></svg>
           <svg class="ico-restore" viewBox="0 0 10 10" aria-hidden="true">
             <rect x="1.4" y="3.1" width="5.5" height="5.5" rx="0.8" />
             <path d="M3.4 3.1V1.6h5v5H6.9" />
           </svg>
         </button>
-        <button type="button" class="tb-win-btn is-close" data-win="close" title="关闭（最小化到托盘）" aria-label="关闭">
+        <button type="button" class="tb-win-btn is-close" data-win="close" title="关闭（最小化到托盘）" aria-label="关闭" data-i18n-title="关闭（最小化到托盘）" data-i18n-aria="关闭">
           <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" /></svg>
         </button>
       </div>
@@ -150,31 +156,31 @@
              导航 / 分组 / 标签放进独立滚动容器，底部只留版本号。 -->
         <div class="sidebar-scroll">
           <nav class="nav">
-            <button class="nav-item" data-view="today"><span class="nav-ico">📅</span>今天</button>
-            <button class="nav-item" data-view="upcoming"><span class="nav-ico">⏰</span>即将到期</button>
+            <button class="nav-item" data-view="today"><span class="nav-ico">📅</span><span data-i18n="今天">今天</span></button>
+            <button class="nav-item" data-view="upcoming"><span class="nav-ico">⏰</span><span data-i18n="即将到期">即将到期</span></button>
             <!-- 「未完成」= 全部进行中任务，跨分组汇总（含逾期 / 未排期）。
                  放在「即将到期」与「全部任务」之间：一个看将来，一个看欠账，再往下才是全量。 -->
-            <button class="nav-item" data-view="unfinished"><span class="nav-ico">📇</span>未完成</button>
-            <button class="nav-item" data-view="all"><span class="nav-ico">📋</span>全部任务</button>
-            <button class="nav-item" data-view="completed"><span class="nav-ico">✅</span>已完成</button>
-            <button class="nav-item" data-view="archived"><span class="nav-ico">🗂</span>归档</button>
-            <button class="nav-item" data-view="notes"><span class="nav-ico">📝</span>笔记</button>
-            <button class="nav-item" data-view="reports"><span class="nav-ico">🤖</span>AI 报告</button>
-            <button class="nav-item" data-view="meetings"><span class="nav-ico">🎙</span>会议纪要</button>
+            <button class="nav-item" data-view="unfinished"><span class="nav-ico">📇</span><span data-i18n="未完成">未完成</span></button>
+            <button class="nav-item" data-view="all"><span class="nav-ico">📋</span><span data-i18n="全部任务">全部任务</span></button>
+            <button class="nav-item" data-view="completed"><span class="nav-ico">✅</span><span data-i18n="已完成">已完成</span></button>
+            <button class="nav-item" data-view="archived"><span class="nav-ico">🗂</span><span data-i18n="归档">归档</span></button>
+            <button class="nav-item" data-view="notes"><span class="nav-ico">📝</span><span data-i18n="笔记">笔记</span></button>
+            <button class="nav-item" data-view="reports"><span class="nav-ico">🤖</span><span data-i18n="AI 报告">AI 报告</span></button>
+            <button class="nav-item" data-view="meetings"><span class="nav-ico">🎙</span><span data-i18n="会议纪要">会议纪要</span></button>
           </nav>
 
           <div class="sidebar-section">
             <div class="section-head">
-              <span>分组</span>
-              <button class="mini-btn" id="btn-add-group" title="新增分组">＋</button>
+              <span data-i18n="分组">分组</span>
+              <button class="mini-btn" id="btn-add-group" title="新增分组" data-i18n-title="新增分组">＋</button>
             </div>
             <ul class="group-list" id="group-list"></ul>
           </div>
 
           <div class="sidebar-section">
             <div class="section-head">
-              <span>标签</span>
-              <button class="mini-btn" id="btn-add-tag" title="新增标签">＋</button>
+              <span data-i18n="标签">标签</span>
+              <button class="mini-btn" id="btn-add-tag" title="新增标签" data-i18n-title="新增标签">＋</button>
             </div>
             <ul class="tag-list" id="tag-list"></ul>
           </div>
@@ -183,13 +189,14 @@
 
       <!-- 侧边栏与主区之间的拖拽把手：拖动调整侧边栏宽度（双击恢复默认） -->
       <div class="sidebar-resizer" id="sidebar-resizer" title="拖拽调整侧边栏宽度（双击恢复默认）"
-           role="separator" aria-orientation="vertical" aria-label="调整侧边栏宽度"></div>
+           data-i18n-title="拖拽调整侧边栏宽度（双击恢复默认）"
+           role="separator" aria-orientation="vertical" aria-label="调整侧边栏宽度" data-i18n-aria="调整侧边栏宽度"></div>
 
       <!-- 主区域 -->
       <main class="main">
         <header class="topbar">
           <div class="topbar-left">
-            <h1 id="view-title">今天</h1>
+            <h1 id="view-title" data-i18n="今天">今天</h1>
             <span class="view-desc" id="view-desc"></span>
           </div>
           <div class="topbar-right">
@@ -197,44 +204,50 @@
                  两个入口都紧贴搜索框（原侧栏「AI 检索」已上移）；笔记点开是弹窗，不切视图。
                  「同步」「主题」两个低频入口已收进顶部菜单栏，腾出的行宽给这里。 -->
             <div class="search-box">
-              <input type="text" id="search-input" placeholder="搜索任务 / 标签…" />
+              <input type="text" id="search-input" placeholder="搜索任务 / 标签…" data-i18n-ph="搜索任务 / 标签…" />
             </div>
             <button type="button" class="text-btn ai-search-btn" id="btn-ai-search"
-                    title="AI 检索：关键词检索全部任务并生成 AI 总结（再点一次返回任务列表）">🔍 AI 检索</button>
+                    title="AI 检索：关键词检索全部任务并生成 AI 总结（再点一次返回任务列表）"
+                    data-i18n-title="AI 检索：关键词检索全部任务并生成 AI 总结（再点一次返回任务列表）" data-i18n="🔍 AI 检索">🔍 AI 检索</button>
             <button type="button" class="text-btn note-btn" id="btn-notes-dock"
-                    title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）">📝 笔记</button>
+                    title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）"
+                    data-i18n-title="打开笔记（弹窗，内容与侧栏「笔记」完全一致，不离开当前任务）" data-i18n="📝 笔记">📝 笔记</button>
             <!-- 贴顶便签（📌）不再占顶栏位置：紧挨「笔记」看起来像笔记的附属按钮，
                  而且它是低频开关、常驻图标只是噪音。入口保留在侧栏「未完成」的右键菜单里。 -->
-            <button class="text-btn" id="btn-import" title="从完整备份包（.zip）或旧版 JSON 恢复">📥 导入</button>
-            <button class="text-btn" id="btn-export" title="导出完整备份包（任务 / 笔记 / 附件 / 录音都在里面）">📤 备份</button>
+            <!-- 「📥 导入」已移入设置中心「数据与备份 → 导入备份包」：它是低频的换机 / 恢复动作，
+                 和「📤 备份」常驻在这里会被当成一对日常按钮，还挤占搜索框的行宽。 -->
+            <button class="text-btn" id="btn-export" title="导出完整备份包（任务 / 笔记 / 附件 / 录音都在里面）" data-i18n-title="导出完整备份包（任务 / 笔记 / 附件 / 录音都在里面）" data-i18n="📤 备份">📤 备份</button>
             <!-- 「🗂 归档」已移入 File 菜单（低频维护动作），腾出的行宽给搜索框与 AI 检索 -->
             <!-- 录制拆成两条入口：录音一键直启（不弹配置窗），录屏要先挑屏幕 / 窗口。
                  分片时长不在顶栏配置，统一放到「会议纪要」界面。 -->
-            <button class="text-btn" id="btn-record-audio" title="录音：点击直接开始（麦克风 + 系统声），结束后转文字并生成纪要">🎙 录音</button>
-            <button class="text-btn" id="btn-record-screen" title="录屏：先选择屏幕 / 窗口，再开始录制画面 + 音频">🖥 录屏</button>
+            <button class="text-btn" id="btn-record-audio" title="录音：点击直接开始（麦克风 + 系统声），结束后转文字并生成纪要"
+                    data-i18n-title="录音：点击直接开始（麦克风 + 系统声），结束后转文字并生成纪要" data-i18n="🎙 录音">🎙 录音</button>
+            <button class="text-btn" id="btn-record-screen" title="录屏：先选择屏幕 / 窗口，再开始录制画面 + 音频"
+                    data-i18n-title="录屏：先选择屏幕 / 窗口，再开始录制画面 + 音频" data-i18n="🖥 录屏">🖥 录屏</button>
             <!-- AI 设置 / 开机自启动 / 同步 / 主题 都在顶部菜单栏（主进程应用菜单） -->
-            <button class="primary-btn" id="btn-new-task">＋ 新建任务</button>
+            <button class="primary-btn" id="btn-new-task" data-i18n="＋ 新建任务">＋ 新建任务</button>
           </div>
         </header>
 
         <div class="filter-bar" id="filter-bar">
-          <span class="filter-label">优先级</span>
-          <button class="chip" data-priority="all">全部</button>
-          <button class="chip" data-priority="0">低</button>
-          <button class="chip" data-priority="1">中</button>
-          <button class="chip" data-priority="2">高</button>
-          <button class="chip" data-priority="3">紧急</button>
+          <span class="filter-label" data-i18n="优先级">优先级</span>
+          <button class="chip" data-priority="all" data-i18n="全部">全部</button>
+          <button class="chip" data-priority="0" data-i18n="低">低</button>
+          <button class="chip" data-priority="1" data-i18n="中">中</button>
+          <button class="chip" data-priority="2" data-i18n="高">高</button>
+          <button class="chip" data-priority="3" data-i18n="紧急">紧急</button>
           <span class="filter-sep"></span>
-          <button class="chip" id="btn-time-filter">⏱ 时间筛选</button>
+          <button class="chip" id="btn-time-filter" data-i18n="⏱ 时间筛选">⏱ 时间筛选</button>
           <span class="filter-sep"></span>
           <button class="chip chip-tag" id="tag-filter-chip" hidden title="点击清除标签筛选"></button>
           <span class="filter-sep"></span>
-          <span class="filter-label">排序</span>
-          <select class="sort-select" id="sort-select" title="选择列表排序方式；选「手动」后可直接拖拽任务行调整顺序">
-            <option value="smart">智能</option>
-            <option value="priority">优先级</option>
-            <option value="due">截止日期</option>
-            <option value="manual">手动（可拖拽）</option>
+          <span class="filter-label" data-i18n="排序">排序</span>
+          <select class="sort-select" id="sort-select" title="选择列表排序方式；选「手动」后可直接拖拽任务行调整顺序"
+                  data-i18n-title="选择列表排序方式；选「手动」后可直接拖拽任务行调整顺序">
+            <option value="smart" data-i18n="智能">智能</option>
+            <option value="priority" data-i18n="优先级">优先级</option>
+            <option value="due" data-i18n="截止日期">截止日期</option>
+            <option value="manual" data-i18n="手动（可拖拽）">手动（可拖拽）</option>
           </select>
         </div>
 
@@ -249,7 +262,7 @@
 
     <!-- 故宫主题 · 檐角脊兽：只在 data-style="palace" 时显示（见 css/palace-ridge.css），
          13 尊形象由 js/palace-rail.js 注入，悬停浮起来历与寓意。 -->
-    <div class="palace-rail" id="palace-rail" role="group" aria-label="太和殿脊兽">
+    <div class="palace-rail" id="palace-rail" role="group" aria-label="太和殿脊兽" data-i18n-aria="太和殿脊兽">
       <div class="pr-row" id="pr-row"></div>
       <span class="pr-seal" aria-hidden="true">太<br>和</span>
       <span class="pr-caption" aria-hidden="true">太和殿 · 十脊兽</span>
@@ -260,9 +273,9 @@
 
   <!-- 背景图文件丢失的提示条：不阻塞启动，也不弹模态，点「重新选择」直接落到外观分区 -->
   <div class="bd-lost" id="bd-lost" hidden>
-    <span class="bd-lost-text">⚠ 背景图文件已丢失，已回退主题底色</span>
-    <button type="button" class="bd-lost-btn" id="bd-lost-fix">重新选择</button>
-    <button type="button" class="bd-lost-x" id="bd-lost-close" aria-label="关闭提示">×</button>
+    <span class="bd-lost-text" data-i18n="⚠ 背景图文件已丢失，已回退主题底色">⚠ 背景图文件已丢失，已回退主题底色</span>
+    <button type="button" class="bd-lost-btn" id="bd-lost-fix" data-i18n="重新选择">重新选择</button>
+    <button type="button" class="bd-lost-x" id="bd-lost-close" aria-label="关闭提示" data-i18n-aria="关闭提示">×</button>
   </div>
 
   <!-- 任务详情抽屉 -->

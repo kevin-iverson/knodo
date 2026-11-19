@@ -772,6 +772,15 @@ const start = new Date(now); start.setHours(0, 0, 0, 0);
     n1.word_count > 0 && n1.excerpt.includes('灰度发布') && /^[0-9a-f]{40}$/.test(n1.content_hash));
   const n2 = db.createNote({ title: '复盘：发布事故', contentMd: '事故原因：配置未同步。' });
   check('标签挂在笔记上', (db.getNote(n1.id).tags || []).length === 1);
+  // 界面写标签走的是「名称」而不是 id（main/db.js#updateNote 的 tagNames 分支）：
+  // 只按逗号切分，不按空白切 —— 「项目 A」这种带空格的标签必须仍是一个标签。
+  const nTag = db.updateNote(n1.id, { tagNames: '方案，复盘,含 空格的标签' });
+  check('按名称写标签：解析并挂到笔记上',
+    nTag.tags.length === 3 && nTag.tags.some((t) => t.name === '含 空格的标签'));
+  check('按名称写标签可清空', db.updateNote(n1.id, { tagNames: '' }).tags.length === 0);
+  check('按名称写标签复用同名标签（不重复建行）',
+    db.updateNote(n1.id, { tagNames: '方案' }).tags.length === 1
+      && db.listNoteTags().filter((t) => t.name === '方案').length === 1);
   const nUpd = db.updateNote(n1.id, { content_md: `${md}\n补充：回滚策略。` });
   check('改正文重算摘要 / 字数 / 哈希',
     nUpd.content_hash !== n1.content_hash && nUpd.word_count > n1.word_count);

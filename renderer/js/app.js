@@ -4,6 +4,7 @@
  */
 import { init, toast, getEncouragerStats } from './ui.js';
 import { api } from './api.js';
+import { primeLocale, setLocaleSync, applyStaticI18n, normalizeLocale } from './i18n.js';
 
 // 供冒烟测试检测渲染进程是否成功初始化
 window.__appReady = false;
@@ -107,12 +108,43 @@ async function syncFeatures(payload) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // 语言必须在 init() 之前就位：侧栏 / 顶栏 / 空态文案都是 init 期间画的。
+  // 先吃 localStorage 缓存（同步、无闪烁），再以主进程的设置为准纠正一次。
+  const bootLocale = primeLocale();
+  try {
+    const loc = await api.i18n.get();
+    if (loc && normalizeLocale(loc) !== bootLocale) {
+      // 主进程的值和首帧缓存不一致（首次启动 / 从备份恢复 / 刚从设置里切过）：
+      // 一批模块常量（星期名、趋势范围、工时来源…）已经在 import 阶段按旧语言求过值了，
+      // 这里补写缓存再重载一次，让整棵树按新语言重建。
+      // 用 sessionStorage 记号保证只重载一次，不会来回抖。
+      setLocaleSync(loc);
+      let once = '';
+      try { once = sessionStorage.getItem('knodo.localeReload') || ''; } catch (e) { once = ''; }
+      if (once !== normalizeLocale(loc)) {
+        try { sessionStorage.setItem('knodo.localeReload', normalizeLocale(loc)); } catch (e) { /* 隐私模式忽略 */ }
+        window.location.reload();
+        return;
+      }
+    }
+    if (loc) setLocaleSync(loc);
+  } catch (e) {
+    console.warn('[i18n] 读取语言失败，沿用缓存', e);
+  }
+  applyStaticI18n();
+
   try {
     await init();
     window.__appReady = true;
   } catch (e) {
     console.error('[renderer init failed]', e);
   }
+  // 设置中心切语言 → 主进程广播 → 各窗口整体重载（界面是整块重写，热替换不可靠）。
+  // 重载前必须先把新语言写进缓存：reload 后模块在 import 阶段就要拿它求顶层常量。
+  api.on('locale:changed', (loc) => {
+    setLocaleSync(loc || 'zh-CN');
+    window.location.reload();
+  });
   // 插件在界面就绪之后再挂，避免和首屏抢 DOM
   try {
     const [worklog, buddy, journal] = await Promise.all([

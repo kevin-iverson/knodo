@@ -10,6 +10,7 @@
  */
 import { api } from '../api.js';
 import { toast } from '../ui.js';
+import { t as tr } from '../i18n.js';
 import { openDetail } from '../detail.js';
 import { live, elapsedMs, hms, isActive } from './shared.js';
 import * as zen from './zen.js';
@@ -19,13 +20,13 @@ let timer = null;
 let bound = false;
 
 function html() {
-  return `<span class="wl-dock-tag">🕒 工时计时</span>
+  return `<span class="wl-dock-tag">🕒 ${tr('工时计时')}</span>
     <span class="wl-dot"></span>
     <span class="wl-dock-time num" data-wl-time>00:00:00</span>
     <span class="wl-dock-task" data-wl-task></span>
-    <button type="button" class="wl-dock-btn" data-wl="zen" title="进入禅模式（全屏静默计时）">禅</button>
-    <button type="button" class="wl-dock-btn" data-wl="pause" title="暂停 / 继续计时">⏸ 暂停</button>
-    <button type="button" class="wl-dock-btn is-solid" data-wl="stop" title="结束并记录">■ 结束</button>`;
+    <button type="button" class="wl-dock-btn" data-wl="zen" title="${tr('进入禅模式（全屏静默计时）')}">${tr('禅')}</button>
+    <button type="button" class="wl-dock-btn" data-wl="pause" title="${tr('暂停 / 继续计时')}">⏸ ${tr('暂停')}</button>
+    <button type="button" class="wl-dock-btn is-solid" data-wl="stop" title="${tr('结束并记录')}">■ ${tr('结束')}</button>`;
 }
 
 export function mount() {
@@ -64,7 +65,7 @@ async function togglePause() {
     if (live.snap.mode === 'paused') await api.worklog.resume();
     else await api.worklog.pause();
   } catch (e) {
-    toast(`切换暂停失败：${(e && e.message) || e}`);
+    toast(tr('切换暂停失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -73,15 +74,15 @@ export async function stop() {
     const r = await api.worklog.stop();
     if (!r) return;
     if (r.discarded) {
-      toast(`太短（${r.sec} 秒），已丢弃`);
+      toast(tr('太短（{sec} 秒），已丢弃', { sec: r.sec }));
     } else {
-      const title = live.snap.taskTitle || '任务';
-      toast(`已记录 ${Math.floor(r.sec / 60)} 分钟到「${title}」`);
+      const title = live.snap.taskTitle || tr('任务');
+      toast(tr('已记录 {min} 分钟到「{title}」', { min: Math.floor(r.sec / 60), title }));
     }
     if (r.warning) toast(r.warning);
     zen.hide();
   } catch (e) {
-    toast(`结束计时失败：${(e && e.message) || e}`);
+    toast(tr('结束计时失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -99,12 +100,12 @@ export function paint() {
   const pz = el.querySelector('[data-wl="pause"]');
   if (t) t.textContent = hms(Math.floor(elapsedMs(snap) / 1000));
   if (name) {
-    name.textContent = snap.taskTitle || '任务';
+    name.textContent = snap.taskTitle || tr('任务');
     name.title = snap.taskTitle || '';
   }
   if (pz) {
-    pz.textContent = paused ? '▶ 继续' : '⏸ 暂停';
-    pz.title = paused ? '继续计时' : '暂停计时';
+    pz.textContent = paused ? `▶ ${tr('继续')}` : `⏸ ${tr('暂停')}`;
+    pz.title = paused ? tr('继续计时') : tr('暂停计时');
   }
 }
 

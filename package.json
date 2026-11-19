@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.10.0",
+  "version": "2.10.1",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": {
@@ -30,6 +30,7 @@
     "verify:search": "node scripts/verify-search-modal.js",
     "verify:note": "node scripts/verify-note-desktop.js",
     "verify:note-fs": "node scripts/verify-note-fs.js",
+    "verify:note-tags": "node scripts/verify-note-tags.js",
     "verify:dock": "node scripts/verify-dock.js",
     "dist": "node scripts/gen-icon.js && node scripts/build-vendor.js && node scripts/build-win.js",
     "dist:portable": "node scripts/gen-icon.js && node scripts/build-win.js --dir",
@@ -38,6 +39,7 @@
     "release:github": "node scripts/release-github.js",
     "verify:appearance": "node scripts/verify-appearance.js",
     "verify:settings-foot": "node scripts/verify-settings-foot.js",
+    "verify:import-entry": "node scripts/verify-import-entry.js",
     "verify:palace-rail": "node scripts/verify-palace-rail.js",
     "verify:mode": "node scripts/verify-theme-switch.js",
     "smoke:theme-image": "node scripts/smoke-theme-image.js",
@@ -61,7 +63,9 @@
     "figures": "electron scripts/marketing-figures.js",
     "verify:complete-fx": "node scripts/verify-complete-fx.js",
     "verify:update-badge": "node scripts/verify-update-badge.js",
-    "verify:journal": "node scripts/verify-journal.js"
+    "verify:journal": "node scripts/verify-journal.js",
+    "verify:i18n": "node scripts/verify-i18n.js",
+    "verify:dock-dup": "node scripts/verify-dock-dup.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

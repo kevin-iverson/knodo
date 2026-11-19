@@ -13,6 +13,7 @@
  * 于是用一段专用 DOM，但完整复用 modal 的 class，视觉与系统弹窗一致。
  */
 import { api } from '../api.js';
+import { t as tr } from '../i18n.js';
 import { esc, dateKey } from './shared.js';
 
 /** 分 → ¥1,234.50（整数分，展示时才除 100，避免浮点尾巴） */
@@ -47,22 +48,22 @@ export async function openRateModal(onChanged) {
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
   mask.innerHTML = `
-    <div class="modal modal-form pay-rate-modal" role="dialog" aria-modal="true" aria-label="时薪设置" style="width:460px">
-      <div class="modal-head">时薪设置</div>
+    <div class="modal modal-form pay-rate-modal" role="dialog" aria-modal="true" aria-label="${tr('时薪设置')}" style="width:460px">
+      <div class="modal-head">${tr('时薪设置')}</div>
       <div class="modal-body pay-body">
-        <p class="pay-tip">给时间估个值，不是工资条。按生效日计价，改价不会改写历史记录。</p>
+        <p class="pay-tip">${tr('给时间估个值，不是工资条。按生效日计价，改价不会改写历史记录。')}</p>
         <div class="form-grid">
           <div class="modal-field span-1">
-            <label>时薪（元 / 小时）</label>
+            <label>${tr('时薪（元 / 小时）')}</label>
             <input class="modal-input" type="text" inputmode="decimal" data-f="yuan" placeholder="80.00" autocomplete="off" />
           </div>
           <div class="modal-field span-1">
-            <label>生效日</label>
+            <label>${tr('生效日')}</label>
             <input class="modal-input" type="date" data-f="date" value="${dateKey(new Date())}" />
           </div>
           <div class="modal-field span-2">
-            <label>备注 <span class="pay-optional">可选</span></label>
-            <input class="modal-input" type="text" data-f="note" placeholder="例如：涨薪后 / A 客户报价" autocomplete="off" />
+            <label>${tr('备注')} <span class="pay-optional">${tr('可选')}</span></label>
+            <input class="modal-input" type="text" data-f="note" placeholder="${tr('例如：涨薪后 / A 客户报价')}" autocomplete="off" />
           </div>
         </div>
         <div class="pay-history" data-pay-history></div>
@@ -70,8 +71,8 @@ export async function openRateModal(onChanged) {
       </div>
       <div class="modal-foot">
         <div class="foot-main">
-          <button type="button" class="ghost-btn" data-pay-cancel>取消</button>
-          <button type="button" class="primary-btn" data-pay-ok>保存</button>
+          <button type="button" class="ghost-btn" data-pay-cancel>${tr('取消')}</button>
+          <button type="button" class="primary-btn" data-pay-ok>${tr('保存')}</button>
         </div>
       </div>
     </div>`;
@@ -98,12 +99,12 @@ export async function openRateModal(onChanged) {
 
   const paintHistory = () => {
     if (!rates.length) {
-      listEl.innerHTML = `<div class="pay-hist-empty">还没有费率。填好上面的时薪并保存，就能开始估算。</div>`;
+      listEl.innerHTML = `<div class="pay-hist-empty">${tr('还没有费率。填好上面的时薪并保存，就能开始估算。')}</div>`;
       return;
     }
     const total = (r) => Math.round(Number(r.rate_cents) || 0);
     listEl.innerHTML = `
-      <div class="pay-hist-head">历史费率 <span>按生效日倒序 · 点击回填修改</span></div>
+      <div class="pay-hist-head">${tr('历史费率')} <span>${tr('按生效日倒序 · 点击回填修改')}</span></div>
       <div class="pay-hist-list">
         ${rates.map((r) => `<div class="pay-hist-row" data-day="${esc(r.effective_from)}">
           <button type="button" class="pay-hist-edit" data-act="edit">
@@ -111,7 +112,7 @@ export async function openRateModal(onChanged) {
             <span class="pay-hist-rate">${rateText(total(r))}</span>
             <span class="pay-hist-note">${r.note ? esc(r.note) : '—'}</span>
           </button>
-          <button type="button" class="pay-hist-del" data-act="del" title="删除这条费率">✕</button>
+          <button type="button" class="pay-hist-del" data-act="del" title="${tr('删除这条费率')}">✕</button>
         </div>`).join('')}
       </div>`;
   };
@@ -138,8 +139,8 @@ export async function openRateModal(onChanged) {
     showError('');
     const raw = String(yuanEl.value || '').trim();
     const yuan = Number(raw);
-    if (!raw || !Number.isFinite(yuan) || yuan <= 0) { showError('时薪必须大于 0，且为数字'); return; }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateEl.value || '')) { showError('请选择生效日'); return; }
+    if (!raw || !Number.isFinite(yuan) || yuan <= 0) { showError(tr('时薪必须大于 0，且为数字')); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateEl.value || '')) { showError(tr('请选择生效日')); return; }
     setBusy(true);
     try {
       await api.worklog.rateSet({
@@ -153,7 +154,7 @@ export async function openRateModal(onChanged) {
       await reload();
       showError('');
     } catch (e) {
-      showError((e && e.message) || '保存失败，请重试');
+      showError((e && e.message) || tr('保存失败，请重试'));
     } finally {
       setBusy(false);
     }
@@ -177,7 +178,7 @@ export async function openRateModal(onChanged) {
     if (del && !busy) {
       if (del.dataset.confirm !== '1') {
         del.dataset.confirm = '1';
-        del.textContent = rates.length <= 1 ? '最后的费率？' : '再点删除';
+        del.textContent = rates.length <= 1 ? tr('最后的费率？') : tr('再点删除');
         del.classList.add('is-confirm');
         setTimeout(() => {
           if (del.isConnected) { delete del.dataset.confirm; del.textContent = '✕'; del.classList.remove('is-confirm'); }
@@ -192,7 +193,7 @@ export async function openRateModal(onChanged) {
         changed = true;
         await reload();
       } catch (err) {
-        showError((err && err.message) || '删除失败');
+        showError((err && err.message) || tr('删除失败'));
       } finally {
         setBusy(false);
       }

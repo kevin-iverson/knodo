@@ -132,7 +132,7 @@ const SCRIPT = `(async () => {
   ck('v19 迁移已就绪（pay 通道可用）', typeof api.worklog.pay === 'function');
   ck('费率通道齐全', ['rates','rateSet','rateDelete','entryBillable'].every((k) => typeof api.worklog[k] === 'function'));
 
-  /* ---------- 0b. 工时视图隐藏顶栏那排工具（搜索/AI/笔记/导入/备份/录制/新建）----------
+  /* ---------- 0b. 工时视图隐藏顶栏那排工具（搜索/AI/笔记/备份/录制/新建）----------
    * 此刻 nav 已在 worklog（mount 末尾 navigateTo 过），顶栏应整排 hidden。 */
   nav('worklog');
   await until(() => document.querySelector('.nav-item[data-view="worklog"].active'));
@@ -143,7 +143,7 @@ const SCRIPT = `(async () => {
   await until(() => document.querySelector('.nav-item[data-view="all"].active'));
   const topbarRightTask = document.querySelector('.topbar-right');
   ck('切回任务视图顶栏工具恢复', !!topbarRightTask && topbarRightTask.hidden === false
-    && !!topbarRightTask.querySelector('#btn-import') && !!topbarRightTask.querySelector('#btn-export'));
+    && !!topbarRightTask.querySelector('#btn-export') && !!topbarRightTask.querySelector('#btn-new-task'));
   nav('worklog');
   await until(() => document.querySelector('.nav-item[data-view="worklog"].active'));
 

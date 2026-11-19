@@ -247,6 +247,62 @@
 .shot-del:focus-visible { opacity: 1; }
 .shot-del:hover { background: rgba(229, 72, 77, 0.12); color: var(--danger); }
 
+/* 计划日期胶囊：默认「今天」是灰的（没信息量），从截图里读到的日期用主色标出来，
+   让用户一眼看出「这条不是我排的，是图里本来就有的」。
+   点一下换成原生日期输入（.shot-due-input），改完自动收回胶囊。 */
+.shot-due {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.shot-due:hover { background: var(--bg-hover); color: var(--text-2); }
+.shot-due:focus-visible { outline: 2px solid rgb(var(--primary-rgb) / 0.5); outline-offset: 1px; }
+.shot-due.is-set {
+  border-color: rgb(var(--primary-rgb) / 0.38);
+  background: rgb(var(--primary-rgb) / 0.12);
+  color: rgb(var(--primary-rgb));
+}
+.shot-due.is-set:hover { background: rgb(var(--primary-rgb) / 0.2); }
+
+/* 原生日期输入：只在点开胶囊时露出来。宽度按「2026/08/31」估，再窄就会被裁字 */
+.shot-due-input {
+  flex: 0 0 auto;
+  width: 118px;
+  margin-top: 0;
+  padding: 1px 4px;
+  border: 1px solid rgb(var(--primary-rgb) / 0.5);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  color-scheme: light;
+}
+[data-theme="dark"] .shot-due-input { color-scheme: dark; }
+
+/* 批量日期行：贴着列表底部，说清「这会改掉上面所有条目」 */
+.shot-batch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 2px 2px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.shot-batch-label { flex: 0 0 auto; }
+
 /* ---------------- 骨架屏 ---------------- */
 .shot-skel { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 0; }
 .shot-skel-row { display: flex; align-items: center; gap: 10px; }
@@ -321,7 +377,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .shot-skel-line { animation: none; }
-  .shot-row, .shot-del, .shot-thumb-zoom, .shot-check-box, .shot-pri, .shot-title { transition: none; }
+  .shot-row, .shot-del, .shot-thumb-zoom, .shot-check-box, .shot-pri, .shot-title, .shot-due { transition: none; }
 }
 
 /* 兜底识别：文字草稿的备注放宽到 3 行，至少让人看清识别出了什么 */

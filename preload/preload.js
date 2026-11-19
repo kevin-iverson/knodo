@@ -245,6 +245,12 @@ contextBridge.exposeInMainWorld('api', {
     clearImage: () => call('theme:clearImage'),
     reset: () => call('theme:reset'),
   },
+  // 国际化：get 拿当前语言，set 落库并让所有窗口重载（切换后界面整体重画）
+  i18n: {
+    get: () => call('i18n:get'),
+    list: () => call('i18n:list'),
+    set: (locale) => call('i18n:set', locale),
+  },
   accent: {
     get: () => call('accent:get'),
     set: (hex) => call('accent:set', hex),
@@ -464,6 +470,8 @@ contextBridge.exposeInMainWorld('api', {
       'ui:notes-dock',
       // 主题（主进程已改好 nativeTheme，推一份当前值让界面跟进）
       'ui:theme-changed',
+      // 语言切换：收到即 reload，界面按新语言整体重画
+      'locale:changed',
       // 自绘三键：最大化 / 还原态由主进程推（拖边吸附、Win+方向键、双击标题栏都会变）
       'win:state',
       // 全局快捷键：设置面板入口 / 快捷键变更（多条浮窗时同步刷新）/ 没有钉住清单时的提示

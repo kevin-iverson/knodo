@@ -313,6 +313,59 @@ html[data-theme='dark'] .dw-pend {
   text-overflow: ellipsis;
 }
 
+/* ---------------- 重名行的归属小字 ----------------
+   桌面浮窗最常钉「未完成 / 今天」，跨清单的任务名撞车时（两个项目各有一个「周报」），
+   只给标题是分不清的。只有**真重名**的行才多长一行 10px 小字 + 分组色圆点：
+   不重名的行仍然是 34px 单行，密排节奏不变；判据在 desktop.js#duplicateTitles。
+   高度用 min-height + auto：两行内容撑开约 38px，比写死一个值更耐受字号 / 缩放变化。
+   ------------------------------------------------ */
+.dw-row.has-sub {
+  height: auto;
+  min-height: var(--dw-row-h);
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.dw-row.has-sub .dw-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  /* 父级的 nowrap + ellipsis 是给单行标题的：换成两行后截断交给子元素自己做 */
+  white-space: normal;
+  text-overflow: clip;
+}
+.dw-t {
+  display: block;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dw-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.15;
+  letter-spacing: 0.2px;
+  color: var(--dw-text-3);
+}
+/* 圆点是分组色（数据色，来自库里的 group_color）；拿不到就跟着文字灰（currentColor） */
+.dw-sub-dot {
+  flex: none;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.dw-sub-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dw-row.is-done .dw-sub { color: var(--dw-text-3); }
+
 /* ---------------- 优先级色点（8px，四档固定配色） ----------------
    固定档位色，不跟分组色走：低=灰 / 中=青 / 高=橙 / 紧急=红。
    「中」刻意避开品牌蓝与分组常见的绿 —— 撞色会被误读成分组颜色。

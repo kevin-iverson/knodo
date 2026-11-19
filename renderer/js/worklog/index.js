@@ -11,6 +11,7 @@
 import { api } from '../api.js';
 import { navigateTo, toast, renderTasks } from '../ui.js';
 import { EXT } from '../ext.js';
+import { t as tr } from '../i18n.js';
 import { live, setSnap, onSnap, elapsedMs, isActive } from './shared.js';
 import * as view from './view.js';
 import * as bar from './timer-bar.js';
@@ -99,7 +100,7 @@ function renderRowExtra({ task, el }) {
   zenBtn.dataset.wlRowZen = '';
   zenBtn.dataset.taskId = String(task.id);
   zenBtn.textContent = '☯';
-  zenBtn.title = '禅模式：全屏静默计时（通知静默、不统计离开）';
+  zenBtn.title = tr('禅模式：全屏静默计时（通知静默、不统计离开）');
 
   const stopBtn = document.createElement('button');
   stopBtn.type = 'button';
@@ -107,7 +108,7 @@ function renderRowExtra({ task, el }) {
   stopBtn.dataset.wlRowStop = '';
   stopBtn.dataset.taskId = String(task.id);
   stopBtn.textContent = '■';
-  stopBtn.title = '结束并记录工时';
+  stopBtn.title = tr('结束并记录工时');
 
   run.addEventListener('click', async (e) => {
     e.preventDefault();
@@ -119,7 +120,7 @@ function renderRowExtra({ task, el }) {
       else if (snap.mode === 'running') await api.worklog.pause();
       else await api.worklog.resume();
     } catch (err) {
-      toast((err && err.message) || '操作失败');
+      toast((err && err.message) || tr('操作失败'));
     }
   });
 
@@ -131,7 +132,7 @@ function renderRowExtra({ task, el }) {
       if (!mine) await api.worklog.start({ taskId: task.id, source: 'zen' });
       zen.show();
     } catch (err) {
-      toast((err && err.message) || '进入禅模式失败');
+      toast((err && err.message) || tr('进入禅模式失败'));
     }
   });
 
@@ -158,8 +159,8 @@ function paintRow(run, stopBtn) {
   run.classList.toggle('is-run', mine);
   run.classList.toggle('is-paused', paused);
   run.title = mine
-    ? (paused ? '已暂停，点击继续' : '正在计时，点击暂停')
-    : '开始工时计时';
+    ? (paused ? tr('已暂停，点击继续') : tr('正在计时，点击暂停'))
+    : tr('开始工时计时');
 
   if (mine) {
     let t = run.querySelector('[data-wl-row-time]');
@@ -205,9 +206,9 @@ export async function mount() {
 
   // 扩展点：视图路由 + 任务行内计时按钮（详情抽屉里不再有工时块）
   EXT.views.worklog = {
-    title: '工时',
-    desc: '子任务向上累积 · 可按分组导出报工表',
-    long: '按时间范围统计任务工时；父任务合计 = 自身 + 全部后代，绝不重复计入',
+    title: tr('工时'),
+    desc: tr('子任务向上累积 · 可按分组导出报工表'),
+    long: tr('按时间范围统计任务工时；父任务合计 = 自身 + 全部后代，绝不重复计入'),
     render: view.render,
   };
   // 任务行两个扩展点：行内计时按钮 + 工时摘要/记录/补录（都在ui.js#renderTasks重绘后同步回调）

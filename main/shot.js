@@ -21,6 +21,7 @@ const attachments = require('./attachments');
 const crypto = require('./crypto');
 const ai = require('./ai');
 const shotOverlay = require('./shot-overlay');
+const dateU = require('./date-utils');
 
 /** 长边压到 1280：1080p 截图约 180–280KB，视觉模型看得清，也不至于传半天 */
 const MAX_EDGE = 1280;
@@ -50,12 +51,6 @@ function userError(msg, code) {
 }
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-
-function todayStr() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
 
 function stamp() {
   const d = new Date();
@@ -148,16 +143,21 @@ function readVisionConfig() {
   const vModel = String(db.getSetting('ai.visionModel', '') || '').trim();
   const vKey = crypto.decryptApiKey(db.getSetting('ai.visionKey', '')).value;
 
-  const baseUrl = vBase || mainBase;
-  const model = vModel || mainModel;
-  const source = vModel ? 'vision' : 'fallback';
+  // 视觉配置是**一组**：只有模型填了才算"要用单独的视觉模型"，否则整组回落到对话模型。
+  // 绝不能逐字段回落 —— 用户想取消配置时最常做的就是清掉模型（地址 / Key 还残留着），
+  // 逐字段回落会拼出「智谱地址 + deepseek 模型 + 过期视觉 Key」这种必 401 的组合，
+  // 越是想取消越取消不掉。
+  const useVision = !!vModel;
+  const baseUrl = useVision ? (vBase || mainBase) : mainBase;
+  const model = useVision ? vModel : mainModel;
+  const source = useVision ? 'vision' : 'fallback';
   // Key 复用有个坑：只有地址相同才能借主 Key，地址不同还复用必然 401
-  const reuse = !vKey && sameBase(baseUrl, mainBase);
-  const apiKey = vKey || (reuse ? mainKey : '');
+  const reuse = useVision && !vKey && sameBase(baseUrl, mainBase);
+  const apiKey = useVision ? (vKey || (reuse ? mainKey : '')) : mainKey;
 
   return {
     baseUrl, model, apiKey, source,
-    mainBase, mainModel, vBase, vModel,
+    mainBase, mainModel, mainKey, vBase, vModel, vKey,
     hasKey: !!apiKey,
     capability: ai.visionCapability(model),
     label: ai.modelLabel(model),
@@ -174,7 +174,7 @@ function visionStatus() {
     baseUrl: c.baseUrl,
     imageCapability: c.capability,
     hasKey: c.hasKey,
-    keyReused: !c.vKey && !!c.apiKey,
+    keyReused: c.source === 'vision' && !c.vKey && !!c.apiKey,
   };
 }
 
@@ -326,23 +326,72 @@ async function captureRegion() {
 
 /* ------------------------------ 识别 ------------------------------ */
 
+/**
+ * 这个失败值不值得换一条路再试一次？
+ *
+ * 只认"配置侧"的错误：Key 失效 / 没有 Key / 地址错了 / 模型不存在 / 模型不吃图。
+ * 超时与网络抖动不在其列 —— 那种情况重试只会让用户多等一倍时间，
+ * 而换了模型也一样会超时。
+ */
+function isConfigFailure(e) {
+  if (!e) return false;
+  if (e.code === 'NO_VISION' || e.code === 'NO_API_KEY' || e.code === 'VISION_KEY_MISSING') return true;
+  const msg = String(e.message || '');
+  return /HTTP (401|403|404)\b/.test(msg)
+    || /invalid[_ ]?(api[_ ]?key|token)/i.test(msg)
+    || /model[^.\n]{0,40}(not found|does not exist|not exist)/i.test(msg)
+    || /unauthorized|authentication/i.test(msg);
+}
+
+/**
+ * 调一次识图，把错误翻译成"用户能动手"的话。
+ * 单独拆出来是因为降级路径要对同一张图再打一次，两次的错误口径必须一致。
+ */
+async function runRecognize(dataUrl, cfg) {
+  try {
+    return await ai.recognizeTasksFromImage(dataUrl, cfg);
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    // 服务端明确拒绝图片输入：换个视觉模型是唯一正确的下一步，保留 NO_VISION 让卡片显示「去配置」
+    if (e && e.code === 'NO_VISION') {
+      throw userError(msg, 'NO_VISION');
+    }
+    if (/超时|timeout|aborted/i.test(msg)) {
+      throw userError('识别超时，可能是网络或模型太慢（可重试，或换一个更快的视觉模型）', 'TIMEOUT');
+    }
+    throw userError(msg, 'RECOGNIZE_FAILED');
+  }
+}
+
 async function recognize() {
   const p = alivePending();
   if (!p) {
     throw userError('这张截图过期了，请重新截一次', 'STALE');
   }
   const cfg = resolveVision();
+  let used = cfg;
+  let degraded = '';
   let raw;
   try {
-    raw = await ai.recognizeTasksFromImage(p.dataUrl, cfg);
+    raw = await runRecognize(p.dataUrl, cfg);
   } catch (e) {
-    const msg = e && e.message ? e.message : String(e);
-    // 服务端明确拒绝图片输入：换个视觉模型是唯一正确的下一步，保留 NO_VISION 让卡片显示「去配置」
-    if (e && e.code === 'NO_VISION') throw userError(msg, 'NO_VISION');
-    if (/超时|timeout|aborted/i.test(msg)) {
-      throw userError('识别超时，可能是网络或模型太慢（可重试，或换一个更快的视觉模型）', 'TIMEOUT');
+    // 视觉这条路自己坏了（Key 过期 / 模型不存在…）→ 用对话模型再试一次。
+    // 用户的原话是"我不想配视觉模型，不行就直接用对话的"：这时候把 401 糊到脸上
+    // 才是错的，能不能看图是服务端说了算，试过才知道。
+    const chat = readVisionConfig();
+    const canRetry = e && e.code !== 'STALE' && isConfigFailure(e)
+      && cfg.source === 'vision' && !!chat.mainKey;
+    if (!canRetry) throw e;
+    degraded = (e.message || String(e)).slice(0, 160);
+    used = { baseUrl: chat.mainBase, apiKey: chat.mainKey, model: chat.mainModel, source: 'fallback' };
+    try {
+      raw = await runRecognize(p.dataUrl, used);
+    } catch (e2) {
+      // 两条路都不通：优先给"去换一个能吃图的模型"这种可操作的话
+      if (e2 && e2.code === 'NO_VISION') throw e2;
+      throw userError(`视觉模型不可用（${degraded}），改用对话模型也失败：${(e2 && e2.message) || e2}`,
+        (e2 && e2.code) || 'RECOGNIZE_FAILED');
     }
-    throw userError(msg, 'RECOGNIZE_FAILED');
   }
   let parsed = { summary: '', tasks: [] };
   let parseErr = null;
@@ -357,7 +406,7 @@ async function recognize() {
   if (!parsed.tasks.length) {
     let ocr = null;
     try {
-      ocr = ai.parseTextShotReply(await ai.recognizeTextFromImage(p.dataUrl, cfg));
+      ocr = ai.parseTextShotReply(await ai.recognizeTextFromImage(p.dataUrl, used));
     } catch (e) {
       ocr = null;
     }
@@ -366,9 +415,11 @@ async function recognize() {
         summary: '',
         tasks: [{ title: ocr.title, note: ocr.note || '', priority: 1, due: '' }],
         fallback: 'text',
-        model: cfg.model,
-        modelLabel: ai.modelLabel(cfg.model),
-        source: cfg.source,
+        model: used.model,
+        modelLabel: ai.modelLabel(used.model),
+        source: used.source,
+        degraded: !!degraded,
+        degradedReason: degraded,
         width: p.width,
         height: p.height,
       };
@@ -379,9 +430,11 @@ async function recognize() {
   return {
     summary: parsed.summary,
     tasks: parsed.tasks,
-    model: cfg.model,
-    modelLabel: ai.modelLabel(cfg.model),
-    source: cfg.source,
+    model: used.model,
+    modelLabel: ai.modelLabel(used.model),
+    source: used.source,
+    degraded: !!degraded,
+    degradedReason: degraded,
     width: p.width,
     height: p.height,
   };
@@ -404,16 +457,23 @@ function resolveGroup() {
  * 建任务 + 存附件 + 写描述。
  * 顺序不能反：先建任务拿 id（附件目录名就是 task-<id>），再落图片。
  * 图片落盘失败不算致命（任务本身还有用），但要如实回报 imageErrors。
+ *
+ * 计划日期：识别时模型只在截图**明写**日期时给 due（见 ai.js#SHOT_SYSTEM_PROMPT），
+ * 用户在卡片上还能改。这里再做一次校验 —— 前端传什么都不能让一条脏日期进库，
+ * 认不出就按今天算，与卡片上的默认显示一致。
  */
 function commit(payload = {}) {
   const p = alivePending();
   if (!p) throw userError('这张截图过期了，请重新截一次', 'STALE');
 
+  const today = dateU.todayLocal();
   const list = (Array.isArray(payload.tasks) ? payload.tasks : [])
     .map((t) => ({
       title: String((t && t.title) || '').replace(/\s+/g, ' ').trim().slice(0, 200),
       note: String((t && t.note) || '').trim().slice(0, 500),
       priority: clamp(Math.round(Number(t && t.priority) || 0), 0, 3),
+      // toDay 只认真实存在的 YYYY-MM-DD（2026-02-31 会被它挡掉）
+      due: dateU.toDay(t && t.due) || today,
     }))
     .filter((t) => t.title);
   if (!list.length) throw userError('至少要留一条任务', 'EMPTY');
@@ -421,15 +481,14 @@ function commit(payload = {}) {
   const group = resolveGroup();
   if (!group) throw userError('还没有清单，先在主窗口建一个', 'NO_GROUP');
 
-  const today = todayStr();
   const imageErrors = [];
   const taskIds = [];
   list.forEach((t) => {
     const task = db.createTask({
       title: t.title,
       groupId: group.id,
-      planStart: today,
-      planEnd: today,
+      planStart: t.due,
+      planEnd: t.due,
       priority: t.priority,
     });
     taskIds.push(task.id);
@@ -459,6 +518,10 @@ function commit(payload = {}) {
     taskIds,
     group,
     imageErrors,
+    // 卡片要据此告诉用户「这批里有几条不在今天」——落在别处的任务不会出现在「今天」列表里，
+    // 不说明的话看起来就像没保存成功
+    days: [...new Set(list.map((t) => t.due))],
+    today,
   };
 }
 

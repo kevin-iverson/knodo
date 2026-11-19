@@ -2642,12 +2642,22 @@ function createNote({ title = '', contentMd = '', folderId = null, tagIds = [], 
   return getNote(create());
 }
 
-/** 局部更新笔记：改正文时同步重算摘要 / 字数 / 哈希（增量索引靠哈希判断是否要重建分块） */
+/**
+ * 局部更新笔记：改正文时同步重算摘要 / 字数 / 哈希（增量索引靠哈希判断是否要重建分块）。
+ *
+ * 标签支持两种入参：
+ * - tagNames：界面里那行「逗号分隔标签」的原文，由这里解析成 id（不存在的自动建）。
+ *   **推荐走这条**：渲染层不必先跑一遍异步解析再回写缓存，避免「文本已改、缓存还是旧 id」
+ *   的失步（旧实现只靠 change 事件同步，900ms 的自动保存先跑就会把旧标签写回去）。
+ * - tagIds：内部/导入等已知 id 的场景，保持原行为。
+ */
 function updateNote(id, patch = {}) {
   const cur = getNote(id);
   if (!cur) return null;
   const keys = Object.keys(patch).filter((k) => NOTE_FIELDS.includes(k));
-  if (keys.length === 0 && !patch.tagIds) return cur;
+  const hasTagIds = Array.isArray(patch.tagIds);
+  const hasTagNames = patch.tagNames !== undefined && patch.tagNames !== null;
+  if (keys.length === 0 && !hasTagIds && !hasTagNames) return cur;
 
   const run = db.transaction(() => {
     if (keys.length) {
@@ -2668,7 +2678,15 @@ function updateNote(id, patch = {}) {
       db.prepare(`UPDATE notes SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`)
         .run(...values, nowIso(), id);
     }
-    if (patch.tagIds) setNoteTags(id, patch.tagIds);
+    // tagNames 优先：名称→id 的解析只在这一处发生。
+    // 只按逗号切分（不按空白切），与界面「逗号分隔」的语义一致 —— 否则「项目 A」
+    // 这种带空格的标签会被 resolveNoteTagIds 的 \s+ 拆成两个。
+    if (hasTagNames) {
+      const names = (Array.isArray(patch.tagNames) ? patch.tagNames : String(patch.tagNames || '').split(/[,，]/))
+        .map((s) => String(s == null ? '' : s).trim())
+        .filter(Boolean);
+      setNoteTags(id, names.map((n) => createNoteTag(n).id));
+    } else if (hasTagIds) setNoteTags(id, patch.tagIds);
   });
   run();
   return getNote(id);

@@ -113,7 +113,10 @@ body:has(.detail-drawer[data-opened="1"]:not([hidden])) .wl-dock-task { display:
   margin: 4px 0 14px;
 }
 .wl-spacer { flex: 1 1 0; min-width: 0; }
-.wl-tb-label { color: var(--text-3); font-size: 11px; margin-right: 0; }
+.wl-tb-label { color: var(--text-3); font-size: 11px; margin-right: 0; white-space: nowrap; }
+/* 标签 + 控件成组：英文标签比中文长，「分组 / Group」这类会被 flex 换行拆到两侧，
+   看起来像是标签跑到了别的控件后面。成组后整组要么在这行、要么整体下移。 */
+.wl-tb-group { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
 .wl-select {
   height: 26px; min-width: 74px; max-width: 124px;
   padding: 0 22px 0 9px;
@@ -144,8 +147,10 @@ body:has(.detail-drawer[data-opened="1"]:not([hidden])) .wl-dock-task { display:
    否则右侧两个按钮会被挤到第二行。这里把「分组 / 标签」两个标签收起 ——
    两个下拉各自带 title，范围与口径的芯片本身带文字，不影响辨识。 */
 @media (max-width: 1250px) {
-  .wl-toolbar > .wl-tb-label:nth-of-type(1),
-  .wl-toolbar > .wl-tb-label:nth-of-type(2) { display: none; }
+  /* 英文标签比中文长（Group / Tag / Range / Scope），整排必然要换行；
+     只藏前两个会留下「All groups  Tags」这种看着像贴错控件的样子 —— 干脆全藏，
+     控件自身带 aria-label + title，芯片本身有文字，不影响辨识。 */
+  .wl-toolbar .wl-tb-label { display: none; }
 }
 
 .wl-custom-range { margin: -4px 0 14px; }

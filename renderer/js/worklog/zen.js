@@ -7,6 +7,7 @@
  */
 import { api } from '../api.js';
 import { toast } from '../ui.js';
+import { t as tr } from '../i18n.js';
 import { live, elapsedMs, hms, esc, isActive } from './shared.js';
 
 let root = null;
@@ -15,14 +16,14 @@ let keyBound = false;
 
 function html() {
   return `
-    <div class="wl-zen-label">ZEN · 静默计时</div>
+    <div class="wl-zen-label">ZEN · ${tr('静默计时')}</div>
     <div class="wl-zen-time num" data-zen-time>00:00:00</div>
     <div class="wl-zen-task" data-zen-task></div>
     <div class="wl-zen-track" data-zen-track><div class="wl-zen-fill" data-zen-fill></div></div>
-    <div class="wl-zen-hint">通知已静默 · 不统计离开 · 按 Esc 退出</div>
+    <div class="wl-zen-hint">${tr('通知已静默 · 不统计离开 · 按 Esc 退出')}</div>
     <div class="wl-zen-actions">
-      <button type="button" class="wl-zen-btn" data-zen="pause">暂停</button>
-      <button type="button" class="wl-zen-btn is-main" data-zen="end">结束并记录</button>
+      <button type="button" class="wl-zen-btn" data-zen="pause">${tr('暂停')}</button>
+      <button type="button" class="wl-zen-btn is-main" data-zen="end">${tr('结束并记录')}</button>
     </div>`;
 }
 
@@ -68,7 +69,7 @@ export function isOpen() {
 export function show() {
   if (!root) return;
   if (!isActive(live.snap)) {
-    toast('先在这个任务上开始计时，再进禅模式');
+    toast(tr('先在这个任务上开始计时，再进禅模式'));
     return;
   }
   root.classList.add('is-open');
@@ -84,7 +85,7 @@ async function togglePause() {
     if (live.snap.mode === 'running') await api.worklog.pause();
     else if (live.snap.mode === 'paused') await api.worklog.resume();
   } catch (e) {
-    toast(`操作失败：${(e && e.message) || e}`);
+    toast(tr('操作失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -93,11 +94,11 @@ async function end() {
     const r = await api.worklog.stop();
     hide();
     if (!r) return;
-    if (r.discarded) toast(`太短（${r.sec} 秒），已丢弃`);
-    else toast(`已记录 ${Math.floor(r.sec / 60)} 分钟`);
+    if (r.discarded) toast(tr('太短（{sec} 秒），已丢弃', { sec: r.sec }));
+    else toast(tr('已记录 {min} 分钟', { min: Math.floor(r.sec / 60) }));
     if (r.warning) toast(r.warning);
   } catch (e) {
-    toast(`结束计时失败：${(e && e.message) || e}`);
+    toast(tr('结束计时失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -112,8 +113,8 @@ export function paint() {
   const pauseBtn = root.querySelector('[data-zen="pause"]');
   const ms = elapsedMs(snap);
   if (timeEl) timeEl.textContent = hms(Math.floor(ms / 1000));
-  if (taskEl) taskEl.textContent = snap.taskTitle || '任务';
-  if (pauseBtn) pauseBtn.textContent = snap.mode === 'paused' ? '继续' : '暂停';
+  if (taskEl) taskEl.textContent = snap.taskTitle || tr('任务');
+  if (pauseBtn) pauseBtn.textContent = snap.mode === 'paused' ? tr('继续') : tr('暂停');
   const target = Number(live.pref && live.pref.zenDefaultSec) || 0;
   if (track && fill) {
     track.hidden = !target;

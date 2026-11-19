@@ -14,6 +14,8 @@ const DEFAULT_CONFIG = {
   model: 'deepseek-chat',
 };
 
+const dateU = require('./date-utils');
+
 /** 预设同样用 id 做主键，避免同一 baseUrl 下挂多个模型时联动写错 */
 const PRESETS = [
   { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
@@ -285,7 +287,7 @@ function modelLabel(model) {
   return hit ? hit.label : m || '未配置模型';
 }
 
-/** 截图识别的系统提示：强调"只提取要动手的事"，并禁止推算日期 */
+/** 截图识别的系统提示：强调"只提取要动手的事"，并给出日期换算的明确边界 */
 const SHOT_SYSTEM_PROMPT = [
   '你是把截图变成待办清单的助手。用户截的可能是聊天记录、邮件、表格、会议白板或网页。',
   '只提取「需要有人动手去做」的事项；纯信息、结论、寒暄、已经完成的事都不要。',
@@ -294,7 +296,10 @@ const SHOT_SYSTEM_PROMPT = [
   '2. title 是一句可执行的动宾短语，不超过 30 字，不要「需要」「记得」这类前缀；',
   '3. note 用一句话补上截图里明确写出的关键信息（时间、对方、金额、编号），没有就留空字符串；',
   '4. priority 只能是 0（低）/ 1（中）/ 2（高）/ 3（紧急）；看不出来就给 1，不要瞎猜；',
-  '5. due 只填截图里**明写**的日期，格式 YYYY-MM-DD；没写就 null，绝不自己推算或补全；',
+  '5. due 是计划完成日期，格式 YYYY-MM-DD：',
+  '   截图里明写了日期（如「8月31日前」「2026-09-05 交」）就照写；',
+  '   用了「明天」「后天」「本周五」「下周一上午」这类**相对今天**的说法，按末尾给出的今天换算成具体日期；',
+  '   「尽快」「这几天」「月底前」这种说不准哪天的填 null —— 绝不自己编一个日子凑数；',
   '6. summary 一句话概括这张图是什么（不超过 40 字）；',
   '7. 只输出 JSON，不要 Markdown 代码块，不要任何解释文字。',
   '输出格式：{"summary":"...","tasks":[{"title":"...","note":"...","priority":1,"due":null}]}',
@@ -352,7 +357,9 @@ async function recognizeTasksFromImage(dataUrl, cfg) {
     return await callLLM({
       ...cfg,
       messages: [
-        { role: 'system', content: SHOT_SYSTEM_PROMPT },
+        // 今天日期必须给：提示词要求把「明天 / 本周五」换算成具体日期，
+        // 模型自己的"今天"是训练时的旧日期，不喂就会出现差好几年的 due
+        { role: 'system', content: `${SHOT_SYSTEM_PROMPT}\n${dateU.todaySentence()}` },
         {
           role: 'user',
           content: [

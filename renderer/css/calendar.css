@@ -135,6 +135,7 @@
 .cal-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 18px 10px;
+  gap: 8px 12px; flex-wrap: wrap;
 }
 .cal-nav { display: flex; align-items: center; gap: 10px; }
 .cal-arrow {
@@ -143,10 +144,11 @@
 }
 .cal-arrow:hover { background: var(--bg-hover); color: var(--cal-blue); }
 .cal-month { font-size: 15px; font-weight: 700; min-width: 108px; text-align: center; }
-.cal-head-right { display: flex; align-items: center; gap: 12px; }
+/* 英文态「Back to today」比中文长：右侧一组自身不换行，整条头栏放不下时才整体折到第二行 */
+.cal-head-right { display: flex; align-items: center; gap: 12px; flex-wrap: nowrap; }
 .cal-today {
   border: 0; background: transparent; color: var(--cal-blue);
-  font-size: 12px; cursor: pointer; padding: 3px 2px;
+  font-size: 12px; cursor: pointer; padding: 3px 2px; white-space: nowrap;
 }
 .cal-today:hover { text-decoration: underline; }
 .cal-seg {

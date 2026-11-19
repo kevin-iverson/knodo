@@ -11,6 +11,7 @@ import { api } from '../api.js';
 import { EXT } from '../ext.js';
 import { state } from '../store.js';
 import { navigateTo } from '../ui.js';
+import { t as tr } from '../i18n.js';
 import { renderJournal, applyLabels, unmount as unmountView } from './view.js';
 
 const CSS_ID = 'jr-css';
@@ -45,15 +46,16 @@ function bindChanged() {
 export async function mount(pref) {
   if (mounted) return;
   mounted = true;
-  prefCache = pref || { enabled: true, cellLabels: ['心智', '身体', '连结', '事业'] };
+  prefCache = pref || { enabled: true, cellLabels: ['心智', '身体', '连结', '事业'].map((s) => tr(s)) };
   injectCss();
   bindChanged();
   applyLabels(prefCache.cellLabels);
 
   EXT.views.journal = {
-    title: '四象日记',
-    desc: '按日记录 · 四格整理 + 随手碎碎念',
-    long: '一天一页：心智 / 身体 / 连结 / 事业四格 + 随手碎碎念。只存本地，不进 AI 检索与报告。',
+    // 视图元数据在 mount 时求值（切语言会 reload → 重新 mount），所以这里用 tr 是安全的
+    title: tr('四象日记'),
+    desc: tr('按日记录 · 四格整理 + 随手碎碎念'),
+    long: tr('一天一页：心智 / 身体 / 连结 / 事业四格 + 随手碎碎念。只存本地，不进 AI 检索与报告。'),
     render: (root) => renderJournal(root),
   };
 

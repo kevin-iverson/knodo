@@ -43,6 +43,8 @@ function check(name, ok, detail) {
 
 let sawImage = false;
 let mockRequests = 0;
+/** 每次请求的落地信息：用来验证「这次请求到底打给了谁」（对话地址还是视觉地址） */
+const reqLog = [];
 const MOCK_TASKS = {
   summary: '一张项目排期表',
   tasks: [
@@ -88,6 +90,13 @@ function startMock() {
           const flat = JSON.stringify(payload);
           if (flat.includes('"image_url"') && flat.includes('data:image/jpeg;base64,')) sawImage = true;
         } catch (e) { /* 体不是 JSON 也不影响返回 */ }
+        reqLog.push({ path: String(req.url || ''), model: payload.model || '', auth: String(req.headers.authorization || '') });
+        // 模拟「视觉 Key 过期」：智谱的 401 原文（截图里那个「令牌已过期或验证不正确」）
+        if (String(req.headers.authorization || '') === 'Bearer sk-expired') {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { code: '401', message: '令牌已过期或验证不正确' } }));
+          return;
+        }
         // 用来验证「服务端明确拒绝图片输入」时，错误会被翻译成可操作的中文提示
         if (payload.model === 'text-only-model') {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -242,6 +251,24 @@ const settleExpr = (expr, ms = 12000) => `Promise.race([
   Promise.resolve(${expr}).then((v) => ({ timedOut: false, value: v }), (e) => ({ timedOut: false, error: String((e && e.message) || e) })),
   new Promise((r) => setTimeout(() => r({ timedOut: true }), ${ms})),
 ])`;
+
+/**
+ * 截一张图（走覆盖层；剪贴板里通常没有图）。
+ * 只关心"手上有一张能识别的图"，尺寸不参与断言 —— 覆盖层拖拽本身另有 [2] 在验。
+ */
+async function grabImage(main, tag) {
+  await main.evaluate(`window.${tag} = window.__shot(window.api.shot.screen()); true`);
+  const ws = await findTarget(/shot-overlay\.html/);
+  if (!ws) throw new Error('框选覆盖层没打开');
+  const ov = await connect(ws);
+  await sleep(600);
+  await drag(ov, { x: 300, y: 240 }, { x: 620, y: 470 });
+  await pressKey(ov, 'Enter', 'Enter', 13);
+  await sleep(400);
+  ov.close();
+  const r = await main.evaluate(settleExpr(`window.${tag}`));
+  return r && !r.timedOut ? r.value : null;
+}
 
 /* ------------------------------ 主流程 ------------------------------ */
 
@@ -549,6 +576,7 @@ async function main() {
       allChecked: r.every((x) => x.querySelector('input[type=checkbox]').checked),
       titles: r.map((x) => x.querySelector('.shot-title').textContent),
       pri: r.map((x) => x.querySelector('.shot-pri').textContent),
+      due: r.map((x) => x.querySelector('.shot-due').textContent),
       okEnabled: !document.querySelector('.modal-shot [data-modal="ok"]').disabled,
     };
   })()`);
@@ -556,6 +584,31 @@ async function main() {
   check('标题取自识别结果', rowState.titles[0] === MOCK_TASKS.tasks[0].title, rowState.titles[0]);
   check('优先级胶囊显示「高 / 中」', rowState.pri.join(',') === '高,中', rowState.pri.join(','));
   check('可以提交', rowState.okEnabled === true);
+
+  // 计划日期：模型只在截图里**明写**日期时给 due，没写就落到今天
+  check('识别到日期的行显示具体日期', rowState.due[0] === '8月31日', rowState.due[0]);
+  check('没识别到日期的行显示「今天」', rowState.due[1] === '今天', rowState.due[1]);
+
+  // 手改第 2 行：设置原生日期输入的值 → change → 胶囊立刻更新
+  const dueAfterEdit = await main.evaluate(`(() => {
+    const row = document.querySelectorAll('.modal-shot .shot-row')[1];
+    const input = row.querySelector('.shot-due-input');
+    input.value = '2026-06-18';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return row.querySelector('.shot-due').textContent;
+  })()`);
+  check('手改一行日期，胶囊立刻更新', dueAfterEdit === '6月18日', dueAfterEdit);
+
+  // 批量：所有条目改到同一天（第 1 条回到识别值，后面按它落库）
+  const dueAfterBatch = await main.evaluate(`(() => {
+    const input = document.querySelector('.modal-shot [data-role="batch-input"]');
+    input.value = '2026-08-31';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return [...document.querySelectorAll('.modal-shot .shot-row .shot-due')].map((x) => x.textContent);
+  })()`);
+  check('批量改日期对每一行都生效', dueAfterBatch.join(',') === '8月31日,8月31日', dueAfterBatch.join(','));
+  const shotOkText = await main.evaluate('document.querySelector(\'.modal-shot [data-modal="ok"]\').textContent');
+  check('有条目不在今天时按钮改成「添加 N 条」', shotOkText === '添加 2 条', shotOkText);
   await snap(main, '3-card-list.png');
 
   // 取消勾选第二条 + 把第一条改成紧急
@@ -603,7 +656,8 @@ async function main() {
   check('只建了勾选的那一条', tasks.length === 1, String(tasks.length));
   const t0 = tasks[0] || {};
   check('优先级 = 紧急(3)', t0.priority === 3, String(t0.priority));
-  check('计划日期是今天', !!t0.plan_start && t0.plan_start === t0.plan_end, `${t0.plan_start}`);
+  check('计划日期取自截图识别值', t0.plan_start === '2026-08-31' && t0.plan_end === '2026-08-31',
+    `${t0.plan_start} ~ ${t0.plan_end}`);
   check('描述里有 todo-media 图片', /todo-media:\/\/\//.test(t0.notes || ''), (t0.notes || '').slice(0, 40));
   check('附件已登记', Array.isArray(t0.attachments) && t0.attachments.length === 1,
     t0.attachments && t0.attachments[0] && t0.attachments[0].name);
@@ -620,6 +674,100 @@ async function main() {
   const st3 = await main.evaluate('window.__shot(window.api.shot.status())');
   check('提交后暂存已清', st3.hasImage === false);
 
+  /* ---------- [8] 「不配置视觉模型」必须真的能取消（用户报的原始问题） ----------
+   * 现场：设置里视觉那组配过 GLM-4V（Key 过期），想取消却取消不掉 —— 模型下拉只能改不能清，
+   * Key 输入框「留空则不变」，于是每次截图都揣着一个 401 的视觉配置去打。
+   * 期望：清空模型 = 整组回落；视觉 Key 失效 = 自动降级；界面上有一个明确的「不使用」。
+   */
+  console.log('\n[8] 视觉配置「取消不掉」→ 整组回落到对话模型');
+  const chatBase = `http://127.0.0.1:${mock.port}/v1`;
+  const visionBase = `http://127.0.0.1:${mock.port}/v2`; // 同一 mock、不同地址 = 另一个服务商
+  await main.evaluate(`window.api.ai.saveConfig({
+    baseUrl: '${chatBase}', model: 'mock-chat-1', apiKey: 'sk-chat',
+    visionBaseUrl: '${visionBase}', visionModel: 'glm-4v-flash', visionKey: 'sk-vision',
+  })`);
+  const v8a = await main.evaluate('window.api.ai.getConfig()');
+  check('[8.1] 视觉配置齐全时走视觉模型', v8a.vision.effective.source === 'vision',
+    `${v8a.vision.effective.baseUrl} · ${v8a.vision.effective.model}`);
+
+  // 「取消」= 把模型清空（最常见的那一下），地址与 Key 还残留着
+  await main.evaluate(`window.api.ai.saveConfig({ visionModel: '' })`);
+  const v8b = await main.evaluate('window.api.ai.getConfig()');
+  check('[8.2] 清空模型后整组回落到对话模型',
+    v8b.vision.effective.source === 'fallback', v8b.vision.effective.source);
+  check('[8.3] 回落用的是对话地址与对话模型（不再拼「视觉地址 + 对话模型」）',
+    v8b.vision.effective.baseUrl === chatBase && v8b.vision.effective.model === 'mock-chat-1',
+    `${v8b.vision.effective.baseUrl} · ${v8b.vision.effective.model}`);
+  check('[8.4] 回落时用对话模型的 Key，而不是残留的视觉 Key',
+    v8b.vision.effective.hasKey === true);
+
+  reqLog.length = 0;
+  await grabImage(main, '__shotP8');
+  const rec8 = await main.evaluate(`window.__shot(window.api.shot.recognize())
+    .then((r) => ({ ok: true, r })).catch((e) => ({ ok: false, code: e.code || '', msg: e.message }))`);
+  check('[8.5] 清空视觉配置后识别仍然成功', rec8 && rec8.ok === true,
+    rec8 && (rec8.msg || `${rec8.r.tasks && rec8.r.tasks.length} 条`));
+  check('[8.6] 识别请求打给了对话地址与对话模型',
+    reqLog.some((q) => q.path === '/v1/chat/completions' && q.model === 'mock-chat-1'),
+    JSON.stringify(reqLog.map((q) => `${q.path}:${q.model}`)));
+  check('[8.7] 没有偷偷往视觉地址发请求', !reqLog.some((q) => q.path === '/v2/chat/completions'));
+
+  // 视觉 Key 失效（401）→ 自动降级，而不是把用户卡在必错的配置上
+  await main.evaluate(`window.api.ai.saveConfig({ visionModel: 'glm-4v-flash', visionKey: 'sk-expired' })`);
+  reqLog.length = 0;
+  await grabImage(main, '__shotP9');
+  const rec9 = await main.evaluate(`window.__shot(window.api.shot.recognize())
+    .then((r) => ({ ok: true, r })).catch((e) => ({ ok: false, code: e.code || '', msg: e.message }))`);
+  check('[8.8] 视觉 Key 失效（HTTP 401）时自动降级到对话模型',
+    rec9 && rec9.ok === true && rec9.r.source === 'fallback',
+    rec9 && (rec9.msg || `source=${rec9.r.source} model=${rec9.r.modelLabel}`));
+  check('[8.9] 降级结果里带着「为什么降级」',
+    !!(rec9 && rec9.ok && rec9.r.degraded && /401|过期|验证/.test(String(rec9.r.degradedReason || ''))),
+    rec9 && rec9.ok ? String(rec9.r.degradedReason) : '');
+  check('[8.10] 降级后用的是对话模型',
+    !!(rec9 && rec9.ok && reqLog.some((q) => q.path === '/v1/chat/completions' && q.model === 'mock-chat-1')),
+    JSON.stringify(reqLog.map((q) => `${q.path}:${q.model}`)));
+
+  // 界面：必须有一个「不使用（用对话模型）」，选中就能把三件套一起清掉
+  await main.evaluate(`window.api.ai.saveConfig({ visionModel: '' })`);
+  await main.evaluate(`window.__openSettings('ai'); true`);
+  await sleep(900);
+  const vUi = await main.evaluate(`(() => {
+    const sel = document.querySelector('#st-vision-model');
+    if (!sel) return { noSel: true };
+    const none = [...sel.options].find((o) => o.value === '__none');
+    return {
+      hasNone: !!none, noneLabel: none ? none.textContent : '', cur: sel.value,
+      state: (document.querySelector('[data-item="vision-state"] .st-row-desc') || {}).textContent || '',
+    };
+  })()`);
+  check('[8.11] 视觉模型下拉有「不使用（用对话模型）」这一项',
+    vUi && vUi.hasNone === true && /不使用/.test(vUi.noneLabel || ''), vUi && vUi.noneLabel);
+  check('[8.12] 模型为空时下拉显示「不使用」，不会被自动填成某个模型',
+    vUi && vUi.cur === '__none', vUi && vUi.cur);
+  check('[8.13] 「当前生效」指向对话模型而不是残留的视觉模型',
+    !!vUi && String(vUi.state || '').includes('mock-chat-1') && !String(vUi.state || '').includes('glm-4v-flash'),
+    vUi && vUi.state);
+
+  // 选中「不使用」→ 地址 / 模型 / Key 三件套一起清空
+  await main.evaluate(`window.api.ai.saveConfig({
+    visionBaseUrl: '${visionBase}', visionModel: 'glm-4v-flash', visionKey: 'sk-vision',
+  })`);
+  await main.evaluate(`(() => {
+    const sel = document.querySelector('#st-vision-model');
+    sel.value = '__none';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  await sleep(1200);
+  const v8c = await main.evaluate('window.api.ai.getConfig()');
+  check('[8.14] 选「不使用」后模型 / 地址 / Key 全部清空',
+    v8c.vision.model === '' && v8c.vision.baseUrl === '' && v8c.vision.hasKey === false,
+    `model=${v8c.vision.model || '空'} base=${v8c.vision.baseUrl || '空'} key=${v8c.vision.hasKey}`);
+  check('[8.15] 清空后生效值仍是对话模型',
+    v8c.vision.effective.source === 'fallback' && v8c.vision.effective.model === 'mock-chat-1',
+    `${v8c.vision.effective.source} · ${v8c.vision.effective.model}`);
+
   main.close();
   mock.server.close();
   return childLog;
@@ -628,11 +776,11 @@ async function main() {
 /* ------------------------------ 入口 ------------------------------ */
 
 const hardStop = setTimeout(() => {
-  console.error('\n超时：180 秒内没跑完，强制结束');
+  console.error('\n超时：240 秒内没跑完，强制结束');
   if (childLog) console.error(`\n--- 主进程日志 ---\n${childLog.slice(-3000)}`);
   killChild();
   process.exit(1);
-}, 180000);
+}, 240000);
 
 main()
   .then((log) => {

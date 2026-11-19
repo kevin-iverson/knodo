@@ -8,15 +8,18 @@
  */
 import { api } from '../api.js';
 import { toast } from '../ui.js';
+import { t as tr } from '../i18n.js';
 
-const LABEL_DEFAULT = ['心智', '身体', '连结', '事业'];
+// 中文原文单独留一份：主进程把「没改过」的四格名存成中文，英文态下要按位置换成英文
+const LABEL_ZH = ['心智', '身体', '连结', '事业'];
+const LABEL_DEFAULT = LABEL_ZH.map((s) => tr(s));
 const PLACEHOLDERS = [
   '今天想明白了什么？读到 / 想到的一句是什么？',
   '睡够了吗？身体哪里有感觉？动了没有？',
   '和谁说了什么话？哪句让你停了一下？',
   '哪件事推进了？卡在哪儿？明天第一步是什么？',
-];
-const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+].map((s) => tr(s));
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'].map((s) => tr(s));
 
 let labels = LABEL_DEFAULT.slice();
 let current = null;       // { day, cells:[4], notes:[] }
@@ -41,8 +44,8 @@ function weekdayOf(day) {
 
 function dayLabel(day) {
   const [, m, d] = day.split('-').map(Number);
-  const base = `${m} 月 ${d} 日`;
-  return { main: day === localDay() ? `${base} 今天` : base, week: weekdayOf(day) };
+  const base = tr('{m} 月 {d} 日', { m, d });
+  return { main: day === localDay() ? `${base} ${tr('今天')}` : base, week: weekdayOf(day) };
 }
 
 function shiftDay(day, delta) {
@@ -72,7 +75,7 @@ async function refreshStats() {
 async function loadDay(day) {
   try {
     const data = unwrap(await api.journal.day(day), null);
-    if (!data) throw new Error('数据库未就绪');
+    if (!data) throw new Error(tr('数据库未就绪'));
     current = {
       day: data.day,
       cells: Array.isArray(data.cells) ? data.cells.slice(0, 4).concat(['', '', '', '']).slice(0, 4) : ['', '', '', ''],
@@ -81,7 +84,7 @@ async function loadDay(day) {
     return true;
   } catch (e) {
     current = { day: localDay(day), cells: ['', '', '', ''], notes: [] };
-    toast(`读取日记失败：${(e && e.message) || e}`);
+    toast(tr('读取日记失败：{msg}', { msg: (e && e.message) || e }));
     return false;
   }
 }
@@ -93,7 +96,7 @@ function paintSave() {
   if (!el) return;
   el.className = `jr-save${saveState === 'idle' ? '' : ` is-${saveState}`}`;
   el.innerHTML = saveState === 'idle' ? ''
-    : `<span class="sdot"></span>${saveState === 'saving' ? '保存中' : '已保存'}`;
+    : `<span class="sdot"></span>${saveState === 'saving' ? tr('保存中') : tr('已保存')}`;
 }
 
 /** 800ms 防抖落库。flush=true 时立即写（unmount / 切日期前调用，防丢改动） */
@@ -119,7 +122,7 @@ async function commitCell() {
     }, 2000);
   } catch (e) {
     saveState = 'idle'; paintSave();
-    toast(`保存失败：${(e && e.message) || e}`);
+    toast(tr('保存失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -151,7 +154,7 @@ function quadsHtml() {
       <div class="quad-head">
         <span class="quad-dot"></span>
         <span class="quad-label">${escapeHtml(label)}</span>
-        <span class="quad-count">${body.trim() ? `${body.trim().length} 字` : ''}</span>
+        <span class="quad-count">${body.trim() ? tr('{n} 字', { n: body.trim().length }) : ''}</span>
       </div>
       <textarea data-cell="${i}" placeholder="${escapeHtml(PLACEHOLDERS[i])}" spellcheck="false">${escapeHtml(body)}</textarea>
     </section>`;
@@ -165,19 +168,19 @@ function noteHtml(n) {
   const linked = !!(n.taskId || n.task);
   const done = linked ? ' is-done' : '';
   const time = n.createdAt ? `${pad(new Date(n.createdAt).getHours())}:${pad(new Date(n.createdAt).getMinutes())}` : '';
-  const trace = linked ? '<div class="note-trace">→ 已加入今天</div>' : '';
+  const trace = linked ? `<div class="note-trace">→ ${tr('已加入今天')}</div>` : '';
   return `<div class="jr-note${done}" data-note="${n.id}">
     <div class="note-top"><span class="note-time">${time}</span>${ax}</div>
     <div class="note-body">${escapeHtml(n.body)}</div>
     ${trace}
     <div class="note-acts">
-      <button type="button" class="note-act" data-act="fold" data-note="${n.id}" title="归入某一象">
+      <button type="button" class="note-act" data-act="fold" data-note="${n.id}" title="${tr('归入某一象')}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M17 7H9M17 7v8"/></svg>
       </button>
-      <button type="button" class="note-act" data-act="task" data-note="${n.id}" title="转为今天的任务">
+      <button type="button" class="note-act" data-act="task" data-note="${n.id}" title="${tr('转为今天的任务')}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
       </button>
-      <button type="button" class="note-act" data-act="del" data-note="${n.id}" title="删除">
+      <button type="button" class="note-act" data-act="del" data-note="${n.id}" title="${tr('删除')}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13"/></svg>
       </button>
     </div>
@@ -189,9 +192,9 @@ function paintNotes() {
   if (!list) return;
   const alive = current.notes.filter((n) => !n.gone);
   const cnt = rootEl.querySelector('.nh-count');
-  if (cnt) cnt.textContent = `${alive.length} 条`;
+  if (cnt) cnt.textContent = tr('{n} 条', { n: alive.length });
   if (!alive.length) {
-    list.innerHTML = '<div class="notes-empty">今天还没有碎碎念<br><span class="ne-sub">想到什么就丢一句，晚上再挑重要的归到四格里</span></div>';
+    list.innerHTML = `<div class="notes-empty">${tr('今天还没有碎碎念')}<br><span class="ne-sub">${tr('想到什么就丢一句，晚上再挑重要的归到四格里')}</span></div>`;
     return;
   }
   list.innerHTML = alive.map(noteHtml).join('');
@@ -229,7 +232,7 @@ function paintCells() {
       autoGrow(ta);
     }
     const count = ta.closest('.quad').querySelector('.quad-count');
-    if (count) count.textContent = ta.value.trim() ? `${ta.value.trim().length} 字` : '';
+    if (count) count.textContent = ta.value.trim() ? tr('{n} 字', { n: ta.value.trim().length }) : '';
   });
 }
 
@@ -254,10 +257,10 @@ function showToast(msg, undo) {
     bar.className = 'jr-undo-bar';
     rootEl.appendChild(bar);
   }
-  bar.innerHTML = `<span>${escapeHtml(msg)}</span><button type="button" id="jr-undo-btn">撤销</button>`;
+  bar.innerHTML = `<span>${escapeHtml(msg)}</span><button type="button" id="jr-undo-btn">${tr('撤销')}</button>`;
   const btn = bar.querySelector('#jr-undo-btn');
   btn.addEventListener('click', async () => {
-    try { await undo(); bar.remove(); await reload(); } catch (e) { toast(`撤销失败：${(e && e.message) || e}`); }
+    try { await undo(); bar.remove(); await reload(); } catch (e) { toast(tr('撤销失败：{msg}', { msg: (e && e.message) || e })); }
   });
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => bar.remove(), 5200);
@@ -284,7 +287,7 @@ async function addNote() {
     if (list) list.scrollTop = list.scrollHeight;
     input.focus();
   } catch (e) {
-    toast(`记下失败：${(e && e.message) || e}`);
+    toast(tr('记下失败：{msg}', { msg: (e && e.message) || e }));
   }
 }
 
@@ -296,11 +299,11 @@ async function removeNote(id) {
     unwrap(await api.journal.noteRemove(Number(id)), null);
     current.notes.splice(idx, 1);
     paintNotes(); refreshStats();
-    showToast('已删除', async () => {
+    showToast(tr('已删除'), async () => {
       // 撤销：物理删除后只能重建一条同 id 的记录（insert 带 id）
       unwrap(await api.journal.noteAdd({ day: snapshot.day, body: snapshot.body, cell: snapshot.cell }), null);
     });
-  } catch (e) { toast(`删除失败：${(e && e.message) || e}`); }
+  } catch (e) { toast(tr('删除失败：{msg}', { msg: (e && e.message) || e })); }
 }
 
 async function foldInto(id, cell) {
@@ -316,12 +319,12 @@ async function foldInto(id, cell) {
       if (Number(ta.dataset.cell) === cell) ta.value = current.cells[cell];
     });
     paint(); refreshStats();
-    showToast(`已归入「${labels[cell]}」`, async () => {
+    showToast(tr('已归入「{label}」', { label: labels[cell] }), async () => {
       // 撤销：格子还原 + 重建碎碎念（内容回到原料区）
       unwrap(await api.journal.setCell({ day: current.day, cell, body: prevCell }), null);
       unwrap(await api.journal.noteAdd({ day: note.day, body: note.body, cell: note.cell }), null);
     });
-  } catch (e) { toast(`归入失败：${(e && e.message) || e}`); }
+  } catch (e) { toast(tr('归入失败：{msg}', { msg: (e && e.message) || e })); }
 }
 
 /** 转任务：只做视觉留痕（P0），不写 tasks 表 —— 方案 §9 边界 9 */
@@ -341,8 +344,8 @@ async function convertTask(id) {
     }
     current.notes[idx].task = true;
     paintNotes();
-    toast(`已加入今天：${title.length > 14 ? `${title.slice(0, 14)}…` : title}`);
-  } catch (e) { toast(`转任务失败：${(e && e.message) || e}`); }
+    toast(tr('已加入今天：{title}', { title: title.length > 14 ? `${title.slice(0, 14)}…` : title }));
+  } catch (e) { toast(tr('转任务失败：{msg}', { msg: (e && e.message) || e })); }
 }
 
 function closeAxMenu() {
@@ -355,8 +358,8 @@ function openAxMenu(anchor, id) {
   const menu = document.createElement('div');
   menu.className = 'ax-menu';
   menu.innerHTML = labels.map((label, i) =>
-    `<button type="button" data-ax="${i}"><span class="ax-dot" style="background:var(--ax${i})"></span>归入 ${escapeHtml(label)}</button>`
-  ).join('') + '<div class="sep"></div><button type="button" data-ax="-1" style="color:var(--text-3)">取消</button>';
+    `<button type="button" data-ax="${i}"><span class="ax-dot" style="background:var(--ax${i})"></span>${tr('归入 {label}', { label: escapeHtml(label) })}</button>`
+  ).join('') + `<div class="sep"></div><button type="button" data-ax="-1" style="color:var(--text-3)">${tr('取消')}</button>`;
   menu.style.left = `${Math.min(r.left - 100, window.innerWidth - 160)}px`;
   menu.style.top = `${Math.min(r.bottom + 4, window.innerHeight - 200)}px`;
   document.body.appendChild(menu);
@@ -383,7 +386,7 @@ function bind() {
       current.cells[i] = ta.value;
       autoGrow(ta);
       const count = ta.closest('.quad').querySelector('.quad-count');
-      if (count) count.textContent = ta.value.trim() ? `${ta.value.trim().length} 字` : '';
+      if (count) count.textContent = ta.value.trim() ? tr('{n} 字', { n: ta.value.trim().length }) : '';
       markSaving(i, false);
     });
     ta.addEventListener('keydown', (e) => {
@@ -446,35 +449,35 @@ export async function renderJournal(root) {
     <div class="jr-view">
       <div class="jr-daybar">
         <div class="jr-daynav">
-          <button type="button" class="jr-arrow" id="day-prev" title="前一天">
+          <button type="button" class="jr-arrow" id="day-prev" title="${tr('前一天')}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg>
           </button>
           <div class="jr-day" id="jr-day"></div>
-          <button type="button" class="jr-arrow" id="day-next" title="后一天">
+          <button type="button" class="jr-arrow" id="day-next" title="${tr('后一天')}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 5l7 7-7 7"/></svg>
           </button>
         </div>
-        <span class="jr-streak">已记录 <b id="jr-streak-n">0</b> 天</span>
+        <span class="jr-streak">${tr('已记录 {n} 天', { n: '<b id="jr-streak-n">0</b>' })}</span>
         <div class="jr-daybar-right">
           <span class="jr-save" id="jr-save"></span>
-          <button type="button" class="jr-ghost" id="day-today" hidden>回到今天</button>
+          <button type="button" class="jr-ghost" id="day-today" hidden>${tr('回到今天')}</button>
         </div>
       </div>
       ${ok ? `
       <div class="jr-body">
         <div class="jr-quads">${quadsHtml()}</div>
         <div class="jr-notes">
-          <div class="notes-head"><span class="nh-title">碎碎念</span><span class="nh-count">0 条</span></div>
+          <div class="notes-head"><span class="nh-title">${tr('碎碎念')}</span><span class="nh-count">${tr('{n} 条', { n: 0 })}</span></div>
           <div class="notes-list" id="notes-list"></div>
           <div class="notes-input">
-            <textarea id="note-input" rows="1" placeholder="随手记一句…"></textarea>
-            <button type="button" class="ni-send" id="note-send" title="记下（Enter）">
+            <textarea id="note-input" rows="1" placeholder="${tr('随手记一句…')}"></textarea>
+            <button type="button" class="ni-send" id="note-send" title="${tr('记下（Enter）')}">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
             </button>
           </div>
-          <div class="ni-hint">Enter 记下 · Shift+Enter 换行 · 悬停可归入 / 转任务 / 删除</div>
+          <div class="ni-hint">${tr('Enter 记下 · Shift+Enter 换行 · 悬停可归入 / 转任务 / 删除')}</div>
         </div>
-      </div>` : '<div class="jr-unready">数据未就绪，请稍后重试</div>'}
+      </div>` : `<div class="jr-unready">${tr('数据未就绪，请稍后重试')}</div>`}
     </div>`;
   bind();
   paint();
@@ -485,8 +488,10 @@ export async function renderJournal(root) {
 export function applyLabels(next) {
   if (!Array.isArray(next) || next.length !== 4) return;
   labels = next.map((s, i) => {
-    const t = String(s == null ? '' : s).trim();
-    return t || LABEL_DEFAULT[i];
+    const v = String(s == null ? '' : s).trim();
+    if (!v) return LABEL_DEFAULT[i];
+    // 还是出厂名（用户没改过）→ 跟着界面语言走；自己改过的名字原样保留
+    return v === LABEL_ZH[i] ? LABEL_DEFAULT[i] : v;
   });
   // 只存数组不刷 DOM 的话，用户在设置里改完名字回来看还是旧的（已踩）→ 就地更新文本
   if (!rootEl || destroyed) return;

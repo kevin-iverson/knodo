@@ -18,6 +18,7 @@
  */
 
 const path = require('path');
+const i18n = require('./i18n');
 const { app } = require('electron');
 
 /** 开机拉起时附加的命令行参数，主进程据此判断「这次是被自启动唤起的」 */
@@ -44,13 +45,13 @@ function isPortable() {
  */
 function availability() {
   if (process.platform !== 'win32' && process.platform !== 'darwin') {
-    return { supported: false, reason: `当前系统（${process.platform}）暂不支持该功能` };
+    return { supported: false, reason: i18n.t('当前系统（{os}）暂不支持该功能', { os: process.platform }) };
   }
   if (isPortable()) {
-    return { supported: false, reason: '这个便携版每次运行都会解压到临时目录，无法登记稳定的启动项；安装版或 7z 便携包可用' };
+    return { supported: false, reason: i18n.t('这个便携版每次运行都会解压到临时目录，无法登记稳定的启动项；安装版或 7z 便携包可用') };
   }
   if (!app.isPackaged) {
-    return { supported: false, reason: '开发调试模式下不写系统启动项；打包安装后可用' };
+    return { supported: false, reason: i18n.t('开发调试模式下不写系统启动项；打包安装后可用') };
   }
   return { supported: true, reason: '' };
 }
@@ -108,7 +109,7 @@ function getState() {
     // Windows 下 openAtLogin 反映的是注册表项是否存在且未被系统禁用
     enabled = !!(s && s.openAtLogin);
   } catch (e) {
-    return { supported: true, enabled: false, reason: `读取系统设置失败：${e && e.message}` };
+    return { supported: true, enabled: false, reason: i18n.t('读取系统设置失败：{msg}', { msg: (e && e.message) || e }) };
   }
   return { supported: true, enabled, reason: '' };
 }
@@ -126,12 +127,12 @@ function setEnabled(enabled) {
   try {
     app.setLoginItemSettings(loginItemOptions(enabled));
   } catch (e) {
-    return { ok: false, supported: true, enabled: false, reason: `写入系统设置失败：${e && e.message}` };
+    return { ok: false, supported: true, enabled: false, reason: i18n.t('写入系统设置失败：{msg}', { msg: (e && e.message) || e }) };
   }
   const st = getState();
   // 写完之后回读一次：被组策略 / 安全软件拦下时，避免界面显示"已开启"其实没生效
   if (enabled && !st.enabled) {
-    return { ok: false, supported: true, enabled: false, reason: '系统未接受该启动项（可能被安全软件或组策略拦截）' };
+    return { ok: false, supported: true, enabled: false, reason: i18n.t('系统未接受该启动项（可能被安全软件或组策略拦截）') };
   }
   return { ok: true, supported: true, enabled: st.enabled, reason: '' };
 }

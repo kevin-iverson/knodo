@@ -4,6 +4,7 @@
  */
 const { Tray, Menu, nativeImage, Notification } = require('electron');
 const path = require('path');
+const i18n = require('./i18n');
 
 let tray = null;
 /** 动态菜单项（桌面浮窗列表）：每次弹出前重建，保证「已钉清单」永远是最新的 */
@@ -16,12 +17,12 @@ function buildMenu() {
     onShow, onQuickAdd, onQuit, onCapture, onSettings,
   } = handlers;
   const template = [
-    { label: '显示主界面', click: onShow },
-    { label: '快速添加任务', click: onQuickAdd },
+    { label: i18n.t('显示主界面'), click: onShow },
+    { label: i18n.t('快速添加任务'), click: onQuickAdd },
     // 托盘是全局键的兜底：快捷键被别的软件占掉（或用户在管理员窗口前）时仍有一条路
-    ...(typeof onCapture === 'function' ? [{ label: '快速捕捉…', click: onCapture }] : []),
+    ...(typeof onCapture === 'function' ? [{ label: i18n.t('快速捕捉…'), click: onCapture }] : []),
     { type: 'separator' },
-    ...(typeof onSettings === 'function' ? [{ label: '设置…', click: onSettings }, { type: 'separator' }] : []),
+    ...(typeof onSettings === 'function' ? [{ label: i18n.t('设置…'), click: onSettings }, { type: 'separator' }] : []),
   ];
   let extra = [];
   try {
@@ -30,7 +31,7 @@ function buildMenu() {
     extra = [];
   }
   if (extra.length) template.push(...extra, { type: 'separator' });
-  template.push({ label: '退出', click: onQuit });
+  template.push({ label: i18n.t('退出'), click: onQuit });
   return Menu.buildFromTemplate(template);
 }
 
