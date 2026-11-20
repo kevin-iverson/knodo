@@ -1,6 +1,6 @@
 {
   "name": "todo-desktop",
-  "version": "2.10.1",
+  "version": "2.10.2",
   "description": "Knodo — 知识化待办（Knowledge + Todo）桌面应用（Electron + SQLite，本地存储 + AI 报告）",
   "main": "main/main.js",
   "author": {
@@ -30,6 +30,7 @@
     "verify:search": "node scripts/verify-search-modal.js",
     "verify:note": "node scripts/verify-note-desktop.js",
     "verify:note-fs": "node scripts/verify-note-fs.js",
+    "verify:note-picker-toc": "node scripts/verify-note-picker-toc.js",
     "verify:note-tags": "node scripts/verify-note-tags.js",
     "verify:dock": "node scripts/verify-dock.js",
     "dist": "node scripts/gen-icon.js && node scripts/build-vendor.js && node scripts/build-win.js",
@@ -54,6 +55,7 @@
     "verify:dock-subtask-worklog": "node scripts/verify-dock-subtask-worklog.js",
     "verify:main-drag-parent": "node scripts/verify-main-drag-parent.js",
     "verify:add-inline": "node scripts/verify-add-inline.js",
+    "verify:plan-date": "node scripts/verify-plan-date.js",
     "verify:shot": "node scripts/verify-shot.js",
     "verify:voice": "node scripts/verify-voice-task.js",
     "verify:meeting-rename": "node scripts/verify-meeting-rename.js",

@@ -1,16 +1,16 @@
 'use strict';
 /**
- * 桌面浮窗「同名任务归属小字」验收。
+ * 桌面浮窗「任务归属小字」验收。
  *
- * 背景（用户报的场景）：钉在桌面的浮窗把多个清单的任务混在一屏里，
- * 两个项目各有一条「周报」时，光看标题分不出是哪一个 —— 得靠归属信息。
+ * 背景（用户拍板）：钉在桌面的跨清单浮窗把多个清单的任务混在一屏里，
+ * 每条任务都该默认显示它属于哪个分组 —— 不只是撞名了才亮出来。
  *
  * 设计约束（断言就是这些约束）：
- *  1. **只有真重名**的行才多长一行小字：唯一名的行仍是 34px 单行，密排节奏不变；
- *  2. 归属取分组名（跨清单才有区分力），并带一个分组色圆点；
- *  3. 单清单浮窗（kind:'group'）里所有任务同属一个清单，分组名没有区分力 →
- *     不许显示分组名（否则两条同名行显示一模一样的字，等于没区分）；
- *  4. 两行行高必须被内容撑开且不把标题挤没（标题行仍有可用宽度），列表不横向溢出。
+ *  1. **跨清单投影每行都多一行小字**（今天/即将/未完成）：唯一名、同清单同名也是两行；
+ *  2. 归属取分组名，空分组写「未分组」，并带一个分组色圆点（未分组无色点）；
+ *  3. 单清单浮窗（kind:'group'）标题已是清单名 → 不显示分组名（重复无意义）；
+ *  4. 两行行高必须被内容撑开且不把标题挤没（标题行仍有可用宽度），列表不横向溢出；
+ *  5. 归属只在数据真变了时才重绘（取消重名、改分组后仍显示新归属，不残留旧值）。
  *
  * 用法：node scripts/verify-dock-dup.js [port] [--shots]
  *   --shots 把两段结果各截一张到 %TEMP%/knodo-dock-dup-{1-mixed,2-group}.png
@@ -256,9 +256,9 @@ async function shoot(page, name) {
     ck('色点 = 各自清单色',
       a.a1 && a.b1 && a.a1.dot === hexToRgb('#4f7cff') && a.b1.dot === hexToRgb('#e5484d'),
       `${a.a1 && a.a1.dot} / ${a.b1 && a.b1.dot}`);
-    ck('唯一名行不加归属（仍是单行）',
-      a.uniq && !a.uniq.hasSub && !a.uniq.name, JSON.stringify(a.uniq));
-    ck('唯一名行高 = 34px（密排节奏未变）', a.uniq && Math.abs(a.uniq.h - 34) <= 1, a.uniq && a.uniq.h);
+    ck('唯一名行也显示分组名（默认展示而非撞名才亮）',
+      a.uniq && a.uniq.hasSub && a.uniq.name === '项目甲', JSON.stringify(a.uniq));
+    ck('唯一名行同样被撑成两行', a.uniq && a.uniq.h > 34 && a.uniq.h < 56, a.uniq && a.uniq.h);
     ck('重名行被两行内容撑高但仍矮于 56px',
       a.a1 && a.a1.h > 34 && a.a1.h < 56, a.a1 && a.a1.h);
     ck('两行行高一致（不因分组名长短跳动）',
@@ -266,10 +266,11 @@ async function shoot(page, name) {
     ck('标题没被归属小字挤没（宽度 ≥60px）', a.a1 && a.a1.titleW >= 60, a.a1 && a.a1.titleW);
     ck('标题文本仍是原任务名', a.a1 && a.a1.titleText === '周报', a.a1 && a.a1.titleText);
     ck('列表无横向溢出（286px 窄窗）', a.overflowX <= 1, a.overflowX);
-    // 归属必须「真能区分」才出现：两条同清单同名任务写两遍「项目甲」等于白占一行高度
-    ck('同清单同名行不加归属（分组名无区分力）',
-      a.d1 && a.d2 && !a.d1.hasSub && !a.d2.hasSub && !a.d1.name && !a.d2.name,
-      JSON.stringify([a.d1 && a.d1.hasSub, a.d2 && a.d2.hasSub]));
+    // 默认展示：两条同清单同名任务也各写一遍「项目甲」——分组是固有属性，不再按区分力省略
+    ck('同清单同名行也显示分组名',
+      a.d1 && a.d2 && a.d1.hasSub && a.d2.hasSub
+        && a.d1.name === '项目甲' && a.d2.name === '项目甲',
+      JSON.stringify([a.d1 && a.d1.name, a.d2 && a.d2.name]));
     ck('有清单 / 无清单的同名行都加归属',
       a.mix1 && a.mix2 && a.mix1.hasSub && a.mix2.hasSub,
       JSON.stringify([a.mix1 && a.mix1.hasSub, a.mix2 && a.mix2.hasSub]));
@@ -279,7 +280,7 @@ async function shoot(page, name) {
 
     await shoot(dock, '1-mixed');
 
-    /* ---- B. 取消其中一个重名 → 剩下的那条立刻回到单行（按需出现/消失） ---- */
+    /* ---- B. 取消其中一个重名 → 剩下的那条仍显示归属（默认展示，不随重名状态变化） ---- */
     const b = await dock.evaluate(`(async () => {
       const wait = (ms) => new Promise(r => setTimeout(r, ms));
       // 走真实路径：在浮窗里勾掉「项目乙」的那条，浮窗只画未完成行 → 只剩一条「周报」
@@ -295,9 +296,10 @@ async function shoot(page, name) {
           ? left.querySelector('.dw-sub-name').textContent.trim() : '',
       };
     })()`);
-    ck('重名消失后剩下的那条回到单行', b.leftHasSub === false && Math.abs(b.leftH - 34) <= 1,
-      `${b.leftHasSub}/${b.leftH}`);
-    ck('残留归属小字已移除', !b.leftSubName, b.leftSubName);
+    ck('重名消失后归属仍在（默认展示不回退）',
+      b.leftHasSub === true && b.leftH > 34 && b.leftSubName === '项目甲',
+      `${b.leftHasSub}/${b.leftH}/${b.leftSubName}`);
+    ck('归属小字保留正确分组名', b.leftSubName === '项目甲', b.leftSubName);
 
     // 还原：把勾掉的取消完成，便于下一段断言「周报」仍在清单甲里
     await main.evaluate(`window.api.tasks.toggle(${setup.b1})`);

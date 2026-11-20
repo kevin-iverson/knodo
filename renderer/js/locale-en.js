@@ -101,6 +101,28 @@ export const EN = {
   '手动（可拖拽）': 'Manual (drag)',
   '手动': 'Manual',
 
+  /* --------------------- 日期控件（单日期 / 日期段双形态） --------------------- */
+  '截止 {date}': 'Due {date}',
+  '点击选择截止日期': 'Click to pick a due date',
+  '点击选择计划开始 / 完成日期（只需一次）': 'Click to pick the planned start / end dates (one picker)',
+  '选一天作为截止日期': 'Pick a single day as the due date',
+  '点第 1 次 = 开始日期，点第 2 次 = 完成日期': '1st click = start date, 2nd click = end date',
+  '明天': 'Tomorrow',
+  '本周末': 'This weekend',
+  '清除': 'Clear',
+  '请先选择截止日期': 'Please pick a due date first',
+  '请先选择计划开始 / 完成日期': 'Please pick the planned start / end dates',
+  '任务日期': 'Task dates',
+  '计划模式': 'Plan mode',
+  '启用计划模式': 'Enable plan mode',
+  '启用日期段 / 年度计划模式': 'Enable date-range / yearly plan mode',
+  '开启时新建 / 编辑任务可选起止日期段，适合做年度 / 季度计划（默认开启）；关闭后只需选一个截止日期。仅改变日期控件形态，不影响已有任务的数据。':
+    'When on (default), new/edited tasks can use a start/end range for yearly or quarterly plans. Turn it off to pick only a single due date. This only changes the date picker, never existing task data.',
+  '已开启计划模式，新建任务可选起止日期': 'Plan mode on: new tasks can use a start/end range',
+  '已关闭计划模式，新建任务只需选截止日期': 'Plan mode off: new tasks only need a due date',
+  '已开启日期段模式，新建任务可选起止日期': 'Date-range mode on: new tasks can use a start/end range',
+  '已关闭日期段模式，新建任务只需选截止日期': 'Date-range mode off: new tasks only need a due date',
+
   /* ------------------------------ 其它静态提示 ------------------------------ */
   '太和殿脊兽': 'Hall of Supreme Harmony ridge beasts',
   '⚠ 背景图文件已丢失，已回退主题底色': '⚠ Background image is missing — reverted to the theme base color',

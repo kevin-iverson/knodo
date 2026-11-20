@@ -29,13 +29,14 @@ import {
 const KT = window.KnodoTheme;
 
 let toast = (msg) => console.warn('[settings]', msg);
-/** 需要壳层配合的外部动作（日历偏好改动要重绘日历视图） */
-const ext = { onCalendarPrefs: null, onAction: null };
+/** 需要壳层配合的外部动作（日历偏好改动要重绘日历视图 / 日期形态切换要重绘编辑器） */
+const ext = { onCalendarPrefs: null, onAction: null, onPlanDateModeChange: null };
 
-export function setSettingsHandlers({ toast: t, onCalendarPrefs, onAction } = {}) {
+export function setSettingsHandlers({ toast: t, onCalendarPrefs, onAction, onPlanDateModeChange } = {}) {
   if (typeof t === 'function') toast = t;
   if (typeof onCalendarPrefs === 'function') ext.onCalendarPrefs = onCalendarPrefs;
   if (typeof onAction === 'function') ext.onAction = onAction;
+  if (typeof onPlanDateModeChange === 'function') ext.onPlanDateModeChange = onPlanDateModeChange;
 }
 
 /**
@@ -65,6 +66,8 @@ const S = {
   /** 刚选完图时的文件信息（名称 / 压缩前后体积），只在本次面板里显示 */
   bgInfo: null,
   autoStart: { enabled: false, supported: true, reason: '' },
+  /** 计划模式：{ rangeMode:boolean }，默认 true = 起止日期段（见 tool.taskDate） */
+  taskDate: null,
   /** 界面语言（主进程 settings.locale，值域 zh-CN / en） */
   locale: 'zh-CN',
   version: '',
@@ -564,6 +567,18 @@ function generalHtml() {
       ],
     }),
     sectionHtml({
+      title: tr('计划模式'),
+      rows: [
+        rowHtml({
+          title: tr('启用计划模式'),
+          desc: tr('开启时新建 / 编辑任务可选起止日期段，适合做年度 / 季度计划（默认开启）；关闭后只需选一个截止日期。仅改变日期控件形态，不影响已有任务的数据。'),
+          ctl: ctlSwitch('st-plan-range-mode', (S.taskDate || {}).rangeMode !== false),
+          search: '计划模式 日期段 起止日期 年度计划 季度计划 截止日期 range plan date',
+          id: 'plan-date-mode',
+        }),
+      ],
+    }),
+    sectionHtml({
       title: tr('启动'),
       rows: [
         rowHtml({
@@ -579,6 +594,26 @@ function generalHtml() {
 }
 
 function mountGeneral(pane) {
+  // 「计划模式」：写 tool.taskDate，切换后通知壳层即时换控件形态（无需重载）。
+  // 已有任务的 plan_start / plan_end 原样保留，只有用户重新选日期时才会被改成新形态的值。
+  const rangeSw = pane.querySelector('#st-plan-range-mode');
+  rangeSw?.addEventListener('change', async (e) => {
+    const want = e.target.checked;
+    e.target.disabled = true;
+    try {
+      const next = { ...(S.taskDate || {}), rangeMode: want };
+      await api.ui.setToolPref('taskDate', next);
+      S.taskDate = next;
+      if (typeof ext.onPlanDateModeChange === 'function') ext.onPlanDateModeChange(want);
+      toast(want ? tr('已开启计划模式，新建任务可选起止日期') : tr('已关闭计划模式，新建任务只需选截止日期'));
+    } catch (err) {
+      e.target.checked = !want;
+      toast(tr('保存失败：{msg}', { msg: (err && err.message) || err }));
+    } finally {
+      e.target.disabled = false;
+    }
+  });
+
   // 界面语言：写库 → 主进程广播 locale:changed → 所有窗口 reload（含当前窗口）。
   // 因此这里不需要自己重绘，只把失败态回滚；成功时给一句过渡提示。
   const locSel = pane.querySelector('#st-locale');
@@ -2079,9 +2114,10 @@ function applyFilter(root) {
 
 async function loadState() {
   const soft = async (p, fb) => { try { return await p; } catch (e) { return fb; } };
-  const [themeRaw, autoStart, version, storage, backup, salary, ai, calendar, encourager, worklog, buddy, journal, locale] = await Promise.all([
+  const [themeRaw, autoStart, taskDate, version, storage, backup, salary, ai, calendar, encourager, worklog, buddy, journal, locale] = await Promise.all([
     soft(api.theme.get(), null),
     soft(api.app.getAutoStart(), { enabled: false, supported: false, reason: tr('读取开机自启动状态失败') }),
+    soft(api.ui.getToolPref('taskDate'), null),
     soft(api.app.getVersion(), ''),
     soft(api.env.getStorageInfo(), null),
     soft(api.env.getBackupInfo(), null),
@@ -2098,6 +2134,7 @@ async function loadState() {
     // 老库 / 读取失败时回落出厂值，界面永远有东西可渲染
     theme: KT.normalize(themeRaw),
     autoStart, version, storage, backup, salary, ai, calendar, encourager,
+    taskDate: taskDate && typeof taskDate === 'object' ? taskDate : null,
     locale: locale || getLocaleNow(),
     worklog: worklog || null,
     buddy: buddy || null,

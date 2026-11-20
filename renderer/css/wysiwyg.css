@@ -42,9 +42,9 @@
 .nt-dp-body { grid-template-columns: minmax(0, 1fr); }
 .nt-dp[data-mode="preview"] .nt-preview,
 .nt-dp[data-mode="edit"] .nt-preview { display: block; }
-/* 编辑态把大纲收起来：右栏本来就不宽，腾出 190px 给正文与工具条，
-   工具条才不会被挤到横向滚动里（想看大纲可随时点标题栏「大纲」） */
-.nt-dp[data-mode="edit"] .nt-toc { display: none; }
+/* 大纲显隐只由 JS 的 `toc.hidden`（即 tocVisible + 有无标题）决定，CSS 不按 mode 硬隐藏。
+   以前这里写死 `display:none`，导致编辑态点「大纲」按钮只切了 hidden/active 却永远看不到面板
+   —— 与按钮 title「显示 / 隐藏大纲」自相矛盾。编辑态想腾空间请点按钮关，别用 CSS 越权。 */
 
 /* 块级包裹只用于「未改动块复用原始 Markdown 片段」，不引入任何视觉差异 */
 .nt-blk { position: relative; }

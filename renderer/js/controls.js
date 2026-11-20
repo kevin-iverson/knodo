@@ -15,8 +15,19 @@
  *  - range 模式本身就是「两次点选成范围 + 选满自动关闭」，弹层次数由上游保证；
  *  - 面板由 flatpickr 自己挂到 body 并计算位置，不受 .detail-body{overflow:auto} 裁剪；
  *  - 跨月、闰月、键盘操作、无障碍都在上游维护，我们只保留一层薄封装。
+ *
+ * 两种形态（由设置中心「通用 → 计划模式」切换，全局共享，计划模式默认开启）：
+ *  - 日期段（计划模式，默认）：flatpickr mode='range'，两次点选起止日，适合年度 / 季度计划；
+ *  - 单日期（关闭计划模式后）：flatpickr mode='single'，点一天即截止日，底层 plan_start=plan_end=该日，
+ *    与「今天」视图默认值、截图 / 语音建任务的落库约定一致。
  */
 import { localToIso, isoToLocal } from './api.js';
+import { t as tr } from './i18n.js';
+
+/** 控件形态：true=单截止日期，false=起止日期段（计划模式，默认）。所有宿主共享这一份。 */
+let singleDateMode = false;
+function setSingleDateMode(enabled) { singleDateMode = !!enabled; }
+function isSingleDateMode() { return singleDateMode; }
 
 const esc = (s) =>
   String(s == null ? '' : s)
@@ -28,8 +39,9 @@ const DATE_RANGE_EVENT = 'date-range:change';
 
 /** 日期范围控件的默认行为（宿主可用 opts 覆盖） */
 const DATE_RANGE_DEFAULTS = {
-  placeholder: '计划日期', // 未选择时的占位文案
+  placeholder: '计划日期', // 未选择时的占位文案（单日期形态下改用「截止日期」）
   required: false,         // 计划开始 / 完成日期是否必填
+  single: null,            // null=跟随全局形态；true=单日期；false=日期段
 };
 
 function pad2(n) { return String(n).padStart(2, '0'); }
@@ -141,14 +153,19 @@ function ensureRangeViewHandlers() {
 
 function dateRangeFieldHtml(startValue, endValue, opts = {}) {
   const cfg = { ...DATE_RANGE_DEFAULTS, ...opts };
+  const single = cfg.single == null ? singleDateMode : !!cfg.single;
+  const placeholder = single ? tr('截止日期') : cfg.placeholder;
   let s = normalizeDate(startValue);
   let e = normalizeDate(endValue);
   if (s && e && e < s) { const t = s; s = e; e = t; } // 历史数据倒序时兜底纠正
-  const days = daysBetween(s, e);
-  const label = s && e ? `${s} ~ ${e}` : (s ? `${s} 起` : cfg.placeholder);
+  const days = single ? 0 : daysBetween(s, e);
+  const label = single
+    ? (e ? tr('截止 {date}', { date: e }) : placeholder)
+    : (s && e ? `${s} ~ ${e}` : (s ? `${s} 起` : placeholder));
+  const title = single ? tr('点击选择截止日期') : tr('点击选择计划开始 / 完成日期（只需一次）');
   return `
-  <div class="date-range-field" data-required="${cfg.required ? '1' : '0'}" data-placeholder="${esc(cfg.placeholder)}">
-    <button type="button" class="date-range-trigger${s ? '' : ' is-empty'}" aria-haspopup="dialog" aria-expanded="false" title="点击选择计划开始 / 完成日期（只需一次）">
+  <div class="date-range-field${single ? ' is-single' : ''}" data-single="${single ? '1' : '0'}" data-required="${cfg.required ? '1' : '0'}" data-placeholder="${esc(placeholder)}">
+    <button type="button" class="date-range-trigger${(single ? e : s) ? '' : ' is-empty'}" aria-haspopup="dialog" aria-expanded="false" title="${esc(title)}">
       <span class="dr-icon">📅</span>
       <span class="dr-text">${esc(label)}</span>
       <span class="dr-days"${days ? '' : ' hidden'}>${days ? `${days} 天` : ''}</span>
@@ -165,19 +182,19 @@ function dateRangeFieldHtml(startValue, endValue, opts = {}) {
  * 在 flatpickr 面板底部补一行快捷操作（今天 / 明天 / 本周末 / 清除）。
  * 面板 DOM 由 flatpickr 生成并复用，这里只追加一次。
  */
-function buildRangeFooter(instance, onPick) {
+function buildRangeFooter(instance, onPick, single) {
   const cal = instance.calendarContainer;
   if (!cal || cal.querySelector('.dr-fp-foot')) return;
   const foot = document.createElement('div');
   foot.className = 'dr-fp-foot';
   foot.innerHTML = `
-    <span class="dr-fp-hint">点第 1 次 = 开始日期，点第 2 次 = 完成日期</span>
+    <span class="dr-fp-hint">${single ? tr('选一天作为截止日期') : tr('点第 1 次 = 开始日期，点第 2 次 = 完成日期')}</span>
     <div class="dr-fp-quick">
-      <button type="button" class="dr-quick" data-quick="today">今天</button>
-      <button type="button" class="dr-quick" data-quick="tomorrow">明天</button>
-      <button type="button" class="dr-quick" data-quick="weekend">本周末</button>
+      <button type="button" class="dr-quick" data-quick="today">${tr('今天')}</button>
+      <button type="button" class="dr-quick" data-quick="tomorrow">${tr('明天')}</button>
+      ${single ? '' : `<button type="button" class="dr-quick" data-quick="weekend">${tr('本周末')}</button>`}
       <span class="dr-fp-spacer"></span>
-      <button type="button" class="dr-clear" data-quick="clear">清除</button>
+      <button type="button" class="dr-clear" data-quick="clear">${tr('清除')}</button>
     </div>`;
   // 阻止冒泡：避免脚部点击被 flatpickr 当成「点外部」而提前收起面板
   foot.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -188,8 +205,8 @@ function buildRangeFooter(instance, onPick) {
     e.stopPropagation();
     const t = todayStrLocal();
     const q = btn.dataset.quick;
-    if (q === 'today') onPick([t, t]);
-    else if (q === 'tomorrow') { const d = addDays(t, 1); onPick([d, d]); }
+    if (q === 'today') onPick(single ? [t] : [t, t]);
+    else if (q === 'tomorrow') { const d = addDays(t, 1); onPick(single ? [d] : [d, d]); }
     else if (q === 'weekend') {
       const idx = (new Date(`${t}T00:00:00`).getDay() + 6) % 7; // 周一=0，周六=5
       onPick([addDays(t, 5 - idx), addDays(t, 6 - idx)]);
@@ -210,6 +227,7 @@ function bindDateRangeFields(container) {
   container.querySelectorAll('.date-range-field').forEach((dr) => {
     if (dr.dataset.drBound === '1') return; // 同一 DOM 不重复绑定
     dr.dataset.drBound = '1';
+    const single = dr.dataset.single === '1';
 
     const trigger = dr.querySelector('.date-range-trigger');
     const anchor = dr.querySelector('.dr-input');
@@ -220,9 +238,13 @@ function bindDateRangeFields(container) {
     const placeholder = dr.dataset.placeholder || '计划日期';
 
     const syncText = (s, e) => {
-      textEl.textContent = s && e ? `${s} ~ ${e}` : (s ? `${s} 起` : placeholder);
-      trigger.classList.toggle('is-empty', !s);
-      const d = daysBetween(s, e);
+      if (single) {
+        textEl.textContent = e ? tr('截止 {date}', { date: e }) : placeholder;
+      } else {
+        textEl.textContent = s && e ? `${s} ~ ${e}` : (s ? `${s} 起` : placeholder);
+      }
+      trigger.classList.toggle('is-empty', !(single ? e : s));
+      const d = single ? 0 : daysBetween(s, e);
       daysEl.textContent = d ? `${d} 天` : '';
       daysEl.hidden = !d;
     };
@@ -231,7 +253,12 @@ function bindDateRangeFields(container) {
     const apply = (dates) => {
       let s = fmtDay(dates[0]);
       let e = fmtDay(dates[1]);
-      if (s && e && e < s) { const t = s; s = e; e = t; }
+      if (single) {
+        // 单日期形态：点一天即截止日；起止写同一天，与 today 默认 / 截图语音建任务一致。
+        // 注意 apply 只在用户真的选了日期后才触发，编辑旧的范围任务时不碰它就不会被压平。
+        s = e || s;
+        e = s;
+      } else if (s && e && e < s) { const t = s; s = e; e = t; }
       sInput.value = s;
       eInput.value = e;
       if (s && e) dr.classList.remove('invalid'); // 重新选成完整范围后清掉校验红框
@@ -250,11 +277,17 @@ function bindDateRangeFields(container) {
     };
 
     const initial = [];
-    if (sInput.value) initial.push(sInput.value);
-    if (eInput.value && eInput.value !== sInput.value) initial.push(eInput.value);
+    if (single) {
+      // 单日期形态回显截止日；旧范围任务在关闭日期段模式后仍只显示 plan_end
+      const day = normalizeDate(eInput.value) || normalizeDate(sInput.value);
+      if (day) initial.push(day);
+    } else {
+      if (sInput.value) initial.push(sInput.value);
+      if (eInput.value && eInput.value !== sInput.value) initial.push(eInput.value);
+    }
 
     const instance = flatpickrLib(anchor, {
-      mode: 'range',          // 两次点选成范围
+      mode: single ? 'single' : 'range',
       dateFormat: 'Y-m-d',
       locale: rangeLocale(),
       monthSelectorType: 'static',
@@ -273,7 +306,7 @@ function bindDateRangeFields(container) {
         requestAnimationFrame(() => positionRangeCalendar(instance, anchor));
       },
       onClose: () => trigger.setAttribute('aria-expanded', 'false'),
-      onReady: (_dates, _value, self) => buildRangeFooter(self, setRange),
+      onReady: (_dates, _value, self) => buildRangeFooter(self, setRange, single),
     });
 
     boundRanges.add({ field: dr, instance, anchor });
@@ -312,13 +345,16 @@ function getDateRange(container) {
 function validateDateRange(container, { required } = {}) {
   const { planStart, planEnd } = getDateRange(container);
   const dr = container.querySelector('.date-range-field');
+  const single = !!(dr && dr.dataset.single === '1');
   const need = required != null ? required : (dr && dr.dataset.required === '1');
   const fail = (message) => {
     if (dr) dr.classList.add('invalid');
     return { ok: false, planStart, planEnd, message };
   };
-  if (need && (!planStart || !planEnd)) return fail('请先选择计划开始 / 完成日期');
-  if (planStart && planEnd && planEnd < planStart) return fail('完成日期不能早于开始日期');
+  if (need && (single ? !planEnd : (!planStart || !planEnd))) {
+    return fail(single ? tr('请先选择截止日期') : tr('请先选择计划开始 / 完成日期'));
+  }
+  if (!single && planStart && planEnd && planEnd < planStart) return fail('完成日期不能早于开始日期');
   if (dr) dr.classList.remove('invalid');
   return { ok: true, planStart, planEnd, message: '' };
 }
@@ -397,6 +433,7 @@ export {
   DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS,
   dateRangeFieldHtml, bindDateRangeFields, getDateRange, validateDateRange,
   defaultDateRange, todayStrLocal, addDays, normalizeDate, isAnyRangeOpen,
+  setSingleDateMode, isSingleDateMode,
   syncReminderWithPlanEnd,
   reminderHtml, bindReminder, computeReminder, reminderNeedsPlanEnd,
 };

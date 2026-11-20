@@ -61,6 +61,7 @@ const AUTO_SAVE_DELAY = 700;
 import {
   dateRangeFieldHtml, bindDateRangeFields, validateDateRange,
   DATE_RANGE_EVENT, DATE_RANGE_DEFAULTS, syncReminderWithPlanEnd, defaultDateRange,
+  setSingleDateMode,
   reminderHtml, bindReminder, computeReminder, reminderNeedsPlanEnd,
 } from './controls.js';
 
@@ -163,6 +164,14 @@ export function getEncouragerStats() {
 }
 
 export async function init() {
+  // 日期交互形态：默认「计划模式」（日期段双选）；设置中心可关闭后降级为单截止日期。
+  // 控件层是全局单例形态，这里读取一次即可；切换由 setSettingsHandlers 的回调即时更新。
+  try {
+    const pref = await api.ui.getToolPref('taskDate');
+    setSingleDateMode(!!(pref && pref.rangeMode === false));
+  } catch (_) {
+    setSingleDateMode(false);
+  }
   setDetailHandlers({ refresh: () => { renderSidebar(); renderTasks(); }, toast });
   setSearchHandlers({ openDetail, toast });
   // 截图建任务的卡片也要 toast（"已添加 3 条到今天"）：注入而不是让它反向 import ui.js
@@ -385,6 +394,11 @@ function bindStaticEvents() {
     onCalendarPrefs: () => { if (state.view === 'calendar') render(); },
     // 菜单栏撤掉后，原来那些「打开工具 / 维护动作」改由设置中心发起，实现仍在本模块
     onAction: runMenuAction,
+    // 「计划模式」切换后即时改变控件形态（含详情抽屉），不必重载窗口
+    onPlanDateModeChange: (rangeMode) => {
+      setSingleDateMode(!rangeMode);
+      if (state.addingTask) renderTasks();
+    },
   });
   api.on('ui:settings', (paneId) => {
     // 主进程可带分区 id（菜单「趣味功能 → 工位搭子设置…」直接落到 fun 分区）

@@ -24,6 +24,8 @@ const el = {
   dot: document.getElementById('dw-dot'),
   title: document.getElementById('dw-title'),
   count: document.getElementById('dw-count'),
+  countFill: document.getElementById('dw-count-fill'),
+  countText: document.getElementById('dw-count-text'),
   pend: document.getElementById('dw-pend'),
   collapse: document.getElementById('dw-collapse'),
   pin: document.getElementById('dw-pin'),
@@ -211,6 +213,24 @@ function pendText(n) {
   return isSideDock() && isCollapsed() ? String(n) : `未完成 ${n}`;
 }
 
+/** 完成进度胶囊：把完成度写进读数徽标自身 —— 填充层压在数字底下推进。
+ *  仅普通任务清单（显示 x / y 的投影）挂 is-progress；笔记 / 未完成投影 / missing / error
+ *  都不画（后者读的是「欠多少」而不是完成比例）。纯展示，不进签名、不触发重建。 */
+function paintTrack(done, total, show) {
+  el.count.classList.toggle('is-progress', !!show);
+  if (!show) {
+    el.countFill.style.width = '0%';
+    return;
+  }
+  const t = Math.max(0, Number(total) || 0);
+  const d = Math.min(t, Math.max(0, Number(done) || 0));
+  const pct = t ? Math.round((d / t) * 100) : 0;
+  el.countFill.style.width = `${pct}%`;
+  el.count.setAttribute('role', 'progressbar');
+  el.count.setAttribute('aria-valuenow', String(pct));
+  el.count.title = `已完成 ${d} / 共 ${t}`;
+}
+
 /** 「保持展开」：dock 悬停展开后手动钉住，鼠标移开也不收回 */
 function isDockPinned() {
   return !!(view && view.projection && view.projection.dockPinned);
@@ -238,42 +258,21 @@ function priOf(t) {
 /** 分组色只认 #rrggbb(a)：别把库里的脏值原样拼进 style（与 calendar.js#safeColor 同口径） */
 const safeColor = (c) => (/^#[0-9a-f]{3,8}$/i.test(String(c || '')) ? String(c) : '');
 
-/** 标题的比较键：只 trim，不做大小写归一 —— 「周报」和「周报 」是重名，「周报」和「周报A」不是 */
-const titleKey = (t) => String(t && t.title != null ? t.title : '').trim();
-
 /**
- * 重名行的归属小字：按标题分组，**只在归属真能区分出这几条时**才给。
+ * 归属小字：跨清单投影里**每行默认显示自己的分组名**（空分组写「未分组」）。
+ * 用户拍板：分组是任务的固有属性，不该等「撞名了才亮出来」——看一眼就知道每条属于哪个清单。
+ * 父任务名不进这个维度：父可见时有缩进 + └ 引导线，父被筛掉时行内已有「↳ 父任务名」标签。
+ * 单清单投影（group）由调用方传空 Map：标题已经是清单名，每行再重复一遍是纯噪音。
  *
- * 为什么不做「有重名就塞分组名」：两条同名任务往往就躺在同一个清单里
- * （用户连着建了两条「周会准备」），此时写两遍一样的「项目甲」既没有区分力，
- * 又把 34px 的行白白撑成 37px。判据是「组内分组名取值 ≥2 种」：
- *  - 「项目甲 / 项目乙」→ 给（跨清单撞名，正是这条需求的靶子）；
- *  - 一条有分组、一条没有 → 给，空的那个写「未分组」（这也可以区分）；
- *  - 两条都在项目甲 → 不给（分组名不承担区分职责，也没有别的维度可退）。
- *
- * 父任务名不进这个维度：父可见时有缩进 + └ 引导线，父被筛掉时行内已有
- * 「↳ 父任务名」标签 —— 浮窗里父属关系已有表达，不必在第二行重复一遍。
- *
- * @param {Array} rows 真正会被画出来的行（flattenTree 之后），不是原始任务表：
- *                     未展开的子任务不渲染，也就谈不上「同屏撞名」。
- * @returns {Map<number, string>} taskId → 归属文案（不在表里 = 不显示）
+ * @param {Array} rows 真正会被画出来的行（flattenTree 之后）
+ * @returns {Map<number, string>} taskId → 归属文案
  */
 function ownersByTask(rows) {
-  const groups = new Map();
-  for (const t of rows) {
-    const k = titleKey(t);
-    if (!k) continue;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(t);
-  }
   const out = new Map();
-  for (const list of groups.values()) {
-    if (list.length < 2) continue;
-    const names = list.map((t) => String(t && t.group_name != null ? t.group_name : '').trim());
-    if (new Set(names).size < 2) continue;
-    // 空串也算一种取值（「这条没归到任何清单」），写出来同样能区分。
-    // 「未分组」直接写中文：浮窗渲染层整体没接 i18n（本文件其余文案同此）。
-    list.forEach((t, i) => out.set(t.id, names[i] || '未分组'));
+  for (const t of rows) {
+    if (!t || t.id == null) continue;
+    const name = String(t.group_name == null ? '' : t.group_name).trim();
+    out.set(t.id, name || '未分组');
   }
   return out;
 }
@@ -284,7 +283,7 @@ function signature() {
   const p = view.projection || {};
   // 优先级必须进指纹：否则主列表改了优先级，浮窗不重绘 = 「色标永远不变」。
   // parent_title / subtask_* 决定层级徽标，wlEnabled 决定工时按钮组，变了都要重建 DOM。
-  // group_name / group_color 决定重名行的归属小字（与色点），同样必须重建。
+  // group_name / group_color 决定每行的归属小字（与色点），同样必须重建。
   // 注意计时秒数**不进**指纹：那是瞬态，交给 paintWorklogRows 每秒就地改，重绘会丢滚动位置。
   return `${view.title}|${view.counts ? view.counts.done : 0}/${view.counts ? view.counts.total : 0}|${view.error || ''}|${view.missing ? 1 : 0}|${isCollapsed() ? 1 : 0}|${p.kind || ''}|${p.dock || ''}|${view.pending == null ? '' : view.pending}/${view.overdue == null ? '' : view.overdue}|${t}|${highlightId || ''}|${wlEnabled ? 1 : 0}`;
 }
@@ -318,12 +317,14 @@ function render() {
     el.dot.hidden = true;
     el.count.hidden = true;
     el.pend.hidden = true;
+    paintTrack(0, 0, false);
   } else if (view.error) {
     el.root.dataset.state = 'error';
     el.title.textContent = view.title || '数据未就绪';
     el.dot.hidden = true;
     el.count.hidden = true;
     el.pend.hidden = true;
+    paintTrack(0, 0, false);
   } else {
     el.root.dataset.state = 'ready';
     const p = view.projection || {};
@@ -341,24 +342,27 @@ function render() {
       // 笔记没有「完成进度」这回事：徽标一律不显示，标题就是全部读数
       el.count.hidden = true;
       el.pend.hidden = true;
+      paintTrack(0, 0, false);
     } else if (isUnfinished) {
       // 「未完成」的头条信息是「我还欠多少」：收起条尤其要一眼看到数字 + 逾期数。
       // 两个徽标并排 —— 左边红色报危机（逾期），右边品牌色报总量（未完成），标题只留名字。
       const pend = view.pending == null ? Math.max(0, c.total - c.done) : view.pending;
       const over = Number(view.overdue) || 0;
       el.count.hidden = !over;
-      el.count.textContent = over ? `逾期 ${over}` : '';
+      el.countText.textContent = over ? `逾期 ${over}` : '';
       el.count.title = `逾期 ${over} 条（未勾掉）`;
       el.count.classList.toggle('is-overdue', over > 0);
       el.pend.hidden = false;
       el.pend.textContent = pendText(pend);
       el.pend.title = `还有 ${pend} 条没勾掉`;
+      paintTrack(0, 0, false);
     } else {
       el.count.hidden = false;
       el.count.classList.remove('is-overdue');
-      el.count.textContent = `${c.done} / ${c.total}`;
+      el.countText.textContent = `${c.done} / ${c.total}`;
       el.count.title = `已完成 ${c.done} / 共 ${c.total}`;
       el.pend.hidden = true;
+      paintTrack(c.done, c.total, true);
     }
   }
 
@@ -467,7 +471,8 @@ function rowHtml(t, opts = {}) {
     // 紧急行额外强化：左侧竖条 + 标题加粗 + 淡红底（色点太弱，一眼扫不到）
     pri === 3 && !done ? 'is-urgent' : '',
     timing ? 'is-timing' : '',
-    // 重名行多长一行归属小字（34px → 自适应高度），不重名的行保持单行
+    // 归属小字默认每行都显示（group_name → 分组名 / 「未分组」）：跨清单视图里一眼分清每条属于哪。
+    // 没有分组字段时也写「未分组」，DOM 形态与有分组时一致（统一两行，不因数据缺失而跳动）。
     owner ? 'has-sub' : '',
   ].filter(Boolean).join(' ');
   const due = opts.due || '';
@@ -488,9 +493,8 @@ function rowHtml(t, opts = {}) {
   const subTotal = Number(t.subtask_count) || 0;
   const subDone = Number(t.subtask_done) || 0;
   const subTag = subTotal > 0 ? `<span class="dw-rel dw-rel-count" title="子任务 ${subDone}/${subTotal} 已完成">☑ ${subDone}/${subTotal}</span>` : '';
-  // 重名行：标题下面再给一行 10px 归属（分组名 / 「未分组」）+ 分组色圆点。
-  // 286px 里把归属拼进标题会直接挤掉标题本身；而同一屏出现两条同名任务时，
-  // 光看标题是分不出「这是哪个项目的」—— 这是这一行唯一的区分手段。
+  // 归属小字：标题下面固定一行 10px 分组名（或「未分组」）+ 分组色圆点。
+  // 286px 里把归属拼进标题会挤掉标题本身；分组名独占一行后标题宽度不受影响。
   // 圆点只在归属确实是一个分组名时才上色（「未分组」没有颜色可给，走 currentColor 灰）。
   const dotColor = owner && owner === String(t.group_name == null ? '' : t.group_name).trim()
     ? safeColor(t.group_color) : '';
@@ -641,12 +645,11 @@ function renderList() {
     return;
   }
 
-  // 归属小字按「真正画出来的行」算：未展开的子任务不渲染，不算同屏撞名。
-  // 没有能区分的归属时 owner 一律空串 → DOM 与改造前完全一致（单行 34px）。
+  // 归属小字：跨清单投影每行都给（今天/即将/未完成），单清单给一行也没意义。
+  // has-sub 不再是可有可无：跨清单投影里每一行都是两行高，节奏统一。
   if (kind === 'unfinished') {
     const html = groupSections(tasks).map((sec) => {
-      // 每段各自成树：逾期段里的一对父子也在展开后紧跟在一起；
-      // 重名也按段内算 —— 两段各自只剩一条同名时，本来就不需要区分。
+      // 每段各自成树：逾期段里的一对父子也在展开后紧跟在一起；归属按段内取分组名。
       const nodes = flattenTree(sec.rows);
       const owners = ownersByTask(nodes.map((n) => n.task));
       const rows = nodes.map((node) => {
@@ -1078,7 +1081,7 @@ function recount() {
     view.pending = open.length;
     view.overdue = open.filter((t) => t.plan_end && t.plan_end < today).length;
     el.count.hidden = !view.overdue;
-    el.count.textContent = view.overdue ? `逾期 ${view.overdue}` : '';
+    el.countText.textContent = view.overdue ? `逾期 ${view.overdue}` : '';
     el.count.title = `逾期 ${view.overdue} 条（未勾掉）`;
     el.count.classList.toggle('is-overdue', view.overdue > 0);
     el.pend.hidden = false;
@@ -1086,7 +1089,8 @@ function recount() {
     el.pend.title = `还有 ${view.pending} 条没勾掉`;
     paintSectionCounts();
   } else {
-    el.count.textContent = `${view.counts.done} / ${view.counts.total}`;
+    el.countText.textContent = `${view.counts.done} / ${view.counts.total}`;
+    paintTrack(view.counts.done, view.counts.total, true);
   }
   // 指纹里的计数变了，下次 refresh 才会真正重建（这里先同步，避免重复重绘）
   lastSig = signature();
@@ -1254,6 +1258,7 @@ function enterMissing() {
   el.title.textContent = gone;
   el.count.hidden = true;
   el.dot.hidden = true;
+  paintTrack(0, 0, false);
   el.list.innerHTML = '';
   el.list.hidden = false;
   el.note.hidden = true;

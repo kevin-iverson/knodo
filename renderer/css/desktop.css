@@ -127,6 +127,35 @@ body {
   min-width: 0;
 }
 
+/* 完成进度胶囊：读数与进度合为一个元素 —— 填充层压在数字底下从左向右推进。
+   同色系（轨道底 / 填充 / 数字都是 --dw-primary 一族），杜绝「灰轨 + 蓝徽标」两套语言。
+   0% 时胶囊底就是一条浅色轨道托着数字，不再是一条无信息的悬空灰线。 */
+.dw-count.is-progress {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 86px;
+  overflow: hidden;
+  isolation: isolate;
+}
+.dw-count-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--dw-primary) 34%, transparent);
+  z-index: -1;
+  transition: width 260ms ease;
+}
+.dw-count-text { position: relative; z-index: 1; }
+html[data-theme='dark'] .dw-count-fill {
+  background: color-mix(in srgb, var(--dw-primary) 55%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .dw-count-fill { transition: none; }
+}
+
 /* 完成进度徽标：这是浮窗最核心的读数，必须一眼扫到 —— 小灰字会淹没在标题栏里。
    .dw-pend 是「未完成」投影的第二个徽标（逾期右边报总数），与它同一套材质。 */
 .dw-count,
@@ -661,6 +690,13 @@ html[data-theme='dark'] .dw-rel-count { opacity: 0.85; }
    别的操作在展开态做。整条仍保持 drag（可以拖着沿边挪位置）——
    悬停展开不靠 DOM 事件，由主进程按系统指针位置判定后发 desktop:pointer。 */
 .dw.is-dock-side.is-collapsed .dw-btns { display: flex; }
+/* 竖排 30px 侧条里放不下横向进度胶囊：展开/收起态都退回小读数胶囊，
+   填充层隐藏（窄条里进度条读不出来，数字才是信息）。 */
+.dw.is-dock-side .dw-count.is-progress {
+  display: inline;
+  min-width: 0;
+}
+.dw.is-dock-side .dw-count-fill { display: none; }
 /* 只有「展开」箭头在收起态有意义；📌 与 ⋯ 在 30px 宽里既挤又容易误点，展开后再给 */
 .dw.is-dock-side.is-collapsed .dw-pin,
 .dw.is-dock-side.is-collapsed #dw-more { display: none; }

@@ -23,7 +23,9 @@
     <header class="dw-head" id="dw-head">
       <span class="dw-dot" id="dw-dot" hidden></span>
       <span class="dw-title" id="dw-title">加载中…</span>
-      <span class="dw-count" id="dw-count" hidden></span>
+      <!-- 完成进度胶囊：填充层在数字底下推进，读数压在上层。
+           只有普通任务投影显示（is-progress），笔记 / 未完成 / 出错时整枚隐藏。 -->
+      <span class="dw-count" id="dw-count" hidden><i class="dw-count-fill" id="dw-count-fill"></i><span class="dw-count-text" id="dw-count-text"></span></span>
       <!-- 「未完成」投影专用：逾期徽标右边常驻未完成总数，收起成一条读「还欠多少」 -->
       <span class="dw-pend" id="dw-pend" hidden></span>
       <span class="dw-btns">
