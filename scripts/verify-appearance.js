@@ -107,11 +107,11 @@ async function connect(wsUrl) {
       style: document.documentElement.getAttribute('data-style'),
     }))()`);
     ok('渲染层就绪', boot.ready);
-    ok('theme-core 已加载且 7 套风格', boot.hasCore && boot.styles === 7, JSON.stringify(boot.styles));
+    ok('theme-core 已加载且 9 套风格', boot.hasCore && boot.styles === 9, JSON.stringify(boot.styles));
     ok('背景层 DOM 存在', boot.hasLayer);
     ok('启动即有 data-theme / data-style', !!boot.theme && !!boot.style, `${boot.theme} / ${boot.style}`);
 
-    /* ---- 1) 12 组 token：每组都真的改到了 CSS ---- */
+    /* ---- 1) 18 组 token：每组都真的改到了 CSS ---- */
     const tokens = await page.evaluate(`(() => {
       const KT = window.KnodoTheme;
       const out = [];
@@ -134,7 +134,7 @@ async function connect(wsUrl) {
       return out;
     })()`);
     const bad = tokens.filter((t) => t.bg !== t.expectBg || t.primary !== t.expectPrimary);
-    ok('12 组风格×明暗 token 全部生效', bad.length === 0, bad.length ? JSON.stringify(bad.slice(0, 3)) : `${tokens.length} 组`);
+    ok('18 组风格×明暗 token 全部生效', bad.length === 0, bad.length ? JSON.stringify(bad.slice(0, 3)) : `${tokens.length} 组`);
 
     /* ---- 2) 透明度补偿公式 ---- */
     const alpha = await page.evaluate(`(() => {
@@ -208,7 +208,7 @@ async function connect(wsUrl) {
     })()`);
     ok('设置中心第一个分区是「外观」', pane.first === '外观', JSON.stringify(pane.nav));
     ok('外观分区默认选中', pane.isActive);
-    ok('7 张风格卡', pane.cards === 7, pane.cards);
+    ok('9 张风格卡', pane.cards === 9, pane.cards);
     ok('当前风格高亮到 sepia', pane.selected === 'sepia', pane.selected);
     ok('风格卡缩略图按真实 token 上色', !!pane.thumbBg && pane.thumbBg !== 'rgba(0, 0, 0, 0)', pane.thumbBg);
     ok('「通用」里不再有界面主题下拉', pane.generalHasTheme === false);

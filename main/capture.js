@@ -7,7 +7,8 @@
  * 但绝不允许调 showWindow() —— 主窗口一旦跳前台，"不打断"这件事就作废了。
  *
  * 关键约束：
- *  - 窗口单例 + hide 复用：每次新建会冷启动 200ms 白屏，手感全毁；
+ *  - 窗口懒创建 + hide 复用：启动时不建窗（它自带一个 renderer 进程，实测约 32MB 私有内存），
+ *    首次唤起才建；建好后只 hide 不 destroy，所以只有第一次付 200ms 冷启动；
  *  - 必须抢焦点（要打字），靠 Esc 立刻归还来补偿；
  *  - 层级 screen-saver：浮窗是 floating，不压住就会把自己的捕捉条盖住；
  *  - 落在鼠标所在屏，不能写死主屏。
@@ -43,7 +44,6 @@ const PICK_MAX = 8; // 最多展开 8 行，再多就滚动
 let win = null;
 let getMainWindow = () => null;
 let onDataChange = () => {};
-let ready = false;
 
 /** 当前目标清单（id），以及本次会话已记录条数（"已添加到 今天 · 1" 的那个 1） */
 let targetId = null;
@@ -241,7 +241,7 @@ function sendState() {
 }
 
 /**
- * 开 / 关（幂等）。
+ * 开 / 关（幂等）。首次打开时这里才真正创建窗口（见 init 的说明）。
  * @param {object} [opts]
  * @param {number|null} [opts.contextGroupId] 本次上下文清单（桌面浮窗对应的清单 / 主窗口选中项）
  */
@@ -451,14 +451,11 @@ function init(opts = {}) {
   getMainWindow = opts.getMainWindow || (() => null);
   onDataChange = opts.onDataChange || (() => {});
   registerIpc();
-  ready = true;
-  // 启动时预创建隐藏窗口：第一次按 C 才不会有 200ms 冷启动白屏
-  if (!db.isReady()) return;
-  try { ensureWindow(); } catch (e) { console.error('[capture] 预创建失败', e && e.message); }
+  // 不预创建隐藏窗口：它自带一个 renderer 进程（实测约 32MB 私有内存 / 92MB 工作集），
+  // 而快速捕捉是低频入口。首次 toggle() 才建，建好后 hide 复用 —— 只有第一次有冷启动。
 }
 
 function destroy() {
-  ready = false;
   if (win && !win.isDestroyed()) win.destroy();
   win = null;
 }

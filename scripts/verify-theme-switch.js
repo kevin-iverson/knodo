@@ -265,7 +265,7 @@ async function connect(wsUrl) {
     ok('跟随系统时 title 标注「跟随系统」', /跟随系统/.test(reset.title), reset.title);
 
     /* ---- 7) 极端风格抽查（只出图，不断言）：高对比浅色 / 樱粉深色 ----
-       这套开关全部走 token，12 组配色里只要这两个极端不塌，其余都在中间地带 */
+       这套开关全部走 token，18 组配色里只要这两个极端不塌，其余都在中间地带 */
     if (wantShots) {
       // 先把手/焦点移开，否则拍到的都是 hover + focus-visible 的复合态
       await page.evaluate('document.activeElement && document.activeElement.blur()');

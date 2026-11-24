@@ -237,8 +237,8 @@ function appearanceHtml() {
     </div>
   </section>
 
-  <section class="st-sec" data-search="${APPEARANCE_SEARCH} 风格 雾灰 石墨 苔绿 宣纸 樱粉 故宫 宫殿 脊兽 高对比 style 夜间盯屏 护眼 笔记">
-    <div class="st-sec-title">${tr("风格")}<span class="ap-hint">${tr("七套气质，随时可换")}</span></div>
+  <section class="st-sec" data-search="${APPEARANCE_SEARCH} 风格 雾灰 石墨 苔绿 抹茶 青柠 宣纸 樱粉 丁香 薰衣草 紫 故宫 宫殿 脊兽 高对比 style 夜间盯屏 护眼 笔记">
+    <div class="st-sec-title">${tr("风格")}<span class="ap-hint">${tr("九套气质，随时可换")}</span></div>
     <div class="st-card ap-card-body">
       <div class="ap-styles" data-grid="styles" data-mode="${r.mode}" role="radiogroup" aria-label="${tr("风格")}">${styleCardsHtml(r.mode)}</div>
       ${r.style === 'palace' ? `<div class="ap-palace-note">${tr('故宫风格会在窗口底部陈列太和殿的十一尊脊兽：悬停或点击任意一尊，可查看来历与寓意。切到其他风格时檐口会自动收起。')}</div>` : ''}

@@ -7,7 +7,7 @@
  * 在 <head> 里同步把 data-theme / 三元组写进 :root，首帧就是对的颜色。
  *
  * 职责边界：
- *   · 本文件 = 6 套风格 × 明暗的配色表 + 补偿/护栏/scrim 的算法 + 把 token 写进 DOM
+ *   · 本文件 = 9 套风格 × 明暗的配色表 + 补偿/护栏/scrim 的算法 + 把 token 写进 DOM
  *   · js/theme.js = 与主进程通信（读写配置、选图）、丢失兜底、给设置面板用的小工具
  *
  * 唯一公式（设计方案 4.2）：
@@ -15,7 +15,7 @@
  * 透明度调的是「背景透过面板的比例」，不是图片层的 opacity —— 后者会被主题底色洗成灰雾。
  */
 (function () {
-  /** 七套风格：只定义色相与饱和度；base = 图片全显时允许的最小面板不透明度 */
+  /** 九套风格：只定义色相与饱和度；base = 图片全显时允许的最小面板不透明度 */
   const STYLES = {
     mist: {
       name: '雾灰', en: 'MIST', base: 0.72, swatch: '#4f7cff',
@@ -50,6 +50,17 @@
         text: '#e4ebdf', 'text-2': '#9caf9a', 'text-3': '#6f7d6e', border: '#26301f', primary: '#7fb070', 'primary-strong': '#5f9155',
       },
     },
+    matcha: {
+      name: '抹茶', en: 'MATCHA', base: 0.72, swatch: '#628a35',
+      light: {
+        bg: '#f2f6ea', 'bg-panel': '#fbfdf6', 'bg-sidebar': '#f6f9ef', 'bg-hover': '#e7efda', 'bg-active': '#dbe9c7',
+        text: '#28321d', 'text-2': '#657354', 'text-3': '#96a186', border: '#dfe8d0', primary: '#628a35', 'primary-strong': '#4e7029',
+      },
+      dark: {
+        bg: '#161b12', 'bg-panel': '#1f2718', 'bg-sidebar': '#191f15', 'bg-hover': '#2a3520', 'bg-active': '#35452a',
+        text: '#e9f0dd', 'text-2': '#aabd95', 'text-3': '#7d8d6c', border: '#2f3b25', primary: '#9ecb6a', 'primary-strong': '#80ad50',
+      },
+    },
     sepia: {
       name: '宣纸', en: 'SEPIA', base: 0.70, swatch: '#a5642c',
       light: {
@@ -70,6 +81,17 @@
       dark: {
         bg: '#1a1417', 'bg-panel': '#241a1e', 'bg-sidebar': '#1e171a', 'bg-hover': '#2e2227', 'bg-active': '#3a2a31',
         text: '#f0e4e7', 'text-2': '#b8a2a9', 'text-3': '#8a737b', border: '#33242a', primary: '#ec8ba0', 'primary-strong': '#d07087',
+      },
+    },
+    lilac: {
+      name: '丁香', en: 'LILAC', base: 0.72, swatch: '#8874bd',
+      light: {
+        bg: '#f4f1fa', 'bg-panel': '#fdfbff', 'bg-sidebar': '#f8f5fd', 'bg-hover': '#ece6f6', 'bg-active': '#e2d9f3',
+        text: '#2b2440', 'text-2': '#6a6185', 'text-3': '#9b93b2', border: '#e4ddef', primary: '#8874bd', 'primary-strong': '#6f5aa4',
+      },
+      dark: {
+        bg: '#171525', 'bg-panel': '#201d33', 'bg-sidebar': '#1b1930', 'bg-hover': '#2a2642', 'bg-active': '#342e52',
+        text: '#ece8f7', 'text-2': '#b4aacd', 'text-3': '#847a9e', border: '#332e49', primary: '#b6a3e8', 'primary-strong': '#9984d4',
       },
     },
     palace: {
@@ -96,7 +118,7 @@
     },
   };
 
-  const ORDER = ['mist', 'graphite', 'moss', 'sepia', 'sakura', 'palace', 'contrast'];
+  const ORDER = ['mist', 'graphite', 'moss', 'matcha', 'sepia', 'sakura', 'lilac', 'palace', 'contrast'];
 
   /**
    * 出厂默认 = 故宫（与主进程 main/theme.js 的 DEFAULT_THEME 必须一致）。

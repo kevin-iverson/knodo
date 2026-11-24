@@ -8,7 +8,7 @@
  *  1. 默认只读态：工具条隐藏、contenteditable=false、元数据只读、输入/删除/粘贴全被拦；
  *  2. 读态 / 编辑态都不出现 Markdown 原始标记（** / # / == / ``` / | --- |）；
  *  3. 「点编辑」后工具条出现、可写；切态不重渲（innerHTML 完全一致）；
- *  4. 工具条与快捷键插入加粗 / 标题 / 列表 / 链接 / 表格 / 代码块；
+ *  4. 工具条与快捷键插入加粗 / 标题 / 列表 / 链接 / 表格 / 代码块；表格自定义行列、格式刷、清除样式；
  *  5. 退出编辑自动隐藏工具条恢复只读、立即落库；
  *  6. 已有内容与自定义格式（颜色高亮 / 代码块 / 表格 / 链接）往返零丢失。
  *
@@ -303,8 +303,24 @@ function probe() {
       s.addRange(r);
     }
     document.querySelector('[data-nt-cmd="table"]').click();
-    await wait(120);
+    await wait(150);
+    const tableBox = document.querySelector('.nt-overlay .nt-table-grid');
+    ok('表格行列浮层出现', !!tableBox);
+    if (tableBox) {
+      const rowsInput = document.querySelector('.nt-overlay [data-nt-rows]');
+      const colsInput = document.querySelector('.nt-overlay [data-nt-cols]');
+      rowsInput.value = '4';
+      colsInput.value = '5';
+      rowsInput.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('.nt-overlay [data-ov-act="ok"]').click();
+    }
+    await wait(200);
     ok('工具条插入表格生效', doc.querySelectorAll('table').length > tableBefore);
+    const freshTable = [...doc.querySelectorAll('table')].pop();
+    ok('表格自定义 4 行（含表头）', !!freshTable && freshTable.rows.length === 4,
+      freshTable && freshTable.rows.length);
+    ok('表格自定义 5 列', !!freshTable && freshTable.querySelectorAll('thead th').length === 5,
+      freshTable && freshTable.querySelectorAll('thead th').length);
 
     // 代码块：工具条先选语言再插入；插完点左上角语言标签可以换语言
     const codeBefore = doc.querySelectorAll('.md-code').length;
@@ -393,6 +409,43 @@ function probe() {
       ok('色板已关闭', !document.querySelector('.nt-palette'));
     }
 
+    // 格式刷 🖌：从「红字」取颜色格式，分别刷到原表格的「列A」「列B」
+    const colorSrc = [...doc.querySelectorAll('.md-color')].find((x) => /红字/.test(x.textContent || ''));
+    const headCellA = [...doc.querySelectorAll('thead th')].find((x) => /列A/.test(x.textContent || ''));
+    const headCellB = [...doc.querySelectorAll('thead th')].find((x) => /列B/.test(x.textContent || ''));
+    ok('找到格式刷源（红字）', !!colorSrc);
+    ok('找到格式刷目标（表格表头）', !!headCellA && !!headCellB);
+    if (colorSrc && headCellA && headCellB) {
+      const brushBtn = document.querySelector('[data-nt-cmd="brush"]');
+      selectNode(colorSrc);
+      brushBtn.click();
+      await wait(120);
+      ok('格式刷已激活', !!document.querySelector('[data-nt-cmd="brush"].active')
+        && doc.classList.contains('nt-brushing'));
+      selectNode(headCellA);
+      doc.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
+      await wait(200);
+      ok('格式刷已把颜色刷到目标', !!headCellA.querySelector('.md-color'), headCellA.innerHTML);
+      ok('刷完自动退出格式刷', !document.querySelector('[data-nt-cmd="brush"].active')
+        && !doc.classList.contains('nt-brushing'));
+
+      // 再刷一次到「列B」，留给清除样式按钮验证
+      selectNode(colorSrc);
+      brushBtn.click();
+      await wait(100);
+      selectNode(headCellB);
+      doc.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0 }));
+      await wait(200);
+      ok('格式刷可重复使用（列B）', !!headCellB.querySelector('.md-color'), headCellB.innerHTML);
+
+      // 清除样式按钮：清掉「列B」的颜色，列A 保留供落库断言
+      selectNode(headCellB.querySelector('.md-color'));
+      document.querySelector('[data-nt-cmd="clearFormat"]').click();
+      await wait(160);
+      ok('清除样式按钮移除了 md-color', !headCellB.querySelector('.md-color'), headCellB.innerHTML);
+      ok('清除样式保留了文字', /列B/.test(headCellB.textContent || ''));
+    }
+
     // 编辑后仍不暴露 Markdown 标记
     const text2 = doc.innerText;
     out.editTables = doc.querySelectorAll('table').length;
@@ -447,7 +500,10 @@ function probe() {
     ok('保存后加粗生效（工具条）', /\*\*列表项 A\*\*|__列表项 A__/.test(savedMd), savedMd.slice(0, 200));
     ok('保存后斜体生效（快捷键）', /[*_]列表项 B[*_]/.test(savedMd), savedMd.slice(0, 200));
     ok('保存后新链接生效', savedMd.includes('https://example.org'));
-    ok('保存后新插入表格生效', savedMd.includes('列 A') && savedMd.includes('列 C'), savedMd.slice(-260));
+    ok('保存后自定义 5 列表格生效', savedMd.includes('列 A') && savedMd.includes('列 E'), savedMd.slice(-260));
+    const brushedLine = savedMd.split('\n').find((line) => /列A/.test(line)) || '';
+    ok('保存后格式刷颜色已落库', /==列A==\{c:#e5484d\}/.test(brushedLine), brushedLine);
+    ok('保存后清除样式已落库', !/==列B==\{c:/.test(brushedLine), brushedLine);
     ok('保存后代码块语言生效', savedMd.includes(FENCE + 'python') && savedMd.includes('print("hi")'),
       savedMd.slice(-260));
     ok('保存后新背景高亮生效', /==标题一==\{bg:/.test(savedMd), savedMd.slice(0, 120));

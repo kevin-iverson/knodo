@@ -70,6 +70,8 @@ export const TOOLBAR_HTML = `
     <button type="button" class="nt-tb-btn" data-nt-cmd="italic" title="斜体 (Ctrl+I)"><i>I</i></button>
     <button type="button" class="nt-tb-btn" data-nt-cmd="underline" title="下划线 (Ctrl+U)"><u>U</u></button>
     <button type="button" class="nt-tb-btn" data-nt-cmd="strike" title="删除线 (Ctrl+Shift+X)"><s>S</s></button>
+    <button type="button" class="nt-tb-btn nt-tb-brush" data-nt-cmd="brush" title="格式刷：选源文字后点此，再选目标文字应用（Ctrl+\ 取格式，双击连续刷）">🖌️</button>
+    <button type="button" class="nt-tb-btn nt-tb-clear" data-nt-cmd="clearFormat" title="清除样式 (Ctrl+Shift+Backspace)：清除选中文字的行内格式"><s>A</s></button>
     <span class="nt-tb-sep"></span>
     <button type="button" class="nt-tb-btn nt-tb-color" data-nt-cmd="color" title="字体颜色">A</button>
     <button type="button" class="nt-tb-btn nt-tb-bg" data-nt-cmd="bg" title="背景高亮">H</button>
@@ -82,7 +84,7 @@ export const TOOLBAR_HTML = `
     <button type="button" class="nt-tb-btn" data-nt-cmd="ol" title="有序列表 (Ctrl+Shift+7)">1≡</button>
     <button type="button" class="nt-tb-btn" data-nt-cmd="quote" title="引用">❝</button>
     <button type="button" class="nt-tb-btn" data-nt-cmd="code" title="代码块（可选语言）">&lt;/&gt;</button>
-    <button type="button" class="nt-tb-btn" data-nt-cmd="table" title="插入表格">▦</button>
+    <button type="button" class="nt-tb-btn" data-nt-cmd="table" title="插入表格（自定义行数和列数）">▦</button>
     <button type="button" class="nt-tb-btn" data-nt-cmd="hr" title="分割线">—</button>
     <span class="nt-tb-sep"></span>
     <button type="button" class="nt-tb-btn" data-nt-cmd="link" title="链接 (Ctrl+K)">🔗</button>
@@ -581,6 +583,88 @@ export function createWysiwyg(o) {
     return touched;
   }
 
+  /* ---- 插入表格：行列可选，默认 3×3 ---- */
+  const TABLE_MAX = 20;
+  const TABLE_GRID_ROWS = 6;
+  const TABLE_GRID_COLS = 8;
+  const clampInt = (v, min, max, fallback) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+  };
+
+  /** 表头一律用 <th>，保证 turndown 的 GFM 表格规则能识别并写出分隔行 */
+  function buildTableHTML(rows, cols) {
+    const r = clampInt(rows, 1, TABLE_MAX, 3);
+    const c = clampInt(cols, 1, TABLE_MAX, 3);
+    const heads = Array.from({ length: c }, (_, i) => {
+      const label = i < 26 ? `列 ${String.fromCharCode(65 + i)}` : `列 ${i + 1}`;
+      return `<th>${esc(label)}</th>`;
+    }).join('');
+    const body = Array.from({ length: r - 1 }, () => `<tr>${'<td>&nbsp;</td>'.repeat(c)}</tr>`).join('');
+    return `<table><thead><tr>${heads}</tr></thead><tbody>${body}</tbody></table><p><br></p>`;
+  }
+
+  /** 表格浮层：网格快速选择或输入精确行列，两者都写回同一组数字框 */
+  function openTableBox(anchor) {
+    showOverlay(anchor, `
+      <div class="nt-overlay-title">插入表格</div>
+      <div class="nt-table-grid" data-nt-table-grid>
+        ${Array.from({ length: TABLE_GRID_ROWS * TABLE_GRID_COLS }, (_, i) => `
+          <i class="nt-table-cell" data-nt-r="${Math.floor(i / TABLE_GRID_COLS) + 1}" data-nt-c="${i % TABLE_GRID_COLS + 1}"></i>`).join('')}
+      </div>
+      <div class="nt-table-fields">
+        <label>行数（含表头）<input class="nt-overlay-input" type="number" min="1" max="${TABLE_MAX}" value="3" data-nt-rows /></label>
+        <label>列数<input class="nt-overlay-input" type="number" min="1" max="${TABLE_MAX}" value="3" data-nt-cols /></label>
+      </div>
+      <div class="nt-overlay-acts">
+        <button type="button" class="ghost-btn tiny" data-ov-act="cancel">取消</button>
+        <span class="nt-tb-spacer"></span>
+        <button type="button" class="primary-btn tiny" data-ov-act="ok">插入表格</button>
+      </div>`, null);
+    const grid = overlayEl?.querySelector('[data-nt-table-grid]');
+    const rowsInput = overlayEl?.querySelector('[data-nt-rows]');
+    const colsInput = overlayEl?.querySelector('[data-nt-cols]');
+    const paint = (r, c) => {
+      grid?.querySelectorAll('.nt-table-cell').forEach((cell) => {
+        cell.classList.toggle('picked', +cell.dataset.ntR <= r && +cell.dataset.ntC <= c);
+      });
+    };
+    const commit = (r, c) => {
+      closeOverlay();
+      focusRoot(true);
+      insertHTML(buildTableHTML(r, c));
+    };
+    grid?.addEventListener('mouseover', (e) => {
+      const cell = e.target.closest?.('.nt-table-cell');
+      if (!cell) return;
+      const r = +cell.dataset.ntR;
+      const c = +cell.dataset.ntC;
+      if (rowsInput) rowsInput.value = r;
+      if (colsInput) colsInput.value = c;
+      paint(r, c);
+    });
+    grid?.addEventListener('click', (e) => {
+      const cell = e.target.closest?.('.nt-table-cell');
+      if (cell) commit(+cell.dataset.ntR, +cell.dataset.ntC);
+    });
+    overlayEl?.addEventListener('input', () => {
+      paint(
+        clampInt(rowsInput?.value, 1, TABLE_GRID_ROWS, 0),
+        clampInt(colsInput?.value, 1, TABLE_GRID_COLS, 0),
+      );
+    });
+    overlayEl?.addEventListener('click', (e) => {
+      const act = e.target.closest?.('[data-ov-act]')?.dataset.ovAct;
+      if (!act) return;
+      if (act === 'cancel') { closeOverlay(); return; }
+      commit(clampInt(rowsInput?.value, 1, TABLE_MAX, 3), clampInt(colsInput?.value, 1, TABLE_MAX, 3));
+    });
+    overlayEl?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); overlayEl.querySelector('[data-ov-act="ok"]')?.click(); }
+    });
+    paint(3, 3);
+  }
+
   function openLinkBox(anchor) {
     const sel = window.getSelection();
     const selected = sel && root.contains(sel.anchorNode) ? String(sel.toString() || '') : '';
@@ -710,6 +794,8 @@ export function createWysiwyg(o) {
     italic: () => exec('italic'),
     underline: () => exec('underline'),
     strike: () => exec('strikeThrough'),
+    brush: (btn) => collectBrush(btn),
+    clearFormat: () => clearInlineStyles(),
     h1: () => formatBlock('h1'),
     h2: () => formatBlock('h2'),
     h3: () => formatBlock('h3'),
@@ -718,11 +804,7 @@ export function createWysiwyg(o) {
     ul: () => exec('insertUnorderedList'),
     ol: () => exec('insertOrderedList'),
     code: (btn) => openCodeLangBox(btn, 'text', (lang) => insertCodeBlock(lang)),
-    table: () => insertHTML(
-      '<table><thead><tr><th>列 A</th><th>列 B</th><th>列 C</th></tr></thead>'
-      + '<tbody><tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>'
-      + '<tr><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr></tbody></table><p><br></p>',
-    ),
+    table: (btn) => openTableBox(btn),
     hr: () => insertHTML('<hr><p><br></p>'),
     link: (btn) => openLinkBox(btn),
     image: () => { if (hooks.pickImage) hooks.pickImage(); },
@@ -767,6 +849,173 @@ export function createWysiwyg(o) {
         return;
       }
     }
+    saveSelection();
+    afterChange();
+  }
+
+  /* ---- 格式刷：取源格式 → 刷到目标选区 ---- */
+  let brush = null;
+  let brushLocked = false;
+  const brushBtn = () => toolbar?.querySelector('[data-nt-cmd="brush"]');
+
+  function cancelBrush() {
+    if (!brush && !brushLocked) return;
+    brush = null;
+    brushLocked = false;
+    root.classList.remove('nt-brushing');
+    brushBtn()?.classList.remove('active', 'is-locked');
+  }
+  function syncBrushBtn() {
+    brushBtn()?.classList.toggle('active', !!brush);
+    brushBtn()?.classList.toggle('is-locked', !!brush && brushLocked);
+    root.classList.toggle('nt-brushing', !!brush);
+  }
+
+  /** 从 style 属性读原始值，保留 #hex（用 .style.color 会拿到 rgb()，破坏自定义语法） */
+  function styleValue(el, key) {
+    const text = el?.getAttribute?.('style') || '';
+    const hit = String(text).split(';').map((s) => s.trim()).find((s) => s.startsWith(`${key}:`));
+    return hit ? hit.slice(key.length + 1).trim() : '';
+  }
+
+  /** 取当前选区的格式：行内样式 + 标题 / 引用段落样式 */
+  function collectBrush(btn) {
+    if (!editing) { notify('请先点「编辑」'); return; }
+    focusRoot();
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) { notify('请先选中带格式的文字'); return; }
+    const range = sel.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) { notify('请选中正文里的文字'); return; }
+    const start = range.startContainer;
+    const el = start.nodeType === 1 ? start : start.parentElement;
+    if (!el || !root.contains(el)) return;
+
+    const hasTag = (re) => {
+      for (let n = el; n && n !== root; n = n.parentElement) {
+        if (n.nodeType === 1 && re.test(n.tagName)) return true;
+      }
+      return false;
+    };
+    let color = '';
+    let bg = '';
+    for (let n = el; n && n !== root; n = n.parentElement) {
+      if (n.nodeType !== 1) continue;
+      if (!color && n.classList?.contains('md-color')) color = styleValue(n, 'color');
+      if (!bg && n.classList?.contains('md-mark')) {
+        bg = styleValue(n, 'background') || styleValue(n, 'background-color');
+      }
+    }
+    const cs = window.getComputedStyle(el);
+    const deco = String(cs.textDecorationLine || cs.textDecoration || '');
+    // 段落格式只在选区覆盖整块时才带走：选中半个标题只应刷行内格式，
+    // 否则把 h3 套进表格单元格 / 列表项会直接破坏结构。
+    const blockEl = el.closest?.('h1,h2,h3,blockquote');
+    let block = '';
+    if (blockEl && root.contains(blockEl)) {
+      const whole = document.createRange();
+      whole.selectNodeContents(blockEl);
+      if (range.compareBoundaryPoints(Range.START_TO_START, whole) <= 0
+        && range.compareBoundaryPoints(Range.END_TO_END, whole) >= 0) {
+        block = blockEl.tagName.toLowerCase();
+      }
+    }
+
+    brush = {
+      bold: hasTag(/^(B|STRONG)$/) || parseInt(cs.fontWeight, 10) >= 600,
+      italic: hasTag(/^(I|EM)$/) || cs.fontStyle === 'italic',
+      underline: hasTag(/^U$/) || deco.includes('underline'),
+      strike: hasTag(/^(S|STRIKE|DEL)$/) || deco.includes('line-through'),
+      color, bg, block,
+    };
+    syncBrushBtn();
+    notify(brushLocked ? '格式已复制，可连续刷到目标文字；Esc 取消' : '格式已复制，选中目标文字即可应用；双击按钮可连续刷');
+  }
+
+  /** 用当前选区套一层项目自定义样式包裹，DOM 结构与 applyStyle 上色一致 */
+  function wrapSelection(value, tag, cls, prop) {
+    if (!value) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+    const range = sel.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) return;
+    const wrap = document.createElement(tag);
+    wrap.className = cls;
+    wrap.setAttribute('style', `${prop}:${value}`);
+    try {
+      wrap.appendChild(range.extractContents());
+      range.insertNode(wrap);
+      sel.removeAllRanges();
+      const r2 = document.createRange();
+      r2.selectNodeContents(wrap);
+      sel.addRange(r2);
+    } catch (e) { /* 选区跨块时忽略 */ }
+  }
+
+  /** 把已复制的格式刷到当前选区；由正文 mouseup 触发 */
+  function applyBrush() {
+    if (!brush || !editing) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+    const range = sel.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) return;
+    const anchorEl = range.startContainer.nodeType === 1
+      ? range.startContainer : range.startContainer.parentElement;
+    const inStructural = !!anchorEl?.closest?.('th,td,li,pre');
+
+    // 先清目标原有行内样式（含自定义颜色 / 高亮包裹）
+    root.querySelectorAll('span.md-color, mark.md-mark').forEach((el) => {
+      if (!range.intersectsNode(el)) return;
+      const parent = el.parentNode;
+      if (!parent) return;
+      while (el.firstChild) parent.insertBefore(el.firstChild, el);
+      el.remove();
+    });
+    try { document.execCommand('removeFormat'); } catch (e) { /* 忽略 */ }
+
+    const put = (key, cmd) => {
+      if (!brush[key]) return;
+      try {
+        // execCommand 是 toggle：目标本身已是粗体（如表头）时再 bold 反而会关掉
+        if (document.queryCommandState(cmd)) return;
+        document.execCommand(cmd);
+      } catch (e) { /* 忽略 */ }
+    };
+    put('bold', 'bold');
+    put('italic', 'italic');
+    put('underline', 'underline');
+    put('strike', 'strikeThrough');
+    wrapSelection(brush.color, 'span', 'md-color', 'color');
+    wrapSelection(brush.bg, 'mark', 'md-mark', 'background');
+    if (brush.block && !inStructural) {
+      try { document.execCommand('formatBlock', false, `<${brush.block}>`); } catch (e) { /* 忽略 */ }
+    }
+
+    saveSelection();
+    afterChange();
+    if (brushLocked) notify('已应用，可继续选中文字刷格式；Esc 取消');
+    else cancelBrush();
+  }
+
+  /**
+   * 清除选区行内样式：解包项目自定义的颜色 / 高亮包裹层，再用 removeFormat
+   * 清掉 b/i/u/s/font 等原生内联样式；标题 / 列表 / 引用等段落结构保留。
+   */
+  function clearInlineStyles() {
+    if (!editing) { notify('请先点「编辑」'); return; }
+    // 工具条 mousedown 已阻止聚焦、快捷键焦点也在正文，直接保留当前选区
+    focusRoot();
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) { notify('请选中一段文字再清除样式'); return; }
+    const range = sel.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) { notify('请选中正文里的文字'); return; }
+    root.querySelectorAll('span.md-color, mark.md-mark').forEach((el) => {
+      if (!range.intersectsNode(el)) return;
+      const parent = el.parentNode;
+      if (!parent) return;
+      while (el.firstChild) parent.insertBefore(el.firstChild, el);
+      el.remove();
+    });
+    try { document.execCommand('removeFormat'); } catch (e) { /* 忽略 */ }
     saveSelection();
     afterChange();
   }
@@ -818,6 +1067,7 @@ export function createWysiwyg(o) {
     }
     syncMetaReadonly();
     if (!editing) {
+      cancelBrush();
       closeOverlay();
       savedRange = null;
       root.blur?.();
@@ -863,8 +1113,16 @@ export function createWysiwyg(o) {
     if (!btn || !toolbar.contains(btn)) return;
     e.preventDefault();
     if (!editing) return;
-    const fn = COMMANDS[btn.dataset.ntCmd];
+    const cmd = btn.dataset.ntCmd;
+    if (cmd !== 'brush') cancelBrush();
+    const fn = COMMANDS[cmd];
     if (fn) fn(btn);
+  }
+  /** 双击格式刷：锁定连续应用模式（单击刷一次后自动退出） */
+  function onToolbarDblClick(e) {
+    if (!editing || !e.target.closest?.('[data-nt-cmd="brush"]')) return;
+    brushLocked = !brushLocked;
+    collectBrush(e.target.closest('[data-nt-cmd="brush"]'));
   }
   function onToolbarMouseDown(e) {
     // 按钮抢焦点会让正文选区消失：先存 range，再阻止默认聚焦。
@@ -1047,6 +1305,12 @@ export function createWysiwyg(o) {
     if (!editing) return;
     const mod = e.ctrlKey || e.metaKey;
     const k = String(e.key || '').toLowerCase();
+    // 格式刷优先吃掉 Esc：只取消刷状态，不退出编辑 / 不关抽屉
+    if (k === 'escape' && brush) {
+      e.preventDefault(); e.stopPropagation();
+      cancelBrush();
+      return;
+    }
     // html 模式没有「退出编辑」这种状态：Esc 必须继续冒泡给抽屉（关面板），不能吞掉
     if (!htmlMode && k === 'escape' && !overlayEl && (!hooks.canExit || hooks.canExit())) {
       e.preventDefault(); e.stopPropagation();
@@ -1064,8 +1328,9 @@ export function createWysiwyg(o) {
     // Ctrl+Shift+Z = 重做。必须单独判一次：写在下面的 !e.shiftKey 分支里永远走不到
     // （那里 e.shiftKey 已经为假），快捷键会在帮助面板里写着却不生效。
     else if (e.shiftKey && k === 'z') cmd = 'redo';
+    else if (e.shiftKey && !e.altKey && k === 'backspace') cmd = 'clearFormat';
     else if (!e.altKey && !e.shiftKey) {
-      cmd = { b: 'bold', i: 'italic', u: 'underline', k: 'link' }[k];
+      cmd = { b: 'bold', i: 'italic', u: 'underline', k: 'link', '\\': 'brush' }[k];
     }
     if (!cmd) return;
     e.preventDefault(); e.stopPropagation();
@@ -1093,6 +1358,12 @@ export function createWysiwyg(o) {
     openCodeLangBox(label, cur, (lang) => setBlockLang(shell, lang));
   }
 
+  /** 取完格式后，在正文松开鼠标（选区已确定）就把格式刷到目标上 */
+  function onRootMouseUp(e) {
+    if (!brush || !editing || e.button !== 0) return;
+    setTimeout(() => { if (brush) applyBrush(); }, 0);
+  }
+
   const GUARD_EVENTS = ['beforeinput', 'paste', 'cut', 'drop', 'input', 'keydown'];
   root.addEventListener('input', onRootInput);
   root.addEventListener('paste', onPaste);
@@ -1100,9 +1371,11 @@ export function createWysiwyg(o) {
   root.addEventListener('keydown', onKeydown, true);
   root.addEventListener('mousedown', onRootMouseDown, true);
   root.addEventListener('click', onRootClick);
+  root.addEventListener('mouseup', onRootMouseUp);
   GUARD_EVENTS.forEach((t) => root.addEventListener(t, onGuard, true));
   toolbar?.addEventListener('click', onToolbarClick);
   toolbar?.addEventListener('mousedown', onToolbarMouseDown);
+  toolbar?.addEventListener('dblclick', onToolbarDblClick);
   document.addEventListener('selectionchange', onSelectionChange);
 
   // 兼容旧调用点（notes.js 里读 editor.codemirror 的地方一律拿到 null）
@@ -1128,9 +1401,11 @@ export function createWysiwyg(o) {
       root.removeEventListener('keydown', onKeydown, true);
       root.removeEventListener('mousedown', onRootMouseDown, true);
       root.removeEventListener('click', onRootClick);
+      root.removeEventListener('mouseup', onRootMouseUp);
       GUARD_EVENTS.forEach((t) => root.removeEventListener(t, onGuard, true));
       toolbar?.removeEventListener('click', onToolbarClick);
       toolbar?.removeEventListener('mousedown', onToolbarMouseDown);
+      toolbar?.removeEventListener('dblclick', onToolbarDblClick);
       document.removeEventListener('selectionchange', onSelectionChange);
     },
   };

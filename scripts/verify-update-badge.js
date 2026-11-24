@@ -173,14 +173,14 @@ const BADGE = `(() => {
     }
     ok('点击事件已绑定（点击查看更新 / 下载）', clickBound, clickBound ? '' : '未读到 click 监听器');
 
-    // 主题矩阵：六套风格 × 明暗都要看得见。浅风格标题栏是浅色 → 文字应偏深；
+    // 主题矩阵：九套风格 × 明暗都要看得见。浅风格标题栏是浅色 → 文字应偏深；
     // 深风格标题栏是深色 → 文字应偏浅。只比亮度方向，避免把具体色值写死进测试。
     const lum = (rgb) => {
       const m = String(rgb || '').match(/(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
       if (!m) return null;
       return 0.2126 * Number(m[1]) + 0.7152 * Number(m[2]) + 0.0722 * Number(m[3]);
     };
-    const styles = ['mist', 'graphite', 'moss', 'sepia', 'sakura', 'palace', 'contrast'];
+    const styles = ['mist', 'graphite', 'moss', 'matcha', 'sepia', 'sakura', 'lilac', 'palace', 'contrast'];
     const themes = [].concat(...styles.map((style) => [
       { style, mode: 'light' }, { style, mode: 'dark' },
     ]));
@@ -200,7 +200,7 @@ const BADGE = `(() => {
         contrastFails.push(`${t.style}/${t.mode}: ${JSON.stringify(sample)}`);
       }
     }
-    ok('六套风格 × 明暗角标文字均可读', contrastFails.length === 0, contrastFails.join(' | ').slice(0, 240));
+    ok('九套风格 × 明暗角标文字均可读', contrastFails.length === 0, contrastFails.join(' | ').slice(0, 240));
 
     // 推送「已是最新」→ 重新隐藏
     await page.evaluate(`window.__setUpdateBadgeForTest({ hasUpdate: false })`);

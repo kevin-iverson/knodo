@@ -124,6 +124,14 @@
   height: 19px; padding: 0 5px; align-self: center;
 }
 .nt-tb-help { color: var(--text-3); }
+/* 格式刷：取格式后按钮常亮，双击锁定连续模式 */
+.nt-tb-brush { font-weight: 600; }
+.nt-tb-brush.active {
+  background: color-mix(in srgb, var(--primary) 20%, transparent);
+  color: var(--primary);
+}
+.nt-tb-brush.is-locked { text-decoration: underline; text-underline-offset: 2px; }
+.nt-preview.nt-brushing { cursor: copy; }
 .nt-tb-sep {
   flex: 0 0 auto; width: 1px; height: 16px; margin: 0 4px;
   background: var(--border);
@@ -168,6 +176,29 @@
 }
 .nt-overlay-input:focus { border-color: var(--primary); }
 .nt-overlay-acts { display: flex; align-items: center; gap: 6px; }
+
+/* ---- 插入表格：网格快选 + 精确行列 ---- */
+.nt-table-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 13px);
+  grid-auto-rows: 13px;
+  gap: 2px;
+  padding: 4px 8px 10px;
+}
+.nt-table-cell {
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  cursor: pointer;
+}
+.nt-table-cell:hover,
+.nt-table-cell.picked {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 25%, var(--bg));
+}
+.nt-table-fields { display: flex; gap: 8px; padding: 0 8px 8px; }
+.nt-table-fields label { flex: 1 1 0; min-width: 0; color: var(--text-3); font-size: 11.5px; }
+.nt-table-fields .nt-overlay-input { margin: 4px 0 0; }
 
 /* ---- 代码块语言选择 ---- */
 .nt-lang-grid {

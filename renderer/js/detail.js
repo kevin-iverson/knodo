@@ -670,6 +670,8 @@ const MD_SHORTCUTS = [
   { keys: 'Ctrl+Shift+8', desc: '无序列表' },
   { keys: 'Ctrl+K', desc: '插入链接' },
   { keys: 'Ctrl+Alt+C', desc: '插入代码块（可选语言）' },
+  { keys: 'Ctrl+\\', desc: '格式刷（先选源文字，再选目标应用）' },
+  { keys: 'Ctrl+Shift+Backspace', desc: '清除样式（工具条也有按钮）' },
   { keys: 'Ctrl+Z / Ctrl+Shift+Z', desc: '撤销 / 重做' },
 ];
 
@@ -686,7 +688,7 @@ function showMdHelp() {
         <tbody>${rows}</tbody>
       </table>
       <div class="md-help-tip">
-        工具条上的「▾ 正文」可切换段落样式；代码块插入后点左上角语言标签能就地换语言。
+        工具条上的「▾ 正文」可切换段落样式；表格可自定义行数和列数；刷子图标是格式刷（选源文字后点它，再选目标即应用），旁边的带删除线 A 是清除样式；代码块插入后点左上角语言标签能就地换语言。
         也可以直接把截图 / 图片粘贴或拖进描述，图片会插到光标处。
       </div>`,
   });

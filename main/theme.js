@@ -18,16 +18,18 @@ const fs = require('fs');
 const path = require('path');
 const { nativeImage } = require('electron');
 
-/** 七套风格：只定义色相与饱和度，圆角 / 间距 / 字号沿用现值（切风格零布局抖动） */
-const STYLES = ['mist', 'graphite', 'moss', 'sepia', 'sakura', 'palace', 'contrast'];
+/** 九套风格：只定义色相与饱和度，圆角 / 间距 / 字号沿用现值（切风格零布局抖动） */
+const STYLES = ['mist', 'graphite', 'moss', 'matcha', 'sepia', 'sakura', 'lilac', 'palace', 'contrast'];
 
 /** 每套风格的底色（窗口背景 / 启动防白闪只需 bg 这一个值，其余 token 在渲染层） */
 const BG_HEX = {
   mist: { light: '#f5f6f8', dark: '#15181f' },
   graphite: { light: '#e9ecf1', dark: '#0f1216' },
   moss: { light: '#eef2e9', dark: '#131a14' },
+  matcha: { light: '#f2f6ea', dark: '#161b12' },
   sepia: { light: '#f6f0e4', dark: '#1b1610' },
   sakura: { light: '#fbf1f3', dark: '#1a1417' },
+  lilac: { light: '#f4f1fa', dark: '#171525' },
   palace: { light: '#f6eedc', dark: '#1b1310' },
   contrast: { light: '#ffffff', dark: '#000000' },
 };
