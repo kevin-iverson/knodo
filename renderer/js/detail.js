@@ -244,11 +244,8 @@ let polishBusy = false;
 
 const DETAIL_WIDTH = { min: 360, max: 860, def: 420, key: 'ui.detailWidth' };
 let detailWidth = null; // 运行时宽度（null = 尚未读取）
-let widthSaveTimer = null;
-/** 是否正在拖拽调宽 */
+/** 是否正在拖拽调宽（期间忽略重绘请求，避免松手瞬间整块重建闪一下） */
 let resizing = false;
-/** 拖拽期间被推迟的重绘（结束后补一次） */
-let pendingRender = false;
 
 /** 面板宽度上限：不超过窗口宽度的 85%，也不低于最小值 */
 function clampDetailWidth(w) {
@@ -283,14 +280,11 @@ async function ensureDetailWidth() {
   return detailWidth;
 }
 
-/** 保存宽度：先写 localStorage（即时、下次打开瞬间生效），再异步落库（节流） */
+/** 保存宽度：localStorage 与落库都在拖拽结束时立即写入，不再延迟节流 */
 function persistDetailWidth(w) {
   const val = clampDetailWidth(w);
   try { localStorage.setItem(DETAIL_WIDTH.key, String(val)); } catch (_e) { /* 忽略配额异常 */ }
-  clearTimeout(widthSaveTimer);
-  widthSaveTimer = setTimeout(() => {
-    api.ui.setDetailWidth(val).catch((e) => console.warn('[detail] 保存侧边栏宽度失败', e && e.message));
-  }, 350);
+  api.ui.setDetailWidth(val).catch((e) => console.warn('[detail] 保存侧边栏宽度失败', e && e.message));
 }
 
 /**
@@ -348,17 +342,16 @@ function bindResizer(drawer) {
       : (detailWidth || DETAIL_WIDTH.def);
     applyWidth(w);
     resizing = false;
-    // 拖拽期间被推迟的重绘，结束后补上（宽度已经是最新值，不会跳）
-    if (pendingRender) {
-      pendingRender = false;
-      renderDetail();
-    }
     persistDetailWidth(w);
   };
 
   handle.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     e.preventDefault(); // 阻止拖拽时选中文字
+    // 拖拽期间 CSS 用 is-resizing 关掉入场动画；松手移除该类时动画属性恢复，
+    // 浏览器会把 detailIn 重新播一遍（位移 + 淡入），表现为“保存后闪一下”。
+    // 给面板留一个常驻 no-anim，撤掉拖拽态后动画仍保持关闭。
+    panel.classList.add('no-anim');
     drag = { next: e.clientX, last: null };
     resizing = true;
     handle.__pointerId = e.pointerId;
@@ -462,9 +455,10 @@ async function renderDetail() {
   if (!drawer) return;
   const id = state.detailTaskId;
   if (id == null) { destroyGroupSelectsIn(drawer); drawer.hidden = true; return; }
-  // 拖拽调宽期间不重建 DOM：innerHTML 一换，入场动画重播 + 宽度回到重建前的值，
-  // 画面上就是“闪一下/抖一下”。推迟到指针抬起后再补一次重绘。
-  if (resizing) { pendingRender = true; return; }
+  // 拖拽调宽期间直接忽略重绘请求：innerHTML 一换，整个面板节点被替换，
+  // 松手瞬间画面就会“闪一下”。宽度由 CSS 变量驱动，不依赖重绘；
+  // 期间到来的数据变更留到下一次自然刷新即可。
+  if (resizing) return;
   const token = ++renderToken;
   // Tom Select 实例必须赶在 innerHTML 覆盖**之前**销毁：覆盖后旧 <select> 已脱离文档，
   // registry 里的 contains 判定就失效了，会留下永远清不掉的下拉面板。

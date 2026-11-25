@@ -1857,9 +1857,10 @@ app.whenReady().then(async () => {
               }
               out.widthAfter = Math.round(panel.getBoundingClientRect().width);
               out.resizingClassCleared = !document.documentElement.classList.contains('is-resizing');
+              out.panelNoAnim = panel.classList.contains('no-anim'); // 松手后入场动画仍关闭，避免闪一下
               out.savedWidth = localStorage.getItem('ui.detailWidth');
               out.persistedImmediate = await window.api.ui.getDetailWidth();
-              // 落库有 350ms 节流，等一等再读一次
+              // 拖拽结束应立即落库；稍后再读一次确认稳定
               await new Promise(r => setTimeout(r, 600));
               out.persisted = await window.api.ui.getDetailWidth();
               // 关掉再打开，宽度应被复用
@@ -3640,7 +3641,8 @@ app.whenReady().then(async () => {
             && dom.moveMenuHasUpdown && dom.moveReordered && dom.moveDropMarked
             && dom.moveIntoChild && dom.moveIntoChildRow
             && detail.panelOpen && detail.hasResizer && detail.widthAfter > detail.widthBefore
-            && detail.resizingClassCleared && !!detail.persisted
+            && detail.resizingClassCleared && detail.panelNoAnim && !!detail.persisted
+            && Math.abs(detail.persistedImmediate - detail.widthAfter) <= 2
             && Math.abs(detail.widthReopened - detail.widthAfter) <= 2
             && detail.samePanelNode && (detail.subtaskTitles || []).includes('冒烟子任务')
             && feat.persistedTitle === '自动保存后的标题' && feat.persistedPriority === 3
@@ -3757,7 +3759,6 @@ app.whenReady().then(async () => {
             // 失败时把各组结果里「假值」的项打出来，避免对着几十个 && 条件逐个猜。
             // 其中少数断言本来就该是假/零（例如「原生 date 输入框应为 0 个」），列进白名单免得误导。
             const EXPECT_FALSY = new Set([
-              'detail:persistedImmediate', // 落库有 350ms 节流，紧跟着读是 0 属正常，看 persisted
               'feat:subPriorityAfterEdit', // 期望值就是优先级 0
               'r4:popClipped',             // 期望「没有被裁剪容器包住」
               'r9:tagBeforeActive',        // 期望「点击前未选中」

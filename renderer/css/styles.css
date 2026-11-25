@@ -1718,6 +1718,8 @@ html.is-resizing, html.is-resizing * { cursor: col-resize !important; user-selec
  * 1) 不播入场动画、不做过渡：动画的 transform/opacity 与每帧宽度变化叠加会明显“闪”；
  * 2) contain: layout 把重排限制在面板内部，宽度每帧变化不再波及全屏遮罩与整个抽屉；
  * 3) 面板内容冻结指针事件：鼠标掠过大量行时不再触发 :hover / opacity 过渡，避免一片闪动。
+ * 注意：松手时会移除 is-resizing，动画属性一旦恢复就会重播 detailIn；
+ * detail.js 在 pointerdown 时给面板加常驻 .no-anim，保证松手后仍不播动画。
  */
 html.is-resizing .detail-panel {
   animation: none !important;

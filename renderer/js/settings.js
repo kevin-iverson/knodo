@@ -83,6 +83,8 @@ const S = {
   buddy: null,
   /** 功能插件：四象日记开关（{ enabled, cellLabels:[4] }），默认关闭 */
   journal: null,
+  /** 功能插件：会议纪要开关（{ enabled }），默认开启 */
+  meeting: null,
 };
 
 /** 当前搜索词（列表重绘后要重跑过滤，所以留在模块级） */
@@ -1902,18 +1904,48 @@ function journalCardHtml() {
   </div>`;
 }
 
+const MEETING_DEFAULTS = { enabled: true };
+
+function meetingCardHtml() {
+  const p = { ...MEETING_DEFAULTS, ...(S.meeting || {}) };
+  const on = !!p.enabled;
+  return `<div class="st-card wl-set-card mt-set-card${on ? ' is-on' : ''}" data-meeting-card>
+    <div class="wl-set-head">
+      <div class="wl-set-ico">🎙</div>
+      <div class="wl-set-main">
+        <div class="wl-set-title">${tr('会议纪要')} <span class="wl-badge">${tr('插件')}</span></div>
+        <div class="wl-set-desc">${tr('录音 / 导入音视频 → 语音转写 → AI 纪要 → 勾选待办入库。默认开启。')}</div>
+      </div>
+      <label class="st-switch" title="${on ? tr('关闭会议纪要插件') : tr('启用会议纪要插件')}">
+        <input type="checkbox" id="mt-enabled"${on ? ' checked' : ''} aria-label="${tr('启用会议纪要')}">
+        <span class="st-switch-track"><span class="st-switch-dot"></span></span>
+      </label>
+    </div>
+    <div class="wl-set-body"${on ? '' : ' hidden'}>
+      <div class="wl-field">
+        <span class="wl-field-label">${tr('入口')}</span>
+        <span class="wl-chip is-active is-static">${tr('侧栏「会议纪要」')}</span>
+        <span class="wl-field-hint">${tr('顶栏「🎙 录音 / 🖥 录屏」随插件开关显示')}</span>
+      </div>
+      <div class="wl-set-note">${on
+    ? tr('已启用：录音与转写、纪要生成、待办入库全部可用；关闭后相关入口与 IPC 立即卸载，历史会议记录保留在本地，随时可再开启。')
+    : tr('当前为关闭状态 —— 主进程未注册录制 / 纪要 IPC，渲染层不加载会议模块；历史记录保留，侧栏入口点进去是开启引导。')}</div>
+    </div>
+  </div>`;
+}
+
 function pluginsHtml() {
   return `<section class="st-sec"
-    data-search="功能插件 插件 工时 worklog 计时 报工 子任务 禅模式 行内计时 补录 搭子 鼓励器 牛马币 抽签 抱团 日记 journal 四格 碎碎念">
+    data-search="功能插件 插件 工时 worklog 计时 报工 子任务 禅模式 行内计时 补录 搭子 鼓励器 牛马币 抽签 抱团 日记 journal 四格 碎碎念 会议纪要 meeting 录音 录屏 转写 待办">
     <div class="st-sec-title">${tr('功能插件')}</div>
-    <div class="st-sec-desc">${tr('默认全部关闭。关闭状态的插件不加载任何模块 —— 没有计时器、不监听事件、不注入样式；搭子入口随开关隐藏（工时 / 日记入口保留为开启引导），这里始终能看到开关。')}</div>
-    <div class="wl-set-host">${pluginsCardHtml()}${buddyCardHtml()}${journalCardHtml()}</div>
+    <div class="st-sec-desc">${tr('仅会议纪要默认开启；其余插件默认关闭。关闭状态的插件不加载任何模块 —— 没有计时器、不监听事件、不注入样式；搭子入口随开关隐藏（工时 / 日记 / 会议纪要入口保留为开启引导），这里始终能看到开关。')}</div>
+    <div class="wl-set-host">${meetingCardHtml()}${pluginsCardHtml()}${buddyCardHtml()}${journalCardHtml()}</div>
   </section>`;
 }
 
 function repaintPlugins(paneEl) {
   const host = paneEl.querySelector('.wl-set-host');
-  if (host) host.innerHTML = pluginsCardHtml() + buddyCardHtml() + journalCardHtml();
+  if (host) host.innerHTML = meetingCardHtml() + pluginsCardHtml() + buddyCardHtml() + journalCardHtml();
 }
 
 function mountPlugins(paneEl) {
@@ -1922,36 +1954,41 @@ function mountPlugins(paneEl) {
 
   // 开关：主进程负责注册 / 注销，渲染层由 app.js 动态 mount / unmount
   paneEl.addEventListener('change', async (e) => {
-    const sw = e.target.closest('#wl-enabled, #buddy-enabled, #jr-enabled');
+    const sw = e.target.closest('#wl-enabled, #buddy-enabled, #jr-enabled, #mt-enabled');
     if (!sw) return;
-    const isBuddy = sw.id === 'buddy-enabled';
-    const isJournal = sw.id === 'jr-enabled';
-    const name = isBuddy ? 'buddy' : (isJournal ? 'journal' : 'worklog');
+    const name = sw.id === 'buddy-enabled' ? 'buddy'
+      : sw.id === 'jr-enabled' ? 'journal'
+        : sw.id === 'mt-enabled' ? 'meeting' : 'worklog';
     const want = sw.checked;
     sw.disabled = true;
+    let msg = '';
     try {
       const r = await api.features.setPref(name, { enabled: want });
       if (!r || r.ok === false) throw new Error((r && r.reason) || tr('切换失败'));
-      if (isBuddy) {
+      if (name === 'buddy') {
         S.buddy = r.pref;
         applyFunGate(document);
-      } else if (isJournal) {
+        msg = want
+          ? tr('工位搭子插件已启用 · 标题栏出现「🐮 搭子」')
+          : tr('工位搭子插件已关闭 · 入口与浮窗已卸载，配置保留');
+      } else if (name === 'journal') {
         S.journal = r.pref;
+        msg = want
+          ? tr('四象日记已启用 · 标题栏出现「📔 日记」')
+          : tr('日记插件已关闭 · 视图与样式已卸载，历史记录保留');
+      } else if (name === 'meeting') {
+        S.meeting = r.pref;
+        msg = want
+          ? tr('会议纪要插件已启用 · 侧栏入口与录制工具已加载')
+          : tr('会议纪要插件已关闭 · 录制 / 纪要 IPC 已卸载，历史记录保留');
       } else {
         S.worklog = r.pref;
+        msg = want
+          ? tr('工时插件已启用 · 任务行内出现 ▶ 计时 / ☯ 禅模式')
+          : tr('工时插件已关闭 · 计时与视图已卸载，历史记录保留');
       }
       repaintPlugins(paneEl);
-      toast(isBuddy
-        ? (want
-          ? tr('工位搭子插件已启用 · 标题栏出现「🐮 搭子」')
-          : tr('工位搭子插件已关闭 · 入口与浮窗已卸载，配置保留'))
-        : isJournal
-          ? (want
-            ? tr('四象日记已启用 · 标题栏出现「📔 日记」')
-            : tr('日记插件已关闭 · 视图与样式已卸载，历史记录保留'))
-          : (want
-            ? tr('工时插件已启用 · 任务行内出现 ▶ 计时 / ☯ 禅模式')
-            : tr('工时插件已关闭 · 计时与视图已卸载，历史记录保留')));
+      toast(msg);
     } catch (err) {
       sw.checked = !want;
       sw.disabled = false;
@@ -2002,7 +2039,7 @@ const PANES = [
   { id: 'appearance', group: 'base', label: tr('外观'), icon: ICON.appearance, build: appearanceHtml, mount: mountAppearance },
   { id: 'general', group: 'base', label: tr('通用'), icon: ICON.general, build: generalHtml, mount: mountGeneral },
   { id: 'keys', group: 'base', label: tr('快捷键'), icon: ICON.keys, build: keysPaneHtml, mount: null },
-  // 功能插件常驻第一位：默认全关，用户需要一个能找到开关的地方
+  // 功能插件常驻第一位：开关始终可见（仅会议纪要默认开启）
   { id: 'plugins', group: 'feature', label: tr('功能插件'), icon: ICON.plugins, build: pluginsHtml, mount: mountPlugins },
   { id: 'ai', group: 'feature', label: tr('AI 与语音'), icon: ICON.ai, build: aiHtml, mount: mountAi },
   { id: 'calendar', group: 'feature', label: tr('日历'), icon: ICON.calendar, build: calendarHtml, mount: mountCalendar },
@@ -2114,7 +2151,7 @@ function applyFilter(root) {
 
 async function loadState() {
   const soft = async (p, fb) => { try { return await p; } catch (e) { return fb; } };
-  const [themeRaw, autoStart, taskDate, version, storage, backup, salary, ai, calendar, encourager, worklog, buddy, journal, locale] = await Promise.all([
+  const [themeRaw, autoStart, taskDate, version, storage, backup, salary, ai, calendar, encourager, worklog, buddy, journal, meeting, locale] = await Promise.all([
     soft(api.theme.get(), null),
     soft(api.app.getAutoStart(), { enabled: false, supported: false, reason: tr('读取开机自启动状态失败') }),
     soft(api.ui.getToolPref('taskDate'), null),
@@ -2128,6 +2165,7 @@ async function loadState() {
     soft(api.features.pref(), null),
     soft(api.features.pref('buddy'), null),
     soft(api.features.pref('journal'), null),
+    soft(api.features.pref('meeting'), null),
     soft(api.i18n.get(), getLocaleNow()),
   ]);
   Object.assign(S, {
@@ -2139,6 +2177,7 @@ async function loadState() {
     worklog: worklog || null,
     buddy: buddy || null,
     journal: journal || null,
+    meeting: meeting || { enabled: true },
   });
 }
 

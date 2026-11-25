@@ -24,7 +24,7 @@ import {
 } from './group-select.js';
 import { listenAiSettingsMenu, setAiSettingsHandlers } from './ai-settings.js';
 import { openSponsorAsk } from './sponsor.js';
-import { renderMeetings, setMeetingsHandlers, autoProcessMeeting } from './meetings.js';
+// 会议纪要是插件：入口常驻侧栏，业务模块由 app.js 按开关动态 mount（见 meetings/index.js）
 import {
   renderNotes, setNotesHandlers, createNote, disposeNotes, importNotesFromDisk, openNotesDock,
 } from './notes.js';
@@ -179,11 +179,7 @@ export async function init() {
   setShotHandlers({ toast, onAdded: (info) => refreshAfterShotAdd(info) });
   // 语音录入的确认卡同样只管渲染 / 提交；onAdded 复用截图卡的补刷链路
   setVoiceHandlers({ toast, onAdded: (info) => refreshAfterShotAdd(info) });
-  // 会议录制 / 纪要：录制归档后自动跳到会议视图查看。
-  // refresh 只刷侧栏计数，绝不碰 #view —— 它是共享容器，会议里完成转写 / 出纪要 /
-  // 删除记录 / 导入待办都会回调它，这里调 renderTasks() 会把整页换回任务列表
-  // （「录制完跳任务列表」「删除录音记录也跳任务列表」都是这个原因）。
-  setMeetingsHandlers({ toast, refresh: () => { renderSidebar().catch(() => {}); } });
+  // 会议录制 / 纪要的 handlers 与业务模块由 meetings/index.js 在插件挂载时注入。
   // 笔记视图：切走时销毁编辑器自动保存器（否则拿着已销毁的 DOM 继续写库）
   setNotesHandlers({
     toast,
@@ -205,7 +201,8 @@ export async function init() {
       renderSidebar();
       try {
         await render();
-        if (m) await autoProcessMeeting(m);
+        if (m && window.KnodoMeetings) await window.KnodoMeetings.autoProcessMeeting(m);
+        else toast(tr('会议纪要插件未开启，录音已保存但未自动处理'));
       } catch (e) {
         console.error('[ui] 会议自动处理失败', e);
       }
@@ -735,13 +732,16 @@ async function render() {
   const extView = getExtView(state.view);
   const wlOff = state.view === 'worklog' && !extView;
   const jrOff = state.view === 'journal' && !extView;
+  const mtOff = state.view === 'meetings' && !extView;
   const meta = extView
     ? { title: extView.title, desc: extView.desc || '', long: extView.long || extView.desc || '' }
     : wlOff
       ? { title: tr('工时'), desc: tr('功能插件 · 未开启'), long: tr('在 设置 → 功能插件 中开启「工时记录」后可用') }
       : jrOff
         ? { title: tr('四象日记'), desc: tr('功能插件 · 未开启'), long: tr('在 设置 → 功能插件 中开启「四象日记」后可用') }
-        : (VIEW_META[state.view] || VIEW_META.all);
+        : mtOff
+          ? { title: tr('会议纪要'), desc: tr('功能插件 · 未开启'), long: tr('在 设置 → 功能插件 中开启「会议纪要」后可用') }
+          : (VIEW_META[state.view] || VIEW_META.all);
   document.getElementById('view-title').textContent = meta.title;
   const descEl = document.getElementById('view-desc');
   descEl.textContent = meta.desc;
@@ -759,7 +759,9 @@ async function render() {
   // 只用 hidden 切换，不删 DOM / 不碰 innerHTML —— 切回任务/日历视图时按钮要原样可用。
   const isWorklogView = state.view === 'worklog';
   const isJournalView = state.view === 'journal';
-  document.querySelector('.topbar-right').hidden = !(isTaskView || (!!extView && !isWorklogView && !isJournalView));
+  const isMeetingView = state.view === 'meetings';
+  document.querySelector('.topbar-right').hidden = !(isTaskView
+    || (!!extView && !isWorklogView && !isJournalView && !isMeetingView));
   document.getElementById('filter-bar').hidden = !isTaskView;
   if (!isTaskView) document.getElementById('time-filter').hidden = true;
   // AI 检索已是弹窗：顶栏按钮只是入口，不再有「选中态」，也不占视图
@@ -770,9 +772,9 @@ async function render() {
   if (extView) { await extView.render(document.getElementById('view')); return; }
   if (wlOff) { renderWorklogOff(document.getElementById('view')); return; }
   if (jrOff) { renderJournalOff(document.getElementById('view')); return; }
+  if (mtOff) { renderMeetingsOff(document.getElementById('view')); return; }
   if (state.view === 'stats') { await renderStats(); return; }
   if (state.view === 'reports') { await renderReports(); return; }
-  if (state.view === 'meetings') { await renderMeetings(); return; }
   if (state.view === 'notes') { await renderNotes(); return; }
   if (isCalendar) { await renderCalendar(); return; }
   // force：视图切换不等完成反馈 —— 点侧栏必须立刻切走
@@ -824,6 +826,33 @@ function renderJournalOff(root) {
         await navigateTo('journal');
       } catch (e) {
         toast(`开启日记失败：${(e && e.message) || e}`);
+      }
+    });
+  }
+}
+
+/**
+ * 会议纪要的「未启用」引导页。侧栏入口常驻，关闭态不 import meetings.js，
+ * 只给这块空态；「开启」按钮走统一偏好通道，开了直接回到会议视图。
+ */
+function renderMeetingsOff(root) {
+  root.innerHTML = `
+    <div class="wl-off mt-off" data-meeting-off>
+      <div class="wl-off-ico" aria-hidden="true">🎙</div>
+      <div class="wl-off-title">${esc(tr('会议纪要未开启'))}</div>
+      <div class="wl-off-text">${tr('录音 / 导入音视频 → 语音转写 → AI 纪要 → 勾选待办入库。')}</div>
+      <button type="button" class="primary-btn wl-off-btn" id="mt-off-open">${esc(tr('开启会议纪要'))}</button>
+      <div class="jr-off-hint">${esc(tr('也可到 设置 → 功能插件 开启；历史会议记录一直保留在本地'))}</div>
+    </div>`;
+  const btn = root.querySelector('#mt-off-open');
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      try {
+        const r = await api.features.setPref('meeting', { enabled: true });
+        if (!r || r.ok === false) throw new Error((r && r.reason) || '开启失败');
+        await navigateTo('meetings');
+      } catch (e) {
+        toast(tr('开启会议纪要失败：{msg}', { msg: (e && e.message) || e }));
       }
     });
   }

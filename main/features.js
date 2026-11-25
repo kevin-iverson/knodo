@@ -11,6 +11,7 @@
  *   feature.worklog → { enabled, zenDefaultSec, dayAttr: 'start' }
  *   feature.buddy   → { enabled }
  *   feature.journal → { enabled, cellLabels }        // 四象日记（并行插件）
+ *   feature.meeting → { enabled }                    // 会议纪要（默认开启）
  *
  * 兼容：老的 `worklog:pref/get|set` 与无参 `getPref()/setPref(patch)` 继续只操作工时，
  * 现有验收脚本不用改；新代码走 `features:get/set` + 显式插件名。
@@ -23,6 +24,7 @@ const db = require('./db');
 const SETTING_KEY = 'feature.worklog';
 const BUDDY_SETTING_KEY = 'feature.buddy';
 const JOURNAL_SETTING_KEY = 'feature.journal';
+const MEETING_SETTING_KEY = 'feature.meeting';
 
 const DEFAULTS = {
   enabled: false,
@@ -31,6 +33,7 @@ const DEFAULTS = {
 };
 const BUDDY_DEFAULTS = { enabled: false };
 const JOURNAL_DEFAULTS = { enabled: false, cellLabels: ['心智', '身体', '连结', '事业'] };
+const MEETING_DEFAULTS = { enabled: true };
 
 /** 子模块懒加载：关闭态不 require，物理边界看得见 */
 let mods = null;
@@ -47,8 +50,10 @@ function M() {
 let pref = { ...DEFAULTS };              // 工时（保留旧变量名，减少历史代码改动面）
 let buddyPref = { ...BUDDY_DEFAULTS };   // 工位搭子
 let journalPref = { ...JOURNAL_DEFAULTS, cellLabels: JOURNAL_DEFAULTS.cellLabels.slice() }; // 四象日记
+let meetingPref = { ...MEETING_DEFAULTS }; // 会议纪要（默认开启）
 let onChange = null;                     // 主进程菜单重等副作用，由 main.js 注入
 let journalMods = null;                  // 四象日记子模块：关闭态不 require main/journal/**
+let meetingMods = null;                  // 会议纪要子模块：关闭态不 require main/meeting/**
 
 function normalize(raw) {
   let o = raw;
@@ -94,6 +99,21 @@ function MJ() {
   return journalMods;
 }
 
+/** 会议纪要：老库没有这一行时回落默认开启；只有显式 false 才是关闭 */
+function normalizeMeeting(raw) {
+  let o = raw;
+  if (typeof raw === 'string') {
+    try { o = JSON.parse(raw); } catch (e) { o = {}; }
+  }
+  o = o && typeof o === 'object' ? o : {};
+  return { enabled: typeof o.enabled === 'boolean' ? o.enabled : MEETING_DEFAULTS.enabled };
+}
+
+function MM() {
+  if (!meetingMods) meetingMods = { ipc: require('./meeting/ipc') };
+  return meetingMods;
+}
+
 function readPref() {
   try {
     return normalize(db.isReady() ? db.getSetting(SETTING_KEY) : null);
@@ -116,9 +136,11 @@ function broadcast() {
     ...pref,
     worklog: { ...pref },
     buddy: { ...buddyPref },
+    meeting: { ...meetingPref },
     // 新插件挂 plugins.*（方案 §4.3），顶层一份也不动
     plugins: {
       journal: { ...journalPref, cellLabels: journalPref.cellLabels.slice() },
+      meeting: { ...meetingPref },
     },
   };
   for (const w of BrowserWindow.getAllWindows()) {
@@ -152,14 +174,16 @@ function deactivate() {
   ipc.unregister();
 }
 
-/** 无参 = 工时（兼容旧调用）；显式插件名 = 对应配置；'all' = 三份快照 */
+/** 无参 = 工时（兼容旧调用）；显式插件名 = 对应配置；'all' = 四份快照 */
 function getPref(name) {
   if (name === 'buddy') return { ...buddyPref };
   if (name === 'journal') return { ...journalPref, cellLabels: journalPref.cellLabels.slice() };
+  if (name === 'meeting') return { ...meetingPref };
   if (name === 'all') {
     return {
       worklog: { ...pref }, buddy: { ...buddyPref },
       journal: { ...journalPref, cellLabels: journalPref.cellLabels.slice() },
+      meeting: { ...meetingPref },
     };
   }
   return { ...pref };
@@ -239,11 +263,40 @@ function setJournalPref(patch) {
   return { ok: true, pref: { ...journalPref, cellLabels: journalPref.cellLabels.slice() } };
 }
 
-/** 兼容旧签名 setPref(patch)；新签名 setPref('worklog'|'buddy'|'journal', patch) */
+/** 会议纪要：开关翻转才注册 / 注销 rec:* 与 meeting:*；数据常驻，关掉不删历史 */
+function setMeetingPref(patch) {
+  const wasOn = meetingPref.enabled;
+  meetingPref = normalizeMeeting({ ...meetingPref, ...(patch || {}) });
+  try {
+    db.setSetting(MEETING_SETTING_KEY, JSON.stringify(meetingPref));
+  } catch (e) {
+    console.error('[features] 写入会议纪要开关失败：', e && e.message);
+    meetingPref.enabled = wasOn;
+    return { ok: false, reason: '写入设置失败' };
+  }
+
+  if (meetingPref.enabled !== wasOn) {
+    try {
+      if (meetingPref.enabled) MM().ipc.register();
+      else MM().ipc.unregister();
+    } catch (e) {
+      console.error('[features] 切换会议纪要插件失败：', e && e.message);
+      meetingPref.enabled = wasOn;
+      try { db.setSetting(MEETING_SETTING_KEY, JSON.stringify(meetingPref)); } catch (e2) { /* 忽略 */ }
+      return { ok: false, reason: (e && e.message) || '切换失败' };
+    }
+  }
+
+  broadcast();
+  return { ok: true, pref: { ...meetingPref } };
+}
+
+/** 兼容旧签名 setPref(patch)；新签名 setPref('worklog'|'buddy'|'journal'|'meeting', patch) */
 function setPref(nameOrPatch, patch) {
   if (typeof nameOrPatch === 'string') {
     if (nameOrPatch === 'buddy') return setBuddyPref(patch);
     if (nameOrPatch === 'journal') return setJournalPref(patch);
+    if (nameOrPatch === 'meeting') return setMeetingPref(patch);
     if (nameOrPatch === 'worklog') return setWorklogPref(patch);
     return { ok: false, reason: `未知插件：${nameOrPatch}` };
   }
@@ -253,6 +306,7 @@ function setPref(nameOrPatch, patch) {
 function isEnabled(name) {
   if (name === 'buddy') return !!buddyPref.enabled;
   if (name === 'journal') return !!journalPref.enabled;
+  if (name === 'meeting') return !!meetingPref.enabled;
   return !!pref.enabled;
 }
 
@@ -264,15 +318,18 @@ function ensurePrefIpc() {
   for (const ch of [
     'worklog:pref/get', 'worklog:pref/set',
     'journal:pref/get', 'journal:pref/set',
+    'meeting:pref/get', 'meeting:pref/set',
     'features:get', 'features:set',
   ]) {
     try { ipcMain.removeHandler(ch); } catch (e) { /* 没注册过 */ }
   }
   ipcMain.handle('worklog:pref/get', () => getPref());
   ipcMain.handle('worklog:pref/set', (_e, patch) => setPref(patch));
-  // 日记的开关通道永远注册：关闭态用户靠它把插件打开（方案 §4.1）
+  // 每个插件的开关通道永远注册：关闭态用户靠它把插件打开（方案 §4.1）
   ipcMain.handle('journal:pref/get', () => getPref('journal'));
   ipcMain.handle('journal:pref/set', (_e, patch) => setJournalPref(patch));
+  ipcMain.handle('meeting:pref/get', () => getPref('meeting'));
+  ipcMain.handle('meeting:pref/set', (_e, patch) => setMeetingPref(patch));
   ipcMain.handle('features:get', (_e, name) => getPref(name));
   ipcMain.handle('features:set', (_e, name, patch) => setPref(name, patch));
 }
@@ -287,21 +344,32 @@ function init() {
   } catch (e) {
     journalPref = { ...JOURNAL_DEFAULTS, cellLabels: JOURNAL_DEFAULTS.cellLabels.slice() };
   }
+  try {
+    meetingPref = normalizeMeeting(db.isReady() ? db.getSetting(MEETING_SETTING_KEY) : null);
+  } catch (e) {
+    meetingPref = { ...MEETING_DEFAULTS };
+  }
   if (pref.enabled && db.isReady()) {
     try { activate(); } catch (e) { console.error('[features] 启用工时插件失败：', e && e.message); }
   }
   if (journalPref.enabled && db.isReady()) {
     try { MJ().ipc.register(); } catch (e) { console.error('[features] 启用日记插件失败：', e && e.message); }
   }
+  if (meetingPref.enabled && db.isReady()) {
+    try { MM().ipc.register(); } catch (e) { console.error('[features] 启用会议纪要插件失败：', e && e.message); }
+  }
 }
 
-/** registerIpc() 末尾调用：只负责把 `worklog:*` 挂上（开关已开的场合） */
+/** registerIpc() 末尾调用：把已开启插件的业务 IPC 挂上（关闭态不 require 子模块） */
 function registerAll() {
   if (pref.enabled) {
     try { M().ipc.register(); } catch (e) { console.error('[features] 注册工时 IPC 失败：', e && e.message); }
   }
   if (journalPref.enabled) {
     try { MJ().ipc.register(); } catch (e) { console.error('[features] 注册日记 IPC 失败：', e && e.message); }
+  }
+  if (meetingPref.enabled) {
+    try { MM().ipc.register(); } catch (e) { console.error('[features] 注册会议纪要 IPC 失败：', e && e.message); }
   }
 }
 
@@ -315,9 +383,11 @@ module.exports = {
   SETTING_KEY,
   BUDDY_SETTING_KEY,
   JOURNAL_SETTING_KEY,
+  MEETING_SETTING_KEY,
   DEFAULTS,
   JOURNAL_DEFAULTS,
   BUDDY_DEFAULTS,
+  MEETING_DEFAULTS,
   init,
   registerAll,
   handleWillQuit,

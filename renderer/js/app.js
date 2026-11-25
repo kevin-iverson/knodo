@@ -96,15 +96,39 @@ async function syncJournal(pref) {
   }
 }
 
+/** 会议纪要：视图、录制入口与业务 IPC 一起挂载 / 卸载（默认开启） */
+async function syncMeeting(pref) {
+  const on = !!(pref && pref.enabled);
+  if (on) {
+    if (window.KnodoMeetings) {
+      try { window.KnodoMeetings.applyPref(pref); } catch (e) { console.warn('[meeting] 偏好同步失败', e); }
+      return;
+    }
+    try {
+      const m = await import('./meetings/index.js');
+      await m.mount(pref);
+      window.KnodoMeetings = m;
+    } catch (e) {
+      console.error('[meeting] 挂载失败', e);
+    }
+    return;
+  }
+  if (window.KnodoMeetings) {
+    try { window.KnodoMeetings.unmount(); } catch (e) { console.warn('[meeting] 卸载异常', e); }
+    window.KnodoMeetings = null;
+  }
+}
+
 /**
- * 新广播带 { worklog, buddy, plugins:{ journal } }；老广播顶层就是工时开关，仍可识别。
- * 日记偏好在 plugins.journal（方案 §4.3 的兼容形态），启动时单独 pref('journal') 拉。
+ * 新广播带 { worklog, buddy, plugins:{ journal, meeting } }；老广播顶层就是工时开关，仍可识别。
+ * 插件偏好在 plugins.*（方案 §4.3 的兼容形态），启动时单独 pref(name) 拉。
  */
 async function syncFeatures(payload) {
   const p = payload || {};
   await syncWorklog(p.worklog || p);
   await syncBuddy(p.buddy || { enabled: false });
   await syncJournal((p.plugins && p.plugins.journal) || p.journal || null);
+  await syncMeeting((p.plugins && p.plugins.meeting) || p.meeting || { enabled: true });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -147,12 +171,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   // 插件在界面就绪之后再挂，避免和首屏抢 DOM
   try {
-    const [worklog, buddy, journal] = await Promise.all([
+    const [worklog, buddy, journal, meeting] = await Promise.all([
       api.features.pref(),
       api.features.pref('buddy').catch(() => ({ enabled: false })),
       api.features.pref('journal').catch(() => null),
+      api.features.pref('meeting').catch(() => ({ enabled: true })),
     ]);
-    await syncFeatures({ worklog, buddy, journal });
+    await syncFeatures({ worklog, buddy, journal, meeting });
   } catch (e) {
     console.warn('[features] 读取开关键失败', e);
   }
