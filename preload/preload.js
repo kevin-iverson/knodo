@@ -132,6 +132,14 @@ contextBridge.exposeInMainWorld('api', {
   // 报告（含历史记录持久化）
   report: {
     generate: (p) => call('report:generate', p),
+    outputTemplates: () => call('report:output-templates'),
+    // 生成进度：主进程按 requestId 推送流式片段 / 重试 / 降级 / 完成，返回取消订阅函数
+    onProgress: (cb) => {
+      if (typeof cb !== 'function') return () => {};
+      const listener = (_e, payload) => cb(payload);
+      ipcRenderer.on('report:progress', listener);
+      return () => ipcRenderer.removeListener('report:progress', listener);
+    },
     export: (p) => call('report:export', p),
     save: (p) => call('report:save', p),
     list: (limit) => call('report:list', limit),

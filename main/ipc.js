@@ -714,9 +714,26 @@ function registerIpc() {
   });
 
   /* ---------- 报告 ---------- */
+  // 内置输出模板：自定义模板由渲染层保存在本地并随生成请求传来，主进程只负责校验与注入 prompt
+  ipcMain.handle('report:output-templates', () => report.listOutputTemplates());
+  // 生成进度按 requestId 定向推给发起调用的窗口，避免多个窗口同时生成时流串到别处。
+  // 渲染层每次生成先生成 requestId，并监听 report:progress 过滤同 id 的事件。
   ipcMain.handle('report:generate', withDb(async (params) => {
     const cfg = getAiConfig();
-    return report.generateReport(params, cfg);
+    const p = params || {};
+    const requestId = String(p.requestId || '');
+    const sender = () => {
+      // handler 拿不到 event（withDb 包装后参数里被去掉），用当前聚焦窗口回推；
+      // 报告只在主窗口触发生成，多窗口场景下聚焦窗口就是发起方。
+      const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+      return win && !win.isDestroyed() ? win.webContents : null;
+    };
+    const onProgress = (evt) => {
+      if (!requestId) return;
+      const wc = sender();
+      if (wc) { try { wc.send('report:progress', { requestId, evt }); } catch (e) { /* 窗口已关闭 */ } }
+    };
+    return report.generateReport(p, cfg, { onProgress });
   }));
   // 导出格式表：Word 走 docx（OOXML），其余按纯文本写入
   const EXPORT_FORMATS = {
@@ -737,7 +754,7 @@ function registerIpc() {
   ipcMain.handle('report:update', withDb(({ id, patch }) => db.updateReport(id, patch || {})));
   ipcMain.handle('report:remove', withDb((id) => !!db.deleteReport(id)));
 
-  ipcMain.handle('report:export', guard(async (_e, { content, defaultName, format }) => {
+  ipcMain.handle('report:export', guard(async (_e, { content, defaultName, format, images }) => {
     const f = EXPORT_FORMATS[format] || EXPORT_FORMATS.md;
     const { canceled, filePath } = await dialog.showSaveDialog({
       title: '导出报告',
@@ -749,7 +766,7 @@ function registerIpc() {
     });
     if (canceled || !filePath) return { ok: false, canceled: true };
     if (f.ext === 'docx') {
-      fs.writeFileSync(filePath, markdownToDocx(content, { title: defaultName }));
+      fs.writeFileSync(filePath, markdownToDocx(content, { title: defaultName, images }));
     } else {
       fs.writeFileSync(filePath, content, 'utf8');
     }

@@ -517,6 +517,23 @@ const MIGRATIONS = [
   (d) => { require('./worklog/schema').migratePay(d); },
   // v20：四象日记（插件功能）。同 v18/v19：DDL 在插件目录，迁移期建表，与开关无关。
   (d) => { require('./journal/schema').migrate(d); },
+  // v21：AI 报告生成元数据。用于事后追溯「这份报告是谁、用什么参数、花了多少 token 生成的」：
+  // 没有这些列，质量问题无法归因、成本无法核算，建议（环比/可视化）也就失去了可信基线。
+  // 全部走 ALTER + 默认值，旧报告的这些字段读出来是空串 / 0，不影响历史列表。
+  (d) => {
+    const cols = d.prepare('PRAGMA table_info(reports)').all().map((c) => c.name);
+    const adds = [
+      ['model', "TEXT NOT NULL DEFAULT ''"],
+      ['temperature', 'REAL NOT NULL DEFAULT 0'],
+      ['prompt_version', "TEXT NOT NULL DEFAULT ''"],
+      ['tokens', 'INTEGER NOT NULL DEFAULT 0'],
+      ['duration_ms', 'INTEGER NOT NULL DEFAULT 0'],
+      ['degraded_reason', "TEXT NOT NULL DEFAULT ''"],
+    ];
+    for (const [name, def] of adds) {
+      if (!cols.includes(name)) d.exec(`ALTER TABLE reports ADD COLUMN ${name} ${def}`);
+    }
+  },
 ];
 
 // 初始化状态：失败时记录原因，供 IPC 层返回可读错误而不是抛异常
@@ -1340,6 +1357,33 @@ function archiveTask(id) {
 
 /* ------------------------------ 标签 ------------------------------ */
 
+/**
+ * 批量取任务的标签名（供报告 Prompt 使用）。
+ * 一次查询取全部 id，避免「每个任务查一次库」——报告一次可能涉及几十上百条任务。
+ * @param {number[]} ids 任务 id 数组
+ * @returns {Map<number,string[]>} taskId → 标签名数组
+ */
+function tagNamesByTaskIds(ids) {
+  const list = [...new Set((Array.isArray(ids) ? ids : [])
+    .map((v) => Number(v)).filter((v) => Number.isFinite(v)))];
+  const map = new Map();
+  if (!list.length) return map;
+  // SQLite 变量上限常见 999，分批 400 以内稳妥
+  for (let i = 0; i < list.length; i += 400) {
+    const part = list.slice(i, i + 400);
+    const rows = db.prepare(
+      `SELECT tt.task_id AS tid, group_concat(t.name) AS names
+         FROM task_tags tt JOIN tags t ON t.id = tt.tag_id
+        WHERE tt.task_id IN (${part.map(() => '?').join(',')})
+        GROUP BY tt.task_id`
+    ).all(...part);
+    for (const r of rows) {
+      map.set(Number(r.tid), String(r.names || '').split(',').filter(Boolean));
+    }
+  }
+  return map;
+}
+
 function listTags() {
   const rows = db.prepare('SELECT * FROM tags ORDER BY id ASC').all();
   return rows.map((t) => {
@@ -2142,11 +2186,15 @@ function deleteMeeting(id) {
 
 /* ------------------------------ AI 报告历史 ------------------------------ */
 
-/** reports 表允许写入的字段白名单 */
+/** reports 表允许写入的字段白名单（含 v21 生成元数据，供追溯 / 成本核算） */
 const REPORT_FIELDS = [
   'title', 'type', 'range_start', 'range_end', 'group_ids', 'group_label',
   'extra_prompt', 'content', 'degraded',
+  'model', 'temperature', 'prompt_version', 'tokens', 'duration_ms', 'degraded_reason',
 ];
+
+/** 元数据列里的数值字段：写入时必须转数字，字符串 "0" 存进 REAL/INTEGER  SQLite 也能存，但回读类型会乱 */
+const REPORT_NUM_FIELDS = new Set(['temperature', 'tokens', 'duration_ms']);
 
 function rowToReport(row) {
   if (!row) return null;
@@ -2157,13 +2205,15 @@ function rowToReport(row) {
  * 保存一份报告（生成时调用，返回带 id 的记录）。
  * @param {{title?:string,type?:string,range_start?:string,range_end?:string,
  *          group_ids?:number[],group_label?:string,extra_prompt?:string,
- *          content?:string,degraded?:boolean}} p
+ *          content?:string,degraded?:boolean,model?:string,temperature?:number,
+ *          prompt_version?:string,tokens?:number,duration_ms?:number,degraded_reason?:string}} p
  */
 function createReport(p = {}) {
   const now = nowIso();
   const info = db.prepare(
-    `INSERT INTO reports (title, type, range_start, range_end, group_ids, group_label, extra_prompt, content, degraded, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO reports (title, type, range_start, range_end, group_ids, group_label, extra_prompt, content, degraded,
+                          model, temperature, prompt_version, tokens, duration_ms, degraded_reason, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     p.title || '未命名报告',
     p.type || 'custom',
@@ -2174,17 +2224,24 @@ function createReport(p = {}) {
     p.extra_prompt || '',
     p.content || '',
     p.degraded ? 1 : 0,
+    String(p.model || ''),
+    Number(p.temperature) || 0,
+    String(p.prompt_version || ''),
+    Number(p.tokens) || 0,
+    Number(p.duration_ms) || 0,
+    String(p.degraded_reason || ''),
     now,
     now,
   );
   return getReport(info.lastInsertRowid);
 }
 
-/** 报告历史（倒序，内容裁掉：列表只需要摘要，正文单独取） */
+/** 报告历史（倒序，内容裁掉：列表只需要摘要，正文单独取；带生成元数据供列表直接展示） */
 function listReports(limit = 100) {
   const rows = db.prepare(
     `SELECT id, title, type, range_start, range_end, group_label, extra_prompt,
-            degraded, created_at, updated_at,
+            degraded, model, temperature, prompt_version, tokens, duration_ms, degraded_reason,
+            created_at, updated_at,
             length(content) AS content_len
        FROM reports ORDER BY created_at DESC, id DESC LIMIT ?`
   ).all(limit);
@@ -2205,6 +2262,7 @@ function updateReport(id, p = {}) {
     const v = p[k];
     if (k === 'group_ids') return JSON.stringify(Array.isArray(v) ? v : []);
     if (k === 'degraded') return v ? 1 : 0;
+    if (REPORT_NUM_FIELDS.has(k)) return Number(v) || 0;
     return v == null ? '' : String(v);
   });
   db.prepare(`UPDATE reports SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...values, nowIso(), id);
@@ -3439,14 +3497,19 @@ function importData(data) {
 
     const insReport = db.prepare(
       `INSERT INTO reports (id, title, type, range_start, range_end, group_ids, group_label,
-         extra_prompt, content, degraded, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         extra_prompt, content, degraded, model, temperature, prompt_version, tokens,
+         duration_ms, degraded_reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const r of data.reports || []) {
       insReport.run(
         r.id, r.title || '未命名报告', r.type || 'custom', r.range_start ?? null, r.range_end ?? null,
         jsonOf(r.group_ids), r.group_label || '', r.extra_prompt || '', r.content || '',
-        r.degraded ? 1 : 0, r.created_at || t0, r.updated_at || t0
+        r.degraded ? 1 : 0,
+        // v21 元数据：旧备份没有这些列，给安全默认值，恢复后历史详情不会显示成 undefined
+        r.model || '', Number(r.temperature) || 0, r.prompt_version || '',
+        Number(r.tokens) || 0, Number(r.duration_ms) || 0, r.degraded_reason || '',
+        r.created_at || t0, r.updated_at || t0
       );
     }
 
@@ -3841,6 +3904,7 @@ module.exports = {
   listTags,
   createTag,
   deleteTag,
+  tagNamesByTaskIds,
   // reminders
   dueReminders,
   markReminderFired,

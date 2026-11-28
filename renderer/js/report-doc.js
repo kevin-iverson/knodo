@@ -63,6 +63,7 @@ export function mdToDocHtml(md) {
   const out = [];
   let inCode = false;
   let codeBuf = [];
+  let codeLang = '';
   let list = null; // { tag:'ul'|'ol', mark:string, items:string[] }
   let tbl = [];
   let para = [];
@@ -85,17 +86,30 @@ export function mdToDocHtml(md) {
     out.push(tableHtml(tbl));
     tbl = [];
   };
+  // mermaid 块保留源码占位，交给 markdown-lib 的 enhanceMarkdown 渲染成真正的图；
+  // contenteditable=false 避免用户在图上误编辑，反向序列化时从源码 / __mmSrc 取回原文。
+  const flushCode = () => {
+    const src = codeBuf.join('\n');
+    if (codeLang === 'mermaid') {
+      out.push(`<div class="md-mermaid" contenteditable="false"><pre class="md-mermaid-src">${escapeHtml(src)}</pre></div>`);
+    } else {
+      out.push(`<pre><code>${escapeHtml(src)}</code></pre>`);
+    }
+    codeBuf = [];
+    codeLang = '';
+  };
   const flushAll = () => { flushPara(); flushList(); flushTable(); };
 
   for (const line of lines) {
-    if (/^\s*```/.test(line)) {
+    const fence = line.match(/^\s*```([A-Za-z0-9_-]*)\s*$/);
+    if (fence) {
       flushAll();
       if (inCode) {
-        out.push(`<pre><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`);
-        codeBuf = [];
+        flushCode();
         inCode = false;
       } else {
         inCode = true;
+        codeLang = (fence[1] || '').toLowerCase();
       }
       continue;
     }
@@ -145,7 +159,7 @@ export function mdToDocHtml(md) {
     para.push(line);
   }
   flushAll();
-  if (inCode) out.push(`<pre><code>${escapeHtml(codeBuf.join('\n'))}</code></pre>`);
+  if (inCode) flushCode();
   return out.join('');
 }
 
@@ -218,6 +232,16 @@ export function docHtmlToMd(root) {
         return;
       }
       if (tag === 'blockquote') { out.push(`> ${inlineToMd(el).trim()}`); return; }
+      // Mermaid 图：渲染前从占位 pre 取源码，渲染后从 mermaid-lib 挂在节点上的 __mmSrc 取，
+      // 保证「图 → Markdown → 再渲染」来回不丢图。
+      if (el.classList && el.classList.contains('md-mermaid')) {
+        const srcEl = el.querySelector('.md-mermaid-src');
+        const src = srcEl ? srcEl.textContent : (el.__mmSrc || '');
+        out.push('```mermaid');
+        out.push(String(src).replace(/\n+$/, ''));
+        out.push('```');
+        return;
+      }
       if (tag === 'pre') {
         out.push('```');
         out.push(String(el.textContent || '').replace(/\n+$/, ''));

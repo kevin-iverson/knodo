@@ -1153,19 +1153,42 @@ body.is-compact .titlebar > .tb-nav > button .nav-ico { font-size: 13px; }
   padding: 8px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg-panel); color: var(--text); font-size: 13px; outline: none;
 }
-/* 自定义要求：与报告控件同区，整行占满 */
-.rp-extra { display: flex; flex-direction: column; gap: 6px; margin: -4px 0 14px; }
-.rp-extra-label { font-size: 12px; color: var(--text-2); }
-.rp-extra textarea {
-  width: 100%; min-height: 58px; max-height: 180px; resize: vertical;
-  padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg-panel); color: var(--text); font-size: 13px; line-height: 1.5;
-  font-family: inherit; outline: none;
+/* 输出模板：按钮与报告控件同排，弹窗里选择 / 新增模板 */
+.rp-tpl-hint { font-size: 12px; color: var(--text-2); line-height: 1.6; margin-bottom: 10px; }
+/* 两列排布：模板数量增加后仍能在弹窗一屏内看全，右侧不再空着 */
+.rp-tpl-list {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+  max-height: 300px; overflow-y: auto; align-content: start;
 }
-.rp-extra textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgb(var(--primary-rgb) / 0.14); }
-.rp-extra-foot { display: flex; align-items: center; gap: 12px; }
-.rp-extra-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.4; flex: 1; }
-.rp-extra-count { font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+@media (max-width: 720px) {
+  .rp-tpl-list { grid-template-columns: minmax(0, 1fr); }
+}
+.rp-tpl-row {
+  display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); cursor: pointer;
+}
+.rp-tpl-row:has(input:checked) { border-color: var(--primary); background: var(--bg-active); }
+.rp-tpl-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.rp-tpl-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.rp-tpl-builtin {
+  font-size: 10px; font-style: normal; font-weight: 500; color: var(--primary);
+  margin-left: 6px; padding: 1px 5px; border-radius: 999px; background: var(--bg-hover);
+}
+.rp-tpl-desc, .rp-tpl-sections { font-size: 11px; color: var(--text-3); line-height: 1.4; }
+.rp-tpl-empty { padding: 24px; text-align: center; color: var(--text-3); font-size: 12px; }
+.rp-tpl-add { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.rp-tpl-toggle { min-height: 32px; }
+.rp-tpl-form { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.rp-tpl-form[hidden] { display: none; }
+.rp-tpl-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-2); }
+.rp-tpl-form input, .rp-tpl-form textarea {
+  width: 100%; box-sizing: border-box; padding: 7px 9px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-panel); color: var(--text); font-size: 13px; font-family: inherit; outline: none;
+}
+.rp-tpl-form textarea { resize: vertical; line-height: 1.5; }
+.rp-tpl-form input:focus, .rp-tpl-form textarea:focus { border-color: var(--primary); }
+.rp-tpl-form .ghost-btn { align-self: flex-start; }
 .report-output { min-height: 320px; }
 .report-output textarea {
   width: 100%; min-height: 320px; padding: 14px; border: 1px solid var(--border);
@@ -1174,10 +1197,24 @@ body.is-compact .titlebar > .tb-nav > button .nav-ico { font-size: 13px; }
 }
 .report-toolbar { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 
-/* 模式条：文档视图 / Markdown 源码 + 保存状态 + 历史记录 */
+/* 模式条：文档视图 / Markdown 源码 + 保存状态 + 导出 + 历史记录 */
 .rp-mode-bar { margin: 0 0 12px; }
 .rp-mode-bar .rp-spacer { flex: 1; }
 .rp-mode-bar .rp-mode.active { border-color: var(--primary); color: var(--primary-strong); font-weight: 600; }
+/* 导出下拉：锚在按钮旁，避免被面板 overflow 裁掉 */
+.rp-export-wrap { position: relative; }
+.rp-export-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
+  min-width: 148px; padding: 4px;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow);
+}
+.rp-export-menu button {
+  display: block; width: 100%; padding: 8px 10px; text-align: left;
+  border: none; border-radius: 6px; background: transparent;
+  color: var(--text); font-size: 13px; cursor: pointer;
+}
+.rp-export-menu button:hover { background: var(--bg-hover); }
 /* 自动保存状态：输入时「未保存」，落库后「已保存 HH:MM」 */
 .rp-save-state { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .rp-save-state.dirty { color: var(--danger); }
@@ -1195,6 +1232,9 @@ body.is-compact .titlebar > .tb-nav > button .nav-ico { font-size: 13px; }
   border-color: var(--primary); box-shadow: 0 0 0 3px rgb(var(--primary-rgb) / .12);
 }
 .rp-doc > *:first-child { margin-top: 0; }
+/* 报告里的 Mermaid 图：按 Word 小节节奏留白，整块不被分页切开 */
+.rp-doc .md-mermaid { margin: 14px 0; padding: 12px; break-inside: avoid; page-break-inside: avoid; }
+.rp-doc .md-mermaid svg { max-width: 100%; height: auto; }
 .rp-doc h1 {
   font-size: 22px; font-weight: 700; margin: 20px 0 12px; padding-bottom: 8px;
   border-bottom: 1px solid var(--border); color: var(--text);

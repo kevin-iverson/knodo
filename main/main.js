@@ -2205,8 +2205,16 @@ app.whenReady().then(async () => {
                   out.tsCascadePair = pageGroup.name + ' / ' + pageChild.name;
                 }
               }
-              out.exportDocxBtn = !!document.getElementById('rp-export-docx');
-              out.exportMdBtn = !!document.getElementById('rp-export-md');
+              // 导出下拉：按钮在历史记录左侧、可展开、含 Word / Markdown 两项
+              const expBtn = document.getElementById('rp-export');
+              const expMenu = document.getElementById('rp-export-menu');
+              const histBtn = document.getElementById('rp-history');
+              out.exportBtn = !!expBtn;
+              out.exportNearHistory = !!(expBtn && histBtn && expBtn.compareDocumentPosition(histBtn) & Node.DOCUMENT_POSITION_FOLLOWING);
+              out.exportMenuItems = expMenu ? expMenu.querySelectorAll('[data-format]').length : 0;
+              if (expBtn) { expBtn.click(); await wait(120); }
+              out.exportMenuOpens = !!(expMenu && !expMenu.hidden);
+              if (expBtn) { expBtn.click(); await wait(120); } // 收起，避免挡住后续断言
               return out;
             })()
           `);
@@ -2214,7 +2222,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 拖拽排序（列表）= 顺序 ${JSON.stringify(r4.beforeOrder)} → ${JSON.stringify(r4.afterOrder)}；sortOrder=${JSON.stringify(r4.sortOrders)}；排序方式=${r4.sortMode}；位置互换=${r4.reordered ? '是' : '否'}；已落库=${r4.persistedOrder ? '是' : '否'}`);
           console.log(`[SMOKE] 拖拽排序（子任务）= ${JSON.stringify(r4.subAfterOrder)}；互换=${r4.subReordered ? '是' : '否'}`);
           console.log(`[SMOKE] 新建表单 = 行操作中文「${r4.actionLabel}」${r4.hasChineseAction ? '✓' : '✗'}；详情默认展开=${r4.detailsShown ? '是' : '否'}；「更多」已撤=${r4.moreBtnGone ? '是' : '否'}；优先级在主行=${r4.priInRow ? '是' : '否'}（标题右${r4.priAfterTitle ? '✓' : '✗'} / 分组左${r4.priBeforeGroup ? '✓' : '✗'}，不在详情区=${r4.priNotInDetails ? '✓' : '✗'}）`);
-          console.log(`[SMOKE] 报告分组多选(Tom Select) = 第三方库=${r4.tsThirdParty ? '已加载' : '未加载'}；控件=${r4.tsWrapper ? '已渲染' : '缺失'}；面板${r4.tsOpened ? '展开' : '未展开'}（挂 body=${r4.tsOnBody ? '是' : '否'}，${r4.tsOptionCount} 项，缩进=${r4.tsIndented ? '有' : '无'}）；多选 chips=${r4.tsChips}（带 ×=${r4.tsHasRemove}）；Word/MD 按钮=${r4.exportDocxBtn && r4.exportMdBtn ? '齐全' : '缺失'}`);
+          console.log(`[SMOKE] 报告分组多选(Tom Select) = 第三方库=${r4.tsThirdParty ? '已加载' : '未加载'}；控件=${r4.tsWrapper ? '已渲染' : '缺失'}；面板${r4.tsOpened ? '展开' : '未展开'}（挂 body=${r4.tsOnBody ? '是' : '否'}，${r4.tsOptionCount} 项，缩进=${r4.tsIndented ? '有' : '无'}）；多选 chips=${r4.tsChips}（带 ×=${r4.tsHasRemove}）；导出下拉=${r4.exportBtn && r4.exportMenuOpens && r4.exportMenuItems === 2 ? '齐全（在历史记录旁）' : '缺失'}`);
           console.log(`[SMOKE] 分组级联（${r4.tsCascadePair || '无父子分组'}）= 选父后子置灰${r4.tsChildLocked ? '✓' : '✗'}；点置灰项无效${r4.tsChildClickIgnored ? '✓' : '✗'}；取消父后恢复${r4.tsChildRestored ? '✓' : '✗'}`);
 
           // 主进程侧：Word 导出与分组多选入参
@@ -2254,6 +2262,23 @@ app.whenReady().then(async () => {
           };
           console.log(`[SMOKE] Word 导出 = ${r4docx.size} 字节，ZIP 头 ${r4docx.isZip ? '正确' : '错误'}`);
           console.log(`[SMOKE] 报告分组多选（后端）= 多选「${multiNames}」${r4multi.multi ? '✓' : '✗'}；单选${r4multi.single ? '✓' : '✗'}；空选=全部${r4multi.none ? '✓' : '✗'}`);
+
+          /* ---- P0 报告增强：元数据 / 进度事件 / preload 进度通道 ---- */
+          const p0Events = [];
+          const p0Gen = await reportMod.generateReport(
+            { type: 'day', customStart: null, customEnd: null, groupIds: [] },
+            null, // 无 Key → 降级路径，验证 meta.degraded_reason
+            { onProgress: (e) => p0Events.push(e) },
+          );
+          const p0HasMeta = !!(p0Gen.meta
+            && typeof p0Gen.meta.duration_ms === 'number'
+            && p0Gen.meta.prompt_version
+            && p0Gen.meta.degraded_reason);
+          const p0HasDegradedEvt = p0Events.some((e) => e.phase === 'degraded');
+          const p0Preload = await mainWindow.webContents.executeJavaScript(
+            'typeof window.api.report.onProgress === "function" && typeof window.api.report.generate === "function"'
+          );
+          console.log(`[SMOKE] 报告 P0 增强 = 元数据${p0HasMeta ? '✓' : '✗'}；降级事件${p0HasDegradedEvt ? '✓' : '✗'}；进度通道${p0Preload ? '✓' : '✗'}`);
 
           /* ---- 第 7 轮：会议录制 → 转写 → 纪要 → 待办入库 ---- */
           const r7 = await mainWindow.webContents.executeJavaScript(`
@@ -2491,7 +2516,8 @@ app.whenReady().then(async () => {
               // Markdown → 文档 HTML → Markdown 往返（真实 DOM 下验证反向序列化不丢结构）
               const mod = await import('./js/report-doc.js');
               const md = ['# 标题R9', '', '段落含**加粗**与 \`代码\`。', '', '## 表格', '',
-                '| 列A | 列B |', '| --- | --- |', '| 1 | 2 |', '', '- 项一', '- 项二'].join('\\n');
+                '| 列A | 列B |', '| --- | --- |', '| 1 | 2 |', '', '- 项一', '- 项二', '',
+                '\`\`\`mermaid', 'pie title 分组完成占比', '    "工作" : 3', '\`\`\`'].join('\\n');
               const html = mod.mdToDocHtml(md);
               const probe = document.createElement('div');
               probe.innerHTML = html;
@@ -2500,10 +2526,30 @@ app.whenReady().then(async () => {
               out.roundTripHasTable = backMd.includes('| 列A | 列B |') && backMd.includes('| --- | --- |');
               out.roundTripHasList = backMd.includes('- 项一') && backMd.includes('- 项二');
               out.roundTripHasInline = backMd.includes('**加粗**') && backMd.includes('\`代码\`');
+              out.roundTripHasMermaid = backMd.includes('\`\`\`mermaid')
+                && backMd.includes('pie title 分组完成占比') && backMd.includes('"工作" : 3');
               out.roundTripStable = (() => {
                 const again = mod.docHtmlToMd(Object.assign(document.createElement('div'), { innerHTML: mod.mdToDocHtml(backMd) }));
                 return again.trim() === backMd.trim();
               })();
+
+              // Mermaid 真实渲染：多图表模板依赖报告文档视图把代码块转成 SVG。
+              // 上一步刚切到源码视图，隐藏容器量不到尺寸，enhanceMarkdown 会跳过，必须切回文档视图。
+              document.querySelector('.rp-mode[data-mode="doc"]')?.click(); await wait(300);
+              const prevHtml = docEl.innerHTML;
+              docEl.innerHTML = html;
+              try {
+                const ml = await import('./js/markdown-lib.js');
+                await ml.enhanceMarkdown(docEl);
+              } catch (e) { /* 渲染失败时下面的断言会记录 */ }
+              await wait(4000);
+              out.chartSvgCount = docEl.querySelectorAll('.md-mermaid.is-ok svg').length;
+              try {
+                const ml2 = await import('./js/markdown-lib.js');
+                const png = await ml2.renderMermaidPng('pie title 导出测试\\n    "工作" : 3', { scale: 1, theme: 'default' });
+                out.chartPngOk = String(png).startsWith('data:image/png;base64,') && png.length > 500;
+              } catch (e) { out.chartPngOk = false; out.chartPngErr = String((e && e.message) || e); }
+              docEl.innerHTML = prevHtml;
 
               // 清理：清掉草稿，避免影响后续手工使用
               try { localStorage.removeItem('todo.report.draft'); } catch (e) {}
@@ -2672,19 +2718,11 @@ app.whenReady().then(async () => {
                 && document.getElementById('btn-time-filter').textContent.indexOf('·') < 0;
               document.getElementById('btn-time-filter').click(); await wait(200);
 
-              /* ---- 4) 报告自定义要求 ---- */
+              /* ---- 4) 报告自定义要求已取消，改为输出模板入口 ---- */
               nav('reports'); await wait(800);
-              const extraEl = document.getElementById('rp-extra');
-              out.extraExists = !!extraEl;
-              const reqText = '根据任务的计划完成时间生成下个月的计划';
-              extraEl.value = reqText;
-              extraEl.dispatchEvent(new Event('input', { bubbles: true }));
-              out.extraPersisted = localStorage.getItem('todo.report.extraPrompt') === reqText;
-              out.extraCounter = (document.getElementById('rp-extra-count') || {}).textContent;
-              document.getElementById('rp-generate').click(); await wait(2600);
-              const src = (document.getElementById('rp-output') || {}).value || '';
-              out.extraDegradedNoted = src.indexOf('未能应用自定义要求') >= 0;
-              try { localStorage.removeItem('todo.report.extraPrompt'); } catch (e) {}
+              out.extraExists = !!document.getElementById('rp-extra');
+              out.tplBtnExists = !!document.getElementById('rp-template');
+              out.tplLabelText = (document.getElementById('rp-template-label') || {}).textContent || '';
               try { localStorage.removeItem('todo.report.draft'); } catch (e) {}
               try { await window.api.tasks.remove(taskA.id); } catch (e) {}
               return out;
@@ -2694,7 +2732,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] 今日保留完成 = 勾选后仍在列表=${r10.todayKeptAfterDone ? '是' : '否'}；置灰/删除线=${r10.todayKeptMarkedDone && r10.todayKeptStrike ? '是' : '否'}；提示条=${r10.todayKeepBar ? '有' : '无'}；手动隐藏生效=${r10.todayHiddenByButton ? '是' : '否'}；切走再回来仍在=${r10.todayKeptAfterViewSwitch ? '是' : '否'}（仍标记完成=${r10.todayKeptStillDone ? '是' : '否'}）；再次手动隐藏=${r10.todayHiddenByButtonAgain ? '是' : '否'}`);
           console.log(`[SMOKE] 拖拽调宽 = 宽度 ${r10.w0} → ${r10.w1} → ${r10.w2}px（视口 ${r10.innerW}）；拖拽态=${r10.resizeFlagOn ? '是' : '否'}；内容冻结指针=${r10.resizePointersFrozen ? '是' : '否'}；layout 隔离=${r10.resizeContain ? '是' : '否'}；滚动条槽位=${r10.resizeGutter}；宽度单调增=${r10.resizeWidened ? '是' : '否'}；拖拽中无重建=${r10.resizeNoRebuild ? '是' : '否'}；宽度变量同步=${r10.resizeVarSynced ? '是' : '否'}；松手后稳定=${r10.resizeStableAfterDrop ? '是' : '否'}；重绘保持宽度=${r10.rerenderKeepsWidth ? '是' : '否'}；重绘不重播动画=${r10.rerenderNoAnim ? '是' : '否'}`);
           console.log(`[SMOKE] 时间筛选控件 = 范围控件 ${r10.tfRangeFields} 个；原生 date 输入 ${r10.tfNativeDates} 个；flatpickr=${r10.tfHasFlatpickr ? '已加载' : '缺失'}；样式与添加任务一致=${r10.tfStyleSame ? '是' : '否'}；点开日历=${r10.tfCalendarOpens ? '是' : '否'}；选中成对=${r10.tfPickedBoth ? '是' : '否'}；按钮「${r10.tfBadge}」；清除生效=${r10.tfCleared ? '是' : '否'}`);
-          console.log(`[SMOKE] 报告自定义要求 = 输入框=${r10.extraExists ? '有' : '无'}；本地记忆=${r10.extraPersisted ? '是' : '否'}；字数「${r10.extraCounter}」；降级报告说明未应用=${r10.extraDegradedNoted ? '是' : '否'}`);
+          console.log(`[SMOKE] 报告自定义要求已取消 = 输入框=${r10.extraExists ? '仍有' : '已移除'}；输出模板按钮=${r10.tplBtnExists ? '有' : '无'}；当前「${r10.tplLabelText}」`);
 
           // 主进程侧：ASR 预设、分片落盘
           const asrMod = require('./asr');
@@ -2720,7 +2758,7 @@ app.whenReady().then(async () => {
           console.log(`[SMOKE] ASR 预设 = ${r7main.presets} 个（国内 ${r7main.domestic} 个，id 唯一=${r7main.uniqueIds ? '是' : '否'}）；分片写盘=${r7main.chunkSaved ? '成功' : '失败'}；会话文件数=${r7main.files}`);
           console.log(`[SMOKE] 标签选中态 = 点击后 active=${r9.tagActiveAfterClick ? '是' : '否'}；aria-pressed=${r9.tagAriaAfter}；样式区分=${r9.tagStyleDistinct ? '是' : '否'}；顶栏指示「${r9.tagChipText}」；键盘可取消=${r9.tagOffByKeyboard ? '是' : '否'}；跨视图保留=${r9.tagKeptAcrossViews ? '是' : '否'}；筛选结果一致=${r9.tagFilterConsistent ? '是' : '否'}（${r9.tagFilteredCount} 条）`);
           console.log(`[SMOKE] 统计下钻 = 卡片按钮=${r9.statCardIsButton ? '是' : '否'}；已逾期 ${r9.overdueNum} → 明细 ${r9.drillRows} 条${r9.drillMatchesNum ? '（一致）' : '（不一致！）'}；可排序=${r9.drillSortWorks ? '是' : '否'}；详情跳转=${r9.detailOpened ? '是' : '否'}${r9.detailMatchesRow ? '（标题匹配）' : ''}；关闭回到统计页=${r9.backOnStats ? '是' : '否'}`);
-          console.log(`[SMOKE] 报告文档化 = 文档渲染=${r9.docRendered ? '是' : '否'}；标题 ${r9.docHasHeadings} 个；默认可编辑=${r9.docEditable ? '是' : '否'}；无编辑/保存按钮=${r9.noEditBtn && r9.noSaveBtn ? '是' : '否'}；历史按钮=${r9.hasHistoryBtn ? '有' : '无'}；自动保存=${r9.autoSaved ? '是' : '否'}；源码含改动=${r9.sourceHasEdit ? '是' : '否'}；往返一致=${r9.roundTripHasHead && r9.roundTripHasTable && r9.roundTripHasList && r9.roundTripHasInline && r9.roundTripStable ? '是' : '否'}`);
+          console.log(`[SMOKE] 报告文档化 = 文档渲染=${r9.docRendered ? '是' : '否'}；标题 ${r9.docHasHeadings} 个；默认可编辑=${r9.docEditable ? '是' : '否'}；无编辑/保存按钮=${r9.noEditBtn && r9.noSaveBtn ? '是' : '否'}；历史按钮=${r9.hasHistoryBtn ? '有' : '无'}；自动保存=${r9.autoSaved ? '是' : '否'}；源码含改动=${r9.sourceHasEdit ? '是' : '否'}；往返一致=${r9.roundTripHasHead && r9.roundTripHasTable && r9.roundTripHasList && r9.roundTripHasInline && r9.roundTripHasMermaid && r9.roundTripStable ? '是' : '否'}；Mermaid SVG ${r9.chartSvgCount || 0} 张；PNG 转图=${r9.chartPngOk ? '成功' : '失败（' + (r9.chartPngErr || '') + '）'}`);
 
           /* ============ 第 11 轮：今日已完成跨视图保留 / 行内改标题 / 报告与检索持久化 ============ */
           const r11 = await mainWindow.webContents.executeJavaScript(`
@@ -2773,8 +2811,10 @@ app.whenReady().then(async () => {
               out.rpSavedState = (document.getElementById('rp-save-state') || {}).textContent || '';
               const histBtn = document.getElementById('rp-history');
               out.rpHistoryBtn = !!histBtn;
-              // 右上角位置：历史按钮应在结果面板的工具条内，且排在导出按钮之前
+              // 右上角位置：历史按钮应在结果面板的工具条内，排在导出按钮之后
               out.rpHistoryInToolbar = !!histBtn && !!histBtn.closest('.report-toolbar');
+              out.rpHistoryAfterExport = !!(histBtn && document.getElementById('rp-export')
+                && (document.getElementById('rp-export').compareDocumentPosition(histBtn) & Node.DOCUMENT_POSITION_FOLLOWING));
               if (histBtn) { histBtn.click(); await wait(800); }
               const mask = document.querySelector('.modal-mask .modal-panel');
               out.rpModalOpened = !!mask;
@@ -2793,11 +2833,17 @@ app.whenReady().then(async () => {
               if (viewBtn) { viewBtn.click(); await wait(700); }
               out.rpModalClosed = !document.querySelector('.modal-mask .modal-panel');
               out.rpLoadedContent = (document.getElementById('rp-doc') || {}).textContent.length > 20;
-              // 清理：删掉一条，历史应减少
+              // 清理：删掉一条，历史应减少；先 stub confirm，避免原生弹窗阻塞冒烟，同时验证确认框确实被调用
+              window.__rpConfirmCalls = [];
+              const nativeConfirm = window.confirm;
+              window.confirm = (msg) => { window.__rpConfirmCalls.push(String(msg)); return true; };
               const histBtn3 = document.getElementById('rp-history');
               if (histBtn3) { histBtn3.click(); await wait(800); }
               const delBtn = document.querySelector('.rpt-row [data-act="del"]');
               if (delBtn) { delBtn.click(); await wait(700); }
+              out.rpHistoryConfirmShown = window.__rpConfirmCalls.length === 1
+                && window.__rpConfirmCalls[0].indexOf('删除历史报告') >= 0;
+              window.confirm = nativeConfirm;
               out.rpRowsAfterDel = document.querySelectorAll('.rpt-row').length;
               out.rpHistoryShrunk = out.rpRowsAfterDel === out.rpRows2 - 1;
               const closeBtn3 = document.querySelector('.modal-mask [data-modal="ok"]');
@@ -2845,9 +2891,71 @@ app.whenReady().then(async () => {
             })(),
           };
           console.log(`[SMOKE] 行内改标题 = 输入框=${r11.renameInputShown ? '弹出' : '未弹出'}（聚焦=${r11.renameFocused ? '是' : '否'}）；失焦保存=${r11.renameSaved ? '是' : '否'}；落库=${r11.renamePersisted ? '是' : '否'}；列表=${JSON.stringify(r11.renameTitles)}`);
-          console.log(`[SMOKE] 报告历史 = 按钮在工具条内=${r11.rpHistoryInToolbar ? '是' : '否'}；${r11.rpRows1} → ${r11.rpRows2} 条（递增=${r11.rpHistoryGrew ? '是' : '否'}）；查看载入=${r11.rpLoadedContent ? '是' : '否'}；删除后 ${r11.rpRowsAfterDel} 条（减少=${r11.rpHistoryShrunk ? '是' : '否'}）`);
+          console.log(`[SMOKE] 报告历史 = 按钮在工具条内=${r11.rpHistoryInToolbar ? '是' : '否'}（在导出之后=${r11.rpHistoryAfterExport ? '是' : '否'}）；${r11.rpRows1} → ${r11.rpRows2} 条（递增=${r11.rpHistoryGrew ? '是' : '否'}）；查看载入=${r11.rpLoadedContent ? '是' : '否'}；删除确认框=${r11.rpHistoryConfirmShown ? '有' : '无'}；删除后 ${r11.rpRowsAfterDel} 条（减少=${r11.rpHistoryShrunk ? '是' : '否'}）`);
           console.log(`[SMOKE] 检索历史 = 列表=${r11.searchHistoryBox ? '存在' : '缺失'}；检索后 ${r11.searchRows} 条（新增=${r11.searchHistoryGrew ? '是' : '否'}）；回看=${r11.searchRestored ? '是' : '否'}`);
           console.log(`[SMOKE] 持久化（主进程）= reports ${r11main.reports} 条 / ai_searches ${r11main.searches} 条；正文可读=${r11main.reportHasContent ? '是' : '否'}；关键词可读=${r11main.searchHasKeyword ? '是' : '否'}；导出含两表=${r11main.exportHasTables ? '是' : '否'}`);
+
+          /* ============ 第 12 轮：输出模板 + 源码实时生成后切回 Word ============ */
+          const r12 = await mainWindow.webContents.executeJavaScript(`
+            (async () => {
+              const out = {};
+              const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+              const nav = (v) => document.querySelector('.nav-item[data-view="' + v + '"]').click();
+              nav('reports'); await wait(700);
+              out.noExtra = !document.getElementById('rp-extra');
+              out.tplBtn = !!document.getElementById('rp-template');
+              out.tplLabel = document.getElementById('rp-template-label')?.textContent || '';
+
+              document.getElementById('rp-template')?.click(); await wait(400);
+              out.modalRows = document.querySelectorAll('#rp-tpl-list .rp-tpl-row').length;
+              const listEl = document.getElementById('rp-tpl-list');
+              out.tplColumns = getComputedStyle(listEl).gridTemplateColumns.split(' ').filter(Boolean).length;
+              out.toggleBtn = !!document.getElementById('rp-tpl-toggle');
+              out.formHiddenInitially = document.getElementById('rp-tpl-form')?.hidden === true;
+              document.getElementById('rp-tpl-toggle')?.click(); await wait(200);
+              out.formOpened = document.getElementById('rp-tpl-form')?.hidden === false;
+              const nameEl = document.getElementById('rp-tpl-name');
+              if (nameEl) nameEl.value = '冒烟模板';
+              const secEl = document.getElementById('rp-tpl-sections');
+              if (secEl) secEl.value = '概览,风险,计划';
+              const insEl = document.getElementById('rp-tpl-instruction');
+              if (insEl) insEl.value = '使用 Markdown；按概览、风险、计划输出。';
+              document.getElementById('rp-tpl-add-btn')?.click(); await wait(300);
+              out.rowsAfterAdd = document.querySelectorAll('#rp-tpl-list .rp-tpl-row').length;
+              out.formHiddenAfterAdd = document.getElementById('rp-tpl-form')?.hidden === true;
+              const masks = document.querySelectorAll('.modal-mask');
+              const topMask = masks[masks.length - 1];
+              topMask?.querySelector('[data-modal="ok"]')?.click(); await wait(400);
+              out.labelAfter = document.getElementById('rp-template-label')?.textContent || '';
+              const saved = JSON.parse(localStorage.getItem('todo.report.outputTemplates') || '[]');
+              out.tplStored = saved.some((t) => t.name === '冒烟模板');
+
+              // contextBridge 暴露的 api 不可在渲染层改写，改用 MutationObserver 记录生成期间的视图切换
+              const outEl = document.getElementById('rp-output');
+              const docEl = document.getElementById('rp-doc');
+              const seq = [];
+              const obs = new MutationObserver(() => {
+                seq.push({ o: !!outEl.hidden, d: !!docEl.hidden });
+              });
+              obs.observe(outEl, { attributes: true, attributeFilter: ['hidden'] });
+              obs.observe(docEl, { attributes: true, attributeFilter: ['hidden'] });
+              document.getElementById('rp-generate')?.click();
+              await wait(1500);
+              obs.disconnect();
+              out.sourceVisibleDuring = seq.some((s) => !s.o && s.d);
+              out.docVisibleAfter = !docEl.hidden && outEl.hidden;
+
+              // 清理冒烟产生的模板，避免后续轮次被污染
+              try {
+                localStorage.setItem('todo.report.outputTemplates', '[]');
+                localStorage.setItem('todo.report.outputTemplateId', 'standard');
+              } catch (e) { /* 忽略 */ }
+              nav('all'); await wait(300);
+              return out;
+            })()
+          `);
+          console.log(`[SMOKE] 输出模板 = 自定义要求已移除=${r12.noExtra ? '是' : '否'}；按钮=${r12.tplBtn ? '有' : '无'}；内置 ${r12.modalRows} 项 / ${r12.tplColumns} 列；表单默认收起=${r12.formHiddenInitially ? '是' : '否'}，点击展开=${r12.formOpened ? '是' : '否'}，添加后收起=${r12.formHiddenAfterAdd ? '是' : '否'}；新增后 ${r12.rowsAfterAdd} 项；选中「${r12.labelAfter}」；本地持久化=${r12.tplStored ? '是' : '否'}`);
+          console.log(`[SMOKE] 生成视图切换 = 生成中源码可见=${r12.sourceVisibleDuring ? '是' : '否'}；完成后 Word 可见=${r12.docVisibleAfter ? '是' : '否'}`);
 
           /* ============ 第 13 轮：提示层级 / 分组折叠 / 今天默认值 / 详情描述回填 / 工具栏清理 ============ */
           const r13 = await mainWindow.webContents.executeJavaScript(`
@@ -3660,7 +3768,7 @@ app.whenReady().then(async () => {
             && r4.tsThirdParty && r4.tsWrapper && r4.tsControl && r4.tsOpened && r4.tsOnBody
             && r4.tsOptionCount >= 2 && r4.tsChips >= 2 && r4.tsHasRemove >= 1
             && r4.tsChildLocked && r4.tsChildClickIgnored && r4.tsChildRestored
-            && r4.exportDocxBtn && r4.exportMdBtn
+            && r4.exportBtn && r4.exportNearHistory && r4.exportMenuOpens && r4.exportMenuItems === 2
             && r4docx.size > 1000 && r4docx.isZip
             && r4multi.multi && r4multi.single && r4multi.none
             // 第 7 轮：会议录制 / 纪要 / 待办
@@ -3687,7 +3795,8 @@ app.whenReady().then(async () => {
             && r9.docEditable && r9.noEditBtn && r9.noSaveBtn && r9.hasHistoryBtn
             && r9.autoSaved && r9.sourceHasEdit
             && r9.roundTripHasHead && r9.roundTripHasTable && r9.roundTripHasList
-            && r9.roundTripHasInline && r9.roundTripStable
+            && r9.roundTripHasInline && r9.roundTripHasMermaid && r9.roundTripStable
+            && r9.chartSvgCount >= 1 && r9.chartPngOk
             // 第 10 轮：今日保留完成 / 拖拽不闪 / 日期控件统一 / 报告自定义要求
             && r10.todayRowBefore && r10.todayKeptAfterDone && r10.todayKeptMarkedDone && r10.todayKeptStrike
             && r10.todayKeepBar && r10.todayHiddenByButton && r10.todayKeptAgain
@@ -3699,15 +3808,19 @@ app.whenReady().then(async () => {
             && r10.rerenderKeepsWidth && r10.rerenderNoAnim
             && r10.tfRangeFields === 3 && r10.tfNativeDates === 0 && r10.tfHasFlatpickr && r10.tfStyleSame
             && r10.tfCalendarOpens && r10.tfPickedBoth && r10.tfBadgeActive && r10.tfCleared
-            && r10.extraExists && r10.extraPersisted && r10.extraDegradedNoted
+            && !r10.extraExists && r10.tplBtnExists && !!r10.tplLabelText
             // 第 11 轮：行内改标题 / 报告与检索持久化
             && r11.renameInputShown && r11.renameSaved && r11.renamePersisted
-            && r11.rpHistoryBtn && r11.rpHistoryInToolbar && r11.rpModalOpened
+            && r11.rpHistoryBtn && r11.rpHistoryInToolbar && r11.rpHistoryAfterExport && r11.rpModalOpened
             && r11.rpRows1 >= 1 && r11.rpHistoryGrew && r11.rpModalClosed && r11.rpLoadedContent
-            && r11.rpHistoryShrunk
+            && r11.rpHistoryConfirmShown && r11.rpHistoryShrunk
             && r11.searchHistoryBox && r11.searchHistoryGrew && r11.searchRestored && r11.searchClosed
             && r11main.reports >= 1 && r11main.searches >= 1 && r11main.reportHasContent
             && r11main.searchHasKeyword && r11main.exportHasTables
+            && r12.noExtra && r12.tplBtn && r12.modalRows >= 6 && r12.tplColumns === 2
+            && r12.toggleBtn && r12.formHiddenInitially && r12.formOpened && r12.formHiddenAfterAdd
+            && r12.rowsAfterAdd === r12.modalRows + 1 && r12.labelAfter === '冒烟模板' && r12.tplStored
+            && r12.sourceVisibleDuring && r12.docVisibleAfter
             // 第 13 轮
             && r13.toastInBody && r13.toastAboveMask && r13.toastNoPointer
             && r13.groupHeads >= 1 && r13.headIsButton && r13.headCollapsed && r13.rowsShrunk
@@ -3763,6 +3876,7 @@ app.whenReady().then(async () => {
               'r4:popClipped',             // 期望「没有被裁剪容器包住」
               'r9:tagBeforeActive',        // 期望「点击前未选中」
               'r10:tfNativeDates',         // 期望「原生 date 输入框 0 个」
+              'r10:extraExists',           // 自定义要求输入框已取消，期望「不存在」
               'r15:masksBefore',           // 提示用：期望润色前没有残留遮罩 = 0
               'r17:noneCount',             // 期望「确实无关联」时候选就是 0 条
               'r7:modeCount',              // 录屏面板已无「采集方式」单选，期望 0 项

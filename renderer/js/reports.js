@@ -16,6 +16,7 @@ import {
 } from './group-select.js';
 import { openPanelModal } from './modal.js';
 import { mdToDocHtml, docHtmlToMd } from './report-doc.js';
+import { enhanceMarkdown, renderMermaidPng } from './markdown-lib.js';
 
 const esc = (s) =>
   String(s == null ? '' : s)
@@ -23,15 +24,18 @@ const esc = (s) =>
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 const DRAFT_KEY = 'todo.report.draft';
-const EXTRA_KEY = 'todo.report.extraPrompt';
+/** 自定义输出模板与当前选中模板只存本地：模板不含数据，也不需要跨设备同步 */
+const TPL_KEY = 'todo.report.outputTemplates';
+const TPL_ID_KEY = 'todo.report.outputTemplateId';
 /** 防抖保存延迟：停止输入这么久之后才写库 */
 const AUTOSAVE_MS = 700;
 
 const TYPE_TEXT = { day: '日报', week: '周报', month: '月报', custom: '自定义范围' };
 
 let reportContent = '';
-/** 用户追加的自定义提示词（随请求传给 AI，留空则用默认提示） */
-let extraPrompt = '';
+/** 内置 + 自定义输出模板；选中项随生成请求传给主进程 */
+let outputTemplates = [];
+let currentTemplate = null;
 /** 视图模式：doc = 类 Word 排版；source = Markdown 源码 */
 let docMode = 'doc';
 /** 当前编辑的报告在库中的 id（null = 尚未入库，例如手工草稿） */
@@ -44,6 +48,12 @@ let groupList = [];
 let groupSelect = null;
 /** 自动保存防抖定时器 */
 let saveTimer = null;
+/** 当前生成请求的 id（流式事件按此过滤，避免多次生成串流） */
+let currentRequestId = '';
+/** 流式进度监听的取消订阅函数 */
+let offProgress = null;
+/** 导出菜单的全局收起监听是否已绑定（只绑一次，随视图重绘复用） */
+let exportMenuBound = false;
 
 function loadDraft() {
   try { return localStorage.getItem(DRAFT_KEY) || ''; } catch (e) { return ''; }
@@ -53,16 +63,35 @@ function saveDraft(text) {
   try { localStorage.setItem(DRAFT_KEY, text); } catch (e) { /* 隐私模式下忽略 */ }
 }
 
-/** 自定义提示词跟着视图切换一起保留（只存本地，不发网络） */
-function loadExtraPrompt() {
-  try { return localStorage.getItem(EXTRA_KEY) || ''; } catch (e) { return ''; }
+/** 自定义模板持久化（只存本地，不发网络） */
+function loadCustomTemplates() {
+  try {
+    const raw = localStorage.getItem(TPL_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list.filter((t) => t && t.name && t.instruction).map((t) => ({
+      ...t, id: String(t.id || ''), builtin: false,
+    })) : [];
+  } catch (e) { return []; }
 }
 
-function saveExtraPrompt(text) {
+function saveCustomTemplates(list) {
+  try { localStorage.setItem(TPL_KEY, JSON.stringify(list)); } catch (e) { /* 忽略 */ }
+}
+
+/** 选出当前模板：id 在列表里就用它，否则回落第一个内置模板 */
+function resolveActiveTemplate() {
+  const id = (() => { try { return localStorage.getItem(TPL_ID_KEY) || ''; } catch (e) { return ''; } })();
+  return outputTemplates.find((t) => t.id === id) || outputTemplates[0] || null;
+}
+
+function selectTemplate(id) {
+  currentTemplate = outputTemplates.find((t) => t.id === id) || outputTemplates[0] || null;
   try {
-    if (text) localStorage.setItem(EXTRA_KEY, text);
-    else localStorage.removeItem(EXTRA_KEY);
+    if (currentTemplate) localStorage.setItem(TPL_ID_KEY, currentTemplate.id);
+    else localStorage.removeItem(TPL_ID_KEY);
   } catch (e) { /* 忽略 */ }
+  const label = document.getElementById('rp-template-label');
+  if (label) label.textContent = currentTemplate ? currentTemplate.name : '默认';
 }
 
 function fmtTime(iso) {
@@ -76,8 +105,10 @@ export async function renderReports() {
   const viewEl = document.getElementById('view');
   // 重启后仍能看到上次编辑过的报告（草稿存 localStorage，正式记录在 reports 表）
   if (!reportContent) reportContent = loadDraft();
-  if (!extraPrompt) extraPrompt = loadExtraPrompt();
   const groups = await loadGroups();
+  const builtins = await api.report.outputTemplates().catch(() => []);
+  outputTemplates = [...(Array.isArray(builtins) ? builtins : []), ...loadCustomTemplates()];
+  currentTemplate = resolveActiveTemplate();
   const aiConfig = await api.ai.getConfig();
 
   const keyHint = aiConfig.hasKey
@@ -107,16 +138,8 @@ export async function renderReports() {
             ${groupOptionsHtml(groups)}
           </select>
         </label>
+        <button class="ghost-btn" id="rp-template" title="选择或新增报告输出模板">📐 输出模板：<span id="rp-template-label">${esc(currentTemplate ? currentTemplate.name : '默认')}</span></button>
         <button class="primary-btn" id="rp-generate">🤖 生成报告</button>
-      </div>
-      <div class="rp-extra">
-        <label class="rp-extra-label" for="rp-extra">自定义要求（可选）</label>
-        <textarea id="rp-extra" rows="2" maxlength="600"
-          placeholder="例如：根据任务的计划完成时间生成下个月的工作计划；风险用表格列出">${esc(extraPrompt)}</textarea>
-        <div class="rp-extra-foot">
-          <span class="rp-extra-hint">会原样追加到给 AI 的提示里，留空则使用默认提示；本地模板报告（未配置 Key）不消耗此项。</span>
-          <span class="rp-extra-count" id="rp-extra-count">${(extraPrompt || '').length}/600</span>
-        </div>
       </div>
       <div class="notice" id="ai-status">
         <span>🔑 ${esc(keyHint)}。</span>
@@ -131,15 +154,18 @@ export async function renderReports() {
         <button class="ghost-btn rp-mode" data-mode="source">⌨ Markdown 源码</button>
         <span class="rp-save-state" id="rp-save-state"></span>
         <span class="rp-spacer"></span>
+        <div class="rp-export-wrap" id="rp-export-wrap">
+          <button class="ghost-btn" id="rp-export" title="导出报告" aria-haspopup="true" aria-expanded="false">📤 导出 ▾</button>
+          <div class="rp-export-menu" id="rp-export-menu" hidden>
+            <button type="button" data-format="docx">📄 导出 Word</button>
+            <button type="button" data-format="md">⌨ 导出 Markdown</button>
+          </div>
+        </div>
         <button class="ghost-btn" id="rp-history" title="查看历史报告">🕘 历史记录</button>
       </div>
       <div class="rp-doc-page" id="rp-page">
         <div class="rp-doc is-editing" id="rp-doc" contenteditable="true" spellcheck="false"></div>
         <textarea id="rp-output" hidden placeholder="点击「生成报告」后在此显示内容，可直接编辑…"></textarea>
-      </div>
-      <div class="report-toolbar">
-        <button class="primary-btn" id="rp-export-docx">📄 导出 Word</button>
-        <button class="ghost-btn" id="rp-export-md">导出 Markdown</button>
       </div>
     </div>`;
 
@@ -169,6 +195,8 @@ function applyDocMode() {
   docEl.innerHTML = reportContent
     ? mdToDocHtml(reportContent)
     : '<p class="rp-placeholder">点击「生成报告」后在此显示内容，可直接编辑…</p>';
+  // 多图表模板会输出 ```mermaid 代码块；复用笔记预览的渲染器把占位块转成真正的 SVG
+  enhanceMarkdown(docEl);
   // 始终可编辑：不再需要「编辑」开关
   docEl.contentEditable = 'true';
   docEl.classList.add('is-editing');
@@ -307,8 +335,14 @@ function historyRowHtml(r) {
     ? `${(r.range_start || '').slice(0, 10)} ~ ${(r.range_end || '').slice(0, 10)}`
     : '';
   const bits = [fmtTime(r.created_at), TYPE_TEXT[r.type] || r.type, range, r.group_label || '全部分组'];
-  if (r.extra_prompt) bits.push('含自定义要求');
+  if (r.extra_prompt) {
+    bits.push(r.extra_prompt.startsWith('模板：') ? r.extra_prompt : '含自定义要求');
+  }
   if (r.degraded) bits.push('本地模板');
+  // 生成元数据：历史列表直接可见，无需点开就能判断是哪次生成、花了多少
+  if (r.model) bits.push(`模型 ${r.model}`);
+  if (r.tokens) bits.push(`${r.tokens} tokens`);
+  if (r.duration_ms) bits.push(`${(r.duration_ms / 1000).toFixed(1)}s`);
   // 分组标签可能是「项目管理 / 问题项、数据管理 / 问题项」这种长串：整行单行省略，
   // 完整内容挂 title，鼠标悬停可看全（否则长标签会把右侧操作按钮挤走）。
   const sub = bits.filter(Boolean).join(' · ');
@@ -352,7 +386,11 @@ async function openHistoryModal() {
         if (!row) return;
         const id = Number(row.dataset.id);
         if (btn.dataset.act === 'del') {
-          await api.report.remove(id).catch(() => {});
+          const title = row.querySelector('.rpt-title')?.textContent?.trim() || '这份报告';
+          if (!window.confirm(`删除历史报告「${title}」？此操作不可恢复。`)) return;
+          let ok = false;
+          try { ok = await api.report.remove(id); } catch (e) { ok = false; }
+          if (!ok) { toast('删除失败，请重试'); return; }
           if (currentReportId === id) currentReportId = null;
           const left = await api.report.list(100).catch(() => []);
           paint(left);
@@ -367,8 +405,110 @@ async function openHistoryModal() {
         applyDocMode();
         setSaveState(`已载入 ${fmtTime(rec.created_at)}`, 'saved');
         close(false);
-        toast('已载入历史报告');
+        const metaBits = [];
+        if (rec.model) metaBits.push(`模型 ${rec.model}`);
+        if (rec.temperature) metaBits.push(`温度 ${rec.temperature}`);
+        if (rec.prompt_version) metaBits.push(`提示词 ${rec.prompt_version}`);
+        if (rec.tokens) metaBits.push(`${rec.tokens} tokens`);
+        if (rec.duration_ms) metaBits.push(`耗时 ${(rec.duration_ms / 1000).toFixed(1)}s`);
+        toast(metaBits.length
+          ? `已载入历史报告 · ${metaBits.join(' · ')}`
+          : '已载入历史报告');
       });
+    },
+  });
+}
+
+/* ---------------- 输出模板 ---------------- */
+
+async function openTemplateModal() {
+  const rowsHtml = () => outputTemplates.map((t) => `
+    <label class="rp-tpl-row" data-id="${esc(t.id)}">
+      <input type="radio" name="rp-tpl" value="${esc(t.id)}" ${currentTemplate && t.id === currentTemplate.id ? 'checked' : ''} />
+      <span class="rp-tpl-main">
+        <span class="rp-tpl-name">${esc(t.name)}${t.builtin ? '<em class="rp-tpl-builtin">内置</em>' : ''}</span>
+        <span class="rp-tpl-desc">${esc(t.description || '无说明')}</span>
+        <span class="rp-tpl-sections">章节：${esc((t.sections || []).join(' / ') || '未指定')}</span>
+      </span>
+      ${t.builtin ? '' : `<button type="button" class="ghost-btn is-danger" data-del="${esc(t.id)}" title="删除该自定义模板">删除</button>`}
+    </label>`).join('');
+
+  await openPanelModal({
+    title: '报告输出模板',
+    className: 'modal-xl rp-tpl-modal',
+    okText: '使用所选模板',
+    html: `
+      <div class="rp-tpl-hint">模板决定 AI 输出哪些章节、按什么语气写。选择后点「使用所选模板」，下一次生成即生效。</div>
+      <div id="rp-tpl-list" class="rp-tpl-list">${rowsHtml() || '<div class="rp-tpl-empty">暂无模板</div>'}</div>
+      <div class="rp-tpl-add">
+        <button type="button" class="ghost-btn rp-tpl-toggle" id="rp-tpl-toggle" aria-expanded="false" aria-controls="rp-tpl-form">＋ 新增自定义模板</button>
+        <div class="rp-tpl-form" id="rp-tpl-form" hidden>
+          <label>名称<input id="rp-tpl-name" maxlength="40" placeholder="如：季度复盘" /></label>
+          <label>说明（可选）<input id="rp-tpl-desc" maxlength="120" placeholder="一句话说明适用场景" /></label>
+          <label>章节（用逗号或换行分隔，最多 8 个）<textarea id="rp-tpl-sections" rows="2" maxlength="240" placeholder="数据概览, 做得好的, 待改进, 行动计划"></textarea></label>
+          <label>输出要求（最多 600 字）<textarea id="rp-tpl-instruction" rows="3" maxlength="600" placeholder="使用 Markdown；先给结论再列证据，风险要写清影响…"></textarea></label>
+          <button type="button" class="ghost-btn" id="rp-tpl-add-btn">添加到模板列表</button>
+        </div>
+      </div>`,
+    onMount(mask) {
+      const list = mask.querySelector('#rp-tpl-list');
+      const repaint = () => { list.innerHTML = rowsHtml() || '<div class="rp-tpl-empty">暂无模板</div>'; };
+      const toggle = mask.querySelector('#rp-tpl-toggle');
+      const form = mask.querySelector('#rp-tpl-form');
+      toggle?.addEventListener('click', () => {
+        const open = form.hidden;
+        form.hidden = !open;
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.textContent = open ? '− 收起新增表单' : '＋ 新增自定义模板';
+        if (open) form.querySelector('#rp-tpl-name')?.focus();
+      });
+      list.addEventListener('click', (e) => {
+        const del = e.target.closest('[data-del]');
+        if (!del) return;
+        const id = del.dataset.del;
+        const t = outputTemplates.find((x) => x.id === id);
+        if (!t || t.builtin) return;
+        if (!window.confirm(`删除自定义模板「${t.name}」？`)) return;
+        outputTemplates = outputTemplates.filter((x) => x.id !== id);
+        saveCustomTemplates(outputTemplates.filter((x) => !x.builtin));
+        if (currentTemplate && currentTemplate.id === id) selectTemplate(outputTemplates[0] && outputTemplates[0].id);
+        repaint();
+        toast('已删除自定义模板');
+      });
+      mask.querySelector('#rp-tpl-add-btn')?.addEventListener('click', () => {
+        const name = mask.querySelector('#rp-tpl-name').value.trim().slice(0, 40);
+        const instruction = mask.querySelector('#rp-tpl-instruction').value.trim().slice(0, 600);
+        if (!name) { toast('请填写模板名称'); return; }
+        if (!instruction) { toast('请填写输出要求'); return; }
+        const sections = mask.querySelector('#rp-tpl-sections').value
+          .split(/[,，、\n]/).map((s) => s.trim()).filter(Boolean).slice(0, 8);
+        const t = {
+          id: `custom-${Date.now().toString(36)}`,
+          name,
+          description: mask.querySelector('#rp-tpl-desc').value.trim().slice(0, 120),
+          sections,
+          instruction,
+          builtin: false,
+        };
+        outputTemplates.push(t);
+        saveCustomTemplates(outputTemplates.filter((x) => !x.builtin));
+        selectTemplate(t.id);
+        mask.querySelector('#rp-tpl-name').value = '';
+        mask.querySelector('#rp-tpl-desc').value = '';
+        mask.querySelector('#rp-tpl-sections').value = '';
+        mask.querySelector('#rp-tpl-instruction').value = '';
+        form.hidden = true;
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.textContent = '＋ 新增自定义模板';
+        repaint();
+        toast(`已添加模板「${name}」`);
+      });
+    },
+    onSubmit: (mask) => {
+      const picked = mask.querySelector('input[name="rp-tpl"]:checked');
+      selectTemplate(picked ? picked.value : '');
+      toast(currentTemplate ? `已选择模板「${currentTemplate.name}」` : '已恢复默认模板');
+      return '';
     },
   });
 }
@@ -376,16 +516,10 @@ async function openHistoryModal() {
 /* ---------------- 事件绑定 ---------------- */
 
 function bindReportEvents() {
-  // 自定义要求：输入即记忆（切换视图 / 重启后仍在，不随报告内容一起清空）
-  const extraEl = document.getElementById('rp-extra');
-  if (extraEl) {
-    const counter = document.getElementById('rp-extra-count');
-    extraEl.addEventListener('input', () => {
-      extraPrompt = extraEl.value;
-      saveExtraPrompt(extraPrompt);
-      if (counter) counter.textContent = `${extraPrompt.length}/600`;
-    });
-  }
+  // 输出模板：选择内置模板，或新增 / 管理自定义模板
+  document.getElementById('rp-template')?.addEventListener('click', () => {
+    openTemplateModal().catch((e) => toast(`打开输出模板失败：${e && e.message ? e.message : e}`));
+  });
 
   // 视图切换：文档（类 Word 排版）/ Markdown 源码
   document.querySelectorAll('.rp-mode').forEach((btn) => {
@@ -457,41 +591,77 @@ function bindReportEvents() {
     const start = document.getElementById('rp-start').value;
     const end = document.getElementById('rp-end').value;
     const groupIds = selectedGroupIds();
-    // 自定义要求：原样传给主进程，由 buildPrompt 追加到 user 消息里
-    const extraEl = document.getElementById('rp-extra');
-    const extra = extraEl ? extraEl.value.trim().slice(0, 600) : '';
-    extraPrompt = extra;
+    const template = currentTemplate || outputTemplates[0] || null;
 
+    // 每次生成分配独立 id：流式事件只认本次 id，切换视图 / 重复点击都不会串流
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    currentRequestId = requestId;
     const params = {
       type,
       customStart: start ? new Date(start + 'T00:00:00').toISOString() : null,
       customEnd: end ? new Date(end + 'T23:59:59').toISOString() : null,
       groupIds, // 空数组 = 全部分组
-      extraPrompt: extra, // 空串 = 不追加
+      outputTemplate: template, // 输出模板：内置或用户自定义
+      requestId,
     };
 
     const out = document.getElementById('rp-output');
     const btn = document.getElementById('rp-generate');
+    // 生成期间先切到 Markdown 源码，用户能实时看到文字长出来；完成后再切回 Word 文档视图
+    docMode = 'source';
+    applyDocMode();
     btn.textContent = '生成中…';
-    const docEl = document.getElementById('rp-doc');
-    if (docEl) docEl.innerHTML = '<p class="rp-placeholder">生成中，请稍候…</p>';
-    if (out) out.value = '生成中，请稍候…';
+    btn.disabled = true;
+    if (out) out.value = '';
+
+    // 订阅流式进度：delta 直接追加到源码框；重试 / 降级 / 完成给出可感知的反馈
+    let streamingText = '';
+    if (offProgress) { offProgress(); offProgress = null; }
+    offProgress = api.report.onProgress(({ requestId: rid, evt }) => {
+      if (rid !== currentRequestId) return; // 只处理本次请求
+      if (evt.phase === 'attempt' && evt.attempt > 1) {
+        setSaveState(`正在重试 ${evt.attempt}/${evt.max}…`, 'dirty');
+      } else if (evt.phase === 'retry') {
+        streamingText = '';
+        if (out) out.value = '';
+        setSaveState('连接中断，正在重试…', 'dirty');
+      } else if (evt.phase === 'delta') {
+        // 当前已是 Markdown 源码视图，片段直接落进 textarea，用户实时看到内容在长出来
+        streamingText += evt.text || '';
+        if (out) out.value = streamingText;
+        setSaveState('● 生成中…', 'dirty');
+      } else if (evt.phase === 'done') {
+        setSaveState(`✓ 生成完成（${evt.tokens || 0} tokens，${evt.durationMs || 0}ms）`, 'saved');
+      } else if (evt.phase === 'degraded') {
+        setSaveState('⚠ 已降级为本地模板', 'error');
+      }
+    });
 
     let r;
     try {
       r = await api.report.generate(params);
     } catch (e) {
+      if (offProgress) { offProgress(); offProgress = null; }
+      currentRequestId = '';
       if (out) out.value = '';
+      docMode = 'doc'; // 失败时回到文档视图，别把用户留在空白源码框
+      applyDocMode();
       btn.textContent = '🤖 生成报告';
+      btn.disabled = false;
       toast(`生成失败：${e && e.message ? e.message : e}`);
       return;
     }
+    if (offProgress) { offProgress(); offProgress = null; }
+    currentRequestId = '';
     reportContent = r.markdown;
     saveDraft(reportContent);
+    // 生成完成后自动切回 Word 文档视图
+    docMode = 'doc';
     applyDocMode();
     btn.textContent = '🤖 生成报告';
+    btn.disabled = false;
 
-    // 持久化：每份报告独立一条记录，生成新报告不会覆盖旧的
+    // 持久化：每份报告独立一条记录，生成新报告不会覆盖旧的；元数据随报告一起入库
     const title = `${TYPE_TEXT[type] || '报告'} ${start || ''}${start && end ? ' ~ ' : ''}${end || ''}`;
     try {
       const rec = await api.report.save({
@@ -500,9 +670,11 @@ function bindReportEvents() {
         range_start: start || null,
         range_end: end || null,
         group_ids: groupIds, // group_label 由主进程按 id 生成（「父 / 子」完整路径）
-        extra_prompt: extra,
+        // 复用 extra_prompt 列记录本次使用的输出模板名，历史列表能看出是按哪套模板生成的
+        extra_prompt: template ? `模板：${template.name}` : '',
         content: reportContent,
         degraded: !!r.degraded,
+        ...(r.meta || {}), // model / temperature / prompt_version / tokens / duration_ms / degraded_reason
       });
       currentReportId = rec ? rec.id : null;
       setSaveState(currentReportId ? `✓ 已保存到历史 ${nowLabel()}` : '已生成（未入库）', 'saved');
@@ -513,17 +685,74 @@ function bindReportEvents() {
 
     const statusEl = document.getElementById('ai-status');
     if (statusEl) {
+      const m = r.meta || {};
+      const detail = m.tokens ? `（${m.tokens} tokens · ${m.duration_ms || 0}ms${m.model ? ` · ${esc(m.model)}` : ''}）` : '';
       statusEl.innerHTML = r.degraded
         ? `<span>⚠ ${esc(r.reason)}</span><button class="link-btn" id="rp-open-ai-settings">⚙ AI 设置…</button>`
-        : '<span>✅ 已由 AI 生成。</span>';
+        : `<span>✅ 已由 AI 生成${detail}。</span>`;
       const again = document.getElementById('rp-open-ai-settings');
       if (again) again.addEventListener('click', () => openAiSettingsModal().then(renderReports));
     }
   });
 
-  // 导出
-  document.getElementById('rp-export-docx').addEventListener('click', () => exportReport('docx'));
-  document.getElementById('rp-export-md').addEventListener('click', () => exportReport('md'));
+  // 导出下拉菜单：点按钮展开，点格式项导出，点外部 / Esc 收起
+  const exportBtn = document.getElementById('rp-export');
+  const exportMenu = document.getElementById('rp-export-menu');
+  if (exportBtn && exportMenu) {
+    const closeMenu = () => {
+      exportMenu.hidden = true;
+      exportBtn.setAttribute('aria-expanded', 'false');
+    };
+    exportBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      exportMenu.hidden = !exportMenu.hidden;
+      exportBtn.setAttribute('aria-expanded', exportMenu.hidden ? 'false' : 'true');
+    });
+    exportMenu.addEventListener('click', (e) => {
+      const item = e.target.closest('[data-format]');
+      if (!item) return;
+      closeMenu();
+      exportReport(item.dataset.format);
+    });
+    if (!exportMenuBound) {
+      exportMenuBound = true;
+      // 点菜单外部 / Esc 收起：只在模块加载后绑一次，避免视图重绘累积监听器
+      document.addEventListener('click', (e) => {
+        const menu = document.getElementById('rp-export-menu');
+        const wrap = document.getElementById('rp-export-wrap');
+        if (menu && !menu.hidden && wrap && !wrap.contains(e.target)) {
+          menu.hidden = true;
+          document.getElementById('rp-export')?.setAttribute('aria-expanded', 'false');
+        }
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        const menu = document.getElementById('rp-export-menu');
+        if (menu && !menu.hidden) {
+          menu.hidden = true;
+          document.getElementById('rp-export')?.setAttribute('aria-expanded', 'false');
+        }
+      });
+    }
+  }
+}
+
+/** Word 导出前把 mermaid 代码块转成 PNG；失败项保留 null，DOCX 生成器会回退成源码 */
+async function renderMermaidImagesForExport(content) {
+  const sources = Array.from(String(content).matchAll(/```mermaid\s*\n([\s\S]*?)```/g))
+    .map((m) => m[1]);
+  if (!sources.length) return [];
+  const images = new Array(sources.length).fill(null);
+  let failed = 0;
+  for (let i = 0; i < sources.length; i++) {
+    try {
+      images[i] = await renderMermaidPng(sources[i], { scale: 2, theme: 'default' });
+    } catch (e) {
+      failed += 1;
+    }
+  }
+  if (failed) toast(`${failed} 张图表转图失败，Word 中保留源码`);
+  return images;
 }
 
 async function exportReport(format) {
@@ -532,8 +761,9 @@ async function exportReport(format) {
   if (!String(content).trim()) { toast('没有可导出的内容'); return; }
   const type = document.getElementById('rp-type').value;
   const name = `报告_${type}_${new Date().toISOString().slice(0, 10)}`;
+  const images = format === 'docx' ? await renderMermaidImagesForExport(content) : [];
   try {
-    const r = await api.report.export({ content, defaultName: name, format });
+    const r = await api.report.export({ content, defaultName: name, format, images });
     if (r && r.ok) toast('已导出：' + r.filePath);
     else if (r && !r.canceled) toast('导出失败：' + (r.message || '未知错误'));
   } catch (e) {

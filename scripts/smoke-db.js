@@ -450,6 +450,7 @@ async function runReportDocTests() {
   const url = require('url').pathToFileURL(path.join(__dirname, '..', 'renderer', 'js', 'report-doc.js')).href;
   const { mdToDocHtml } = await import(url);
   const docx = require('../main/docx');
+  const { unzip } = require('../main/zip');
 
   const md = [
     '# 周报标题',
@@ -472,6 +473,11 @@ async function runReportDocTests() {
     '',
     '1. 先做压测',
     '2. 再做灰度',
+    '',
+    '```mermaid',
+    'pie title 分组完成占比',
+    '    "工作" : 3',
+    '```',
   ].join('\n');
 
   const html = mdToDocHtml(md);
@@ -483,12 +489,29 @@ async function runReportDocTests() {
     && html.includes('<th>任务</th>') && html.includes('<td>已完成</td>'));
   check('表格不含分隔行数据', !html.includes('<td>---</td>') && !html.includes('｜'));
   check('引用渲染为 blockquote', html.includes('<blockquote>下周重点：稳定性</blockquote>'));
+  check('Mermaid 代码块渲染为可增强的占位块', html.includes('<div class="md-mermaid" contenteditable="false"><pre class="md-mermaid-src">pie title 分组完成占比')
+    && !html.includes('<pre><code>pie title'));
 
   // Word 导出：表格必须是真正的 w:tbl（此前被压成 ｜ 分隔的段落）
   const xml = docx.documentXml(md);
   check('Word 导出含真表格', xml.includes('<w:tbl>') && xml.includes('<w:tblHeader/>'));
   check('Word 表格含单元格文本', xml.includes('已完成') && xml.includes('<w:tcBorders>'));
   check('Word 表格后补了空段落', /<\/w:tbl><w:p\/>/.test(xml));
+
+  // Word 图表：mermaid 代码块必须换成内嵌 PNG，而不是只剩源码
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
+  const chartMd = ['# 图表报告', '', '```mermaid', 'pie title 分组完成占比', '    "工作" : 3', '```'].join('\n');
+  const chartXml = docx.documentXml(chartMd, { images: [png] });
+  check('Word 图表块渲染为 drawing 且不再输出 mermaid 源码',
+    chartXml.includes('<w:drawing>') && chartXml.includes('r:embed="rId4"')
+    && !chartXml.includes('pie title 分组完成占比'));
+  const pkg = unzip(docx.markdownToDocx(chartMd, { images: [png] }));
+  check('DOCX 包内含 PNG 图片与图片关系',
+    !!pkg['word/media/image1.png']
+    && pkg['word/_rels/document.xml.rels'].includes('Target="media/image1.png"')
+    && pkg['[Content_Types].xml'].includes('Extension="png"'));
+  const fallbackXml = docx.documentXml(chartMd, { images: [null] });
+  check('图片缺失时回退源码，图表不凭空消失', fallbackXml.includes('pie title 分组完成占比'));
 }
 
 console.log('\n[8] 报告本地生成（无 Key 降级）');

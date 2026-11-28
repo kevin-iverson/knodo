@@ -655,6 +655,70 @@ export function enhanceMarkdown(root) {
   return mermaidChain;
 }
 
+/** SVG 尺寸：mermaid 给的是 viewBox，canvas 要先知道像素宽高才能画成 PNG */
+function svgSize(svg) {
+  const vb = String(svg).match(/viewBox=["']([^"']+)["']/i);
+  if (vb) {
+    const n = vb[1].trim().split(/[\s,]+/).map(Number);
+    if (n.length >= 4 && n[2] > 0 && n[3] > 0) return { w: n[2], h: n[3] };
+  }
+  const w = String(svg).match(/width=["']([\d.]+)/i);
+  const h = String(svg).match(/height=["']([\d.]+)/i);
+  return { w: Math.max(320, Number(w && w[1]) || 800), h: Math.max(200, Number(h && h[1]) || 600) };
+}
+
+/**
+ * Mermaid 源码 → PNG dataURL，供 Word 导出直接插入图片。
+ * 与 enhanceMarkdown 共用一条串行链：mermaid 内部有共享状态，并行 render 会互相踩。
+ * 导出强制用 light 主题 + 白底，避免深色主题下白字在 Word 里看不见；结束后恢复原主题。
+ * @param {string} src Mermaid 源码
+ * @param {{scale?:number, theme?:string}} [opts]
+ * @returns {Promise<string>} data:image/png;base64,...
+ */
+export function renderMermaidPng(src, opts = {}) {
+  const task = mermaidChain.then(async () => {
+    const api = await ensureMermaid();
+    const wanted = opts.theme === 'dark' ? 'dark' : 'default';
+    const original = api.__theme || 'default';
+    if (wanted !== original) {
+      api.initialize({ ...MERMAID_CONFIG, theme: wanted });
+      api.__theme = wanted;
+    }
+    try {
+      const res = await api.render(`mmd-png-${Date.now().toString(36)}-${++mermaidSeq}`, String(src || ''));
+      const svg = res && res.svg;
+      if (!svg) throw new Error('Mermaid 未返回 SVG');
+      const size = svgSize(svg);
+      const scale = Math.max(1, Math.min(3, Number(opts.scale) || 2));
+      const width = Math.min(1800, Math.max(480, Math.round(size.w * scale)));
+      const height = Math.min(1400, Math.max(320, Math.round(size.h * scale)));
+      // CSP 只允许 data: 图片，不放行 blob:；用 data:image/svg+xml 直接喂给 Image
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error('SVG 转图片失败'));
+        img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('无法创建画布');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      return canvas.toDataURL('image/png');
+    } finally {
+      if (wanted !== original) {
+        api.initialize({ ...MERMAID_CONFIG, theme: original });
+        api.__theme = original;
+      }
+    }
+  });
+  mermaidChain = task.catch(() => {});
+  return task;
+}
+
 /**
  * 主题切换后重画：mermaid 的配色是 initialize 时定死的，不重画就会「深色背景配深字」。
  * 做法是把已渲染的块还原成源码占位、清掉标记，再让下一轮 enhance 重新画。

@@ -65,25 +65,84 @@ function splitRow(line) {
   return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
 }
 
+function imageRelId(i) { return `rId${4 + Number(i)}`; }
+
+function dataUrlToPng(dataUrl) {
+  const m = String(dataUrl || '').match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
+  if (!m) return null;
+  const buf = Buffer.from(m[1], 'base64');
+  if (buf.length < 24 || buf.subarray(1, 4).toString() !== 'PNG') return null;
+  return buf;
+}
+
+function pngSize(buf) {
+  return { w: Math.max(1, buf.readUInt32BE(16)), h: Math.max(1, buf.readUInt32BE(20)) };
+}
+
+function codeXml(block) {
+  const text = block.text || '';
+  return `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr>${
+    text.split('\n').map((l, i) => (i ? '<w:r><w:br/><w:t xml:space="preserve"></w:t></w:r>' : '') +
+      `<w:r><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/></w:rPr><w:t xml:space="preserve">${escapeXml(l)}</w:t></w:r>`).join('')
+  }</w:p>`;
+}
+
+/** 图片块 → OOXML 内嵌 PNG；没有对应图片数据时由调用方回退成代码块 */
+function imageXml(block, imageIndex, imageBuffers) {
+  const buf = imageBuffers && imageBuffers[imageIndex];
+  if (!buf) return '';
+  const { w, h } = pngSize(buf);
+  const MAX_W = 5303520; // 5.8 inch，小于 A4 正文宽度
+  const MAX_H = 4114800; // 4.5 inch
+  let cx = MAX_W;
+  let cy = Math.round(MAX_W * h / w);
+  if (cy > MAX_H) { cy = MAX_H; cx = Math.round(MAX_H * w / h); }
+  return `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:drawing>`
+    + `<wp:inline distT="0" distB="0" distL="0" distR="0">`
+    + `<wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>`
+    + `<wp:docPr id="${imageIndex + 1}" name="图表${imageIndex + 1}"/>`
+    + `<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>`
+    + `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">`
+    + `<pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="chart${imageIndex + 1}.png"/><pic:cNvPicPr/></pic:nvPicPr>`
+    + `<pic:blipFill><a:blip r:embed="${imageRelId(imageIndex)}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>`
+    + `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>`
+    + `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>`
+    + `</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+}
+
 /**
  * Markdown 文本 → 块级结构数组。
  * 块类型：h1 / h2 / h3 / p / li / quote / code / hr / table
  */
-function parseBlocks(md) {
+function parseBlocks(md, opts = {}) {
   const lines = String(md == null ? '' : md).split(/\r?\n/);
   const blocks = [];
   let inCode = false;
   let codeBuf = [];
+  let codeLang = '';
+  let imageIndex = 0;
+  const hasImages = Array.isArray(opts.images) && opts.images.length > 0;
   let tbl = null; // 正在收集的表格行（原始文本行）
 
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, '');
 
-    if (/^\s*```/.test(line)) {
-      if (!inCode) { inCode = true; codeBuf = []; } else {
-        inCode = false;
-        blocks.push({ type: 'code', text: codeBuf.join('\n') });
+    const fence = line.match(/^\s*```([A-Za-z0-9_-]*)\s*$/);
+    if (fence) {
+      if (!inCode) {
+        inCode = true;
         codeBuf = [];
+        codeLang = (fence[1] || '').toLowerCase();
+      } else {
+        inCode = false;
+        const text = codeBuf.join('\n');
+        if (codeLang === 'mermaid' && hasImages) {
+          blocks.push({ type: 'image', imageIndex: imageIndex++, text });
+        } else {
+          blocks.push({ type: 'code', text });
+        }
+        codeBuf = [];
+        codeLang = '';
       }
       tbl = null;
       continue;
@@ -119,7 +178,11 @@ function parseBlocks(md) {
 
     blocks.push({ type: 'p', text: line.trim() });
   }
-  if (inCode && codeBuf.length) blocks.push({ type: 'code', text: codeBuf.join('\n') });
+  if (inCode && codeBuf.length) {
+    const text = codeBuf.join('\n');
+    if (codeLang === 'mermaid' && hasImages) blocks.push({ type: 'image', imageIndex: imageIndex++, text });
+    else blocks.push({ type: 'code', text });
+  }
   // 只有分隔行、没有数据行的"伪表格"直接丢掉
   return blocks.filter((b) => b.type !== 'table' || (b.rows && b.rows.length));
 }
@@ -163,17 +226,15 @@ function tableXml(block) {
     + '<w:p/>';
 }
 
-function blockXml(block) {
+function blockXml(block, imageBuffers = []) {
   if (block.type === 'table') return tableXml(block);
   if (block.type === 'hr') {
     return '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="CCCCCC"/></w:pBdr></w:pPr></w:p>';
   }
-  if (block.type === 'code') {
-    const text = block.text || '';
-    return `<w:p><w:pPr><w:pStyle w:val="CodeBlock"/></w:pPr>${
-      text.split('\n').map((l, i) => (i ? '<w:r><w:br/><w:t xml:space="preserve"></w:t></w:r>' : '') +
-        `<w:r><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/></w:rPr><w:t xml:space="preserve">${escapeXml(l)}</w:t></w:r>`).join('')
-    }</w:p>`;
+  if (block.type === 'code') return codeXml(block);
+  if (block.type === 'image') {
+    // 图片数据缺失时退回源码，不能让图表凭空消失
+    return imageXml(block, block.imageIndex, imageBuffers) || codeXml(block);
   }
 
   let text = block.text || '';
@@ -205,11 +266,12 @@ function blockXml(block) {
 
 const FONT = 'Microsoft YaHei';
 
-function contentTypesXml() {
+function contentTypesXml(hasImages = false) {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
+${hasImages ? '<Default Extension="png" ContentType="image/png"/>' : ''}
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
 <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
@@ -226,10 +288,14 @@ function rootRelsXml() {
 </Relationships>`;
 }
 
-function documentRelsXml() {
+function documentRelsXml(imageBuffers = []) {
+  const imagesXml = imageBuffers.map((buf, i) => (buf
+    ? `<Relationship Id="${imageRelId(i)}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${i + 1}.png"/>`
+    : '')).join('');
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+${imagesXml}
 </Relationships>`;
 }
 
@@ -251,10 +317,16 @@ function stylesXml() {
 </w:styles>`;
 }
 
-function documentXml(markdown) {
-  const body = parseBlocks(markdown).map(blockXml).join('');
+function documentXml(markdown, opts = {}) {
+  const imageBuffers = opts.imageBuffers
+    || (Array.isArray(opts.images) ? opts.images.map(dataUrlToPng) : []);
+  const body = parseBlocks(markdown, opts).map((b) => blockXml(b, imageBuffers)).join('');
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
 <w:body>${body || '<w:p><w:r><w:t xml:space="preserve">（空文档）</w:t></w:r></w:p>'}
 <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="851" w:footer="992" w:gutter="0"/></w:sectPr>
 </w:body>
@@ -288,14 +360,21 @@ function appXml() {
  */
 function markdownToDocx(markdown, opts = {}) {
   const title = opts.title || '报告';
+  const imageData = Array.isArray(opts.images) ? opts.images : [];
+  const imageBuffers = imageData.map(dataUrlToPng);
+  const mediaEntries = [];
+  imageBuffers.forEach((buf, i) => {
+    if (buf) mediaEntries.push({ name: `word/media/image${i + 1}.png`, data: buf, store: true });
+  });
   return zip([
-    { name: '[Content_Types].xml', data: contentTypesXml() },
+    { name: '[Content_Types].xml', data: contentTypesXml(mediaEntries.length > 0) },
     { name: '_rels/.rels', data: rootRelsXml() },
-    { name: 'word/document.xml', data: documentXml(markdown) },
+    { name: 'word/document.xml', data: documentXml(markdown, { images: imageData, imageBuffers }) },
     { name: 'word/styles.xml', data: stylesXml() },
-    { name: 'word/_rels/document.xml.rels', data: documentRelsXml() },
+    { name: 'word/_rels/document.xml.rels', data: documentRelsXml(imageBuffers) },
     { name: 'docProps/core.xml', data: coreXml(title) },
     { name: 'docProps/app.xml', data: appXml() },
+    ...mediaEntries,
   ]);
 }
 

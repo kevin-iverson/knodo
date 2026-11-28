@@ -67,6 +67,128 @@ async function callLLM({ baseUrl, apiKey, model, messages, temperature = 0.4, ti
   }
 }
 
+/**
+ * 流式调用大模型（SSE）。供 AI 报告使用：每拿到一段 delta 就通过 onChunk 推送，
+ * 并在结束时把服务商返回的 usage（若支持）一并返回，用于 token / 费用统计。
+ *
+ * 与 callLLM 的关系：callLLM 保持原样给检索总结、润色、识图等调用方用，
+ * 避免这些功能被流式协议改造波及。这里只多开一条流式通道。
+ *
+ * @param {object} opts { baseUrl, apiKey, model, messages, temperature?, timeoutMs?, onChunk?, signal? }
+ * @returns {Promise<{content:string, usage:{promptTokens:number,completionTokens:number,totalTokens:number}|null}>}
+ */
+async function callLLMStream({
+  baseUrl, apiKey, model, messages, temperature = 0.4, timeoutMs = 60000,
+  onChunk = null, signal = null,
+}) {
+  if (!apiKey) throw new Error('NO_API_KEY');
+  if (!baseUrl) throw new Error('未配置 AI 接口地址');
+
+  const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 外部取消（用户点「停止生成」）与内部超时共用同一个 AbortController
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  const send = (chunk) => {
+    if (typeof onChunk !== 'function') return;
+    try { onChunk(chunk); } catch (e) { /* 推送失败不能中断生成本身 */ }
+  };
+  const post = (body) => fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+    signal: controller.signal,
+  });
+
+  try {
+    // stream_options 让兼容 OpenAI 的服务商在末尾附带 usage；部分网关不认这个字段，
+    // 收到明确的「未知参数」400 时去掉它再发一次，不能因为统计把生成本身弄失败。
+    let res = await post({ model, messages, temperature, stream: true, stream_options: { include_usage: true } });
+    if (res.status === 400) {
+      const preview = await res.text().catch(() => '');
+      if (/stream_options|unknown parameter|unrecognized|unsupported parameter/i.test(preview)) {
+        res = await post({ model, messages, temperature, stream: true });
+      } else {
+        throw new Error(`AI 接口请求失败（HTTP ${res.status}）：${preview.slice(0, 300)}`);
+      }
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`AI 接口请求失败（HTTP ${res.status}）：${text.slice(0, 300)}`);
+    }
+    if (!res.body) throw new Error('AI 接口未返回流式内容');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let content = '';
+    let usage = null;
+
+    const handleData = (payload) => {
+      const line = String(payload).trim();
+      if (!line || line === '[DONE]') return;
+      let json;
+      try { json = JSON.parse(line); } catch (e) { return; } // 心跳 / 注释行直接忽略
+      if (json.usage) {
+        usage = {
+          promptTokens: Number(json.usage.prompt_tokens) || 0,
+          completionTokens: Number(json.usage.completion_tokens) || 0,
+          totalTokens: Number(json.usage.total_tokens) || 0,
+        };
+      }
+      const delta = json.choices && json.choices[0] && json.choices[0].delta
+        ? json.choices[0].delta.content : '';
+      if (delta) {
+        content += delta;
+        send({ type: 'delta', text: delta });
+      }
+    };
+    const drain = (text, final = false) => {
+      let buf = text;
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const raw = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of raw.split(/\r?\n/)) {
+          if (line.startsWith('data:')) handleData(line.slice(5));
+        }
+      }
+      if (final && buf.trim()) {
+        for (const line of buf.split(/\r?\n/)) {
+          if (line.startsWith('data:')) handleData(line.slice(5));
+        }
+      }
+      return buf;
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer = drain(buffer + decoder.decode(value, { stream: true }));
+    }
+    drain(buffer, true);
+    if (!content.trim()) throw new Error('AI 接口返回内容为空');
+    send({ type: 'done', usage });
+    return { content: content.trim(), usage };
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      const canceled = !!(signal && signal.aborted);
+      const err = new Error(canceled ? '生成已取消' : 'AI 接口请求超时');
+      err.code = canceled ? 'CANCELED' : 'TIMEOUT';
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onExternalAbort);
+  }
+}
+
 /** 简单连通性测试 */
 async function testConnection({ baseUrl, apiKey, model }) {
   return callLLM({
@@ -593,6 +715,7 @@ module.exports = {
   parseShotReply,
   parseTextShotReply,
   callLLM,
+  callLLMStream,
   testConnection,
   summarizeSearch,
   rankSearchCandidates,
